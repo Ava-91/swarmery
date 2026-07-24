@@ -75,6 +75,11 @@ func (e *noopExec) Run(_ context.Context, _ string, name string, args ...string)
 	if name == "gh" {
 		return "https://github.com/x/y/pull/1\n", nil
 	}
+	// The sha re-check reads the CURRENT origin/main content via `git show
+	// origin/main:<agent_path>`; seedProposal's base_sha256 is over "agent body".
+	if name == "git" && hasArg(args, "show") {
+		return "agent body", nil
+	}
 	// The numstat gate now runs as `git -c core.quotepath=false diff --cached
 	// --numstat --no-renames HEAD`; match on the presence of a "diff" arg so the
 	// config-flag prefix doesn't dodge the stub.

@@ -24,6 +24,35 @@ type improveMockRunner struct {
 
 func (m *improveMockRunner) Run(context.Context, string) (string, error) { return m.out, m.err }
 
+// repoAgentsExec fakes the apply-repo git boundary for the improve API tests:
+// origin/main ships the agents the improve pipeline resolves the SOURCE file
+// from. ls-tree lists them at plugins/core/agents/<name>.md; `git show` returns
+// "agent body" for any of them. Agents absent here (e.g. "ghost") resolve to
+// ErrAgentNotFound → the endpoints answer 404 / in_registry:false.
+type repoAgentsExec struct{ agents []string }
+
+func (e *repoAgentsExec) Run(_ context.Context, _ string, name string, args ...string) (string, error) {
+	if name != "git" || len(args) == 0 {
+		return "", nil
+	}
+	if hasArg(args, "ls-tree") {
+		var b []byte
+		for _, a := range e.agents {
+			b = append(b, []byte("plugins/core/agents/"+a+".md\n")...)
+		}
+		return string(b), nil
+	}
+	if hasArg(args, "show") {
+		return "agent body", nil // matches seedRegistryAgent's DB content + base sha
+	}
+	return "", nil // fetch and everything else succeed silently
+}
+
+func (e *repoAgentsExec) ReadFile(string) ([]byte, error) { return nil, nil }
+func (e *repoAgentsExec) WriteFile(string, []byte) error  { return nil }
+func (e *repoAgentsExec) MkdirTemp() (string, error)      { return "", nil }
+func (e *repoAgentsExec) RemoveAll(string) error          { return nil }
+
 // improveValidOut satisfies the splitDiffRationale contract.
 const improveValidOut = "## Diff\n```diff\n--- a/x.md\n+++ b/x.md\n@@ -1 +1 @@\n-a\n+b\n```\n## Rationale\nEvidence-backed fix.\n"
 
@@ -39,8 +68,10 @@ func improveServer(t *testing.T, runner improve.Runner) (*httptest.Server, *sql.
 	t.Cleanup(func() { db.Close() })
 
 	h := &Handler{
-		DB:        db,
-		Improve:   &improve.Service{DB: db, Runner: runner},
+		DB: db,
+		Improve: &improve.Service{DB: db, Runner: runner, Repo: "/repo",
+			// origin/main ships the agents the improve API tests exercise.
+			Exec: &repoAgentsExec{agents: []string{"tech-lead", "code-auditor"}}},
 		improveGo: func(fn func()) { fn() },
 	}
 	mux := http.NewServeMux()

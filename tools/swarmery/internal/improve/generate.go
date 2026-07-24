@@ -29,17 +29,18 @@ func (s *Service) OpenProposalID(agent string) (int64, error) {
 	return id, err
 }
 
-// AgentInRegistry reports whether the (normalized) agent key resolves to a
-// live registry row.
+// AgentInRegistry reports whether the (normalized) agent key ships in the APPLY
+// REPO at origin/main (plugins/*/agents/<name>.md) — the agents the rewriter
+// can act on. Built-in agents (Explore, general-purpose) and cross-project
+// specialists that live only in another checkout are absent. Backed by the same
+// origin/main listing as repoAgentSet.
 func (s *Service) AgentInRegistry(agent string) (bool, error) {
-	_, err := resolveAgent(s.DB, agent)
-	if errors.Is(err, ErrAgentNotFound) {
-		return false, nil
-	}
+	set, err := repoAgentSet(s.Exec, s.Repo)
 	if err != nil {
 		return false, err
 	}
-	return true, nil
+	_, ok := set[agent]
+	return ok, nil
 }
 
 // Generate runs the full pipeline for one agent: evidence bundle → placeholder
@@ -56,7 +57,7 @@ func (s *Service) AgentInRegistry(agent string) (bool, error) {
 // TOCTOU gap the code-level OpenProposalID check alone left open. The row is
 // then updated in place on completion (like Retry).
 func (s *Service) Generate(ctx context.Context, req GenerateReq) (int64, error) {
-	ev, err := buildEvidence(s.DB, req.Agent, s.Repo)
+	ev, err := s.buildEvidence(req.Agent)
 	if err != nil {
 		return 0, err
 	}
@@ -202,7 +203,7 @@ func (s *Service) Retry(ctx context.Context, id int64) error {
 		return fmt.Errorf("%w (proposal %d)", ErrOpenProposal, open)
 	}
 
-	ev, err := buildEvidence(s.DB, agent, s.Repo)
+	ev, err := s.buildEvidence(agent)
 	if err != nil {
 		return err
 	}
