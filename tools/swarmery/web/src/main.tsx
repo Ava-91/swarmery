@@ -2,6 +2,7 @@ import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet, RouterProvider } from 'react-router-dom';
 import { App } from './App';
+import { PageSearchProvider } from './lib/pageSearch';
 import { ProjectColorProvider } from './lib/projectColors';
 import { ScopeProvider } from './lib/scope';
 import { ThemeProvider } from './lib/theme';
@@ -75,7 +76,9 @@ const ScopedArchitecture = lazy(() =>
 function RootProviders(): JSX.Element {
   return (
     <ScopeProvider>
-      <Outlet />
+      <PageSearchProvider>
+        <Outlet />
+      </PageSearchProvider>
     </ScopeProvider>
   );
 }

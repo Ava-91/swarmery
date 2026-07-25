@@ -31,11 +31,6 @@ import { isoDay } from './lib/format';
 import { useHealth, shortVersion } from './lib/health';
 import { loadPrefs, useBrowserNotifications, type NotifyPrefs } from './lib/notifications';
 import { NotifyPrefsContext } from './lib/notifyPrefsContext';
-import {
-  PageSearchProvider,
-  pageSearchPlaceholder,
-  usePageSearchControl,
-} from './lib/pageSearch';
 import { useScope } from './lib/scope';
 import { useLiveUpdates } from './lib/ws';
 
@@ -76,51 +71,11 @@ function ScopeSwitcher({ block = false }: { block?: boolean }): JSX.Element {
 }
 
 export function App(): JSX.Element {
-  // ScopeProvider now lives one level up (RootProviders in main.tsx) so the
-  // fleet App and the project-workspace shell share one project store; App only
-  // adds the page-search context the fleet header needs.
-  return (
-    <PageSearchProvider>
-      <AppShell />
-    </PageSearchProvider>
-  );
-}
-
-/** Contextual header search — one input, filters the current page's list.
- * Hidden on pages with no searchable list (placeholder === null). */
-function HeaderSearch(): JSX.Element | null {
-  const { pathname } = useLocation();
-  const { query, setQuery } = usePageSearchControl();
-  const placeholder = pageSearchPlaceholder(pathname);
-  if (placeholder === null) return null;
-  return (
-    <div className="relative hidden w-[220px] sm:block">
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 font-mono text-[13px] leading-none text-ink-faint"
-      >
-        ⌕
-      </span>
-      <input
-        type="text"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder={placeholder}
-        aria-label={placeholder}
-        className="w-full rounded-[9px] border border-line-strong bg-field py-[6px] pr-8 pl-7 font-mono text-[12px] text-ink transition-colors outline-none placeholder:text-ink-faint focus:border-ink-dim"
-      />
-      {query !== '' && (
-        <button
-          type="button"
-          onClick={() => setQuery('')}
-          aria-label="clear filter"
-          className="absolute top-1/2 right-2 -translate-y-1/2 font-mono text-[13px] leading-none text-ink-dim transition-colors hover:text-ink"
-        >
-          ×
-        </button>
-      )}
-    </div>
-  );
+  // ScopeProvider + PageSearchProvider now live one level up (RootProviders in
+  // main.tsx) so the fleet App and the project-workspace shell share one project
+  // store and one page-search context (each searchable page renders its own
+  // PageSearchInput now — the header no longer carries the search box).
+  return <AppShell />;
 }
 
 function AppShell(): JSX.Element {
@@ -309,13 +264,11 @@ function AppShell(): JSX.Element {
         {/* Mode toggle, switching between the fleet (session) shell and the
             project shell. The project scope switcher moved to the sidebar top
             (mirrors project mode), so header chrome stays identical across
-            modes — no shift when toggling. */}
+            modes — no shift when toggling. The page-search box now lives in each
+            searchable page's body (PageSearchInput), not the header. Cmd+K still
+            opens the global search palette; theme + notifications live on
+            /settings. */}
         <ModeToggle />
-        {/* One contextual search input — filters the current page's list.
-            Section chips (status/scope/sort) live in the page body. Cmd+K still
-            opens the global search palette. Theme + notifications now live on
-            the /settings page, not the header. */}
-        <HeaderSearch />
         <span className="ml-auto flex items-center gap-3">
         <ThemeToggle />
         <UsagePopover />
