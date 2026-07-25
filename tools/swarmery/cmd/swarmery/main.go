@@ -31,6 +31,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/advisor"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/api"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
@@ -852,6 +853,9 @@ func cmdServe(args []string) error {
 	// without ingest; failures are logged, never fatal.
 	go func() {
 		runAdvisor := func() {
+			if err := trajeval.Compute(db, time.Now()); err != nil {
+				log.Printf("trajeval.Compute: %v", err)
+			}
 			stats, err := advisor.Run(db, time.Now())
 			if err != nil {
 				log.Printf("error: advisor: %v", err)
