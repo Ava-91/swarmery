@@ -11,7 +11,7 @@
 // permission_resolved over the shared connection).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import type { WSMessage } from './api/types';
 import {
   fetchApprovals,
@@ -25,16 +25,12 @@ import { CommandPalette } from './components/CommandPalette';
 import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
 import { ProjectDropdown } from './components/ProjectDropdown';
+import { ThemeToggle } from './components/ThemeToggle';
 import { UsagePopover } from './components/UsagePopover';
 import { isoDay } from './lib/format';
 import { useHealth, shortVersion } from './lib/health';
 import { loadPrefs, useBrowserNotifications, type NotifyPrefs } from './lib/notifications';
 import { NotifyPrefsContext } from './lib/notifyPrefsContext';
-import {
-  PageSearchProvider,
-  pageSearchPlaceholder,
-  usePageSearchControl,
-} from './lib/pageSearch';
 import { useScope } from './lib/scope';
 import { useLiveUpdates } from './lib/ws';
 
@@ -57,9 +53,10 @@ interface NavSection {
 
 const DOCS_NAV: NavItem = { to: '/docs', glyph: '❐', label: 'Docs' };
 
-/** Global project scope switcher (header) — GitHub-org-switcher pattern.
- * Projects come from the ScopeProvider's shared fetch. */
-function ScopeSwitcher(): JSX.Element {
+/** Global project scope switcher — GitHub-org-switcher pattern. Projects come
+ * from the ScopeProvider's shared fetch. Rendered `block` at the top of the
+ * session-mode sidebar (mirrors the project-mode ProjectSwitcher placement). */
+function ScopeSwitcher({ block = false }: { block?: boolean }): JSX.Element {
   const { scope, setScope, projects } = useScope();
   return (
     <ProjectDropdown
@@ -68,56 +65,17 @@ function ScopeSwitcher(): JSX.Element {
       onChange={setScope}
       allLabel="All projects"
       groupByTag
+      block={block}
     />
   );
 }
 
 export function App(): JSX.Element {
-  // ScopeProvider now lives one level up (RootProviders in main.tsx) so the
-  // fleet App and the project-workspace shell share one project store; App only
-  // adds the page-search context the fleet header needs.
-  return (
-    <PageSearchProvider>
-      <AppShell />
-    </PageSearchProvider>
-  );
-}
-
-/** Contextual header search — one input, filters the current page's list.
- * Hidden on pages with no searchable list (placeholder === null). */
-function HeaderSearch(): JSX.Element | null {
-  const { pathname } = useLocation();
-  const { query, setQuery } = usePageSearchControl();
-  const placeholder = pageSearchPlaceholder(pathname);
-  if (placeholder === null) return null;
-  return (
-    <div className="relative hidden w-[220px] sm:block">
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 font-mono text-[13px] leading-none text-ink-faint"
-      >
-        ⌕
-      </span>
-      <input
-        type="text"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder={placeholder}
-        aria-label={placeholder}
-        className="w-full rounded-[9px] border border-line-strong bg-field py-[6px] pr-8 pl-7 font-mono text-[12px] text-ink transition-colors outline-none placeholder:text-ink-faint focus:border-ink-dim"
-      />
-      {query !== '' && (
-        <button
-          type="button"
-          onClick={() => setQuery('')}
-          aria-label="clear filter"
-          className="absolute top-1/2 right-2 -translate-y-1/2 font-mono text-[13px] leading-none text-ink-dim transition-colors hover:text-ink"
-        >
-          ×
-        </button>
-      )}
-    </div>
-  );
+  // ScopeProvider + PageSearchProvider now live one level up (RootProviders in
+  // main.tsx) so the fleet App and the project-workspace shell share one project
+  // store and one page-search context (each searchable page renders its own
+  // PageSearchInput now — the header no longer carries the search box).
+  return <AppShell />;
 }
 
 function AppShell(): JSX.Element {
@@ -235,15 +193,18 @@ function AppShell(): JSX.Element {
   useLiveUpdates(onMessage, resyncBadges);
 
   const pendingCount = pendingIds.size;
-  // Session-mode sidebar. Projects is reached via the header ModeToggle now (not
-  // a sidebar item); tool dashboards are project-scoped (project-mode sidebar).
-  // Settings is pinned to the bottom, rendered separately below.
+  // Session-mode sidebar. A scope switcher sits at the top of the rail (mirrors
+  // project mode); the Projects item opens the fleet project list. Tool
+  // dashboards are project-scoped (project-mode sidebar). System / Docs /
+  // Settings are pinned to the bottom of the rail (mirrors the project-mode
+  // System / Settings footer), rendered separately below.
   const sections: NavSection[] = [
     { label: null, items: [{ to: '/', glyph: '◉', label: 'Overview' }] },
     {
       label: 'Work',
       items: [
         { to: '/sessions', glyph: '❯', label: 'Sessions', ...badgeFor(sessionsToday) },
+        { to: '/projects', glyph: '▤', label: 'Projects' },
         {
           to: '/approvals',
           glyph: '⧗',
@@ -260,23 +221,19 @@ function AppShell(): JSX.Element {
         { to: '/retro', glyph: '↺', label: 'Retro', ...badgeFor(proposedRecs) },
       ],
     },
-    {
-      label: 'System',
-      items: [
-        // Single "System" destination hosting Agents / Toolkit / Hooks /
-        // Insights as tabs (pages/SystemShell.tsx). The promotion/drift/lint
-        // inbox badge rides this one item.
-        { to: '/system', glyph: '☷', label: 'System', ...badgeFor(insightCount) },
-        ...(hasDocs ? [DOCS_NAV] : []),
-      ],
-    },
   ];
-  // Bottom-pinned global settings (session mode); also appended to the flat
-  // mobile nav so it stays reachable on small screens.
-  const SETTINGS_NAV: NavItem = { to: '/settings', glyph: '⚙', label: 'Settings' };
-  // Mobile bottom nav stays flat — sections flattened in order, no labels, with
-  // Settings appended last.
-  const items: NavItem[] = [...sections.flatMap((s) => s.items), SETTINGS_NAV];
+  // Bottom-pinned cluster (session mode): the System destination (tabbed shell,
+  // carrying the promotion/drift/lint inbox badge), Docs when present, and the
+  // global Settings page. Mirrors the project-mode System/Settings footer and
+  // is appended to the flat mobile nav so everything stays reachable.
+  const bottomItems: NavItem[] = [
+    { to: '/system', glyph: '☷', label: 'System', ...badgeFor(insightCount) },
+    ...(hasDocs ? [DOCS_NAV] : []),
+    { to: '/settings', glyph: '⚙', label: 'Settings' },
+  ];
+  // Mobile bottom nav stays flat — sections flattened in order, then the
+  // bottom-pinned cluster, no labels.
+  const items: NavItem[] = [...sections.flatMap((s) => s.items), ...bottomItems];
 
   // Shared NavLink className for a desktop sidebar row (section items + the
   // pinned Settings link) — extracted so the long class string is not duplicated.
@@ -294,23 +251,26 @@ function AppShell(): JSX.Element {
     <div className="app-shell flex h-dvh flex-col">
       {/* Full-width top header: wordmark, scope filter, search/filters, status. */}
       <header className="header-hairline relative z-20 flex h-14 shrink-0 items-center gap-4 bg-bg px-4 desk:px-6">
-        {/* Fixed-width block on desktop: 24px header padding + 208px + 16px gap
-            = 248px, so the scope switcher starts exactly where the sidebar ends. */}
-        <span className="flex min-w-0 items-center desk:w-[208px] desk:shrink-0">
-          <span className="font-sans text-[16px] leading-none font-extrabold tracking-[0.09em] text-ink uppercase">
-            SW<span className="text-brand">◆</span>RMERY
-          </span>
-        </span>
-        {/* Mode toggle first (before the scope filter), switching between the
-            fleet (session) shell and the project shell. */}
+        {/* Fixed-width block on desktop (24px pad + 208px + 16px gap = 248px) so
+            the ModeToggle lines up with the sidebar edge — identical to the
+            project shell's header, so nothing shifts when toggling modes. */}
+        <Link
+          to="/"
+          aria-label="swarmery home"
+          className="flex min-w-0 items-center font-sans text-[16px] leading-none font-extrabold tracking-[0.09em] text-ink uppercase transition-opacity hover:opacity-80 desk:w-[208px] desk:shrink-0"
+        >
+          SW<span className="text-brand">◆</span>RMERY
+        </Link>
+        {/* Mode toggle, switching between the fleet (session) shell and the
+            project shell. The project scope switcher moved to the sidebar top
+            (mirrors project mode), so header chrome stays identical across
+            modes — no shift when toggling. The page-search box now lives in each
+            searchable page's body (PageSearchInput), not the header. Cmd+K still
+            opens the global search palette; theme + notifications live on
+            /settings. */}
         <ModeToggle />
-        <ScopeSwitcher />
-        {/* One contextual search input right after the scope filter — filters
-            the current page's list. Section chips (status/scope/sort) live in
-            the page body. Cmd+K still opens the global search palette. Theme +
-            notifications now live on the /settings page, not the header. */}
-        <HeaderSearch />
         <span className="ml-auto flex items-center gap-3">
+        <ThemeToggle />
         <UsagePopover />
         {!MOCK && <NewProjectButton />}
         <span
@@ -338,6 +298,11 @@ function AppShell(): JSX.Element {
         {/* Desktop sidebar — static labelled panel (248px), no collapse.
             Settings is pinned to the bottom via mt-auto. */}
         <nav className="hidden w-[248px] shrink-0 flex-col border-r border-line px-3 py-4 desk:flex">
+          {/* Project scope switcher at the top of the rail — mirrors the
+              project-mode ProjectSwitcher placement (moved out of the header). */}
+          <div className="mb-3">
+            <ScopeSwitcher block />
+          </div>
           {sections
             .filter((section) => section.items.length > 0)
             .map((section) => (
@@ -371,17 +336,28 @@ function AppShell(): JSX.Element {
                 ))}
               </div>
             ))}
-          {/* Global settings, pinned to the bottom of the rail. */}
+          {/* System / Docs / Settings, pinned to the bottom of the rail. */}
           <div className="mt-auto flex flex-col gap-0.5 pt-3">
-            <NavLink to={SETTINGS_NAV.to} className={navItemClass}>
-              <span
-                className="w-[16px] shrink-0 text-center text-[16px] leading-none"
-                aria-hidden="true"
-              >
-                {SETTINGS_NAV.glyph}
-              </span>
-              <span className="truncate text-[13.5px] font-medium">{SETTINGS_NAV.label}</span>
-            </NavLink>
+            {bottomItems.map((item) => (
+              <NavLink key={item.to} to={item.to} className={navItemClass}>
+                <span
+                  className="w-[16px] shrink-0 text-center text-[16px] leading-none"
+                  aria-hidden="true"
+                >
+                  {item.glyph}
+                </span>
+                <span className="truncate text-[13.5px] font-medium">{item.label}</span>
+                {item.badge !== undefined && (
+                  <span
+                    className={`ml-auto flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-[5px] font-mono text-[10px] font-bold ${
+                      item.alert === true ? 'bg-amber text-bg' : 'bg-line-strong text-ink-dim'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+              </NavLink>
+            ))}
           </div>
         </nav>
 

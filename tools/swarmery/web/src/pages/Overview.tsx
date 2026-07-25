@@ -41,6 +41,7 @@ import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
 import { sessionState, useNowMs } from '../lib/sessionState';
 import { applyPermissionMessage, applySessionMessage, useLiveUpdates } from '../lib/ws';
+import { PageSearchInput } from '../components/PageSearchInput';
 import { ApproxHint, Empty, ErrorBox, Loading } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
 
@@ -816,6 +817,8 @@ export function Overview(): JSX.Element {
           <Loading label="stats…" />
         )}
 
+        {/* In-page session-title filter (moved out of the header). */}
+        <PageSearchInput className="mt-5" />
         {error !== null && <ErrorBox message={error} onRetry={loadSessions} />}
         {sessions === null && error === null ? (
           <Loading label="sessions…" />

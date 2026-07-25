@@ -2,6 +2,7 @@ import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Outlet, RouterProvider } from 'react-router-dom';
 import { App } from './App';
+import { PageSearchProvider } from './lib/pageSearch';
 import { ProjectColorProvider } from './lib/projectColors';
 import { ScopeProvider } from './lib/scope';
 import { ThemeProvider } from './lib/theme';
@@ -11,6 +12,7 @@ import { Overview } from './pages/Overview';
 import { Projects } from './pages/Projects';
 import { Sessions } from './pages/Sessions';
 import { SessionDetailPage } from './pages/SessionDetail';
+import { Settings } from './pages/Settings';
 import { Docs } from './pages/Docs';
 import { Architecture } from './pages/Architecture';
 import { Serena } from './pages/Serena';
@@ -74,7 +76,9 @@ const ScopedArchitecture = lazy(() =>
 function RootProviders(): JSX.Element {
   return (
     <ScopeProvider>
-      <Outlet />
+      <PageSearchProvider>
+        <Outlet />
+      </PageSearchProvider>
     </ScopeProvider>
   );
 }
@@ -182,6 +186,10 @@ const router = createBrowserRouter([
           { path: 'serena', element: <Serena /> },
           { path: 'graphify', element: <Graphify /> },
           { path: 'architecture', element: <Architecture /> },
+          // Global settings (session mode): appearance + notifications +
+          // auto-approve note + daemon/health. Project settings stays scoped at
+          // /p/:slug/settings — do NOT add this to the project subtree.
+          { path: 'settings', element: <Settings /> },
           { path: 'docs', element: <Docs /> },
           { path: 'docs/:slug', element: <Docs /> },
         ],

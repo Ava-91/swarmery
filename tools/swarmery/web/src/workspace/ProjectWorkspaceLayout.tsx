@@ -82,8 +82,8 @@ const BASE_NAV: WorkspaceNavItem[] = [
   { path: 'memory', glyph: '❖', label: 'Memory' },
 ];
 const INSIGHT_NAV: WorkspaceNavItem[] = [
-  { path: 'retro', glyph: '↺', label: 'Retro' },
   { path: 'analytics', glyph: '▦', label: 'Analytics' },
+  { path: 'retro', glyph: '↺', label: 'Retro' },
 ];
 // System (fusion phase 18 → tabbed shell), project-scoped — the EFFECTIVE
 // catalog for this project (enabled packs + overrides). The shell hosts
@@ -176,9 +176,12 @@ function WorkspaceInner(): JSX.Element {
     <WorkspaceTerminalContext.Provider value={openWorktree}>
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
-          <nav className="hidden w-[228px] shrink-0 flex-col border-r border-line px-3 py-3 desk:flex">
+          <nav className="hidden w-[248px] shrink-0 flex-col border-r border-line px-3 py-4 desk:flex">
             <ProjectSwitcher projects={projects} currentSlug={slug} subPath={subPath} />
-            <div className="mt-4 flex flex-col gap-0.5">
+            {/* The fleet Projects list is reached from the ProjectSwitcher's
+                "All projects →" footer (and the ModeToggle) — no standalone
+                Projects item here; it lives in the session-mode sidebar. */}
+            <div className="mt-3 flex flex-col gap-0.5">
               {BASE_NAV.map((item) => (
                 <WorkspaceLink key={item.path} slug={slug} item={item} />
               ))}

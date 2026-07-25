@@ -14,6 +14,7 @@ import { liveActionText } from '../lib/payload';
 import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
 import { applySessionMessage, useLiveUpdates } from '../lib/ws';
+import { PageSearchInput } from '../components/PageSearchInput';
 import { SessionCard } from '../components/SessionCard';
 import { Empty, ErrorBox, GroupHeader, Loading } from '../components/ui';
 
@@ -248,10 +249,11 @@ export function Sessions(): JSX.Element {
         {sorted.length} match · newest first
       </div>
 
-      {/* Status chips — project filtering lives in the header scope switcher,
-          text search in the header ⌘K palette. */}
+      {/* Status chips + in-page title search (moved out of the header). Project
+          filtering lives in the sidebar scope switcher; ⌘K opens global search. */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <StatusChips status={status} onStatus={setStatus} counts={counts} />
+        <PageSearchInput className="sm:ml-auto" />
       </div>
 
       {error !== null && <ErrorBox message={error} onRetry={load} />}
@@ -275,7 +277,13 @@ export function Sessions(): JSX.Element {
           <GroupHeader>{g.label}</GroupHeader>
           <div className="divide-y divide-line-soft">
             {g.rows.map((s) => (
-              <SessionCard key={s.id} session={s} now={nowById[s.id] ?? null} flat />
+              <SessionCard
+                key={s.id}
+                session={s}
+                now={nowById[s.id] ?? null}
+                flat
+                hideProject={scope !== null}
+              />
             ))}
           </div>
         </section>

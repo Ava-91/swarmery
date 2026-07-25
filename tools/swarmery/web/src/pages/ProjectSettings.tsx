@@ -10,7 +10,6 @@ import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { ProjectActions } from '../components/ProjectActions';
 import { ProjectPlugins } from '../components/ProjectPlugins';
 import { PermissionPresets } from '../components/PermissionPresets';
-import { ThemePickerPanel } from '../theme/ThemePicker';
 import { Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 
 export function ProjectSettings(): JSX.Element {
@@ -62,10 +61,8 @@ export function ProjectSettings(): JSX.Element {
         </div>
       )}
 
-      {/* Appearance (mode + palette) — app-global, surfaced here as the settings
-          entry point (mirrors the header picker; both read one provider). */}
-      <SectionTitle>appearance</SectionTitle>
-      <ThemePickerPanel />
+      {/* Appearance is app-global and now lives on the /settings page (session
+          mode); this per-project page keeps only project-scoped settings. */}
 
       {managed ? (
         <div className="mt-5">

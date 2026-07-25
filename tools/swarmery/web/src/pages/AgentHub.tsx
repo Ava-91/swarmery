@@ -108,10 +108,16 @@ export function AgentHub({
   embedded = false,
   routeBase: routeBaseProp,
   scopeSlug: scopeSlugProp,
+  projectScoped = false,
 }: {
   embedded?: boolean;
   routeBase?: string;
   scopeSlug?: string | null;
+  /** PROJECT mode (/p/:slug/system/agents): the roster is narrowed to this
+   * project's OWN agents (scope === 'project') and the all/global/project scope
+   * selector is hidden — the view is inherently project-only. Fleet mode keeps
+   * the full roster + the scope chips. */
+  projectScoped?: boolean;
 } = {}): JSX.Element {
   const params = useParams();
   const navigate = useNavigate();
@@ -235,16 +241,24 @@ export function AgentHub({
     [],
   );
 
-  // Client-side origin-scope filter driven by the scope chips. When no scope is
-  // selected (scopeChip === null → "all scopes") the roster passes through untouched.
+  // Client-side origin-scope filter. In PROJECT mode the roster is pinned to
+  // this project's OWN agents (scope === 'project') — the /api/agents/hub roster
+  // returns the whole registry (projectId only scopes the rollup window), so the
+  // project-only narrowing happens here. In fleet mode the scope chips drive it:
+  // scopeChip === null ("all scopes") passes the roster through untouched.
   const visibleRoster = useMemo(() => {
-    if (roster === null || scopeChip === null) return roster;
+    if (roster === null) return roster;
+    if (projectScoped) return roster.filter((a) => a.scope === 'project');
+    if (scopeChip === null) return roster;
     return roster.filter((a) => a.scope === scopeChip);
-  }, [roster, scopeChip]);
+  }, [roster, scopeChip, projectScoped]);
 
   // Scope segmented control (all scopes / global / project) — reuses the System
-  // page's chips. Rendered in HubShell's full-width top bar, like the toolkit catalog.
-  const scopeFilters = <FiltersRow scope={scopeChip} onScope={setScopeChip} />;
+  // page's chips. Rendered in HubShell's full-width top bar, like the toolkit
+  // catalog. Hidden in PROJECT mode: the view is inherently project-only there.
+  const scopeFilters = projectScoped ? undefined : (
+    <FiltersRow scope={scopeChip} onScope={setScopeChip} />
+  );
 
   return (
     <HubShell<AgentRosterRow>
@@ -258,9 +272,13 @@ export function AgentHub({
       renderRow={(a) => <RosterCard agent={a} />}
       selectedKey={selectedId === null ? null : String(selectedId)}
       onSelect={onSelect}
-      topBar={scopeFilters}
+      {...(scopeFilters !== undefined ? { topBar: scopeFilters } : {})}
       searchPlaceholder="filter agents…"
-      rosterEmptyLabel="no agents on this machine"
+      rosterEmptyLabel={
+        projectScoped
+          ? 'No project-specific agents — this project inherits from enabled packs.'
+          : 'no agents on this machine'
+      }
       tabs={tabs}
       activeTab={tab}
       onTab={onTab}

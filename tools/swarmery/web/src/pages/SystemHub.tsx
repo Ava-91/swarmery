@@ -181,6 +181,17 @@ function fetchRoster(category: HubCategory, projectId: string | null): Promise<R
   }
 }
 
+/** PROJECT-mode narrowing: keep only rows that originate in the project's OWN
+ * .claude/ — skills/commands/hooks carry scope === 'project'; templates carry
+ * source === 'project' (the effective template list also returns core/pack
+ * built-ins the project merely inherits). Anything global / pack-inherited is
+ * dropped. (For skills/commands/hooks the backend ?project= filter already
+ * returns only project-scoped rows; this is a defensive, self-documenting
+ * client-side narrowing that also covers any inherited row that slips through.) */
+function isProjectRow(r: RosterRow): boolean {
+  return r.kind === 'templates' ? r.item.source === 'project' : r.item.scope === 'project';
+}
+
 /* ================= the page ================= */
 
 /** Props are optional so the standalone /system-hub and /p/:slug/system-hub
@@ -194,11 +205,19 @@ export function SystemHub({
   forceCategory,
   routeBase: routeBaseProp,
   scopeSlug: scopeSlugProp,
+  projectScoped = false,
 }: {
   embedded?: boolean;
   forceCategory?: HubCategory;
   routeBase?: string;
   scopeSlug?: string | null;
+  /** PROJECT mode (/p/:slug/system/…): the roster shows ONLY this project's own
+   * items (skills/commands/hooks scope === 'project'; templates source ===
+   * 'project'), dropping catalog items inherited from packs/core or the global
+   * scope. The Toolkit/Hooks catalog has no scope selector to hide (that control
+   * lives only on the Agents tab), so this flag drives only the roster filter +
+   * the empty-state copy. Fleet mode is unchanged. */
+  projectScoped?: boolean;
 } = {}): JSX.Element {
   const params = useParams();
   const navigate = useNavigate();
@@ -245,9 +264,9 @@ export function SystemHub({
     }
     setRosterError(null);
     fetchRoster(category, scopeSlug ?? null)
-      .then(setRoster)
+      .then((rows) => setRoster(projectScoped ? rows.filter(isProjectRow) : rows))
       .catch((e: unknown) => setRosterError(String(e)));
-  }, [category, scopeSlug, refreshKey]);
+  }, [category, scopeSlug, refreshKey, projectScoped]);
   useEffect(loadRoster, [loadRoster]);
 
   const loadSummary = useCallback((): void => {
@@ -403,7 +422,11 @@ export function SystemHub({
           selectedKey={selectedKey}
           onSelect={onSelect}
           searchPlaceholder={`filter ${category}…`}
-          rosterEmptyLabel={`no ${category} on this machine`}
+          rosterEmptyLabel={
+            projectScoped
+              ? `No project-specific ${category} — this project inherits from enabled packs.`
+              : `no ${category} on this machine`
+          }
           tabs={tabs}
           activeTab={activeTab}
           onTab={onTab}

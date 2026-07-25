@@ -15,6 +15,7 @@ import { fmtAgo, fmtCost, fmtTokens } from '../lib/format';
 import { usePageSearch } from '../lib/pageSearch';
 import { ProjectName } from '../components/ProjectName';
 import { PluginBadge, ProjectActions } from '../components/ProjectActions';
+import { PageSearchInput } from '../components/PageSearchInput';
 import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 
 function Metric({ label, value }: { label: string; value: string }): JSX.Element {
@@ -290,7 +291,10 @@ export function Projects(): JSX.Element {
           : ' '}
       </div>
 
-      <TagFilter tags={allTags} value={tag} onChange={setTag} />
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <TagFilter tags={allTags} value={tag} onChange={setTag} />
+        <PageSearchInput className="sm:ml-auto" />
+      </div>
 
       {error !== null && <ErrorBox message={error} onRetry={load} />}
       {projects === null && error === null && <Loading label="projects…" />}
