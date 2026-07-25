@@ -298,4 +298,14 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/system/templates", h.listSystemTemplates)
 	mux.HandleFunc("GET /api/system/templates/{name}", h.getSystemTemplate)
 	mux.HandleFunc("POST /api/system/templates/{name}/copy", requireLocalOrigin(h.copySystemTemplate))
+
+	// connectors (mcp servers): see + add/remove the MCP servers Claude Code
+	// has configured, read through internal/mcpcfg (which shells to `claude mcp
+	// …` with an argv-slice, test-isolated runner). GET is the read feed; the
+	// add/remove writes carry the same D4 origin hardening as every other
+	// mutating endpoint. {name} is decoded by the mux so space/colon names
+	// round-trip.
+	mux.HandleFunc("GET /api/connectors", h.connectors)
+	mux.HandleFunc("POST /api/connectors", requireLocalOrigin(h.addConnector))
+	mux.HandleFunc("DELETE /api/connectors/{name}", requireLocalOrigin(h.removeConnector))
 }

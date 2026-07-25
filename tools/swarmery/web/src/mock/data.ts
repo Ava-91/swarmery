@@ -41,6 +41,7 @@ import type {
   ArchitectureProject,
   AutonomyResp,
   BreakdownResp,
+  ConnectorsResponse,
   DurationsResp,
   ErrorsResp,
   FunnelResp,
@@ -2040,6 +2041,39 @@ export const mockApi = {
       architecture: {
         projects: archProjects,
       },
+    };
+  },
+
+  // ── Connectors (MCP servers) ──
+  async connectors(): Promise<ConnectorsResponse> {
+    await delay(90);
+    return {
+      connectors: [
+        {
+          name: 'serena',
+          transport: 'stdio',
+          scope: 'user',
+          status: 'connected',
+          detail: 'uvx --from git+https://github.com/oraios/serena serena start-mcp-server',
+          source: '~/.claude.json',
+        },
+        {
+          name: 'context7',
+          transport: 'http',
+          scope: 'user',
+          status: 'connected',
+          detail: 'https://mcp.context7.com/mcp',
+          source: '~/.claude.json',
+        },
+        {
+          name: 'playwright',
+          transport: 'stdio',
+          scope: 'local',
+          status: 'needs_auth',
+          detail: 'npx @playwright/mcp@latest',
+          source: '.mcp.json',
+        },
+      ],
     };
   },
 

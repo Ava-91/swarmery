@@ -36,8 +36,13 @@ export interface HubTab {
 }
 
 export interface HubShellProps<T> {
-  /** Page title shown above the roster. */
-  title: string;
+  /** Page title shown above the roster. Omit to skip the `<h1>` entirely — used
+   * when the shell is embedded under an outer tab bar that owns the heading. */
+  title?: string;
+  /** When true AND nothing is selected, the roster fills the full width and the
+   * detail pane is not rendered at all (reverts to the split-pane on selection).
+   * Defaults off so the standard placeholder-rail behaviour is unchanged. */
+  hideDetailWhenUnselected?: boolean;
   /** Roster rows, or null while loading. */
   roster: T[] | null;
   rosterError: string | null;
@@ -54,6 +59,9 @@ export interface HubShellProps<T> {
   onSelect: (key: string | null) => void;
   /** Optional caller-defined filter chip row, rendered under the search box. */
   filters?: ReactNode;
+  /** Full-width bar rendered above the split area (e.g. scope filter chips),
+   * spanning both the roster and detail columns — like the toolkit catalog. */
+  topBar?: ReactNode;
   /** Placeholder for the roster search input. */
   searchPlaceholder?: string;
   /** Empty-roster message. */
@@ -72,6 +80,7 @@ export interface HubShellProps<T> {
 
 export function HubShell<T>({
   title,
+  hideDetailWhenUnselected = false,
   roster,
   rosterError,
   onRosterRetry,
@@ -81,6 +90,7 @@ export function HubShell<T>({
   selectedKey,
   onSelect,
   filters,
+  topBar,
   searchPlaceholder = 'filter…',
   rosterEmptyLabel = 'nothing here yet',
   tabs,
@@ -99,6 +109,9 @@ export function HubShell<T>({
   }, [roster, query, rowMatches]);
 
   const selected = selectedKey !== null;
+  // Full-width roster mode: caller opted in AND nothing is selected. The detail
+  // pane is omitted entirely and the roster is not constrained to a grid column.
+  const rosterOnly = hideDetailWhenUnselected && !selected;
 
   const rosterList = (
     <>
@@ -129,14 +142,24 @@ export function HubShell<T>({
 
   return (
     <div className="flex h-full flex-col px-4 pt-6 pb-6 desk:px-10 desk:pt-[34px] desk:pb-[34px]">
-      <h1 className="mb-4 font-display text-[30px] leading-tight font-medium tracking-[-0.01em]">
-        {title}
-      </h1>
+      {title !== undefined && (
+        <h1 className="mb-4 font-display text-[30px] leading-tight font-medium tracking-[-0.01em]">
+          {title}
+        </h1>
+      )}
+
+      {topBar !== undefined && <div className="mb-4 shrink-0">{topBar}</div>}
 
       {rosterError !== null ? (
         <ErrorBox message={rosterError} {...(onRosterRetry !== undefined ? { onRetry: onRosterRetry } : {})} />
       ) : (
-        <div className="min-h-0 flex-1 wide:grid wide:grid-cols-[minmax(300px,380px)_minmax(0,1fr)] wide:gap-6 wide:overflow-hidden">
+        <div
+          className={
+            rosterOnly
+              ? 'flex min-h-0 flex-1 flex-col'
+              : 'min-h-0 flex-1 wide:grid wide:grid-cols-[minmax(300px,380px)_minmax(0,1fr)] wide:gap-6 wide:overflow-hidden'
+          }
+        >
           {/* Roster pane: search + optional filters (fixed) + scroll list. */}
           <div className="flex min-h-0 flex-col">
             <div className="shrink-0 pb-3">
@@ -174,7 +197,9 @@ export function HubShell<T>({
           </div>
 
           {/* Detail pane: sticky header + tab bar + active panel. On narrow
-              viewports it stacks under the roster (the grid collapses). */}
+              viewports it stacks under the roster (the grid collapses). Omitted
+              entirely in rosterOnly mode (full-width roster, nothing selected). */}
+          {!rosterOnly && (
           <div className="mt-6 flex min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-surface wide:mt-0">
             {!selected ? (
               <div className="flex flex-1 items-center justify-center p-8">
@@ -220,6 +245,7 @@ export function HubShell<T>({
               </>
             )}
           </div>
+          )}
         </div>
       )}
     </div>

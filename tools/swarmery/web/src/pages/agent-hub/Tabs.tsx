@@ -8,114 +8,37 @@ import { Link } from 'react-router-dom';
 import type {
   AgentActivity,
   AgentInsights,
-  AgentOverview,
   AgentRun,
   AgentTask,
   Recommendation,
   RetroLesson,
 } from '../../api/types';
-import { fmtAgo, fmtCost, fmtDurationMs, fmtDayShort } from '../../lib/format';
+import { fmtAgo, fmtDurationMs, fmtDayShort } from '../../lib/format';
 import { Empty } from '../../components/ui';
-import { Sparkline } from '../../components/Sparkline';
 
 /* ----- Overview ----- */
 
-function StatTile({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub?: string | undefined;
-}): JSX.Element {
+// Overview now leads with the History + Versions block (the agent's usage
+// profile, rendered by SystemItemPanel variant="meta" from AgentHub). This tab
+// itself renders only the open-insights preview beneath it.
+export function OverviewTab({ topInsights }: { topInsights: Recommendation[] }): JSX.Element {
+  if (topInsights.length === 0) return <Empty>no open insights</Empty>;
   return (
-    <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
-      <div className="font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">{label}</div>
-      <div className="mt-1 font-display text-[22px] leading-none font-medium text-ink">{value}</div>
-      {sub !== undefined && <div className="mt-1 font-mono text-[10.5px] text-ink-dim">{sub}</div>}
-    </div>
-  );
-}
-
-export function OverviewTab({
-  overview,
-  topInsights,
-}: {
-  overview: AgentOverview;
-  topInsights: Recommendation[];
-}): JSX.Element {
-  const spark = overview.runsByDay.map((d) => d.runs);
-  const sparkTone = overview.failedShare >= 0.6 ? 'red' : overview.failedShare >= 0.3 ? 'amber' : 'dim';
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <StatTile label="runs 30d" value={String(overview.runs30d)} />
-        <StatTile
-          label="success"
-          value={overview.successRate !== null ? `${Math.round(overview.successRate * 100)}%` : '—'}
-          sub={overview.successRate === null ? 'no judged runs' : undefined}
-        />
-        <StatTile label="cost 30d" value={fmtCost(overview.cost30d)} />
-        <StatTile
-          label="last active"
-          value={overview.lastActiveAt !== null ? fmtAgo(overview.lastActiveAt) : '—'}
-        />
+    <div>
+      <div className="mb-1.5 font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
+        open insights
       </div>
-
-      <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
-        <div className="flex items-baseline justify-between">
-          <span className="font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
-            runs / day (30d)
-          </span>
-          <span className="font-mono text-[10.5px] text-ink-dim">
-            {overview.avgMs !== null ? `avg ${fmtDurationMs(overview.avgMs)}` : ''}
-            {overview.p95Ms !== null ? ` · p95 ${fmtDurationMs(overview.p95Ms)}` : ''}
-          </span>
-        </div>
-        {spark.length >= 2 ? (
-          <Sparkline values={spark} highlight={spark.length - 1} tone={sparkTone} />
-        ) : (
-          <div className="mt-2 font-mono text-[11px] text-ink-faint">not enough data</div>
-        )}
+      <div className="space-y-1.5">
+        {topInsights.slice(0, 3).map((rec) => (
+          <div
+            key={rec.id}
+            className="rounded-lg border border-line bg-bg px-3 py-2 text-[12px] text-ink-dim"
+          >
+            <span className="mr-1.5 font-mono text-[10px] text-ink-faint">{rec.rule}</span>
+            {rec.title}
+          </div>
+        ))}
       </div>
-
-      {overview.errors > 0 && (
-        <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
-          <div className="font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
-            errors 30d — {overview.errors}
-          </div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {Object.entries(overview.errorsByClass).map(([cls, n]) => (
-              <span
-                key={cls}
-                className="rounded-[7px] border border-line-strong px-1.5 py-[2px] font-mono text-[10px] text-ink-dim"
-              >
-                {cls} {n}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {topInsights.length > 0 && (
-        <div>
-          <div className="mb-1.5 font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
-            open insights
-          </div>
-          <div className="space-y-1.5">
-            {topInsights.slice(0, 3).map((rec) => (
-              <div
-                key={rec.id}
-                className="rounded-lg border border-line bg-bg px-3 py-2 text-[12px] text-ink-dim"
-              >
-                <span className="mr-1.5 font-mono text-[10px] text-ink-faint">{rec.rule}</span>
-                {rec.title}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
