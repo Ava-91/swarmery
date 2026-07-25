@@ -472,3 +472,110 @@ func TestStatsBreakdownCache(t *testing.T) {
 		t.Errorf("beta hit rate = %v, want 0", beta.CacheHitRate)
 	}
 }
+
+// TestFirstPassRates validates GET /api/analytics/first-pass returns per-agent
+// first-pass success rates from trajectory_scores.
+func TestFirstPassRates(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "firstpass.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	const tsFmt = "2006-01-02T15:04:05.000Z"
+	now := time.Now()
+	at := func(d time.Time) string { return d.UTC().Format(tsFmt) }
+	ts := at(now)
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES (1, '/work/p', '-work-p', 'P', ?)`, ts)
+	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at) VALUES
+		(1, 1, 'u1', 'completed', ?),
+		(2, 1, 'u2', 'completed', ?),
+		(3, 1, 'u3', 'completed', ?)`, ts, ts, ts)
+
+	// tech-lead: 2 first-pass=1 + 1 first-pass=0 → rate 2/3 ≈ 0.667
+	mustExec(`INSERT INTO trajectory_scores(session_id, agent, first_pass, computed_at) VALUES
+		(1, 'tech-lead', 1, ?),
+		(2, 'tech-lead', 1, ?),
+		(3, 'tech-lead', 0, ?)`, ts, ts, ts)
+
+	// explore: 1 first-pass=1 — stored lowercase as normAgent("Explore")="explore".
+	// This seed exercises the path that the Retro chip lookup depends on: the API
+	// must return agent="explore" (not "Explore") so row.agent.toLowerCase() on the
+	// client matches the map key verbatim.
+	mustExec(`INSERT INTO trajectory_scores(session_id, agent, first_pass, computed_at) VALUES
+		(3, 'explore', 1, ?)`, ts)
+
+	// Plant one finding for session 3 tech-lead score (id=3) to exercise the kinds
+	// population path.
+	mustExec(`INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids)
+		VALUES (3, 'verify-skip', 'warn', '[]')`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var out []struct {
+		Agent     string   `json:"agent"`
+		Sessions  int      `json:"sessions"`
+		FirstPass int      `json:"firstPass"`
+		Rate      float64  `json:"rate"`
+		Kinds     []string `json:"kinds"`
+	}
+	getJSON(t, srv.URL+"/api/analytics/first-pass", &out)
+
+	byAgent := make(map[string]struct {
+		Sessions  int
+		FirstPass int
+		Rate      float64
+		Kinds     []string
+	}, len(out))
+	for _, r := range out {
+		byAgent[r.Agent] = struct {
+			Sessions  int
+			FirstPass int
+			Rate      float64
+			Kinds     []string
+		}{r.Sessions, r.FirstPass, r.Rate, r.Kinds}
+	}
+
+	tl, ok := byAgent["tech-lead"]
+	if !ok || tl.Sessions != 3 || tl.FirstPass != 2 {
+		t.Fatalf("tech-lead = %+v (ok=%v), want sessions=3 firstPass=2", tl, ok)
+	}
+	if tl.Rate < 0.66 || tl.Rate > 0.67 {
+		t.Errorf("tech-lead rate = %v, want ~0.667", tl.Rate)
+	}
+	if tl.Kinds == nil {
+		t.Errorf("tech-lead kinds = nil, want empty slice or populated")
+	}
+	// kinds population: the finding we inserted must appear exactly once.
+	if len(tl.Kinds) != 1 || tl.Kinds[0] != "verify-skip" {
+		t.Errorf("tech-lead kinds = %v, want [\"verify-skip\"]", tl.Kinds)
+	}
+
+	// Verify the explore agent is returned with its key already lowercased —
+	// this is the storage-grain guarantee the Retro chip lookup relies on.
+	ex, ok := byAgent["explore"]
+	if !ok {
+		t.Fatalf("explore agent missing from response; got agents: %v", func() []string {
+			ks := make([]string, 0, len(byAgent))
+			for k := range byAgent {
+				ks = append(ks, k)
+			}
+			return ks
+		}())
+	}
+	if ex.Sessions != 1 || ex.FirstPass != 1 {
+		t.Errorf("explore = %+v, want sessions=1 firstPass=1", ex)
+	}
+}

@@ -1306,3 +1306,19 @@ export async function togglePlanCheckbox(
   }
   return (await res.json()) as PlanDoc;
 }
+
+// --- verification contour (phase 2) ------------------------------------------
+
+/** Per-agent first-pass success rate from trajectory_scores. */
+export interface FirstPassRow {
+  agent: string;
+  sessions: number;
+  firstPass: number;
+  rate: number;
+  /** Distinct anti-pattern kinds detected for this agent (for Retro chips). */
+  kinds: string[];
+}
+
+export function fetchFirstPassRates(): Promise<FirstPassRow[]> {
+  return get('/api/analytics/first-pass');
+}

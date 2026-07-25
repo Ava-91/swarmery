@@ -40,6 +40,7 @@ import {
   fetchBreakdown,
   fetchDurations,
   fetchFunnel,
+  fetchFirstPassRates,
   fetchMatrix,
   fetchPlaybookStats,
   fetchProductivity,
@@ -47,6 +48,7 @@ import {
   fetchTimeseries,
   fetchToolStats,
 } from '../api';
+import type { FirstPassRow } from '../api';
 import { useProjectColor } from '../lib/projectColors';
 import type { ColorForSlug } from '../lib/projectColors';
 import {
@@ -1197,6 +1199,52 @@ function AgentFilter({
 const toolRows = (d: ToolsResp): UsageRow[] => d.tools.map((t) => ({ ...t, name: t.tool }));
 const skillRows = (d: SkillsResp): UsageRow[] => d.skills.map((s) => ({ ...s, name: s.skill }));
 
+/* ----- first-pass tile (verification contour v2) ----- */
+
+/** Per-agent first-pass success rate tile backed by /api/analytics/first-pass. */
+function FirstPassTile(): JSX.Element | null {
+  const [data, setData] = useState<FirstPassRow[] | null>(null);
+
+  // fleet-wide, not date-range scoped: trajectory scores are not date-bucketed in the backend
+  useEffect(() => {
+    let live = true;
+    fetchFirstPassRates()
+      .then((r) => live && setData(r))
+      .catch(() => live && setData(null));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (!data?.length) return null;
+
+  return (
+    <section className="mt-6">
+      <SectionTitle>First-pass success rate</SectionTitle>
+      <div className="rounded-[14px] border border-line px-3.5 py-3.5">
+        <table className="w-full font-mono text-[11.5px]">
+          <thead className="sr-only">
+            <tr><th scope="col">Agent</th><th scope="col">Rate</th><th scope="col">Passes / Total</th></tr>
+          </thead>
+          <tbody>
+            {data.map((r) => (
+              <tr key={r.agent}>
+                <td className="py-[3px] pr-3 text-ink">{r.agent}</td>
+                <td className="py-[3px] pr-3 text-right font-medium text-ink">
+                  {Math.round(r.rate * 100)}%
+                </td>
+                <td className="py-[3px] text-right text-ink-faint">
+                  {String(r.firstPass)}/{String(r.sessions)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 /* ----- screen ----- */
 
 export function Analytics(): JSX.Element {
@@ -1502,6 +1550,8 @@ export function Analytics(): JSX.Element {
           )}
         </div>
       </section>
+
+      <FirstPassTile />
     </div>
   );
 }

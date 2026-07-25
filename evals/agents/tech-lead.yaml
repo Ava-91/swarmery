@@ -1,0 +1,89 @@
+# tech-lead routing and orchestration regression suite
+# Hard asserts: contains (agent names), regex (TRIAGE ledger format, pipe-delimited cells)
+# Soft asserts: llm-rubric (sequencing, read-only discipline, vendor-neutral config consulting, ledger quality)
+
+- description: tech-lead routes DB schema work to the database designer
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: >
+      Plan this task: add a new table for device battery-history snapshots
+      with a Prisma migration and expose it via a REST endpoint.
+      Which executor agents would you dispatch, and in what order?
+  assert:
+    - type: contains
+      value: database-designer          # hard
+    - type: llm-rubric                    # soft
+      value: names an API-design or implementation agent for the endpoint work, and sequences schema work before endpoint work
+
+- description: tech-lead keeps investigation read-only
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: Investigate why telemetry ingestion latency doubled yesterday. Do not change anything yet.
+  assert:
+    - type: llm-rubric
+      value: proposes a read-only diagnosis and does NOT propose editing files or applying fixes in this pass
+
+- description: tech-lead consults project config instead of assuming a stack
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: What repositories does this project have, and where should new web work go?
+  assert:
+    - type: llm-rubric
+      value: refers to reading the project's CLAUDE.md and/or .claude/project.json (repos, mainApp) rather than asserting a specific hard-coded repo list
+
+- description: tech-lead triages a bug to the debugger before any planner
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: >
+      Users report the export-to-CSV button stopped working after last week's
+      release; the console shows "TypeError: rows is undefined". Which executor
+      agents would you dispatch first, and in what order? Log your triage decision.
+  assert:
+    - type: contains
+      value: debugger
+    - type: regex
+      value: "TRIAGE \\| type: (bug|mixed)"
+    - type: llm-rubric
+      value: routes to the debugger for root-cause analysis BEFORE dispatching task-planner or implementation-planner; does not start with a planning agent
+
+- description: tech-lead forces architecture design for a boundary-changing task
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: >
+      Split the monolithic notification module into a separate service with its
+      own queue-based interface consumed by two apps. Which executor agents
+      would you dispatch, and in what order? Log your triage decision.
+  assert:
+    - type: contains
+      value: architecture-designer
+    - type: regex
+      value: "TRIAGE \\| type: (design|mixed)"
+
+- description: tech-lead writes the orchestration plan before first dispatch
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: >
+      Add pagination to the audit-log list endpoint and its table view.
+      Describe exactly what you do between receiving this task and dispatching
+      your first subagent.
+  assert:
+    - type: contains
+      value: ORCHESTRATION.md
+    - type: llm-rubric
+      value: states that the orchestration plan artifact (planned subagents, verification strategy) is written to the task workspace BEFORE the first subagent dispatch
+
+- description: tech-lead logs a 7-cell assessment ledger row after a delegation
+  vars:
+    system: file://../../plugins/core/agents/tech-lead.md
+    task: >
+      @implementation-agent just completed its Phase 4 delegation: the step
+      artifact exists on disk and you accepted the work after one re-dispatch
+      round (it initially ignored acceptance criterion #3). Write the exact
+      row you now append to {task-id}/logs/agents.md.
+  assert:
+    # 7 pipe-separated cells: agent | phase | verdict | loops | quality | mistakes | artifact
+    - type: regex
+      value: "[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+"
+    # cell 5 (quality) is a bare 1-5 score
+    - type: regex
+      value: "[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+\\|[^|\\n]+\\|\\s*[1-5]\\s*\\|"

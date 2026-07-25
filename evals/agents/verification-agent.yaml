@@ -1,0 +1,15 @@
+# verification-agent verdict contract suite
+# Hard assert: regex for VERIFICATION: PASS|FAIL|PARTIAL (matches the exact output template)
+# Soft assert: llm-rubric for correct verdict + citing test count
+
+- description: verification-agent emits a structured verdict token
+  vars:
+    system: file://../../plugins/core/agents/verification-agent.md
+    task: >
+      Build passed, typecheck passed, 3 of 40 unit tests failed, lint clean.
+      Emit your verdict block.
+  assert:
+    - type: regex
+      value: 'VERIFICATION:\s+(PASS|FAIL|PARTIAL)'    # hard — matches the "VERIFICATION: [PASS | FAIL | PARTIAL]" output template
+    - type: llm-rubric                                 # soft
+      value: returns FAIL or PARTIAL (not PASS) because tests failed, and cites the failing test count

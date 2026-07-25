@@ -135,6 +135,7 @@ func Run(db *sql.DB, now time.Time) (Stats, error) {
 		{"R5", func() ([]finding, error) { return r5StaleImprovements(db, win, now) }},
 		{"R6", func() ([]finding, error) { return r6CacheRegression(db, win, now) }},
 		{"R7", func() ([]finding, error) { return r7StaleArchitectureMap(db, win, now) }},
+		{"R8", func() ([]finding, error) { return r8TrajectoryAntiPatterns(db, win) }},
 	}
 	for _, e := range evals {
 		fs, err := e.fn()

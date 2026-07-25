@@ -1297,3 +1297,43 @@ func TestUnknownRegistryAgentVerifiesFromAccepted(t *testing.T) {
 		t.Errorf("known status = %q, want still accepted (waits for a registry version bump)", status)
 	}
 }
+
+// ── R8: trajectory anti-patterns ─────────────────────────────────────────────
+
+func TestR8FlagsRecurringAntiPattern(t *testing.T) {
+	db := testDB(t) // seeds projects(1) + sessions(1,2)
+	// trajectory_scores has FK → sessions; session_id=1 is already in testDB.
+	mustExec(t, db, `INSERT INTO trajectory_scores(id, session_id, agent, first_pass, computed_at)
+	                 VALUES (1, 1, 'implementation-agent', 1, ?)`, ago(2))
+	for i := 0; i < R8MinHits; i++ {
+		mustExec(t, db, `INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids)
+		                 VALUES (1, 'verify-skip', 'warn', '[1]')`)
+	}
+	got, err := r8TrajectoryAntiPatterns(db, evalWindow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 || got[0].rule != "R8" {
+		t.Fatalf("expected an R8 finding, got %+v", got)
+	}
+	if got[0].target != "implementation-agent" {
+		t.Errorf("target = %q, want implementation-agent", got[0].target)
+	}
+}
+
+func TestR8BelowFloor(t *testing.T) {
+	db := testDB(t)
+	mustExec(t, db, `INSERT INTO trajectory_scores(id, session_id, agent, first_pass, computed_at)
+	                 VALUES (1, 1, 'implementation-agent', 1, ?)`, ago(2))
+	for i := 0; i < R8MinHits-1; i++ {
+		mustExec(t, db, `INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids)
+		                 VALUES (1, 'verify-skip', 'warn', '[1]')`)
+	}
+	got, err := r8TrajectoryAntiPatterns(db, evalWindow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got findings = %+v, want none below the floor", got)
+	}
+}
