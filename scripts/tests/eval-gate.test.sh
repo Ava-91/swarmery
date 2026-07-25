@@ -34,11 +34,23 @@ cat > "$tmp/pass.json" <<'JSON'
 ]}}
 JSON
 
+# Fixture D: gradingResult present with empty componentResults => exit 0.
+cat > "$tmp/empty.json" <<'JSON'
+{"results":{"results":[{"gradingResult":{"componentResults":[]}}]}}
+JSON
+
+# Fixture E: gradingResult: null (error row) => exit 0 (no crash).
+cat > "$tmp/null.json" <<'JSON'
+{"results":{"results":[{"gradingResult":null}]}}
+JSON
+
 set +e
 bash "$gate" "$tmp/hard.json"; hard=$?
 bash "$gate" "$tmp/soft.json"; soft=$?
 bash "$gate" "$tmp/pass.json"; pass=$?
 bash "$gate" "$tmp/missing.json"; missing=$?
+bash "$gate" "$tmp/empty.json"; empty=$?
+bash "$gate" "$tmp/null.json"; nullr=$?
 set -e
 
 fail=0
@@ -46,5 +58,7 @@ fail=0
 [ "$soft" -eq 0 ]    || { echo "FAIL: soft exit=$soft want 0"; fail=1; }
 [ "$pass" -eq 0 ]    || { echo "FAIL: pass exit=$pass want 0"; fail=1; }
 [ "$missing" -eq 2 ] || { echo "FAIL: missing exit=$missing want 2"; fail=1; }
+[ "$empty" -eq 0 ]   || { echo "FAIL: empty exit=$empty want 0"; fail=1; }
+[ "$nullr" -eq 0 ]   || { echo "FAIL: null exit=$nullr want 0"; fail=1; }
 [ "$fail" -eq 0 ] && echo "eval-gate.test.sh: OK"
 exit "$fail"

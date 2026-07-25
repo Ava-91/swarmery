@@ -14,9 +14,9 @@ fi
 
 # Count failing components split by assertion class.
 hard=$(jq '[.results.results[].gradingResult.componentResults[]?
-            | select(.pass == false and .assertion.type != "llm-rubric")] | length' "$results")
+            | select(.pass == false and (.assertion.type // "") != "llm-rubric")] | length' "$results")
 soft=$(jq '[.results.results[].gradingResult.componentResults[]?
-            | select(.pass == false and .assertion.type == "llm-rubric")] | length' "$results")
+            | select(.pass == false and (.assertion.type // "") == "llm-rubric")] | length' "$results")
 
 if [ "${soft:-0}" -gt 0 ]; then
   echo "::warning::eval-gate: ${soft} soft (llm-rubric) assertion(s) failed — not blocking."
