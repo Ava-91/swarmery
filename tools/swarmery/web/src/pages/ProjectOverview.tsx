@@ -1,60 +1,239 @@
-// Project overview (/p/:slug index — fusion phase 4): the rehomed body of the
-// old ProjectDetail (header + stats + local component inventory + recent
-// sessions), scoped by the workspace project instead of a :id route param. The
-// plugin toggles + detach controls move to ProjectSettings (/p/:slug/settings);
-// this page is the read-first landing tab. Telemetry-only projects hide the
-// component sections, same as before.
+// Project overview (/p/:slug index — Canvas v2 editorial home): the phase-2
+// rebuild that replaces the old stats list with a full editorial layout —
+// hero sentence, right-now tiles, this-week deltas, project-scoped funnel,
+// insights, capability cards, and needs-attention rows.
+// Telemetry-only projects (no plugin) still hide the Capability section.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type {
+  AttentionItem,
+  FunnelResp,
+  OverviewTile,
   ProjectComponent,
   ProjectDetail as ProjectDetailData,
+  ProjectOverviewResp,
   Recommendation,
+  WeekMetric,
 } from '../api/types';
-import { fetchProject, fetchProjectRecommendations, runProjectAdvise } from '../api';
+import {
+  fetchFunnel,
+  fetchProject,
+  fetchProjectOverview,
+  fetchProjectRecommendations,
+  runProjectAdvise,
+} from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
-import { fmtAgo, fmtCost, fmtDateTime, fmtTokens } from '../lib/format';
+import { Empty, ErrorBox, Loading } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
 import { PluginBadge, ProjectActions } from '../components/ProjectActions';
-import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 
-function StatTile({ label, value }: { label: string; value: string }): JSX.Element {
-  return (
-    <div className="rounded-lg border border-line bg-surface px-3 py-2">
-      <div className="font-mono text-[10px] tracking-[0.12em] text-ink-faint uppercase">{label}</div>
-      <div className="mt-0.5 font-mono text-[13px] text-ink">{value}</div>
-    </div>
-  );
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/** Color utility for tone → Tailwind class. */
+function toneClass(tone: string | null | undefined): string {
+  switch (tone) {
+    case 'green':
+      return 'text-green';
+    case 'red':
+      return 'text-red';
+    case 'amber':
+      return 'text-amber';
+    default:
+      return 'text-ink';
+  }
 }
 
-function ComponentList({ title, items }: { title: string; items: ProjectComponent[] }): JSX.Element {
+/** Dot element driven by a tone string. */
+function ToneDot({ tone }: { tone: string }): JSX.Element {
+  const base = 'inline-block shrink-0 h-[7px] w-[7px] rounded-full';
+  if (tone === 'green')
+    return <span className={`${base} bg-green animate-pulse-dot`} />;
+  if (tone === 'amber')
+    return <span className={`${base} bg-amber animate-blink-dot`} />;
+  if (tone === 'red')
+    return <span className={`${base} bg-red`} />;
+  return <span className={`${base} bg-ink-faint`} />;
+}
+
+// ── section rule ─────────────────────────────────────────────────────────────
+
+function SectionRule({
+  label,
+  right,
+}: {
+  label: string;
+  right?: JSX.Element | string;
+}): JSX.Element {
   return (
-    <div>
-      <div className="font-mono text-[10.5px] tracking-[0.1em] text-ink-dim uppercase">
-        {title} · {items.length}
-      </div>
-      {items.length === 0 ? (
-        <div className="mt-1.5 font-mono text-[11px] text-ink-faint">none</div>
-      ) : (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {items.map((c) => (
-            <span
-              key={c.name}
-              title={`source: ${c.source}`}
-              className="rounded-full border border-line px-2 py-0.5 font-mono text-[10.5px] text-ink-2"
-            >
-              {c.name}
-            </span>
-          ))}
-        </div>
+    <div className="mt-6 flex items-center gap-3">
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint whitespace-nowrap">
+        {label}
+      </span>
+      <span className="h-px flex-1 bg-line" />
+      {right !== undefined && (
+        <span className="font-mono text-[10px] text-ink-faint whitespace-nowrap">{right}</span>
       )}
     </div>
   );
 }
 
-/** Lifecycle status chip for a recommendation, matching the Retro rail palette
- * (gray proposed, amber accepted, blue adopted, green verified). */
+// ── hero sentence ─────────────────────────────────────────────────────────────
+
+function HeroSentence({ thisWeek }: { thisWeek: WeekMetric[] }): JSX.Element {
+  const tasksShipped = thisWeek.find((m) => m.label === 'tasks shipped');
+  const approvalsAsked = thisWeek.find((m) => m.label === 'approvals asked');
+  const tasks = tasksShipped?.value ?? '0';
+  const approvals = approvalsAsked?.value ?? '0';
+
+  return (
+    <p className="mt-[18px] max-w-[34ch] font-display text-[26px] font-medium leading-[1.28] tracking-[-0.01em] text-ink text-wrap-pretty">
+      Shipped{' '}
+      <span className="text-green">{tasks} tasks</span>
+      {' '}this week — and asked you{' '}
+      <span className="text-brand">{approvals} times</span>
+      {' '}to do it.
+    </p>
+  );
+}
+
+// ── right-now tiles ───────────────────────────────────────────────────────────
+
+function RightNowTile({ tile }: { tile: OverviewTile }): JSX.Element {
+  const valueClass = toneClass(tile.tone);
+  return (
+    <div className="rounded-[12px] border border-line bg-surface px-[14px] py-3">
+      <div className="flex items-center gap-[7px]">
+        <ToneDot tone={tile.tone} />
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+          {tile.label}
+        </span>
+      </div>
+      <div className="mt-[6px] flex items-baseline gap-[7px]">
+        <span className={`font-display text-[23px] font-semibold ${valueClass}`}>
+          {tile.value}
+        </span>
+        <span className="font-mono text-[10.5px] text-ink-faint">{tile.sub}</span>
+      </div>
+    </div>
+  );
+}
+
+function RightNowSection({ tiles }: { tiles: OverviewTile[] }): JSX.Element {
+  return (
+    <>
+      <SectionRule label="Right now" />
+      <div className="mt-[10px] grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-[10px]">
+        {tiles.map((t) => (
+          <RightNowTile key={t.label} tile={t} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ── this-week tiles ──────────────────────────────────────────────────────────
+
+function WeekTile({ metric }: { metric: WeekMetric }): JSX.Element {
+  const deltaClass = toneClass(metric.deltaTone);
+  return (
+    <div className="rounded-[12px] border border-line px-[14px] py-3">
+      <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+        {metric.label}
+      </div>
+      <div className="mt-[6px] flex items-baseline gap-[7px]">
+        <span className="font-display text-[23px] font-semibold text-ink">
+          {metric.value ?? '—'}
+        </span>
+        {metric.delta !== null && (
+          <span className={`font-mono text-[11px] ${deltaClass}`}>{metric.delta}</span>
+        )}
+      </div>
+      <div className="mt-[3px] font-mono text-[10.5px] text-ink-dim">{metric.sub}</div>
+    </div>
+  );
+}
+
+function ThisWeekSection({ metrics }: { metrics: WeekMetric[] }): JSX.Element {
+  return (
+    <>
+      <SectionRule label="This week" right="vs previous 7 d" />
+      <div className="mt-[10px] grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-[10px]">
+        {metrics.map((m) => (
+          <WeekTile key={m.label} metric={m} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ── where-work-sits (inline funnel) ──────────────────────────────────────────
+
+const FUNNEL_LABELS: Record<string, string> = {
+  triage: 'triage',
+  todo: 'to do',
+  in_progress: 'in progress',
+  in_review: 'in review',
+  done: 'done',
+  archived: 'archived',
+};
+
+function InlineFunnel({ funnel, slug }: { funnel: FunnelResp; slug: string }): JSX.Element {
+  const maxCount = Math.max(1, ...funnel.columns.map((c) => c.count));
+  const BAR_MAX_H = 40; // px for the tallest bar
+  const stallNote =
+    funnel.completionRate < 0.5 && funnel.columns.some((c) => c.count > 0)
+      ? `${(funnel.completionRate * 100).toFixed(0)}% completion rate — some tasks may be stalled.`
+      : null;
+
+  return (
+    <>
+      <SectionRule
+        label="Where work sits"
+        right={
+          (
+            <Link
+              to={`/p/${slug}/board`}
+              className="font-mono text-[10.5px] text-ink-dim hover:text-brand transition-colors"
+            >
+              open board →
+            </Link>
+          ) as unknown as string
+        }
+      />
+      <div className="mt-[10px] rounded-[12px] border border-line px-4 py-[14px]">
+        <div className="flex items-flex-end gap-2">
+          {funnel.columns.map((c) => {
+            const barH = Math.max(3, Math.round((c.count / maxCount) * BAR_MAX_H));
+            return (
+              <div key={c.column} className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-[5px]">
+                  <span className="font-display text-[19px] font-semibold text-ink">
+                    {c.count}
+                  </span>
+                </div>
+                <div
+                  className="mt-[5px] w-full rounded-[3px] bg-brand/30"
+                  style={{ height: `${barH}px` }}
+                />
+                <div className="mt-[5px] overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[9.5px] uppercase tracking-[0.06em] text-ink-faint">
+                  {FUNNEL_LABELS[c.column] ?? c.column}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {stallNote !== null && (
+          <p className="mt-3 text-[12.5px] leading-[1.55] text-ink-3">{stallNote}</p>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── insights (kept verbatim) ──────────────────────────────────────────────────
+
+/** Lifecycle status chip for a recommendation. */
 function InsightStatusChip({ status }: { status: Recommendation['status'] }): JSX.Element {
   const tone: Record<Recommendation['status'], string> = {
     proposed: 'border-line text-ink-dim',
@@ -72,10 +251,7 @@ function InsightStatusChip({ status }: { status: Recommendation['status'] }): JS
   );
 }
 
-/** Per-project Insights (fusion phase 12): the top project-scoped advisor
- * recommendations with a Generate button that runs the advisor and settle-polls
- * the list. Recommendations are global by identity; the daemon post-filters to
- * this project's evidence sessions, so fleet-level rules (R5/R6/R7) never show. */
+/** Per-project Insights with generate button and settle-poll. */
 function InsightsCard({ slug }: { slug: string }): JSX.Element {
   const [recs, setRecs] = useState<Recommendation[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -111,7 +287,7 @@ function InsightsCard({ slug }: { slug: string }): JSX.Element {
     setGenerating(true);
     setError(null);
     runProjectAdvise(slug)
-      .then(() => load()) // settle-poll: the advise run is synchronous server-side
+      .then(() => load())
       .catch((e: unknown) => {
         if (!disposed.current) setError(e instanceof Error ? e.message : String(e));
       })
@@ -124,71 +300,227 @@ function InsightsCard({ slug }: { slug: string }): JSX.Element {
 
   return (
     <>
-      <div className="mt-[26px] mb-2.5 flex items-center justify-between">
-        <SectionTitle>insights</SectionTitle>
-        <button
-          type="button"
-          onClick={generate}
-          disabled={generating}
-          className="rounded-lg border border-line bg-surface px-3 py-1 font-mono text-[11px] font-semibold text-ink-2 transition-colors hover:bg-surface2 disabled:opacity-50"
-        >
-          {generating ? 'analyzing…' : 'generate insights'}
-        </button>
-      </div>
+      <SectionRule
+        label="Insights"
+        right={
+          (
+            <button
+              type="button"
+              onClick={generate}
+              disabled={generating}
+              className="rounded-[7px] border border-line-strong bg-transparent px-[10px] py-[3px] font-mono text-[10.5px] text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
+            >
+              {generating ? 'analyzing…' : 'generate insights'}
+            </button>
+          ) as unknown as string
+        }
+      />
       {error !== null ? (
         <ErrorBox message={error} onRetry={() => void load()} />
       ) : recs === null ? (
         <Loading label="insights…" />
       ) : top.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-line px-3.5 py-4 font-mono text-[11.5px] text-ink-dim">
-          no recommendations for this project yet — Generate insights runs the advisor now
+        <div className="mt-[10px] rounded-xl border border-dashed border-line px-3.5 py-4 font-mono text-[11.5px] text-ink-dim">
+          no recommendations yet — Generate insights runs the advisor now
         </div>
       ) : (
-        <Card>
-          <div className="divide-y divide-line-soft">
+        <>
+          <div className="mt-[10px] flex flex-col gap-[2px]">
             {top.map((rec) => (
-              <div key={rec.id} className="flex items-start gap-2 py-2 first:pt-0 last:pb-0">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono text-[10px] text-ink-faint">{rec.rule}</span>
-                    <span className="truncate text-[12.5px] text-ink-2">{rec.title}</span>
-                  </div>
-                  <div className="mt-0.5 line-clamp-2 text-[11px] text-ink-dim">{rec.detail}</div>
-                </div>
+              <div
+                key={rec.id}
+                className="flex flex-wrap items-baseline gap-[9px] border-t border-line-soft px-0 py-[10px] first:border-t-0"
+              >
+                <span className="font-mono text-[10px] text-ink-faint">{rec.rule}</span>
+                <span className="min-w-[200px] flex-1 text-[13px] font-medium text-ink">
+                  {rec.title}
+                </span>
                 <InsightStatusChip status={rec.status} />
+                <span className="flex-[100%] text-[12px] leading-[1.5] text-ink-dim">
+                  {rec.detail}
+                </span>
               </div>
             ))}
           </div>
-          <div className="mt-2 font-mono text-[11px]">
-            <Link to={`/p/${slug}/retro`} className="text-ink-dim underline hover:text-ink">
+          <button
+            type="button"
+            className="mt-[10px] bg-transparent p-0 font-mono text-[10.5px] text-ink-dim hover:text-brand transition-colors"
+          >
+            <Link to={`/p/${slug}/retro`} className="text-ink-dim hover:text-brand">
               all recommendations in Retro →
             </Link>
-          </div>
-        </Card>
+          </button>
+        </>
       )}
     </>
   );
 }
 
-export function ProjectOverview(): JSX.Element {
-  const { projectId, loading: projLoading } = useProjectWorkspace();
-  const [data, setData] = useState<ProjectDetailData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+// ── capability cards ──────────────────────────────────────────────────────────
 
-  const load = useCallback((): void => {
+const CAP_CATEGORIES: { key: keyof { agents: ProjectComponent[]; skills: ProjectComponent[]; commands: ProjectComponent[]; hooks: ProjectComponent[] }; label: string }[] = [
+  { key: 'agents', label: 'agents' },
+  { key: 'skills', label: 'skills' },
+  { key: 'commands', label: 'commands' },
+  { key: 'hooks', label: 'hooks' },
+];
+
+function CapabilityCard({
+  title,
+  items,
+}: {
+  title: string;
+  items: ProjectComponent[];
+}): JSX.Element {
+  return (
+    <div className="rounded-[12px] border border-line px-[15px] py-[13px]">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-dim">
+          {title}
+        </span>
+        <span className="font-mono text-[10px] text-ink-faint">{items.length}</span>
+        <span className="mx-1 h-px flex-1 bg-line-soft" />
+      </div>
+      <div className="mt-[6px] max-h-[148px] overflow-y-auto overscroll-contain pr-[10px] [scrollbar-color:theme(colors.line-strong)_transparent] [scrollbar-width:thin]">
+        {items.length === 0 ? (
+          <div className="py-[6px] font-mono text-[11px] text-ink-faint">none</div>
+        ) : (
+          items.map((c) => (
+            <div
+              key={c.name}
+              title={`source: ${c.source}`}
+              className="flex items-baseline gap-2 border-t border-line-soft py-[6px] font-mono text-[11.5px] first:border-t-0"
+            >
+              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-ink-2">
+                {c.name}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CapabilitySection({
+  components,
+  slug,
+}: {
+  components: ProjectDetailData['components'];
+  slug: string;
+}): JSX.Element {
+  return (
+    <>
+      <SectionRule label="Capability" right="local to this project" />
+      <div className="mt-[10px] grid grid-cols-[repeat(auto-fit,minmax(290px,1fr))] items-start gap-3">
+        {CAP_CATEGORIES.map(({ key, label }) => (
+          <CapabilityCard key={key} title={label} items={components[key]} />
+        ))}
+      </div>
+      <div className="mt-3 font-mono text-[11px] text-ink-faint">
+        manage plugins + detach in{' '}
+        <Link to={`/p/${slug}/settings`} className="text-ink-dim underline hover:text-ink">
+          Settings →
+        </Link>
+      </div>
+    </>
+  );
+}
+
+// ── needs attention ───────────────────────────────────────────────────────────
+
+function AttentionRow({ item }: { item: AttentionItem }): JSX.Element {
+  return (
+    <div className="flex flex-wrap items-baseline gap-[10px] border-t border-line-soft py-[10px] first:border-t-0">
+      <ToneDot tone={item.tone} />
+      <span className="min-w-[200px] flex-1 text-[12.5px] leading-[1.5] text-ink-2">
+        {item.text}
+      </span>
+      <Link
+        to={item.href}
+        className="rounded-[7px] border border-line-strong bg-transparent px-[10px] py-[3px] font-mono text-[10.5px] text-ink-dim transition-colors hover:border-amber/45 hover:text-amber"
+      >
+        {item.action}
+      </Link>
+    </div>
+  );
+}
+
+function NeedsAttentionSection({ items }: { items: AttentionItem[] }): JSX.Element {
+  return (
+    <>
+      <SectionRule label="Needs attention" />
+      {items.length === 0 ? (
+        <div className="mt-2 font-mono text-[11.5px] text-ink-faint">nothing flagged</div>
+      ) : (
+        <div className="mt-2">
+          {items.map((item, i) => (
+            // eslint-disable-next-line react/no-array-index-key
+            <AttentionRow key={i} item={item} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── root page ─────────────────────────────────────────────────────────────────
+
+export function ProjectOverview(): JSX.Element {
+  const { slug, projectId, loading: projLoading } = useProjectWorkspace();
+
+  // fetchProject for header + Capability
+  const [data, setData] = useState<ProjectDetailData | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
+
+  // fetchProjectOverview for hero + right-now + this-week + attention
+  const [overview, setOverview] = useState<ProjectOverviewResp | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+
+  // fetchFunnel scoped to this project
+  const [funnel, setFunnel] = useState<FunnelResp | null>(null);
+
+  const loadData = useCallback((): void => {
     if (projectId === null) return;
     fetchProject(projectId)
       .then((d) => {
         setData(d);
-        setError(null);
+        setDataError(null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => setDataError(e instanceof Error ? e.message : String(e)));
   }, [projectId]);
+
+  const loadOverview = useCallback((): void => {
+    if (projectId === null) return;
+    fetchProjectOverview(projectId)
+      .then((d) => {
+        setOverview(d);
+        setOverviewError(null);
+      })
+      .catch((e: unknown) => setOverviewError(e instanceof Error ? e.message : String(e)));
+  }, [projectId]);
+
+  const loadFunnel = useCallback((): void => {
+    if (slug === '') return;
+    fetchFunnel({ project: slug })
+      .then((f) => setFunnel(f))
+      .catch(() => setFunnel(null));
+  }, [slug]);
 
   useEffect(() => {
     setData(null);
-    load();
-  }, [load]);
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    setOverview(null);
+    loadOverview();
+  }, [loadOverview]);
+
+  useEffect(() => {
+    setFunnel(null);
+    loadFunnel();
+  }, [loadFunnel]);
 
   const wrap = (inner: JSX.Element): JSX.Element => (
     <div className="px-4 pt-5 pb-10 desk:px-8 desk:pt-7">{inner}</div>
@@ -196,14 +528,15 @@ export function ProjectOverview(): JSX.Element {
 
   if (projLoading && projectId === null) return wrap(<Loading label="workspace…" />);
   if (projectId === null) return wrap(<Empty>unknown project</Empty>);
-  if (error !== null) return wrap(<ErrorBox message={error} onRetry={load} />);
+  if (dataError !== null) return wrap(<ErrorBox message={dataError} onRetry={loadData} />);
   if (data === null) return wrap(<Loading label="project…" />);
 
-  const { project, components, stats } = data;
+  const { project, components } = data;
   const managed = project.plugin?.managed ?? false;
 
   return wrap(
     <>
+      {/* ── §1 Header (kept) ── */}
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <ProjectName
           name={project.name}
@@ -225,46 +558,42 @@ export function ProjectOverview(): JSX.Element {
           </span>
         )}
         <div className="ml-auto">
-          <ProjectActions project={project} onChanged={load} />
+          <ProjectActions project={project} onChanged={loadData} />
         </div>
       </div>
       <div className="mt-1.5 font-mono text-[11px] text-ink-faint" title={project.path}>
         {project.path}
       </div>
 
-      <SectionTitle>stats</SectionTitle>
-      <div className="grid grid-cols-2 gap-2 desk:grid-cols-4">
-        <StatTile label="sessions" value={String(stats.sessions)} />
-        <StatTile label="tokens" value={stats.tokens !== null ? fmtTokens(stats.tokens) : '—'} />
-        <StatTile label="cost" value={fmtCost(stats.costUsd)} />
-        <StatTile
-          label="last activity"
-          value={stats.lastActivity !== null ? fmtAgo(stats.lastActivity) : '—'}
-        />
-      </div>
+      {/* ── §2 Hero sentence ── */}
+      {overview !== null && <HeroSentence thisWeek={overview.thisWeek} />}
+      {overviewError !== null && (
+        <p className="mt-3 font-mono text-[11px] text-red">{overviewError}</p>
+      )}
 
+      {/* ── §3 Right now ── */}
+      {overview !== null && overview.rightNow.length > 0 && (
+        <RightNowSection tiles={overview.rightNow} />
+      )}
+
+      {/* ── §4 This week ── */}
+      {overview !== null && overview.thisWeek.length > 0 && (
+        <ThisWeekSection metrics={overview.thisWeek} />
+      )}
+
+      {/* ── §5 Where work sits ── */}
+      {funnel !== null && <InlineFunnel funnel={funnel} slug={project.slug} />}
+
+      {/* ── §6 Insights (kept verbatim) ── */}
       <InsightsCard slug={project.slug} />
 
+      {/* ── §7 Capability ── */}
       {managed ? (
-        <>
-          <SectionTitle>components (local)</SectionTitle>
-          <div className="space-y-3.5">
-            <ComponentList title="agents" items={components.agents} />
-            <ComponentList title="skills" items={components.skills} />
-            <ComponentList title="commands" items={components.commands} />
-            <ComponentList title="hooks" items={components.hooks} />
-          </div>
-          <div className="mt-3 font-mono text-[11px] text-ink-faint">
-            manage plugins + detach in{' '}
-            <Link to={`/p/${project.slug}/settings`} className="text-ink-dim underline hover:text-ink">
-              Settings →
-            </Link>
-          </div>
-        </>
+        <CapabilitySection components={components} slug={project.slug} />
       ) : (
         <>
-          <SectionTitle>components</SectionTitle>
-          <div className="rounded-xl border border-dashed border-line px-3.5 py-4 font-mono text-[11.5px] text-ink-dim">
+          <SectionRule label="Capability" right="local to this project" />
+          <div className="mt-[10px] rounded-xl border border-dashed border-line px-3.5 py-4 font-mono text-[11.5px] text-ink-dim">
             {project.plugin === null
               ? 'telemetry-only — no .claude/settings.json, the swarmery plugin is not installed here'
               : 'the swarmery plugin is not enabled for this project'}
@@ -272,27 +601,9 @@ export function ProjectOverview(): JSX.Element {
         </>
       )}
 
-      <SectionTitle>recent sessions</SectionTitle>
-      {stats.recentSessions.length === 0 ? (
-        <div className="font-mono text-[11.5px] text-ink-faint">no sessions yet</div>
-      ) : (
-        <Card>
-          <div className="divide-y divide-line-soft">
-            {stats.recentSessions.map((s) => (
-              <Link
-                key={s.id}
-                to={`/sessions/${String(s.id)}`}
-                className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-1.5 font-mono text-[11px] transition-colors first:pt-0 last:pb-0 hover:text-ink"
-              >
-                <span className="min-w-0 flex-1 truncate text-ink-2">{s.title ?? s.sessionUuid}</span>
-                <span className="text-ink-faint">{s.status}</span>
-                {s.model !== null && <span className="text-ink-faint">{s.model}</span>}
-                <span className="text-ink-faint">{fmtCost(s.costUsd)}</span>
-                <span className="text-ink-faint">{fmtDateTime(s.startedAt)}</span>
-              </Link>
-            ))}
-          </div>
-        </Card>
+      {/* ── §8 Needs attention ── */}
+      {overview !== null && (
+        <NeedsAttentionSection items={overview.attention} />
       )}
     </>,
   );

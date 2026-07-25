@@ -48,6 +48,7 @@ import type {
   ProjectDetail,
   ProjectMeta,
   ProjectMetaPatch,
+  ProjectOverviewResp,
   ProjectPluginsResponse,
   ProjectPluginToggleResponse,
   ProjectsHealthResponse,
@@ -104,6 +105,11 @@ export function fetchProjects(includeArchived = false): Promise<ProjectsResponse
 export function fetchProject(id: number | string): Promise<ProjectDetail> {
   if (MOCK) return mockApi.project(id);
   return get(`/api/projects/${encodeURIComponent(id)}`);
+}
+
+/** GET /api/projects/{id}/overview — Canvas v2 editorial aggregate (rightNow / thisWeek / attention). */
+export function fetchProjectOverview(id: number | string): Promise<ProjectOverviewResp> {
+  return get(`/api/projects/${encodeURIComponent(id)}/overview`);
 }
 
 /** DELETE /api/projects/{id} — soft-archive (remove from the default list). */

@@ -1823,6 +1823,43 @@ export interface ConnectorsResponse {
   connectors: Connector[];
 }
 
+// --- Project overview (GET /api/projects/{id}/overview, Canvas v2 phase 1) ----
+
+/** One "Right now" live-count tile. tone: green | amber | red | neutral. */
+export interface OverviewTile {
+  label: string;
+  value: number;
+  sub: string;
+  tone: 'green' | 'amber' | 'red' | 'neutral';
+}
+
+/** One "This week" delta metric. Value/delta/deltaTone are null when no data. */
+export interface WeekMetric {
+  label: string;
+  /** Null when the current window has no data (honesty rule). */
+  value: string | null;
+  /** Null when there is no previous-window data to compare against. */
+  delta: string | null;
+  /** green | red | neutral; null when delta is null. */
+  deltaTone: 'green' | 'red' | 'neutral' | null;
+  sub: string;
+}
+
+/** One "Needs attention" action row. tone: amber | red. */
+export interface AttentionItem {
+  text: string;
+  action: string;
+  href: string;
+  tone: 'amber' | 'red';
+}
+
+/** GET /api/projects/{id}/overview — editorial aggregate for the Canvas v2 home. */
+export interface ProjectOverviewResp {
+  rightNow: OverviewTile[];
+  thisWeek: WeekMetric[];
+  attention: AttentionItem[];
+}
+
 /** POST body for adding a server. command/args apply to stdio; url to http/sse.
  * The page only offers 'stdio' | 'http' | 'sse' and scope 'local' | 'user'. */
 export interface AddConnectorInput {
