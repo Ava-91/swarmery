@@ -41,9 +41,13 @@ export function SystemShell(): JSX.Element {
 
   // Workspace mount (/p/:slug/system/*) carries the slug; fleet mode uses the
   // global scope switcher. Either narrows the rollup window + template scope.
+  // In PROJECT mode (a concrete :slug in the route) the embedded hubs show ONLY
+  // that project's own items (project-scoped) and drop the scope selector; fleet
+  // mode keeps the full catalog + the all/global/project chips.
   const slug = params.slug;
+  const projectScoped = slug !== undefined;
   const scopeSlug = slug ?? scope;
-  const base = slug !== undefined ? `/p/${slug}/system` : '/system';
+  const base = projectScoped ? `/p/${slug}/system` : '/system';
 
   // Active tab = first path segment after the base (params['*'] is the splat).
   const splat = params['*'] ?? '';
@@ -145,7 +149,7 @@ export function SystemShell(): JSX.Element {
           search, detail rail and detail sub-tabs). Each hub manages its own
           internal selection/sub-tab state; the outer tab lives in the URL. */}
       <div className="min-h-0 flex-1">
-        <SystemTabPanel tab={tab} base={base} scopeSlug={scopeSlug} />
+        <SystemTabPanel tab={tab} base={base} scopeSlug={scopeSlug} projectScoped={projectScoped} />
       </div>
     </div>
   );
@@ -159,13 +163,24 @@ function SystemTabPanel({
   tab,
   base,
   scopeSlug,
+  projectScoped,
 }: {
   tab: SystemTab;
   base: string;
   scopeSlug: string | null;
+  /** PROJECT mode (/p/:slug/system): show only this project's own items and hide
+   * the all/global/project scope selector. */
+  projectScoped: boolean;
 }): JSX.Element {
   if (tab === 'agents') {
-    return <AgentHub embedded routeBase={`${base}/agents`} scopeSlug={scopeSlug} />;
+    return (
+      <AgentHub
+        embedded
+        routeBase={`${base}/agents`}
+        scopeSlug={scopeSlug}
+        projectScoped={projectScoped}
+      />
+    );
   }
   // Toolkit → skills (with the skills/commands/templates sub-pills); Hooks and
   // Insights map straight to their SystemHub categories.
@@ -176,6 +191,7 @@ function SystemTabPanel({
       forceCategory={forceCategory}
       routeBase={`${base}/${tab}`}
       scopeSlug={scopeSlug}
+      projectScoped={projectScoped}
     />
   );
 }
