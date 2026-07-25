@@ -86,16 +86,21 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: evals/package-lock.json
-      - name: Install pinned promptfoo
-        working-directory: evals
-        run: npm ci
-      - name: Run agent evals
+      - name: Run agent evals + gate (skips cleanly without ANTHROPIC_API_KEY)
         working-directory: evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: npx promptfoo eval -c promptfooconfig.yaml -o results.json
-      - name: Gate on deterministic asserts
-        run: bash scripts/eval-gate.sh evals/results.json
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY not configured — skipping agent evals."
+            echo "The eval gate is advisory here; its logic is still regression-tested"
+            echo "by scripts/tests/eval-gate.test.sh in the validate job (no API key needed)."
+            exit 0
+          fi
+          npm ci
+          npx promptfoo eval -c promptfooconfig.yaml -o results.json
+          bash ../scripts/eval-gate.sh results.json
 
   secret-scan:
     runs-on: ubuntu-latest
