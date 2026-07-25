@@ -13,6 +13,11 @@ skills-index.json
 # Temporary / scratch files
 temp/
 
+# Tool-local state (Serena project caches, agent scratch memory) — per machine
+.serena/
+**/.serena/
+.claude/agent-memory/
+
 # OS / editor noise
 .DS_Store
 *.log
