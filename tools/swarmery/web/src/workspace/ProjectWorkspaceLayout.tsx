@@ -82,8 +82,8 @@ const BASE_NAV: WorkspaceNavItem[] = [
   { path: 'memory', glyph: '❖', label: 'Memory' },
 ];
 const INSIGHT_NAV: WorkspaceNavItem[] = [
-  { path: 'retro', glyph: '↺', label: 'Retro' },
   { path: 'analytics', glyph: '▦', label: 'Analytics' },
+  { path: 'retro', glyph: '↺', label: 'Retro' },
 ];
 // System (fusion phase 18 → tabbed shell), project-scoped — the EFFECTIVE
 // catalog for this project (enabled packs + overrides). The shell hosts
