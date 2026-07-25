@@ -11,6 +11,7 @@ import { Overview } from './pages/Overview';
 import { Projects } from './pages/Projects';
 import { Sessions } from './pages/Sessions';
 import { SessionDetailPage } from './pages/SessionDetail';
+import { Settings } from './pages/Settings';
 import { Docs } from './pages/Docs';
 import { Architecture } from './pages/Architecture';
 import { Serena } from './pages/Serena';
@@ -182,6 +183,10 @@ const router = createBrowserRouter([
           { path: 'serena', element: <Serena /> },
           { path: 'graphify', element: <Graphify /> },
           { path: 'architecture', element: <Architecture /> },
+          // Global settings (session mode): appearance + notifications +
+          // auto-approve note + daemon/health. Project settings stays scoped at
+          // /p/:slug/settings — do NOT add this to the project subtree.
+          { path: 'settings', element: <Settings /> },
           { path: 'docs', element: <Docs /> },
           { path: 'docs/:slug', element: <Docs /> },
         ],
