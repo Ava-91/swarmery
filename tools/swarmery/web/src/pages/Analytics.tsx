@@ -9,7 +9,7 @@
 // subagent turns, so there is no per-agent $ yet (see the design spec). The UI
 // says so plainly rather than fabricating a number.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -1231,6 +1231,8 @@ export function Analytics(): JSX.Element {
   const [matrixRows, setMatrixRows] = useState<'agent' | 'skill'>('agent');
   const [matrixMetric, setMatrixMetric] = useState<'runs' | 'cost'>('runs');
   const [transposed, setTransposed] = useState(false);
+  // Once the user flips transpose manually, stop auto-deriving it from project count.
+  const transposeTouched = useRef(false);
   const [matrix, setMatrix] = useState<MatrixResp | null>(null);
   const [tools, setTools] = useState<ToolsResp | null>(null);
   const [skills, setSkills] = useState<SkillsResp | null>(null);
@@ -1275,7 +1277,12 @@ export function Analytics(): JSX.Element {
   useEffect(() => {
     const range = { from, to, ...(scope !== null ? { project: scope } : {}) };
     fetchMatrix(matrixRows, effMatrixMetric, range)
-      .then(setMatrix)
+      .then((m) => {
+        setMatrix(m);
+        // A single-project cross-tab is a lone column — transpose it into a
+        // compact single-row strip by default, until the user overrides.
+        if (!transposeTouched.current) setTransposed(m.cols.length <= 1);
+      })
       .catch(() => setMatrix(null));
   }, [matrixRows, effMatrixMetric, from, to, scope]);
 
@@ -1453,7 +1460,10 @@ export function Analytics(): JSX.Element {
             />
             <button
               type="button"
-              onClick={() => setTransposed((t) => !t)}
+              onClick={() => {
+                transposeTouched.current = true;
+                setTransposed((t) => !t);
+              }}
               className="rounded-md border border-line px-2 py-1 font-mono text-[10.5px] text-ink-dim hover:text-ink"
               title="swap rows and columns"
             >
