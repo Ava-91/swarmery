@@ -1205,6 +1205,7 @@ const skillRows = (d: SkillsResp): UsageRow[] => d.skills.map((s) => ({ ...s, na
 function FirstPassTile(): JSX.Element | null {
   const [data, setData] = useState<FirstPassRow[] | null>(null);
 
+  // fleet-wide, not date-range scoped: trajectory scores are not date-bucketed in the backend
   useEffect(() => {
     let live = true;
     fetchFirstPassRates()
@@ -1222,6 +1223,9 @@ function FirstPassTile(): JSX.Element | null {
       <SectionTitle>First-pass success rate</SectionTitle>
       <div className="rounded-[14px] border border-line px-3.5 py-3.5">
         <table className="w-full font-mono text-[11.5px]">
+          <thead className="sr-only">
+            <tr><th scope="col">Agent</th><th scope="col">Rate</th><th scope="col">Passes / Total</th></tr>
+          </thead>
           <tbody>
             {data.map((r) => (
               <tr key={r.agent}>

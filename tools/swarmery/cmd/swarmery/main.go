@@ -31,7 +31,6 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/advisor"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/api"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
@@ -54,6 +53,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysscan"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/term"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/toolproc"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/verify"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"

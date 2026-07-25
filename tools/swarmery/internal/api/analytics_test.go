@@ -505,6 +505,11 @@ func TestFirstPassRates(t *testing.T) {
 		(2, 'tech-lead', 1, ?),
 		(3, 'tech-lead', 0, ?)`, ts, ts, ts)
 
+	// Plant one finding for session 3 (the failing run) to exercise the kinds
+	// population path — the score row for session 3 has id=3 (insertion order).
+	mustExec(`INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids)
+		VALUES (3, 'verify-skip', 'warn', '[]')`)
+
 	h, err := NewServer(db, false)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -528,5 +533,9 @@ func TestFirstPassRates(t *testing.T) {
 	}
 	if out[0].Kinds == nil {
 		t.Errorf("kinds = nil, want empty slice or populated")
+	}
+	// kinds population: the finding we inserted must appear exactly once.
+	if len(out[0].Kinds) != 1 || out[0].Kinds[0] != "verify-skip" {
+		t.Errorf("kinds = %v, want [\"verify-skip\"]", out[0].Kinds)
 	}
 }

@@ -94,3 +94,30 @@ func TestComputePersistsScoreAndFindings(t *testing.T) {
 		t.Errorf("findings after recompute = %d, want 2", findingsAfter)
 	}
 }
+
+// TestComputeNormalizesAgentName proves that a raw turns.agent_name like
+// "core:tech-lead" is stored as "tech-lead" (prefix-stripped + lowercased),
+// matching the key the API and Retro layer use.
+func TestComputeNormalizesAgentName(t *testing.T) {
+	db := openMigratedDB(t)
+
+	mustExec(t, db, `INSERT INTO projects(id, name, path, slug, first_seen) VALUES (1,'p','/p','p','2026-07-25T00:00:00Z')`)
+	mustExec(t, db, `INSERT INTO sessions(id, project_id, session_uuid, started_at)
+	                 VALUES (1, 1, 'u2', '2026-07-25T00:00:00Z')`)
+	mustExec(t, db, `INSERT INTO turns(id, session_id, seq, role, started_at, agent_name)
+	                 VALUES (1, 1, 1, 'assistant', '2026-07-25T00:00:00Z', 'core:tech-lead')`)
+	mustExec(t, db, `INSERT INTO events(id, session_id, turn_id, ts, type, tool_name)
+	                 VALUES (1, 1, 1, '2026-07-25T00:00:00Z', 'file_change', '')`)
+
+	if err := Compute(db, time.Now()); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	var agent string
+	if err := db.QueryRow(`SELECT agent FROM trajectory_scores WHERE session_id=1`).Scan(&agent); err != nil {
+		t.Fatalf("score row: %v", err)
+	}
+	if agent != "tech-lead" {
+		t.Errorf("agent = %q, want \"tech-lead\" (prefix stripped + lowercased)", agent)
+	}
+}

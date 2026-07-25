@@ -1269,9 +1269,11 @@ func (h *Handler) patchRecommendation(w http.ResponseWriter, r *http.Request) {
 // GET filters by evidence session). An unknown project id is not an error —
 // the run proceeds fleet-wide either way.
 func (h *Handler) retroAdvise(w http.ResponseWriter, r *http.Request) {
-	if err := trajeval.Compute(h.DB, time.Now()); err != nil {
-		log.Printf("trajeval.Compute: %v", err)
-	}
+	go func() {
+		if err := trajeval.Compute(h.DB, time.Now()); err != nil {
+			log.Printf("trajeval.Compute: %v", err)
+		}
+	}()
 	stats, err := advisor.Run(h.DB, time.Now())
 	writeJSON(w, stats, err)
 }

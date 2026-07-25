@@ -7,8 +7,18 @@ package trajeval
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
+
+// normAgent folds "core:tech-lead" and "tech-lead" to the same lowercase key.
+// Twin of internal/advisor normAgent — keep in lockstep.
+func normAgent(t string) string {
+	if i := strings.LastIndexByte(t, ':'); i >= 0 {
+		t = t[i+1:]
+	}
+	return strings.ToLower(t)
+}
 
 const searchLoopThreshold = 4
 
@@ -131,6 +141,7 @@ func Compute(db *sql.DB, now time.Time) error {
 			if f := detectVerifySkip(evs); f != nil {
 				found = append(found, f)
 			}
+			agent = normAgent(agent)
 			if err := persist(db, sid, agent, firstPass(evs), found, now); err != nil {
 				continue
 			}
