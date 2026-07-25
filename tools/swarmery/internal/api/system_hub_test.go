@@ -544,19 +544,132 @@ func TestCopyTemplate_AlreadyOverride409(t *testing.T) {
 	}
 }
 
+// In project mode the badge counts must equal the project's OWN rows only
+// (scope='project' AND project_id=<id> for agents/skills/commands/hooks;
+// source='project' for templates), NOT the global totals. Insights (lintFindings)
+// stays global. This seeds a MIX of global + project-scoped rows and asserts the
+// scoped and unscoped summaries differ exactly as the rosters do.
 func TestSystemHubSummary_ProjectScope(t *testing.T) {
 	claudeDir := t.TempDir()
 	projRoot := t.TempDir()
+	// Built-ins the project only INHERITS — these must NOT count in project mode.
 	seedPluginTemplates(t, claudeDir, map[string]string{
-		"adr-template.md": "# ADR\n",
-		"pr-template.md":  "# PR\n",
+		"adr-template.md": "# core ADR\n",
+		"pr-template.md":  "# core PR\n",
 	})
-	srv, pid := hubWorld(t, projRoot)
-	// Project mode: core built-ins are always effective → templates count = 2.
-	var s map[string]any
-	getJSON(t, srv.URL+"/api/system/hub/summary?projectId="+itoa64(pid), &s)
-	if got, _ := s["templates"].(float64); got != 2 {
-		t.Errorf("scoped summary.templates = %v, want 2", s["templates"])
+	// The project overrides adr-template → the ONE source='project' template.
+	projTmpl := filepath.Join(projRoot, ".claude", "templates")
+	if err := os.MkdirAll(projTmpl, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projTmpl, "adr-template.md"), []byte("# project ADR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "scope.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+
+	// Two projects: 'alpha' (the scope under test, id 1) + 'beta' (id 2, another
+	// project's items must never leak into alpha's counts).
+	exec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES
+	      (1, ?, 'alpha', 'Alpha', '2026-07-01T00:00:00Z'),
+	      (2, '/beta', 'beta', 'Beta', '2026-07-01T00:00:00Z')`, projRoot)
+
+	// AGENTS: 2 global + 2 project(alpha) + 1 project(beta) + 1 deleted(alpha).
+	exec(`INSERT INTO agents (name, scope, project_id, file_path, origin, deleted) VALUES
+	      ('g-agent-1', 'global',  NULL, '/a1', 'local', 0),
+	      ('g-agent-2', 'global',  NULL, '/a2', 'local', 0),
+	      ('p-agent-1', 'project', 1,    '/a3', 'local', 0),
+	      ('p-agent-2', 'project', 1,    '/a4', 'local', 0),
+	      ('b-agent-1', 'project', 2,    '/a5', 'local', 0),
+	      ('p-agent-x', 'project', 1,    '/a6', 'local', 1)`)
+
+	// SKILLS: 1 global + 3 project(alpha).
+	exec(`INSERT INTO skills (name, scope, project_id, dir_path, origin, deleted) VALUES
+	      ('g-skill-1', 'global',  NULL, '/s1', 'local', 0),
+	      ('p-skill-1', 'project', 1,    '/s2', 'local', 0),
+	      ('p-skill-2', 'project', 1,    '/s3', 'local', 0),
+	      ('p-skill-3', 'project', 1,    '/s4', 'local', 0)`)
+
+	// COMMANDS: 2 global + 1 project(alpha).
+	exec(`INSERT INTO commands (name, scope, project_id, file_path, origin, content_hash, deleted) VALUES
+	      ('g-cmd-1', 'global',  NULL, '/c1', 'local', 'h1', 0),
+	      ('g-cmd-2', 'global',  NULL, '/c2', 'local', 'h2', 0),
+	      ('p-cmd-1', 'project', 1,    '/c3', 'local', 'h3', 0)`)
+
+	// HOOKS: 3 global + 2 project(alpha) (no deleted column on hooks).
+	exec(`INSERT INTO hooks (scope, project_id, event, command, source_file, seq, enabled, content_hash) VALUES
+	      ('global',  NULL, 'Stop',       'g1', '/s.json', 0, 1, 'hh1'),
+	      ('global',  NULL, 'PreToolUse', 'g2', '/s.json', 1, 1, 'hh2'),
+	      ('global',  NULL, 'PostToolUse','g3', '/s.json', 2, 1, 'hh3'),
+	      ('project', 1,    'Stop',       'p1', '/p.json', 0, 1, 'hh4'),
+	      ('project', 1,    'PreToolUse', 'p2', '/p.json', 1, 1, 'hh5')`)
+
+	// An unresolved (global-only) lint finding — Insights must stay GLOBAL.
+	exec(`INSERT INTO config_lint_findings (target, rule, severity, message, detected_at, resolved_at)
+	      VALUES ('agent:1', 'agent_dead', 'warn', 'unused', '2026-07-10T00:00:00Z', NULL)`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// Fleet (unscoped) counts = the GLOBAL totals across everything.
+	var fleet map[string]any
+	getJSON(t, srv.URL+"/api/system/hub/summary", &fleet)
+	for field, want := range map[string]float64{
+		"agents":   5, // 5 non-deleted agents across all projects
+		"skills":   4,
+		"commands": 3,
+		"hooks":    5,
+		"templates": 2, // core built-ins (fleet lists built-ins only)
+		"lintFindings": 1,
+	} {
+		if got, _ := fleet[field].(float64); got != want {
+			t.Errorf("fleet summary.%s = %v, want %v", field, fleet[field], want)
+		}
+	}
+
+	// Project mode (alpha) = ONLY alpha's own scope='project' rows / source='project'
+	// templates. Insights (lintFindings) stays global (unchanged).
+	var scoped map[string]any
+	getJSON(t, srv.URL+"/api/system/hub/summary?projectId=alpha", &scoped)
+	for field, want := range map[string]float64{
+		"agents":   2, // p-agent-1/2 only (deleted + global + beta excluded)
+		"skills":   3,
+		"commands": 1,
+		"hooks":    2,
+		"templates": 1, // only the project override (adr), NOT the inherited pr built-in
+		"lintFindings": 1, // GLOBAL — Insights is system-wide, not scoped
+	} {
+		if got, _ := scoped[field].(float64); got != want {
+			t.Errorf("scoped(alpha) summary.%s = %v, want %v", field, scoped[field], want)
+		}
+	}
+
+	// Resolving by numeric id must match resolving by slug (slug-or-id contract).
+	var byID map[string]any
+	getJSON(t, srv.URL+"/api/system/hub/summary?projectId=1", &byID)
+	if byID["agents"] != scoped["agents"] || byID["templates"] != scoped["templates"] {
+		t.Errorf("id vs slug scope mismatch: byID=%v scoped=%v", byID, scoped)
+	}
+
+	// An unresolvable projectId falls back to GLOBAL (unchanged fleet behaviour).
+	var unknown map[string]any
+	getJSON(t, srv.URL+"/api/system/hub/summary?projectId=9999", &unknown)
+	if unknown["agents"] != fleet["agents"] {
+		t.Errorf("unknown project should fall back to global: got agents=%v, want %v", unknown["agents"], fleet["agents"])
 	}
 }
 
