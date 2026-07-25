@@ -30,3 +30,38 @@ func TestDetectSearchLoop(t *testing.T) {
 		t.Errorf("expected nil (run broken by file_change), got %+v", f)
 	}
 }
+
+func TestDetectVerifySkip(t *testing.T) {
+	edited := []event{
+		{turnID: 1, typ: "file_change"},
+		{turnID: 2, typ: "session_end"},
+	}
+	if f := detectVerifySkip(edited); f == nil || f.kind != "verify-skip" {
+		t.Fatalf("expected verify-skip finding, got %+v", f)
+	}
+
+	verified := []event{
+		{turnID: 1, typ: "file_change"},
+		{turnID: 2, typ: "test_run"},
+		{turnID: 3, typ: "session_end"},
+	}
+	if f := detectVerifySkip(verified); f != nil {
+		t.Errorf("expected nil (test_run present), got %+v", f)
+	}
+
+	noEdits := []event{{turnID: 1, typ: "tool_call", tool: "Read"}}
+	if f := detectVerifySkip(noEdits); f != nil {
+		t.Errorf("expected nil (no file_change), got %+v", f)
+	}
+}
+
+func TestFirstPass(t *testing.T) {
+	clean := []event{{typ: "file_change"}, {typ: "test_run"}}
+	if !firstPass(clean) {
+		t.Error("firstPass = false, want true (no error events)")
+	}
+	errored := []event{{typ: "file_change"}, {typ: "error"}}
+	if firstPass(errored) {
+		t.Error("firstPass = true, want false (error event present)")
+	}
+}
