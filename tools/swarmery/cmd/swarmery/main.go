@@ -40,6 +40,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/installer"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/logbuf"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/mcpcfg"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/notify"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
@@ -920,6 +921,11 @@ func cmdServe(args []string) error {
 	// outlives the daemon.
 	toolMgr := toolproc.NewManager(toolproc.Config{Command: toolproc.DefaultCommand})
 	api.AttachToolManager(toolMgr)
+
+	// connectors (mcp servers): the reader that shells to `claude mcp …` behind
+	// GET/POST/DELETE /api/connectors. Read-through, no daemon-owned process, so
+	// nothing to stop on shutdown.
+	api.AttachConnectorReader(mcpcfg.New())
 
 	// fusion phase 15: the embedded-terminal PTY manager. Owns every live PTY
 	// behind GET /api/term/ws; the shutdown path below runs CloseAll so no shell

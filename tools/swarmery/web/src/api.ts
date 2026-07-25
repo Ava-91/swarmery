@@ -12,6 +12,9 @@ import type {
   BoardColumn,
   BoardTask,
   BreakdownResp,
+  AddConnectorInput,
+  Connector,
+  ConnectorsResponse,
   DetachResponse,
   DispatchStatus,
   AutonomyResp,
@@ -1090,6 +1093,42 @@ export async function serenaStop(id: number): Promise<void> {
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(data.error ?? `serena stop failed: ${String(res.status)}`);
   }
+}
+
+// --- connectors (MCP servers) --------------------------------------------------
+
+export function fetchConnectors(): Promise<ConnectorsResponse> {
+  if (MOCK) return mockApi.connectors();
+  return get<ConnectorsResponse>('/api/connectors');
+}
+
+/** Add a stdio/http/sse MCP server; the daemon returns the refreshed list. */
+export async function addConnector(input: AddConnectorInput): Promise<Connector[]> {
+  if (MOCK) return (await mockApi.connectors()).connectors;
+  const res = await fetch('/api/connectors', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `add connector failed: ${String(res.status)}`);
+  }
+  const body = (await res.json()) as ConnectorsResponse;
+  return body.connectors;
+}
+
+/** Remove a server by name (optionally scoped); returns the refreshed list. */
+export async function removeConnector(name: string, scope?: string): Promise<Connector[]> {
+  if (MOCK) return (await mockApi.connectors()).connectors;
+  const qs = scope !== undefined && scope !== '' ? `?scope=${encodeURIComponent(scope)}` : '';
+  const res = await fetch(`/api/connectors/${encodeURIComponent(name)}${qs}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `remove connector failed: ${String(res.status)}`);
+  }
+  const body = (await res.json()) as ConnectorsResponse;
+  return body.connectors;
 }
 
 // --- global search (Cmd+K palette) ---------------------------------------------

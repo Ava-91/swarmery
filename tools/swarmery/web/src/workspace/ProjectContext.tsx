@@ -9,6 +9,7 @@
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import type { Project } from '../api/types';
+import { saveLastProject } from '../lib/lastProject';
 import { useScope } from '../lib/scope';
 
 interface ProjectWorkspaceValue {
@@ -46,6 +47,12 @@ export function ProjectWorkspaceProvider({ children }: { children: ReactNode }):
   useEffect(() => {
     if (slug !== '' && scope !== slug) setScope(slug);
   }, [slug, scope, setScope]);
+
+  // Remember the last-visited project so the header ModeToggle's Projects
+  // segment reopens it. Only the raw :slug is persisted (never a placeholder).
+  useEffect(() => {
+    if (slug !== '') saveLastProject(slug);
+  }, [slug]);
 
   const value = useMemo<ProjectWorkspaceValue>(
     () => ({

@@ -20,6 +20,7 @@ import { useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { SystemItemPanel } from './system/ItemDetail';
+import { FiltersRow } from './system/shared';
 import { HubShell, healthTone, type HubTab } from './agent-hub/HubShell';
 import { ActivityTab, InsightsTab, OverviewTab, RunsTab, TasksTab } from './agent-hub/Tabs';
 import { RunNowButton } from './agent-hub/RunNow';
@@ -96,17 +97,49 @@ function ProfileHeader({
 
 /* ----- the page ----- */
 
-export function AgentHub(): JSX.Element {
+/** Props are all optional so the standalone /agents and /p/:slug/agents mounts
+ * behave exactly as before. The tabbed System shell (pages/SystemShell.tsx)
+ * mounts this EMBEDDED: it supplies its own outer heading + owns the URL base,
+ * so it passes `embedded` (suppress the roster heading + gate the detail rail on
+ * selection + show the scope segmented control), an explicit `routeBase` (so the
+ * component's internal navigation stays on the /system/agents tree) and the
+ * resolved `scopeSlug`. */
+export function AgentHub({
+  embedded = false,
+  routeBase: routeBaseProp,
+  scopeSlug: scopeSlugProp,
+  projectScoped = false,
+}: {
+  embedded?: boolean;
+  routeBase?: string;
+  scopeSlug?: string | null;
+  /** PROJECT mode (/p/:slug/system/agents): the roster is narrowed to this
+   * project's OWN agents (scope === 'project') and the all/global/project scope
+   * selector is hidden — the view is inherently project-only. Fleet mode keeps
+   * the full roster + the scope chips. */
+  projectScoped?: boolean;
+} = {}): JSX.Element {
   const params = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { scope } = useScope();
   // Workspace mount (/p/:slug/agents) carries the slug in the route; fleet mount
-  // uses the global scope switcher. Either narrows the rollup window.
-  const scopeSlug = params.slug ?? scope;
-  const routeBase = params.slug !== undefined ? `/p/${params.slug}/agents` : '/agents';
+  // uses the global scope switcher. Either narrows the rollup window. When
+  // embedded, the shell passes both explicitly (it owns the route base).
+  const scopeSlug = scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope);
+  const routeBase =
+    routeBaseProp ?? (params.slug !== undefined ? `/p/${params.slug}/agents` : '/agents');
 
-  const selectedId = params.id !== undefined && /^\d+$/.test(params.id) ? Number(params.id) : null;
+  // Origin scope chips (embedded Agents tab only): all scopes / global / project,
+  // filtered CLIENT-SIDE against AgentRosterRow.scope (no API change).
+  const [scopeChip, setScopeChip] = useState<'global' | 'project' | null>(null);
+
+  // Selected agent: standalone reads it from the /agents/:id route; embedded
+  // keeps it in LOCAL state (the shell's /system/* route has no :id segment, so
+  // params.id is never populated under it). The detail sub-tab stays on ?tab=.
+  const [embSelId, setEmbSelId] = useState<number | null>(null);
+  const routeSelId = params.id !== undefined && /^\d+$/.test(params.id) ? Number(params.id) : null;
+  const selectedId = embedded ? embSelId : routeSelId;
   const tab = parseTab(searchParams.get('tab'));
 
   const [roster, setRoster] = useState<AgentRosterRow[] | null>(null);
@@ -163,9 +196,13 @@ export function AgentHub(): JSX.Element {
 
   const onSelect = useCallback(
     (key: string | null): void => {
+      if (embedded) {
+        setEmbSelId(key === null || !/^\d+$/.test(key) ? null : Number(key));
+        return;
+      }
       navigate(key === null ? routeBase : `${routeBase}/${key}${window.location.search}`);
     },
-    [navigate, routeBase],
+    [embedded, navigate, routeBase],
   );
   const onTab = useCallback(
     (id: string): void => {
@@ -204,10 +241,30 @@ export function AgentHub(): JSX.Element {
     [],
   );
 
+  // Client-side origin-scope filter. In PROJECT mode the roster is pinned to
+  // this project's OWN agents (scope === 'project') — the /api/agents/hub roster
+  // returns the whole registry (projectId only scopes the rollup window), so the
+  // project-only narrowing happens here. In fleet mode the scope chips drive it:
+  // scopeChip === null ("all scopes") passes the roster through untouched.
+  const visibleRoster = useMemo(() => {
+    if (roster === null) return roster;
+    if (projectScoped) return roster.filter((a) => a.scope === 'project');
+    if (scopeChip === null) return roster;
+    return roster.filter((a) => a.scope === scopeChip);
+  }, [roster, scopeChip, projectScoped]);
+
+  // Scope segmented control (all scopes / global / project) — reuses the System
+  // page's chips. Rendered in HubShell's full-width top bar, like the toolkit
+  // catalog. Hidden in PROJECT mode: the view is inherently project-only there.
+  const scopeFilters = projectScoped ? undefined : (
+    <FiltersRow scope={scopeChip} onScope={setScopeChip} />
+  );
+
   return (
     <HubShell<AgentRosterRow>
-      title="Agents"
-      roster={roster}
+      {...(embedded ? {} : { title: 'Agents' })}
+      hideDetailWhenUnselected={false}
+      roster={visibleRoster}
       rosterError={rosterError}
       onRosterRetry={loadRoster}
       rowKey={(a) => String(a.id)}
@@ -215,8 +272,13 @@ export function AgentHub(): JSX.Element {
       renderRow={(a) => <RosterCard agent={a} />}
       selectedKey={selectedId === null ? null : String(selectedId)}
       onSelect={onSelect}
+      {...(scopeFilters !== undefined ? { topBar: scopeFilters } : {})}
       searchPlaceholder="filter agents…"
-      rosterEmptyLabel="no agents on this machine"
+      rosterEmptyLabel={
+        projectScoped
+          ? 'No project-specific agents — this project inherits from enabled packs.'
+          : 'no agents on this machine'
+      }
       tabs={tabs}
       activeTab={tab}
       onTab={onTab}
@@ -281,6 +343,7 @@ function ProfilePanel({
         onMutated={onDefinitionMutated}
         onDeleted={onDefinitionMutated}
         onReadonly={() => undefined}
+        variant="editor"
       />
     );
   }
@@ -298,8 +361,23 @@ function ProfilePanel({
     case 'insights':
       return <InsightsTab insights={profile.insights} />;
     default:
+      // Overview leads with the moved History + Versions (SystemItemPanel meta),
+      // then the open-insights preview.
       return (
-        <OverviewTab overview={profile.overview} topInsights={profile.insights.recommendations} />
+        <div className="space-y-4">
+          <SystemItemPanel
+            kind="agents"
+            id={selectedId}
+            refreshKey={defRefresh}
+            projectNames={projectNames}
+            onClose={() => undefined}
+            onMutated={onDefinitionMutated}
+            onDeleted={onDefinitionMutated}
+            onReadonly={() => undefined}
+            variant="meta"
+          />
+          <OverviewTab topInsights={profile.insights.recommendations} />
+        </div>
       );
   }
 }

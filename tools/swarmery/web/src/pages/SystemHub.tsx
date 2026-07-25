@@ -181,23 +181,73 @@ function fetchRoster(category: HubCategory, projectId: string | null): Promise<R
   }
 }
 
+/** PROJECT-mode narrowing: keep only rows that originate in the project's OWN
+ * .claude/ — skills/commands/hooks carry scope === 'project'; templates carry
+ * source === 'project' (the effective template list also returns core/pack
+ * built-ins the project merely inherits). Anything global / pack-inherited is
+ * dropped. (For skills/commands/hooks the backend ?project= filter already
+ * returns only project-scoped rows; this is a defensive, self-documenting
+ * client-side narrowing that also covers any inherited row that slips through.) */
+function isProjectRow(r: RosterRow): boolean {
+  return r.kind === 'templates' ? r.item.source === 'project' : r.item.scope === 'project';
+}
+
 /* ================= the page ================= */
 
-export function SystemHub(): JSX.Element {
+/** Props are optional so the standalone /system-hub and /p/:slug/system-hub
+ * mounts are unchanged. The tabbed System shell (pages/SystemShell.tsx) mounts
+ * this EMBEDDED: `embedded` suppresses the heading + the standalone role nav
+ * (the shell's outer tab bar owns Toolkit/Hooks/Insights), `forceCategory` pins
+ * the active category from the outer tab, `routeBase` keeps internal navigation
+ * on the /system tree, and `scopeSlug` is supplied by the shell. */
+export function SystemHub({
+  embedded = false,
+  forceCategory,
+  routeBase: routeBaseProp,
+  scopeSlug: scopeSlugProp,
+  projectScoped = false,
+}: {
+  embedded?: boolean;
+  forceCategory?: HubCategory;
+  routeBase?: string;
+  scopeSlug?: string | null;
+  /** PROJECT mode (/p/:slug/system/…): the roster shows ONLY this project's own
+   * items (skills/commands/hooks scope === 'project'; templates source ===
+   * 'project'), dropping catalog items inherited from packs/core or the global
+   * scope. The Toolkit/Hooks catalog has no scope selector to hide (that control
+   * lives only on the Agents tab), so this flag drives only the roster filter +
+   * the empty-state copy. Fleet mode is unchanged. */
+  projectScoped?: boolean;
+} = {}): JSX.Element {
   const params = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { scope } = useScope();
 
   // Workspace mount (/p/:slug/system-hub) carries the slug; fleet mode uses the
-  // global scope switcher. Either scopes the rollups + template resolution.
-  const scopeSlug = params.slug ?? scope;
-  const routeBase = params.slug !== undefined ? `/p/${params.slug}/system-hub` : '/system-hub';
+  // global scope switcher. Either scopes the rollups + template resolution. When
+  // embedded the shell passes both explicitly (it owns the route base).
+  const scopeSlug = scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope);
+  const routeBase =
+    routeBaseProp ?? (params.slug !== undefined ? `/p/${params.slug}/system-hub` : '/system-hub');
 
-  const category = parseCategory(params.category);
+  // Toolkit sub-kind (skills/commands/templates) when embedded: the outer shell
+  // pins the ROLE via forceCategory ('skills' for the Toolkit tab, or 'hooks' /
+  // 'insights'); the Toolkit sub-pills then flip this LOCAL state instead of the
+  // URL, so the shell keeps a flat /system/toolkit route (no nested sub-path).
+  const [subCat, setSubCat] = useState<HubCategory>('skills');
+  // Category: standalone → route param; embedded → forceCategory, except when
+  // forceCategory is the Toolkit role, where the active sub-kind (subCat) wins.
+  const category = embedded
+    ? forceCategory === 'skills'
+      ? subCat
+      : (forceCategory ?? 'skills')
+    : parseCategory(params.category);
   // :id is the selected item (numeric for skills/commands/hooks, a name for
-  // templates). Insights has no selection.
-  const selectedKey = params.id ?? null;
+  // templates). Insights has no selection. Standalone reads it from the route;
+  // embedded keeps it in LOCAL state (the shell route has no :id segment).
+  const [embSel, setEmbSel] = useState<string | null>(null);
+  const selectedKey = embedded ? embSel : (params.id ?? null);
   const tab = searchParams.get('tab') ?? '';
 
   const [roster, setRoster] = useState<RosterRow[] | null>(null);
@@ -214,9 +264,9 @@ export function SystemHub(): JSX.Element {
     }
     setRosterError(null);
     fetchRoster(category, scopeSlug ?? null)
-      .then(setRoster)
+      .then((rows) => setRoster(projectScoped ? rows.filter(isProjectRow) : rows))
       .catch((e: unknown) => setRosterError(String(e)));
-  }, [category, scopeSlug, refreshKey]);
+  }, [category, scopeSlug, refreshKey, projectScoped]);
   useEffect(loadRoster, [loadRoster]);
 
   const loadSummary = useCallback((): void => {
@@ -256,13 +306,24 @@ export function SystemHub(): JSX.Element {
   );
 
   const goCategory = (next: HubCategory): void => {
+    if (embedded) {
+      // Toolkit sub-pill switch: local state, and drop any selection so the new
+      // sub-kind opens on its roster (the previous item belongs to another kind).
+      setSubCat(next);
+      setEmbSel(null);
+      return;
+    }
     navigate(next === 'skills' ? routeBase : `${routeBase}/${next}`);
   };
   const onSelect = useCallback(
     (key: string | null): void => {
+      if (embedded) {
+        setEmbSel(key);
+        return;
+      }
       navigate(key === null ? `${routeBase}/${category}` : `${routeBase}/${category}/${encodeURIComponent(key)}`);
     },
-    [navigate, routeBase, category],
+    [embedded, navigate, routeBase, category],
   );
   const onTab = useCallback(
     (id: string): void => {
@@ -303,19 +364,29 @@ export function SystemHub(): JSX.Element {
   }, [category]);
 
   // The ROLE nav: Toolkit (with three sub-kinds) · Hooks · Insights, each with
-  // a count badge from the summary.
+  // a count badge from the summary. When embedded the outer shell owns the
+  // role row, so RoleNav renders ONLY the Toolkit sub-pills (skills/commands/
+  // templates) — and nothing at all for Hooks/Insights.
   const roleNav = (
-    <RoleNav category={category} summary={summary} onCategory={goCategory} />
+    <RoleNav category={category} summary={summary} onCategory={goCategory} embedded={embedded} />
   );
 
   // Insights is a full-width inbox, NOT a split-pane roster.
   if (category === 'insights') {
     return (
-      <div className="flex h-full flex-col px-4 pt-6 pb-6 desk:px-10 desk:pt-[34px] desk:pb-[34px]">
-        <h1 className="mb-4 font-display text-[30px] leading-tight font-medium tracking-[-0.01em]">
-          System Hub
-        </h1>
-        {roleNav}
+      <div
+        className={
+          embedded
+            ? 'flex h-full min-h-0 flex-col'
+            : 'flex h-full flex-col px-4 pt-6 pb-6 desk:px-10 desk:pt-[34px] desk:pb-[34px]'
+        }
+      >
+        {!embedded && (
+          <h1 className="mb-4 font-display text-[30px] leading-tight font-medium tracking-[-0.01em]">
+            System Hub
+          </h1>
+        )}
+        {!embedded && roleNav}
         <div className="mt-4 min-h-0 flex-1 overflow-y-auto [-webkit-overflow-scrolling:touch]">
           <InsightsTab refreshKey={refreshKey} projectNames={projectNames} />
         </div>
@@ -327,11 +398,21 @@ export function SystemHub(): JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Role nav sits above the shell; the shell owns the split-pane below. */}
-      <div className="px-4 pt-6 desk:px-10 desk:pt-[34px]">{roleNav}</div>
+      {/* Role nav sits above the shell; the shell owns the split-pane below.
+          Standalone: full Toolkit/Hooks/Insights row + Toolkit sub-pills, with
+          the page's own top padding. Embedded: RoleNav emits only the Toolkit
+          sub-pills (Toolkit tab) or nothing (Hooks), and the outer shell owns
+          the chrome — so we add a light top margin only when it renders. */}
+      {!embedded ? (
+        <div className="px-4 pt-6 desk:px-10 desk:pt-[34px]">{roleNav}</div>
+      ) : (
+        category === 'skills' || category === 'commands' || category === 'templates'
+      ) ? (
+        <div className="px-4 pt-4 desk:px-10">{roleNav}</div>
+      ) : null}
       <div className="min-h-0 flex-1">
         <HubShell<RosterRow>
-          title="System Hub"
+          {...(embedded ? {} : { title: 'System Hub' })}
           roster={roster}
           rosterError={rosterError}
           onRosterRetry={loadRoster}
@@ -341,7 +422,11 @@ export function SystemHub(): JSX.Element {
           selectedKey={selectedKey}
           onSelect={onSelect}
           searchPlaceholder={`filter ${category}…`}
-          rosterEmptyLabel={`no ${category} on this machine`}
+          rosterEmptyLabel={
+            projectScoped
+              ? `No project-specific ${category} — this project inherits from enabled packs.`
+              : `no ${category} on this machine`
+          }
           tabs={tabs}
           activeTab={activeTab}
           onTab={onTab}
@@ -378,11 +463,16 @@ function RoleNav({
   category,
   summary,
   onCategory,
+  embedded = false,
 }: {
   category: HubCategory;
   summary: SystemHubSummary | null;
   onCategory: (c: HubCategory) => void;
-}): JSX.Element {
+  /** Embedded under the tabbed System shell: the shell owns the Toolkit/Hooks/
+   * Insights role row, so render ONLY the Toolkit sub-pills (and nothing when
+   * not in Toolkit). */
+  embedded?: boolean;
+}): JSX.Element | null {
   const inToolkit = (TOOLKIT as string[]).includes(category);
   // exactOptionalPropertyTypes: omit `badge` entirely when the summary is absent.
   const badge = (n: number | undefined): { badge?: number } => (n !== undefined ? { badge: n } : {});
@@ -393,6 +483,32 @@ function RoleNav({
     { key: 'hooks', label: 'Hooks', ...badge(summary?.hooks), active: category === 'hooks' },
     { key: 'insights', label: 'Insights', ...badge(summary?.insights), active: category === 'insights' },
   ];
+  const toolkitPills = inToolkit ? (
+    <div className="flex gap-1.5">
+      {TOOLKIT.map((k) => {
+        const b = summary === null ? undefined : k === 'skills' ? summary.skills : k === 'commands' ? summary.commands : summary.templates;
+        const active = category === k;
+        return (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onCategory(k)}
+            aria-pressed={active}
+            className={`rounded-full border px-2.5 py-[3px] font-mono text-[11px] whitespace-nowrap transition-colors ${
+              active ? 'border-brand/50 bg-surface2 text-brand' : 'border-line text-ink-dim hover:border-line-strong hover:text-ink'
+            }`}
+          >
+            {k}
+            {b !== undefined ? ` ${String(b)}` : ''}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  // Embedded: only the Toolkit sub-pills (the outer shell owns the role row).
+  if (embedded) return toolkitPills;
+
   return (
     <div className="space-y-2.5">
       <div className="flex gap-1 border-b border-line" role="tablist" aria-label="System Hub sections">
@@ -416,28 +532,7 @@ function RoleNav({
           </button>
         ))}
       </div>
-      {inToolkit && (
-        <div className="flex gap-1.5">
-          {TOOLKIT.map((k) => {
-            const badge = summary === null ? undefined : k === 'skills' ? summary.skills : k === 'commands' ? summary.commands : summary.templates;
-            const active = category === k;
-            return (
-              <button
-                key={k}
-                type="button"
-                onClick={() => onCategory(k)}
-                aria-pressed={active}
-                className={`rounded-full border px-2.5 py-[3px] font-mono text-[11px] whitespace-nowrap transition-colors ${
-                  active ? 'border-brand/50 bg-surface2 text-brand' : 'border-line text-ink-dim hover:border-line-strong hover:text-ink'
-                }`}
-              >
-                {k}
-                {badge !== undefined ? ` ${String(badge)}` : ''}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {toolkitPills}
     </div>
   );
 }
