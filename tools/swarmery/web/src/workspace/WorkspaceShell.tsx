@@ -1,13 +1,17 @@
 // Workspace shell (fusion phase 4): the top-level chrome for project mode — a
-// slim header (wordmark linking back to the fleet, a theme toggle, daemon
-// health) above the ProjectWorkspaceLayout. It is a SIBLING of the fleet <App/>
-// (its own header + rescoped sidebar + status bar), not nested inside it, so
-// project mode is a distinct full-screen surface rather than a page within the
-// fleet frame. Shared providers (ScopeProvider) live one level up in
-// RootProviders so both surfaces read the same project store.
+// slim header (wordmark linking back to the fleet, the [Sessions|Projects] mode
+// toggle, a theme toggle, daemon health) above the ProjectWorkspaceLayout. It is
+// a SIBLING of the fleet <App/> (its own header + rescoped sidebar + status bar),
+// not nested inside it, so project mode is a distinct full-screen surface rather
+// than a page within the fleet frame. Shared providers (ScopeProvider) live one
+// level up in RootProviders so both surfaces read the same project store.
+//
+// The mode toggle's "Sessions" segment IS the way back to the fleet, so it
+// replaces the old `← fleet` text link (the wordmark still links home too).
 
 import { Link } from 'react-router-dom';
 import { MOCK } from '../api';
+import { ModeToggle } from '../components/ModeToggle';
 import { UsagePopover } from '../components/UsagePopover';
 import { useHealth, shortVersion } from '../lib/health';
 import { useTheme } from '../lib/theme';
@@ -43,12 +47,9 @@ export function WorkspaceShell(): JSX.Element {
         >
           SW<span className="text-brand">◆</span>RMERY
         </Link>
-        <Link
-          to="/"
-          className="font-mono text-[11px] text-ink-dim transition-colors hover:text-ink"
-        >
-          ← fleet
-        </Link>
+        {/* Mode toggle: the "Sessions" segment returns to the fleet (replaces the
+            old `← fleet` link); "Projects" stays active across every /p/:slug/*. */}
+        <ModeToggle />
         <span className="ml-auto flex items-center gap-3">
           <ThemeToggle />
           <UsagePopover />
