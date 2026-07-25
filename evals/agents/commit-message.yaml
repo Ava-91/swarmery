@@ -10,7 +10,7 @@
       crashed on empty payloads. Produce the commit message.
   assert:
     - type: regex
-      value: '^(feat|fix|refactor|chore|docs|test|perf|build|ci)(\(.+\))?!?:'   # hard — type token before colon; agent may add emoji after the colon per its template
+      value: '(?m)^(feat|fix|refactor|chore|docs|test|perf|build|ci)(\(.+\))?!?:'   # hard — (?m): match the subject at line start even if the agent prepends a preamble
     - type: llm-rubric                                                              # soft
       value: subject uses the fix type, is imperative mood, and is under ~72 chars
 
