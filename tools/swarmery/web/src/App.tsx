@@ -11,7 +11,7 @@
 // permission_resolved over the shared connection).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import type { WSMessage } from './api/types';
 import {
   fetchApprovals,
@@ -25,6 +25,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
 import { ProjectDropdown } from './components/ProjectDropdown';
+import { ThemeToggle } from './components/ThemeToggle';
 import { UsagePopover } from './components/UsagePopover';
 import { isoDay } from './lib/format';
 import { useHealth, shortVersion } from './lib/health';
@@ -57,9 +58,10 @@ interface NavSection {
 
 const DOCS_NAV: NavItem = { to: '/docs', glyph: '❐', label: 'Docs' };
 
-/** Global project scope switcher (header) — GitHub-org-switcher pattern.
- * Projects come from the ScopeProvider's shared fetch. */
-function ScopeSwitcher(): JSX.Element {
+/** Global project scope switcher — GitHub-org-switcher pattern. Projects come
+ * from the ScopeProvider's shared fetch. Rendered `block` at the top of the
+ * session-mode sidebar (mirrors the project-mode ProjectSwitcher placement). */
+function ScopeSwitcher({ block = false }: { block?: boolean }): JSX.Element {
   const { scope, setScope, projects } = useScope();
   return (
     <ProjectDropdown
@@ -68,6 +70,7 @@ function ScopeSwitcher(): JSX.Element {
       onChange={setScope}
       allLabel="All projects"
       groupByTag
+      block={block}
     />
   );
 }
@@ -235,15 +238,17 @@ function AppShell(): JSX.Element {
   useLiveUpdates(onMessage, resyncBadges);
 
   const pendingCount = pendingIds.size;
-  // Session-mode sidebar. Projects is reached via the header ModeToggle now (not
-  // a sidebar item); tool dashboards are project-scoped (project-mode sidebar).
-  // Settings is pinned to the bottom, rendered separately below.
+  // Session-mode sidebar. A scope switcher sits at the top of the rail (mirrors
+  // project mode); the Projects item opens the fleet project list. Tool
+  // dashboards are project-scoped (project-mode sidebar). Settings is pinned to
+  // the bottom, rendered separately below.
   const sections: NavSection[] = [
     { label: null, items: [{ to: '/', glyph: '◉', label: 'Overview' }] },
     {
       label: 'Work',
       items: [
         { to: '/sessions', glyph: '❯', label: 'Sessions', ...badgeFor(sessionsToday) },
+        { to: '/projects', glyph: '▤', label: 'Projects' },
         {
           to: '/approvals',
           glyph: '⧗',
@@ -294,23 +299,28 @@ function AppShell(): JSX.Element {
     <div className="app-shell flex h-dvh flex-col">
       {/* Full-width top header: wordmark, scope filter, search/filters, status. */}
       <header className="header-hairline relative z-20 flex h-14 shrink-0 items-center gap-4 bg-bg px-4 desk:px-6">
-        {/* Fixed-width block on desktop: 24px header padding + 208px + 16px gap
-            = 248px, so the scope switcher starts exactly where the sidebar ends. */}
-        <span className="flex min-w-0 items-center desk:w-[208px] desk:shrink-0">
-          <span className="font-sans text-[16px] leading-none font-extrabold tracking-[0.09em] text-ink uppercase">
-            SW<span className="text-brand">◆</span>RMERY
-          </span>
-        </span>
-        {/* Mode toggle first (before the scope filter), switching between the
-            fleet (session) shell and the project shell. */}
+        {/* Fixed-width block on desktop (24px pad + 208px + 16px gap = 248px) so
+            the ModeToggle lines up with the sidebar edge — identical to the
+            project shell's header, so nothing shifts when toggling modes. */}
+        <Link
+          to="/"
+          aria-label="swarmery home"
+          className="flex min-w-0 items-center font-sans text-[16px] leading-none font-extrabold tracking-[0.09em] text-ink uppercase transition-opacity hover:opacity-80 desk:w-[208px] desk:shrink-0"
+        >
+          SW<span className="text-brand">◆</span>RMERY
+        </Link>
+        {/* Mode toggle, switching between the fleet (session) shell and the
+            project shell. The project scope switcher moved to the sidebar top
+            (mirrors project mode), so header chrome stays identical across
+            modes — no shift when toggling. */}
         <ModeToggle />
-        <ScopeSwitcher />
-        {/* One contextual search input right after the scope filter — filters
-            the current page's list. Section chips (status/scope/sort) live in
-            the page body. Cmd+K still opens the global search palette. Theme +
-            notifications now live on the /settings page, not the header. */}
+        {/* One contextual search input — filters the current page's list.
+            Section chips (status/scope/sort) live in the page body. Cmd+K still
+            opens the global search palette. Theme + notifications now live on
+            the /settings page, not the header. */}
         <HeaderSearch />
         <span className="ml-auto flex items-center gap-3">
+        <ThemeToggle />
         <UsagePopover />
         {!MOCK && <NewProjectButton />}
         <span
@@ -338,6 +348,11 @@ function AppShell(): JSX.Element {
         {/* Desktop sidebar — static labelled panel (248px), no collapse.
             Settings is pinned to the bottom via mt-auto. */}
         <nav className="hidden w-[248px] shrink-0 flex-col border-r border-line px-3 py-4 desk:flex">
+          {/* Project scope switcher at the top of the rail — mirrors the
+              project-mode ProjectSwitcher placement (moved out of the header). */}
+          <div className="mb-3">
+            <ScopeSwitcher block />
+          </div>
           {sections
             .filter((section) => section.items.length > 0)
             .map((section) => (

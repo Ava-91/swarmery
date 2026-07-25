@@ -176,18 +176,12 @@ function WorkspaceInner(): JSX.Element {
     <WorkspaceTerminalContext.Provider value={openWorktree}>
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
-          <nav className="hidden w-[228px] shrink-0 flex-col border-r border-line px-3 py-3 desk:flex">
+          <nav className="hidden w-[248px] shrink-0 flex-col border-r border-line px-3 py-4 desk:flex">
             <ProjectSwitcher projects={projects} currentSlug={slug} subPath={subPath} />
-            {/* Return to the fleet Projects list — replaces the header scope
-                dropdown that project mode drops. Non-scoped (not /p/:slug/…), so
-                a plain NavLink, not a WorkspaceLink. */}
-            <NavLink to="/projects" className={projectsLinkClass}>
-              <span className="w-[16px] shrink-0 text-center text-[15px] leading-none" aria-hidden="true">
-                ▤
-              </span>
-              <span className="truncate text-[13px] font-medium">Projects</span>
-            </NavLink>
-            <div className="mt-4 flex flex-col gap-0.5">
+            {/* The fleet Projects list is reached from the ProjectSwitcher's
+                "All projects →" footer (and the ModeToggle) — no standalone
+                Projects item here; it lives in the session-mode sidebar. */}
+            <div className="mt-3 flex flex-col gap-0.5">
               {BASE_NAV.map((item) => (
                 <WorkspaceLink key={item.path} slug={slug} item={item} />
               ))}
@@ -215,14 +209,8 @@ function WorkspaceInner(): JSX.Element {
           </nav>
 
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            {/* Mobile tab strip (the desktop rail is hidden < desk). Projects
-                (back to the fleet list) leads — a non-scoped link, so it is a
-                plain compact NavLink, not a WorkspaceLink. */}
+            {/* Mobile tab strip (the desktop rail is hidden < desk). */}
             <div className="flex gap-1 overflow-x-auto border-b border-line px-3 py-2 desk:hidden">
-              <NavLink to="/projects" className={projectsCompactClass}>
-                <span aria-hidden="true">▤</span>
-                Projects
-              </NavLink>
               {[...BASE_NAV, ...toolNav, ...INSIGHT_NAV, SYSTEM_NAV, SETTINGS_NAV].map((item) => (
                 <WorkspaceLink key={item.path} slug={slug} item={item} compact />
               ))}
@@ -252,22 +240,6 @@ function NavGroupLabel({ children }: { children: string }): JSX.Element {
     </div>
   );
 }
-
-// The fleet "Projects" link is not a /p/:slug/… sub-route, so it renders as a
-// plain NavLink rather than a WorkspaceLink. These two class callbacks mirror
-// WorkspaceLink's desktop and compact styling exactly so it sits flush with the
-// scoped rail items.
-const projectsLinkClass = ({ isActive }: { isActive: boolean }): string =>
-  `mt-3 flex h-[34px] items-center gap-3 rounded-[10px] border px-3 transition-colors ${
-    isActive
-      ? 'border-line-strong bg-surface2 text-brand'
-      : 'border-transparent text-ink-dim hover:bg-surface2/50 hover:text-ink'
-  }`;
-
-const projectsCompactClass = ({ isActive }: { isActive: boolean }): string =>
-  `flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-[11px] whitespace-nowrap transition-colors ${
-    isActive ? 'border-line-strong bg-surface2 text-brand' : 'border-transparent text-ink-dim'
-  }`;
 
 function WorkspaceLink({
   slug,

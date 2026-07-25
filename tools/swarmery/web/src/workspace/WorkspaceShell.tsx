@@ -12,27 +12,10 @@
 import { Link } from 'react-router-dom';
 import { MOCK } from '../api';
 import { ModeToggle } from '../components/ModeToggle';
+import { ThemeToggle } from '../components/ThemeToggle';
 import { UsagePopover } from '../components/UsagePopover';
 import { useHealth, shortVersion } from '../lib/health';
-import { useTheme } from '../lib/theme';
 import { ProjectWorkspaceLayout } from './ProjectWorkspaceLayout';
-
-function ThemeToggle(): JSX.Element {
-  const { theme, toggle } = useTheme();
-  const isLight = theme === 'light';
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={isLight}
-      aria-label={isLight ? 'switch to dark theme' : 'switch to light theme'}
-      onClick={toggle}
-      className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg border border-line bg-field text-[13px] leading-none text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
-    >
-      <span aria-hidden="true">{isLight ? '☾' : '☀'}</span>
-    </button>
-  );
-}
 
 export function WorkspaceShell(): JSX.Element {
   const { health, unreachable } = useHealth();
@@ -40,10 +23,13 @@ export function WorkspaceShell(): JSX.Element {
   return (
     <div className="flex h-dvh flex-col">
       <header className="header-hairline relative z-20 flex h-14 shrink-0 items-center gap-4 bg-bg px-4 desk:px-6">
+        {/* Same fixed-width wordmark block as the fleet header (desk:w-[208px])
+            so the ModeToggle sits at the identical x-position — no shift when
+            toggling between Sessions and Projects. */}
         <Link
           to="/"
           aria-label="back to all projects"
-          className="flex items-center gap-2 font-sans text-[16px] leading-none font-extrabold tracking-[0.09em] text-ink uppercase transition-opacity hover:opacity-80"
+          className="flex min-w-0 items-center font-sans text-[16px] leading-none font-extrabold tracking-[0.09em] text-ink uppercase transition-opacity hover:opacity-80 desk:w-[208px] desk:shrink-0"
         >
           SW<span className="text-brand">◆</span>RMERY
         </Link>

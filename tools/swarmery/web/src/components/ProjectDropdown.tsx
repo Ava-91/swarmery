@@ -38,6 +38,7 @@ export function ProjectDropdown({
   onChange,
   allLabel = 'all projects',
   groupByTag = false,
+  block = false,
 }: {
   projects: Project[];
   /** Selected project slug, or null = all projects. */
@@ -47,6 +48,9 @@ export function ProjectDropdown({
   allLabel?: string;
   /** Group the menu by pinned/tags (global scope switcher). */
   groupByTag?: boolean;
+  /** Full-width sidebar trigger (mirrors ProjectSwitcher) instead of the
+   * header pill — used by the session-mode sidebar scope switcher. */
+  block?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -100,7 +104,7 @@ export function ProjectDropdown({
   const groups = groupByTag ? groupProjects(projects) : [{ label: null, projects }];
 
   return (
-    <div ref={rootRef} className="relative shrink-0">
+    <div ref={rootRef} className={block ? 'relative w-full' : 'relative shrink-0'}>
       <button
         ref={buttonRef}
         type="button"
@@ -114,9 +118,23 @@ export function ProjectDropdown({
             focusOption(1);
           }
         }}
-        className="flex max-w-[200px] items-center gap-1.5 rounded-full border border-line-strong px-[11px] py-[5px] font-mono text-[10.5px] whitespace-nowrap text-ink-dim transition-colors hover:text-ink aria-expanded:border-[#4a4e58] aria-expanded:bg-surface2 aria-expanded:text-ink"
+        className={
+          block
+            ? 'flex w-full items-center gap-2 rounded-[10px] border border-line-strong bg-field px-3 py-2 text-left transition-colors hover:bg-surface2 aria-expanded:border-[#4a4e58] aria-expanded:bg-surface2'
+            : 'flex max-w-[200px] items-center gap-1.5 rounded-full border border-line-strong px-[11px] py-[5px] font-mono text-[10.5px] whitespace-nowrap text-ink-dim transition-colors hover:text-ink aria-expanded:border-[#4a4e58] aria-expanded:bg-surface2 aria-expanded:text-ink'
+        }
       >
-        <span className="truncate" style={value !== null ? { color: colorFor(value) } : undefined}>
+        {block && (
+          <span
+            aria-hidden="true"
+            className={`h-[8px] w-[8px] shrink-0 rounded-full ${value === null ? 'bg-line-strong' : ''}`}
+            style={value !== null ? { backgroundColor: colorFor(value) } : undefined}
+          />
+        )}
+        <span
+          className={block ? 'min-w-0 flex-1 truncate text-[13px] font-semibold text-ink' : 'truncate'}
+          style={!block && value !== null ? { color: colorFor(value) } : undefined}
+        >
           {label}
         </span>
         <span aria-hidden="true" className="text-[9px] text-ink-faint">
@@ -134,7 +152,9 @@ export function ProjectDropdown({
               focusOption(e.key === 'ArrowDown' ? 1 : -1);
             }
           }}
-          className="absolute top-full left-0 z-20 mt-1.5 max-h-[60vh] min-w-[210px] overflow-y-auto rounded-[11px] border border-line-strong bg-field shadow-[0_16px_34px_rgba(0,0,0,0.5)]"
+          className={`absolute top-full left-0 z-20 mt-1.5 max-h-[60vh] overflow-y-auto rounded-[11px] border border-line-strong bg-field shadow-[0_16px_34px_rgba(0,0,0,0.5)] ${
+            block ? 'w-full min-w-[220px]' : 'min-w-[210px]'
+          }`}
         >
           <DropdownOption
             selected={value === null}

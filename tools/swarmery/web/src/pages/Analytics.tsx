@@ -470,44 +470,7 @@ function CommandCenter({
 
   return (
     <section aria-label="Command center" className="mt-3.5">
-      <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-        {autonomy !== null && (
-          <TipStatCard
-            label="Autonomy"
-            value={
-              autonomy.fullyAutonomous
-                ? `${String(autonomy.toolCalls)} calls`
-                : `${autonomy.ratio.toFixed(1)}×`
-            }
-            sub={
-              autonomy.fullyAutonomous
-                ? 'no human interventions'
-                : `${String(autonomy.toolCalls)} calls · ${String(autonomy.interventions.total)} interventions`
-            }
-            tip="Tool calls per human intervention (approvals a human resolved + mid-run prompts). Higher = more autonomous."
-          />
-        )}
-        <TipStatCard
-          label="Tasks done"
-          value={String(tasksDone)}
-          sub={funnel !== null ? `${(funnel.completionRate * 100).toFixed(0)}% completion` : undefined}
-          tip="Board tasks that reached done/archived in this range."
-        />
-        <TipStatCard
-          label="Cost / task"
-          value={costPerTask !== null ? fmtCost(costPerTask) : '—'}
-          sub={rangeCost !== null ? `${fmtCost(rangeCost)} over ${String(tasksDone)} tasks` : 'no priced tasks'}
-          tip="Range total cost ÷ tasks done. Cost comes from priced turns; unpriced work is excluded."
-        />
-        <TipStatCard
-          label="Cache hit"
-          value={cacheHit !== null ? `${(cacheHit * 100).toFixed(1)}%` : '—'}
-          sub="cache_read / (cache_read + in)"
-          tip="Prompt-cache read ratio over the range. Higher = cheaper reads served from cache."
-        />
-      </div>
-
-      <div className="mt-3.5 grid gap-3.5 lg:grid-cols-2">
+      <div className="grid gap-3.5 lg:grid-cols-2">
         {funnel !== null && <FunnelBar funnel={funnel} />}
         {productivity !== null && (
           <div className="rounded-[14px] border border-line bg-surface px-5 py-4">
@@ -586,6 +549,43 @@ function CommandCenter({
           </div>
         </div>
       )}
+
+      <div className="mt-3.5 grid gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+        {autonomy !== null && (
+          <TipStatCard
+            label="Autonomy"
+            value={
+              autonomy.fullyAutonomous
+                ? `${String(autonomy.toolCalls)} calls`
+                : `${autonomy.ratio.toFixed(1)}×`
+            }
+            sub={
+              autonomy.fullyAutonomous
+                ? 'no human interventions'
+                : `${String(autonomy.toolCalls)} calls · ${String(autonomy.interventions.total)} interventions`
+            }
+            tip="Tool calls per human intervention (approvals a human resolved + mid-run prompts). Higher = more autonomous."
+          />
+        )}
+        <TipStatCard
+          label="Tasks done"
+          value={String(tasksDone)}
+          sub={funnel !== null ? `${(funnel.completionRate * 100).toFixed(0)}% completion` : undefined}
+          tip="Board tasks that reached done/archived in this range."
+        />
+        <TipStatCard
+          label="Cost / task"
+          value={costPerTask !== null ? fmtCost(costPerTask) : '—'}
+          sub={rangeCost !== null ? `${fmtCost(rangeCost)} over ${String(tasksDone)} tasks` : 'no priced tasks'}
+          tip="Range total cost ÷ tasks done. Cost comes from priced turns; unpriced work is excluded."
+        />
+        <TipStatCard
+          label="Cache hit"
+          value={cacheHit !== null ? `${(cacheHit * 100).toFixed(1)}%` : '—'}
+          sub="cache_read / (cache_read + in)"
+          tip="Prompt-cache read ratio over the range. Higher = cheaper reads served from cache."
+        />
+      </div>
     </section>
   );
 }
