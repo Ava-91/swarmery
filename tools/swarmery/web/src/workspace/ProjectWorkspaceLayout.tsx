@@ -85,10 +85,10 @@ const INSIGHT_NAV: WorkspaceNavItem[] = [
   { path: 'retro', glyph: '↺', label: 'Retro' },
   { path: 'analytics', glyph: '▦', label: 'Analytics' },
 ];
-// System Hub (fusion phase 18), project-scoped — the EFFECTIVE catalog for this
-// project (enabled packs + overrides). Its in-page role nav fans out to
-// Toolkit/Hooks/Insights, so one sidebar entry is enough.
-const SYSTEM_NAV: WorkspaceNavItem = { path: 'system-hub', glyph: '⚙', label: 'System' };
+// System (fusion phase 18 → tabbed shell), project-scoped — the EFFECTIVE
+// catalog for this project (enabled packs + overrides). The shell hosts
+// Agents / Toolkit / Hooks / Insights as tabs, so one sidebar entry is enough.
+const SYSTEM_NAV: WorkspaceNavItem = { path: 'system', glyph: '☷', label: 'System' };
 const SETTINGS_NAV: WorkspaceNavItem = { path: 'settings', glyph: '⚙', label: 'Settings' };
 const SERENA_NAV: WorkspaceNavItem = { path: 'serena', glyph: '◎', label: 'Serena' };
 const GRAPHIFY_NAV: WorkspaceNavItem = { path: 'graphify', glyph: '⬡', label: 'Graphify' };

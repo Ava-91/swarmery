@@ -18,18 +18,18 @@ import {
   fetchDocs,
   fetchRecommendations,
   fetchStatsOverview,
-  fetchTools,
   MOCK,
 } from './api';
 import { fetchSystemSummary } from './api/system';
 import { CommandPalette } from './components/CommandPalette';
+import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
-import { NotifySettings } from './components/NotifySettings';
 import { ProjectDropdown } from './components/ProjectDropdown';
 import { UsagePopover } from './components/UsagePopover';
 import { isoDay } from './lib/format';
 import { useHealth, shortVersion } from './lib/health';
 import { loadPrefs, useBrowserNotifications, type NotifyPrefs } from './lib/notifications';
+import { NotifyPrefsContext } from './lib/notifyPrefsContext';
 import {
   PageSearchProvider,
   pageSearchPlaceholder,
@@ -37,7 +37,6 @@ import {
 } from './lib/pageSearch';
 import { useScope } from './lib/scope';
 import { useLiveUpdates } from './lib/ws';
-import { ThemePicker } from './theme/ThemePicker';
 
 interface NavItem {
   to: string;
@@ -57,9 +56,6 @@ interface NavSection {
 }
 
 const DOCS_NAV: NavItem = { to: '/docs', glyph: '❐', label: 'Docs' };
-const SERENA_NAV: NavItem = { to: '/serena', glyph: '◎', label: 'Serena' };
-const GRAPHIFY_NAV: NavItem = { to: '/graphify', glyph: '⬡', label: 'Graphify' };
-const ARCHITECTURE_NAV: NavItem = { to: '/architecture', glyph: '▦', label: 'Architecture' };
 
 /** Global project scope switcher (header) — GitHub-org-switcher pattern.
  * Projects come from the ScopeProvider's shared fetch. */
@@ -137,38 +133,9 @@ function AppShell(): JSX.Element {
   useBrowserNotifications(notifyPrefs);
   const { health, unreachable } = useHealth();
 
-  // Tool-dashboard nav items (serena / graphify): each is visible only while
-  // /api/tools reports at least one project for that tool. Polled on the same
-  // 60s cadence as daemon health (lib/health.ts) so items appear/disappear as
-  // lsp-pack gets toggled or graphify builds land, without a reload.
-  const [hasSerena, setHasSerena] = useState(false);
-  const [hasGraphify, setHasGraphify] = useState(false);
-  const [hasArchitecture, setHasArchitecture] = useState(false);
-  useEffect(() => {
-    let disposed = false;
-    const poll = (): void => {
-      fetchTools()
-        .then((t) => {
-          if (disposed) return;
-          setHasSerena(t.serena.projects.length > 0);
-          setHasGraphify(t.graphify.projects.length > 0);
-          setHasArchitecture(t.architecture.projects.length > 0);
-        })
-        .catch(() => {
-          // endpoint absent / daemon unreachable → hide all tool items
-          if (disposed) return;
-          setHasSerena(false);
-          setHasGraphify(false);
-          setHasArchitecture(false);
-        });
-    };
-    poll();
-    const timer = setInterval(poll, 60_000);
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-    };
-  }, []);
+  // Tool dashboards (Serena / Graphify / Architecture) are project-scoped and
+  // live in the project-mode sidebar — the session sidebar no longer carries a
+  // global Tools section, so no /api/tools polling is needed here.
   useEffect(() => {
     fetchDocs()
       .then((docs) => setHasDocs(docs.length > 0))
@@ -268,13 +235,15 @@ function AppShell(): JSX.Element {
   useLiveUpdates(onMessage, resyncBadges);
 
   const pendingCount = pendingIds.size;
+  // Session-mode sidebar. Projects is reached via the header ModeToggle now (not
+  // a sidebar item); tool dashboards are project-scoped (project-mode sidebar).
+  // Settings is pinned to the bottom, rendered separately below.
   const sections: NavSection[] = [
-    { label: null, items: [{ to: '/', glyph: '◉', label: 'Command deck' }] },
+    { label: null, items: [{ to: '/', glyph: '◉', label: 'Overview' }] },
     {
       label: 'Work',
       items: [
         { to: '/sessions', glyph: '❯', label: 'Sessions', ...badgeFor(sessionsToday) },
-        { to: '/projects', glyph: '▤', label: 'Projects' },
         {
           to: '/approvals',
           glyph: '⧗',
@@ -292,35 +261,36 @@ function AppShell(): JSX.Element {
       ],
     },
     {
-      // Tool dashboards are conditional — when none is available the section
-      // has no items and the label is skipped with it.
-      label: 'Tools',
-      items: [
-        ...(hasSerena ? [SERENA_NAV] : []),
-        ...(hasGraphify ? [GRAPHIFY_NAV] : []),
-        ...(hasArchitecture ? [ARCHITECTURE_NAV] : []),
-      ],
-    },
-    {
       label: 'System',
       items: [
-        { to: '/agents', glyph: '☰', label: 'Agents' },
-        // System Hub (fusion phase 18) — the catalog grouped by ROLE. Toolkit
-        // (skills/commands/templates) + Hooks land on the hub; Insights carries
-        // the promotion/drift/lint inbox badge.
-        { to: '/system-hub', glyph: '⚙', label: 'Toolkit' },
-        { to: '/system-hub/hooks', glyph: '⎇', label: 'Hooks' },
-        { to: '/system-hub/insights', glyph: '◇', label: 'Insights', ...badgeFor(insightCount) },
+        // Single "System" destination hosting Agents / Toolkit / Hooks /
+        // Insights as tabs (pages/SystemShell.tsx). The promotion/drift/lint
+        // inbox badge rides this one item.
+        { to: '/system', glyph: '☷', label: 'System', ...badgeFor(insightCount) },
         ...(hasDocs ? [DOCS_NAV] : []),
       ],
     },
   ];
-  // Mobile bottom nav stays flat — sections flattened in order, no labels.
-  const items: NavItem[] = sections.flatMap((s) => s.items);
+  // Bottom-pinned global settings (session mode); also appended to the flat
+  // mobile nav so it stays reachable on small screens.
+  const SETTINGS_NAV: NavItem = { to: '/settings', glyph: '⚙', label: 'Settings' };
+  // Mobile bottom nav stays flat — sections flattened in order, no labels, with
+  // Settings appended last.
+  const items: NavItem[] = [...sections.flatMap((s) => s.items), SETTINGS_NAV];
+
+  // Shared NavLink className for a desktop sidebar row (section items + the
+  // pinned Settings link) — extracted so the long class string is not duplicated.
+  const navItemClass = ({ isActive }: { isActive: boolean }): string =>
+    `flex h-[38px] items-center gap-3 rounded-[10px] border px-3 transition-colors ${
+      isActive
+        ? 'border-line-strong bg-surface2 text-brand'
+        : 'border-transparent text-ink-dim hover:bg-surface2/50 hover:text-ink'
+    }`;
 
   const daemonOk = !unreachable;
 
   return (
+    <NotifyPrefsContext.Provider value={{ prefs: notifyPrefs, setPrefs: setNotifyPrefs }}>
     <div className="app-shell flex h-dvh flex-col">
       {/* Full-width top header: wordmark, scope filter, search/filters, status. */}
       <header className="header-hairline relative z-20 flex h-14 shrink-0 items-center gap-4 bg-bg px-4 desk:px-6">
@@ -331,20 +301,18 @@ function AppShell(): JSX.Element {
             SW<span className="text-brand">◆</span>RMERY
           </span>
         </span>
+        {/* Mode toggle first (before the scope filter), switching between the
+            fleet (session) shell and the project shell. */}
+        <ModeToggle />
         <ScopeSwitcher />
         {/* One contextual search input right after the scope filter — filters
             the current page's list. Section chips (status/scope/sort) live in
-            the page body. Cmd+K still opens the global search palette. */}
+            the page body. Cmd+K still opens the global search palette. Theme +
+            notifications now live on the /settings page, not the header. */}
         <HeaderSearch />
         <span className="ml-auto flex items-center gap-3">
-        <ThemePicker />
         <UsagePopover />
-        {!MOCK && (
-          <span className="flex items-center gap-2">
-            <NotifySettings prefs={notifyPrefs} onChange={setNotifyPrefs} />
-            <NewProjectButton />
-          </span>
-        )}
+        {!MOCK && <NewProjectButton />}
         <span
           className="flex items-center gap-1.5 font-mono text-[10.5px] text-ink-dim"
         >
@@ -367,7 +335,8 @@ function AppShell(): JSX.Element {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* Desktop sidebar — static labelled panel (248px), no collapse. */}
+        {/* Desktop sidebar — static labelled panel (248px), no collapse.
+            Settings is pinned to the bottom via mt-auto. */}
         <nav className="hidden w-[248px] shrink-0 flex-col border-r border-line px-3 py-4 desk:flex">
           {sections
             .filter((section) => section.items.length > 0)
@@ -381,18 +350,7 @@ function AppShell(): JSX.Element {
                   </div>
                 )}
                 {section.items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.to === '/'}
-                    className={({ isActive }) =>
-                      `flex h-[38px] items-center gap-3 rounded-[10px] border px-3 transition-colors ${
-                        isActive
-                          ? 'border-line-strong bg-surface2 text-brand'
-                          : 'border-transparent text-ink-dim hover:bg-surface2/50 hover:text-ink'
-                      }`
-                    }
-                  >
+                  <NavLink key={item.to} to={item.to} end={item.to === '/'} className={navItemClass}>
                     <span
                       className="w-[16px] shrink-0 text-center text-[16px] leading-none"
                       aria-hidden="true"
@@ -413,6 +371,18 @@ function AppShell(): JSX.Element {
                 ))}
               </div>
             ))}
+          {/* Global settings, pinned to the bottom of the rail. */}
+          <div className="mt-auto flex flex-col gap-0.5 pt-3">
+            <NavLink to={SETTINGS_NAV.to} className={navItemClass}>
+              <span
+                className="w-[16px] shrink-0 text-center text-[16px] leading-none"
+                aria-hidden="true"
+              >
+                {SETTINGS_NAV.glyph}
+              </span>
+              <span className="truncate text-[13.5px] font-medium">{SETTINGS_NAV.label}</span>
+            </NavLink>
+          </div>
         </nav>
 
         <main className="min-w-0 flex-1 overflow-y-auto pb-[72px] [-webkit-overflow-scrolling:touch] desk:pb-0">
@@ -446,6 +416,7 @@ function AppShell(): JSX.Element {
 
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
     </div>
+    </NotifyPrefsContext.Provider>
   );
 }
 

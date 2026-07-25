@@ -15,7 +15,6 @@ import { Docs } from './pages/Docs';
 import { Architecture } from './pages/Architecture';
 import { Serena } from './pages/Serena';
 import { Graphify } from './pages/Graphify';
-import { System } from './pages/System';
 import { ProjectDetailRedirect } from './workspace/ProjectDetailRedirect';
 import { Routines } from './pages/Routines';
 import './index.css';
@@ -34,6 +33,13 @@ const AgentHub = lazy(() => import('./pages/AgentHub').then((m) => ({ default: m
 // System Hub (fusion phase 18) — the catalog grouped by ROLE on the same
 // HubShell. Lazy like the Agent Hub; serves /system-hub and /p/:slug/system-hub.
 const SystemHub = lazy(() => import('./pages/SystemHub').then((m) => ({ default: m.SystemHub })));
+
+// System shell — the single "System" destination hosting Agents/Toolkit/Hooks/
+// Insights as tabs (embeds AgentHub + SystemHub). Lazy like the hubs it wraps;
+// serves /system(/:tab) and /p/:slug/system(/:tab).
+const SystemShell = lazy(() =>
+  import('./pages/SystemShell').then((m) => ({ default: m.SystemShell })),
+);
 
 // Project-workspace mode (/p/:slug/…) is a whole subtree — lazy-load it so the
 // fleet-mode initial bundle is unchanged (board/drawer weight loads on demand).
@@ -154,7 +160,24 @@ const router = createBrowserRouter([
               </Suspense>
             ),
           },
-          { path: 'system', element: <System /> },
+          // System — single destination, tabs Agents/Toolkit/Hooks/Insights.
+          // Splat so the shell can own /system/:tab (+ /system/agents/:id).
+          {
+            path: 'system/*',
+            element: (
+              <Suspense fallback={<Loading label="system…" />}>
+                <SystemShell />
+              </Suspense>
+            ),
+          },
+          {
+            path: 'system',
+            element: (
+              <Suspense fallback={<Loading label="system…" />}>
+                <SystemShell />
+              </Suspense>
+            ),
+          },
           { path: 'routines', element: <Routines /> },
           { path: 'serena', element: <Serena /> },
           { path: 'graphify', element: <Graphify /> },
@@ -201,6 +224,9 @@ const router = createBrowserRouter([
           { path: 'system-hub', element: ws(<SystemHub />) },
           { path: 'system-hub/:category', element: ws(<SystemHub />) },
           { path: 'system-hub/:category/:id', element: ws(<SystemHub />) },
+          // System shell (tabs), project-scoped — the workspace "System" item.
+          { path: 'system', element: ws(<SystemShell />) },
+          { path: 'system/*', element: ws(<SystemShell />) },
           { path: 'architecture', element: ws(<ScopedArchitecture />) },
           { path: 'serena', element: ws(<ScopedSerena />) },
           { path: 'graphify', element: ws(<ScopedGraphify />) },

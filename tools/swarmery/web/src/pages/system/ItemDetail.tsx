@@ -561,6 +561,7 @@ export function SystemItemPanel({
   onMutated,
   onDeleted,
   onReadonly,
+  variant = 'full',
 }: {
   kind: SystemItemsKind;
   id: number;
@@ -575,6 +576,10 @@ export function SystemItemPanel({
   onDeleted: () => void;
   /** A write hit the global readonly kill-switch — page-level banner. */
   onReadonly: () => void;
+  /** Section set. 'full' (default, System page) renders everything with a close
+   * button; 'editor' = frontmatter / body / edit only (no ×, History or Versions);
+   * 'meta' = History + Versions only (mounted in the agent Overview tab). */
+  variant?: 'full' | 'editor' | 'meta';
 }): JSX.Element {
   const [detail, setDetail] = useState<SystemItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -729,6 +734,27 @@ export function SystemItemPanel({
       .finally(() => setActionBusy(false));
   };
 
+  // 'meta' variant: only the History + Versions sections, mounted inside the
+  // agent Overview tab. The editor/header live in the Definition tab instead.
+  if (variant === 'meta') {
+    return (
+      <div>
+        {kind === 'agents' && <AgentHistoryPanel agentId={detail.id} />}
+        <SectionTitle>Versions</SectionTitle>
+        <Versions
+          kind={kind}
+          itemId={detail.id}
+          versions={detail.versions}
+          currentVersionId={detail.currentVersionId}
+          writable={writable}
+          diskHash={diskHash}
+          onMutated={onMutated}
+          onReadonly={onReadonly}
+        />
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2">
@@ -755,14 +781,16 @@ export function SystemItemPanel({
               deleted
             </span>
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="close detail"
-            className="ml-1 rounded-[7px] border border-line-strong px-2 py-px text-[12px] text-ink-faint transition-colors hover:text-ink"
-          >
-            ✕
-          </button>
+          {variant === 'full' && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="close detail"
+              className="ml-1 rounded-[7px] border border-line-strong px-2 py-px text-[12px] text-ink-faint transition-colors hover:text-ink"
+            >
+              ✕
+            </button>
+          )}
         </span>
       </div>
       <div className="mt-1 font-mono text-[10px] break-all text-ink-faint">{detail.path}</div>
@@ -990,19 +1018,23 @@ export function SystemItemPanel({
         </>
       )}
 
-      {kind === 'agents' && <AgentHistoryPanel agentId={detail.id} />}
+      {kind === 'agents' && variant !== 'editor' && <AgentHistoryPanel agentId={detail.id} />}
 
-      <SectionTitle>Versions</SectionTitle>
-      <Versions
-        kind={kind}
-        itemId={detail.id}
-        versions={detail.versions}
-        currentVersionId={detail.currentVersionId}
-        writable={writable}
-        diskHash={diskHash}
-        onMutated={onMutated}
-        onReadonly={onReadonly}
-      />
+      {variant !== 'editor' && (
+        <>
+          <SectionTitle>Versions</SectionTitle>
+          <Versions
+            kind={kind}
+            itemId={detail.id}
+            versions={detail.versions}
+            currentVersionId={detail.currentVersionId}
+            writable={writable}
+            diskHash={diskHash}
+            onMutated={onMutated}
+            onReadonly={onReadonly}
+          />
+        </>
+      )}
 
       <ConfirmDialog
         open={confirmDelete}

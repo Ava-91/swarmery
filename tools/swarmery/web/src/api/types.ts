@@ -1797,6 +1797,43 @@ export interface ToolsResponse {
   architecture: { projects: ArchitectureProject[] };
 }
 
+// ── Connectors (MCP servers Claude Code has configured) ─────────────────────
+
+export type ConnectorTransport = 'stdio' | 'http' | 'sse' | '';
+export type ConnectorScope = 'local' | 'user' | 'project' | 'claudeai' | 'unknown';
+export type ConnectorStatus =
+  | 'connected'
+  | 'failed'
+  | 'needs_auth'
+  | 'pending'
+  | 'disabled'
+  | 'unknown';
+
+export interface Connector {
+  name: string;
+  transport: ConnectorTransport;
+  scope: ConnectorScope;
+  status: ConnectorStatus;
+  /** command+args (stdio) or URL (http/sse) as printed by the CLI; display-only. */
+  detail: string;
+  source: string;
+}
+
+export interface ConnectorsResponse {
+  connectors: Connector[];
+}
+
+/** POST body for adding a server. command/args apply to stdio; url to http/sse.
+ * The page only offers 'stdio' | 'http' | 'sse' and scope 'local' | 'user'. */
+export interface AddConnectorInput {
+  name: string;
+  transport: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: string[];
+  url?: string;
+  scope: 'local' | 'user';
+}
+
 // ── Routines (fusion phase 7 — scheduled automation) ────────────────────────
 
 /** routines step kind (mirrors internal/routines/step.go). */
