@@ -31,8 +31,10 @@ func isProgress(typ string) bool {
 	return typ == "file_change" || typ == "commit" || typ == "test_run"
 }
 
-// detectSearchLoop returns a finding when >= searchLoopThreshold consecutive
-// tool_call events share one tool name with no intervening progress event.
+// detectSearchLoop returns the FIRST detected loop in the stream: a finding
+// when >= searchLoopThreshold consecutive tool_call events share one tool name
+// with no intervening progress event. Tool calls with an empty tool name reset
+// the current run rather than extending it.
 func detectSearchLoop(evs []event) *finding {
 	var runTool string
 	var run []int64
@@ -44,14 +46,14 @@ func detectSearchLoop(evs []event) *finding {
 	}
 	for _, e := range evs {
 		switch {
-		case e.typ == "tool_call" && e.tool == runTool:
+		case e.typ == "tool_call" && e.tool != "" && e.tool == runTool:
 			run = append(run, e.turnID)
-		case e.typ == "tool_call":
+		case e.typ == "tool_call" && e.tool != "":
 			if f := flush(); f != nil {
 				return f
 			}
 			runTool, run = e.tool, []int64{e.turnID}
-		case isProgress(e.typ):
+		case isProgress(e.typ), e.typ == "tool_call": // progress OR empty-tool call resets
 			if f := flush(); f != nil {
 				return f
 			}
@@ -163,7 +165,9 @@ func loadEventsByAgent(db *sql.DB, sessionID int64) (map[string][]event, error) 
 	return out, rows.Err()
 }
 
-func persist(db *sql.DB, sessionID int64, agent string, fp bool, fs []*finding, now time.Time) error {
+// persist writes or replaces the trajectory score and its findings for one
+// (session, agent) pair within a single transaction.
+func persist(db *sql.DB, sessionID int64, agent string, fp bool, findings []*finding, now time.Time) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -184,7 +188,7 @@ func persist(db *sql.DB, sessionID int64, agent string, fp bool, fs []*finding, 
 		return err
 	}
 	scoreID, _ := res.LastInsertId()
-	for _, f := range fs {
+	for _, f := range findings {
 		ids, _ := json.Marshal(f.evidenceIDs)
 		if _, err := tx.Exec(
 			`INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids) VALUES (?,?,?,?)`,

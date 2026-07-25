@@ -67,7 +67,9 @@ func TestComputePersistsScoreAndFindings(t *testing.T) {
 		t.Errorf("score = (%s, %d), want (tech-lead, 1)", agent, fp)
 	}
 	var kinds int
-	db.QueryRow(`SELECT COUNT(*) FROM trajectory_findings`).Scan(&kinds)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM trajectory_findings`).Scan(&kinds); err != nil {
+		t.Fatalf("count findings: %v", err)
+	}
 	if kinds != 2 { // search-loop + verify-skip
 		t.Errorf("findings = %d, want 2", kinds)
 	}
@@ -77,8 +79,18 @@ func TestComputePersistsScoreAndFindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	var scores int
-	db.QueryRow(`SELECT COUNT(*) FROM trajectory_scores`).Scan(&scores)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM trajectory_scores`).Scan(&scores); err != nil {
+		t.Fatalf("count scores after recompute: %v", err)
+	}
 	if scores != 1 {
 		t.Errorf("scores after recompute = %d, want 1 (idempotent)", scores)
+	}
+
+	var findingsAfter int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM trajectory_findings`).Scan(&findingsAfter); err != nil {
+		t.Fatalf("count findings after recompute: %v", err)
+	}
+	if findingsAfter != 2 {
+		t.Errorf("findings after recompute = %d, want 2", findingsAfter)
 	}
 }

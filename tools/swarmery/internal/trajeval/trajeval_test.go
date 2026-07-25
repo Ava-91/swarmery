@@ -29,6 +29,28 @@ func TestDetectSearchLoop(t *testing.T) {
 	if f := detectSearchLoop(broken); f != nil {
 		t.Errorf("expected nil (run broken by file_change), got %+v", f)
 	}
+
+	// 4 same-tool calls then a different tool => finding fires on the switch.
+	switchTriggered := []event{
+		{turnID: 1, typ: "tool_call", tool: "Grep"},
+		{turnID: 2, typ: "tool_call", tool: "Grep"},
+		{turnID: 3, typ: "tool_call", tool: "Grep"},
+		{turnID: 4, typ: "tool_call", tool: "Grep"},
+		{turnID: 5, typ: "tool_call", tool: "Read"},
+	}
+	if f := detectSearchLoop(switchTriggered); f == nil {
+		t.Error("expected search-loop finding on tool switch, got nil")
+	}
+
+	emptyTool := []event{
+		{turnID: 1, typ: "tool_call", tool: ""},
+		{turnID: 2, typ: "tool_call", tool: ""},
+		{turnID: 3, typ: "tool_call", tool: ""},
+		{turnID: 4, typ: "tool_call", tool: ""},
+	}
+	if f := detectSearchLoop(emptyTool); f != nil {
+		t.Errorf("expected nil for empty-tool calls, got %+v", f)
+	}
 }
 
 func TestDetectVerifySkip(t *testing.T) {
