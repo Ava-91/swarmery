@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/improve"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
@@ -305,9 +306,10 @@ func TestRetroAgents(t *testing.T) {
 	})
 }
 
-// TestRetroAgentsImprovable pins the Improve-button gate: an agent with a live
-// registry row (current_version_id set) is improvable; an agent that only shows
-// up as a subagent run — no editable definition file — is not.
+// TestRetroAgentsImprovable pins the Improve-button gate: an agent that SHIPS
+// in the apply repo at origin/main (plugins/*/agents/<name>.md) is improvable;
+// an agent that only shows up as a subagent run but is not in the apply repo
+// (built-in like debugger, or a cross-project specialist) is not.
 func TestRetroAgentsImprovable(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "improvable.db"))
 	if err != nil {
@@ -324,21 +326,23 @@ func TestRetroAgentsImprovable(t *testing.T) {
 	}
 	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES (1, '/w/a', '-w-a', 'A', ?)`, today)
 	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at) VALUES (1, 1, 'u1', 'completed', ?)`, today)
-	// Two subagent runs: tech-lead (registry-backed) and debugger (built-in only).
+	// Two subagent runs: tech-lead (ships in the apply repo) and debugger (does
+	// not — built-in / another checkout only).
 	mustExec(`INSERT INTO events (session_id, ts, type, status, payload, dedup_key) VALUES
 		(1, ?, 'subagent_start', 'ok', '{"subagent_type":"tech-lead"}', 'a1'),
 		(1, ?, 'subagent_start', 'ok', '{"subagent_type":"debugger"}',  'a2')`, today, today)
-	// Register tech-lead with a current version so RegistryAgentSet includes it;
-	// debugger gets no registry row.
-	mustExec(`INSERT INTO agents (id, name, scope, file_path, origin) VALUES (1, 'tech-lead', 'global', '/a/tech-lead.md', 'local')`)
-	mustExec(`INSERT INTO agent_versions (id, agent_id, content_hash, content, created_at) VALUES (1, 1, 'h1', 'body', ?)`, today)
-	mustExec(`UPDATE agents SET current_version_id = 1 WHERE id = 1`)
 
-	h, err := NewServer(db, false)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
+	// The Improve service is repo-scoped: origin/main of the apply repo ships
+	// tech-lead but not debugger. Build the handler directly (NewServer wires the
+	// production OSExec + empty package-global repo, which can't be faked here).
+	h := &Handler{
+		DB: db,
+		Improve: &improve.Service{DB: db, Repo: "/repo",
+			Exec: &repoAgentsExec{agents: []string{"tech-lead"}}},
 	}
-	srv := httptest.NewServer(h)
+	mux := http.NewServeMux()
+	Routes(mux, h)
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	var out retroAgentsDTO
@@ -349,10 +353,10 @@ func TestRetroAgentsImprovable(t *testing.T) {
 		got[a.Agent] = a.Improvable
 	}
 	if !got["tech-lead"] {
-		t.Errorf("tech-lead improvable = false, want true (registry-backed agent)")
+		t.Errorf("tech-lead improvable = false, want true (ships in the apply repo)")
 	}
 	if got["debugger"] {
-		t.Errorf("debugger improvable = true, want false (built-in, no registry row)")
+		t.Errorf("debugger improvable = true, want false (not in the apply repo)")
 	}
 }
 

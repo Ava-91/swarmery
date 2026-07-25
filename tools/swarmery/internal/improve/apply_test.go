@@ -160,7 +160,9 @@ func applyRow(t *testing.T, db *sql.DB, id int64) (status string, prURL, errCol 
 }
 
 // coreDiff changes only a core agent file → triggers the semver bump path.
-const coreAgentPath = "/repo/plugins/core/agents/tech-lead.md"
+// The stored agent_path is now REPO-RELATIVE (generation resolves the source
+// from origin/main), so the sha re-check reads `git show origin/main:<path>`.
+const coreAgentPath = "plugins/core/agents/tech-lead.md"
 const coreDiff = "--- a/plugins/core/agents/tech-lead.md\n+++ b/plugins/core/agents/tech-lead.md\n@@ -3 +3 @@\n-old\n+new\n"
 
 // goodFrontmatter is the changed-file content the worktree holds after apply.
@@ -172,6 +174,12 @@ const goodFrontmatter = "---\nname: tech-lead\ndescription: orchestrator\n---\nb
 func baseExec(repo, tmp string) *fakeExec {
 	f := newFakeExec()
 	f.tmpDir = tmp
+	// The sha re-check reads the CURRENT origin/main content via `git show
+	// origin/main:<agent_path>`; all these tests seed base_sha256 over "body\n".
+	f.runResp["git show"] = struct {
+		out string
+		err error
+	}{out: "body\n"}
 	f.runResp["bash scan"] = struct {
 		out string
 		err error
@@ -257,11 +265,13 @@ func TestApplyRequiresApproved(t *testing.T) {
 func TestApplyShaMismatch(t *testing.T) {
 	db := applyDB(t)
 	seedApprovedProposal(t, db, 1, "tech-lead", coreAgentPath, "body\n", coreDiff)
-	// Registry content drifted since the proposal → base_sha256 no longer matches.
-	if _, err := db.Exec(`UPDATE agent_versions SET content='DIFFERENT' WHERE id=1`); err != nil {
-		t.Fatal(err)
-	}
 	f := baseExec("/repo", "/tmp/wt3")
+	// origin/main drifted since the proposal (a merge landed) → the re-read
+	// content no longer hashes to base_sha256.
+	f.runResp["git show"] = struct {
+		out string
+		err error
+	}{out: "DIFFERENT origin/main content\n"}
 	svc := &Service{DB: db, Repo: "/repo", Exec: f}
 	if err := svc.Apply(context.Background(), 1); err != nil {
 		t.Fatalf("Apply returns nil (outcome on the row): %v", err)
@@ -273,8 +283,13 @@ func TestApplyShaMismatch(t *testing.T) {
 	if errCol == nil || !strings.Contains(*errCol, "agent changed since proposal") {
 		t.Errorf("error = %v, want the sha-mismatch message", deref(errCol))
 	}
-	if f.ranSig("git fetch") {
-		t.Error("sha mismatch must fail before any git op")
+	// The mismatch is detected from the origin/main re-read (git show), before
+	// the worktree fetch/add.
+	if f.ranSig("git fetch") || f.ranSig("git worktree") {
+		t.Error("sha mismatch must fail before the worktree git ops")
+	}
+	if !f.ranSig("git show") {
+		t.Error("sha re-check must read origin/main via git show")
 	}
 }
 
@@ -404,6 +419,42 @@ func TestApplyGhErrorStaysApproved(t *testing.T) {
 	}
 	if len(f.removed) == 0 {
 		t.Error("worktree not removed after gh failure")
+	}
+}
+
+// repoRel now accepts the repo-relative agent_path generation stores (source
+// resolved from origin/main), returning it cleaned + slash-normalized; a legacy
+// absolute path under the repo still works; an escape still errors.
+func TestRepoRel(t *testing.T) {
+	cases := []struct {
+		name      string
+		repo      string
+		agentPath string
+		want      string
+		wantErr   bool
+	}{
+		{"relative unchanged", "/repo", "plugins/core/agents/tech-lead.md", "plugins/core/agents/tech-lead.md", false},
+		{"relative cleaned", "/repo", "plugins/core/../core/agents/x.md", "plugins/core/agents/x.md", false},
+		{"absolute under repo", "/repo", "/repo/plugins/core/agents/x.md", "plugins/core/agents/x.md", false},
+		{"relative escape", "/repo", "../evil.md", "", true},
+		{"absolute escape", "/repo", "/etc/passwd", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := repoRel(c.repo, c.agentPath)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("repoRel(%q,%q) = %q, want error", c.repo, c.agentPath, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("repoRel(%q,%q): %v", c.repo, c.agentPath, err)
+			}
+			if got != c.want {
+				t.Errorf("repoRel(%q,%q) = %q, want %q", c.repo, c.agentPath, got, c.want)
+			}
+		})
 	}
 }
 

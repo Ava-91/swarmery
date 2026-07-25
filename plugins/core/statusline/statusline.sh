@@ -28,7 +28,7 @@
 #                      $HOME file is deliberately NOT used as a fallback then),
 #                      else $HOME/.claude.json. Pure local read: no network,
 #                      no credentials, no cache needed.
-#       Model        : JSON .model.display_name           (e.g. "Opus 4.8")
+#       Model        : JSON .model.display_name           (e.g. "Opus 5")
 #       Style        : JSON .output_style.name            (e.g. "Explanatory")
 #       ▲<effort>    : JSON .effort.level                 (high / medium / low)
 #       🧠           : shown when JSON .thinking.enabled == true

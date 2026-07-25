@@ -37,7 +37,7 @@ const AGENTS = [
   'api-designer',
 ];
 const SKILLS = ['code-review', 'brainstorming', 'commit', 'frontend-design', 'testing'];
-const MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'];
+const MODELS = ['claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'];
 
 /** Stable [0,1) hash of an arbitrary seed string. */
 function rand(seed: string): number {

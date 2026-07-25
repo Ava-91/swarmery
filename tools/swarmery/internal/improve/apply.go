@@ -72,25 +72,30 @@ func (s *Service) Apply(ctx context.Context, proposalID int64) error {
 		return fmt.Errorf("proposal %d is %s, not approved", proposalID, status)
 	}
 
-	// Step 2: the diff was generated against a specific agent content; if the
-	// registry drifted since, the patch context is stale — fail before any git.
-	src, err := resolveAgent(s.DB, agent)
+	// The agent-scope gate needs the agent file as a repo-relative path. Since
+	// generation resolves the source from origin/main, agent_path is already
+	// repo-relative (plugins/<pack>/agents/<name>.md); repoRel normalizes it and
+	// blocks any escape.
+	relAgentPath, err := repoRel(s.Repo, agentPath)
 	if err != nil {
 		return s.markFailed(proposalID, err)
 	}
-	sum := sha256.Sum256([]byte(src.content))
+
+	// Step 2: the diff was generated against the agent's origin/main content; if
+	// origin/main drifted since (a merge landed), the patch context is stale —
+	// fail before any worktree. Re-read the CURRENT origin/main content through
+	// the same Exec boundary generation used, so generate-time and approve-time
+	// are both origin/main-based (no working-tree drift).
+	curContent, err := s.Exec.Run(context.Background(), s.Repo, "git", "show", "origin/main:"+relAgentPath)
+	if err != nil {
+		return s.markFailed(proposalID, fmt.Errorf("re-read agent at origin/main: %w", err))
+	}
+	sum := sha256.Sum256([]byte(curContent))
 	if hex.EncodeToString(sum[:]) != baseSHA {
 		return s.markFailed(proposalID, errors.New("agent changed since proposal (sha256 mismatch)"))
 	}
 
 	branch, err := branchName(agent, createdAt)
-	if err != nil {
-		return s.markFailed(proposalID, err)
-	}
-
-	// The apply-scope gate needs the agent file as a repo-relative path; the
-	// stored agent_path is absolute (…/plugins/core/agents/x.md under Repo).
-	relAgentPath, err := repoRel(s.Repo, agentPath)
 	if err != nil {
 		return s.markFailed(proposalID, err)
 	}
@@ -281,9 +286,21 @@ func checkPathScope(changed []string, agentPath string) error {
 	return nil
 }
 
-// repoRel makes an absolute agent path relative to the repo root, so the
-// path-scope gate compares it against numstat's repo-relative paths.
+// repoRel normalizes the stored agent_path to a repo-relative slash path for
+// the scope gate. Since generation now resolves the source from origin/main,
+// agent_path is ALREADY repo-relative (plugins/<pack>/agents/<name>.md); a
+// relative path is cleaned + slash-normalized and validated to not escape the
+// repo (filepath.Rel would misbehave with a relative second arg, so we do NOT
+// call it here). An absolute path (legacy rows generated before this change) is
+// still made relative to the repo root, rejecting any escape.
 func repoRel(repo, agentPath string) (string, error) {
+	if !filepath.IsAbs(agentPath) {
+		clean := filepath.ToSlash(filepath.Clean(agentPath))
+		if clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(clean) {
+			return "", fmt.Errorf("agent path %q escapes repo %q", agentPath, repo)
+		}
+		return clean, nil
+	}
 	rel, err := filepath.Rel(repo, agentPath)
 	if err != nil {
 		return "", fmt.Errorf("agent path %q not under repo %q: %w", agentPath, repo, err)

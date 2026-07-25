@@ -20,9 +20,20 @@ func (m *mockRunner) Run(_ context.Context, prompt string) (string, error) {
 	return m.out, m.err
 }
 
+// genAgentRel is the repo-relative source path the generation tests resolve
+// their agent from (origin/main of the fake apply repo).
+const genAgentRel = "plugins/core/agents/tech-lead.md"
+
+// newService wires a Service whose source resolver reads tech-lead's definition
+// from a fake origin/main (plugins/core/agents/tech-lead.md holding "agent
+// body") — the apply repo the diff is generated against. The DB still carries
+// the scorecard/ledger evidence.
 func newService(t *testing.T, db *sql.DB, r Runner) *Service {
 	t.Helper()
-	return &Service{DB: db, Runner: r}
+	return &Service{
+		DB: db, Runner: r, Repo: "/repo",
+		Exec: repoExecFor("tech-lead", "agent body"),
+	}
 }
 
 type proposalRow struct {
@@ -72,8 +83,8 @@ func TestGenerateSuccess(t *testing.T) {
 	if !p.recID.Valid || p.recID.Int64 != 7 {
 		t.Errorf("recommendation_id = %+v, want 7", p.recID)
 	}
-	if p.sha == "" || p.path != "/x/tech-lead.md" {
-		t.Errorf("base coordinates wrong: %+v", p)
+	if p.sha == "" || p.path != genAgentRel {
+		t.Errorf("base coordinates wrong: %+v (want repo-relative path %s)", p, genAgentRel)
 	}
 	// The prompt embedded the agent file and the evidence bundle.
 	if len(runner.prompts) != 1 || !strings.Contains(runner.prompts[0], "agent body") ||

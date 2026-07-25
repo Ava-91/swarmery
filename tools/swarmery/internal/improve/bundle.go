@@ -41,26 +41,28 @@ type Evidence struct {
 }
 
 // buildEvidence assembles the phase-3 evidence bundle for one (normalized)
-// agent key: agent source via the sysscan registry, the advisor scorecard
-// slice, low-quality ledger assessments, open improvements mentioning the
-// agent, and transcript excerpts around the worst behavior-fixable errors.
-// repo is unused by generation (reserved for the phase-4 apply pipeline).
-func buildEvidence(db *sql.DB, agent, repo string) (*Evidence, error) {
-	_ = repo
-	src, err := resolveAgent(db, agent)
+// agent key. The SOURCE FILE (path/content/sha) is resolved from the APPLY REPO
+// at origin/main (resolveAgentInRepo) — NOT the global DB registry — so the
+// AgentPath is always repo-relative and the diff the model emits applies at the
+// worktree root. Everything else (scorecard, ledger assessments, open
+// improvements, transcript excerpts) stays DB-keyed by the normalized agent
+// name.
+func (s *Service) buildEvidence(agent string) (*Evidence, error) {
+	db := s.DB
+	relPath, srcContent, err := resolveAgentInRepo(s.Exec, s.Repo, agent)
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(src.content))
+	sum := sha256.Sum256([]byte(srcContent))
 	ev := &Evidence{
-		AgentPath:    src.path,
-		AgentContent: src.content,
+		AgentPath:    relPath,
+		AgentContent: srcContent,
 		BaseSHA256:   hex.EncodeToString(sum[:]),
 	}
 
 	now := time.Now()
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Evidence — agent %s\n\nSource: %s (sha256 %s)\n", agent, src.path, ev.BaseSHA256)
+	fmt.Fprintf(&b, "# Evidence — agent %s\n\nSource: %s (sha256 %s)\n", agent, relPath, ev.BaseSHA256)
 
 	sc, err := advisor.ScorecardFor(db, agent, now)
 	if err != nil {
@@ -80,52 +82,6 @@ func buildEvidence(db *sql.DB, agent, repo string) (*Evidence, error) {
 
 	ev.Bundle = capBundle(b.String())
 	return ev, nil
-}
-
-// agentSrc is one resolved registry agent: current path + version content.
-type agentSrc struct {
-	path    string
-	content string
-}
-
-// resolveAgent finds the live registry row whose folded name matches the
-// (normalized) agent key, joined to its current version content. On a name
-// collision a local agent beats a plugin one (the harness override rule);
-// ties break on the lowest id for determinism.
-func resolveAgent(db *sql.DB, agent string) (agentSrc, error) {
-	rows, err := db.Query(`
-		SELECT a.name, a.origin, a.file_path, v.content
-		  FROM agents a
-		  JOIN agent_versions v ON v.id = a.current_version_id
-		 WHERE a.deleted = 0
-		 ORDER BY a.id`)
-	if err != nil {
-		return agentSrc{}, err
-	}
-	defer rows.Close()
-	var best agentSrc
-	found, bestLocal := false, false
-	for rows.Next() {
-		var name, origin, path, content string
-		if err := rows.Scan(&name, &origin, &path, &content); err != nil {
-			return agentSrc{}, err
-		}
-		if advisor.NormAgent(name) != agent {
-			continue
-		}
-		local := origin == "local"
-		if !found || (local && !bestLocal) {
-			best = agentSrc{path: path, content: content}
-			found, bestLocal = true, local
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return agentSrc{}, err
-	}
-	if !found {
-		return agentSrc{}, fmt.Errorf("%w: %q", ErrAgentNotFound, agent)
-	}
-	return best, nil
 }
 
 // writeScorecard renders the advisor window slice (same numbers as the Retro

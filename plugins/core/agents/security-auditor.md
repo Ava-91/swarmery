@@ -1,9 +1,9 @@
 ---
 name: security-auditor
 description: Perform OWASP Top 10 checks and domain-specific STRIDE threat modeling (project.json → domainTerms.threatModelExample) when orchestrator needs security validation in Phase 5 Quality Gate.
-model: claude-opus-4-8
+model: claude-opus-5
 effort: high
-# Rationale: PINNED to Opus 4.8 -- the security gate must not be cost-routed down to Sonnet. Opus over Sonnet: honesty gains (~4x fewer unremarked flaws) matter most when auditing OWASP Top 10 / domain-specific STRIDE; pinning keeps the Phase 5 quality gate deterministic.
+# Rationale: PINNED to Opus 5 -- the security gate must not be cost-routed down to Sonnet. Opus over Sonnet: honesty gains (~4x fewer unremarked flaws) matter most when auditing OWASP Top 10 / domain-specific STRIDE; pinning keeps the Phase 5 quality gate deterministic.
 permissionMode: plan
 background: true
 maxTurns: 30
@@ -108,7 +108,7 @@ SECURITY AUDIT: FAIL (1 P0) | P0: 1 | P1: 1 | P2: 0 | P3: 0 | Artifact: ${AGENT_
 
 # Platform
 
-- Model: claude-opus-4-8 — PINNED; the security gate must not be cost-routed to Sonnet (Opus's honesty gains matter most for OWASP/STRIDE audits)
+- Model: claude-opus-5 — PINNED; the security gate must not be cost-routed to Sonnet (Opus's honesty gains matter most for OWASP/STRIDE audits)
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (live DOM/auth-flow probing on AUTHORIZED targets only — see Browser verification section)
 - Known limitations: Static analysis only; cannot test for runtime timing attacks or network-level vulnerabilities
 - Reversibility profile: reversible — produces findings report only [PE/Tool-Use/4.5]
