@@ -513,10 +513,11 @@ func TestFirstPassRates(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	var out []struct {
-		Agent     string  `json:"agent"`
-		Sessions  int     `json:"sessions"`
-		FirstPass int     `json:"firstPass"`
-		Rate      float64 `json:"rate"`
+		Agent     string   `json:"agent"`
+		Sessions  int      `json:"sessions"`
+		FirstPass int      `json:"firstPass"`
+		Rate      float64  `json:"rate"`
+		Kinds     []string `json:"kinds"`
 	}
 	getJSON(t, srv.URL+"/api/analytics/first-pass", &out)
 	if len(out) != 1 || out[0].Agent != "tech-lead" || out[0].Sessions != 3 || out[0].FirstPass != 2 {
@@ -524,5 +525,8 @@ func TestFirstPassRates(t *testing.T) {
 	}
 	if out[0].Rate < 0.66 || out[0].Rate > 0.67 {
 		t.Errorf("rate = %v, want ~0.667", out[0].Rate)
+	}
+	if out[0].Kinds == nil {
+		t.Errorf("kinds = nil, want empty slice or populated")
 	}
 }

@@ -24,6 +24,7 @@ import type {
 import {
   applyProposal,
   createApprovalRule,
+  fetchFirstPassRates,
   fetchProposals,
   fetchRecommendations,
   fetchRetroAgents,
@@ -785,9 +786,11 @@ function runsDelta(row: RetroAgentRow): string {
 
 function Scorecard({
   row,
+  trajectoryKinds,
   onImprove,
 }: {
   row: RetroAgentRow;
+  trajectoryKinds: string[];
   onImprove: (row: RetroAgentRow) => void;
 }): JSX.Element {
   const split = errClassSplit(row.errors_by_class);
@@ -852,7 +855,7 @@ function Scorecard({
           sessions <b className="font-medium text-ink-2">{row.sessions}</b>
         </span>
       </div>
-      {(row.re_dispatch_rate !== null || row.eval !== null) && (
+      {(row.re_dispatch_rate !== null || row.eval !== null || trajectoryKinds.length > 0) && (
         <div className="mt-2.5 flex flex-wrap gap-1.5">
           {row.re_dispatch_rate !== null && (
             <span
@@ -874,6 +877,15 @@ function Scorecard({
               evals {String(row.eval.passed)}/{String(row.eval.passed + row.eval.failed)}
             </span>
           )}
+          {trajectoryKinds.map((kind) => (
+            <span
+              key={kind}
+              title={`trajectory anti-pattern detected: ${kind}`}
+              className="rounded-[7px] border border-amber/40 px-1.5 py-[2px] font-mono text-[10px] text-amber"
+            >
+              {kind}
+            </span>
+          ))}
         </div>
       )}
     </div>
@@ -1138,6 +1150,8 @@ export function Retro(): JSX.Element {
   const [lessons, setLessons] = useState<RetroLesson[] | null>(null);
   const [taskRows, setTaskRows] = useState<RetroTaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Map of folded agent name → distinct trajectory anti-pattern kinds. */
+  const [trajectoryKindsMap, setTrajectoryKindsMap] = useState<Record<string, string[]>>({});
 
   // Proposals gate: bumping proposalsKey refetches the Proposals rail after a
   // successful generation. The Improve button now opens a preview modal that
@@ -1177,6 +1191,16 @@ export function Retro(): JSX.Element {
     fetchRetroTasks(range)
       .then((r) => setTaskRows(r.tasks))
       .catch(() => setTaskRows(null));
+    // Trajectory anti-pattern kinds per agent (best-effort).
+    fetchFirstPassRates()
+      .then((rows) => {
+        const m: Record<string, string[]> = {};
+        for (const r of rows) {
+          if (r.kinds.length > 0) m[r.agent] = r.kinds;
+        }
+        setTrajectoryKindsMap(m);
+      })
+      .catch(() => setTrajectoryKindsMap({}));
   }, [from, to, scope]);
 
   useEffect(load, [load]);
@@ -1236,7 +1260,12 @@ export function Retro(): JSX.Element {
           ) : (
             <div className="grid gap-3.5 sm:grid-cols-2 wide:grid-cols-3">
               {agents.agents.map((row) => (
-                <Scorecard key={row.agent} row={row} onImprove={onImprove} />
+                <Scorecard
+                  key={row.agent}
+                  row={row}
+                  trajectoryKinds={trajectoryKindsMap[row.agent] ?? []}
+                  onImprove={onImprove}
+                />
               ))}
             </div>
           )}

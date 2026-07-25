@@ -1142,8 +1142,10 @@ func (h *Handler) statsMatrix(w http.ResponseWriter, r *http.Request) {
 
 // ── /api/analytics/first-pass ─────────────────────────────────────────────────
 
-// firstPassRates returns per-agent first-pass success rate from trajectory_scores.
+// firstPassRates returns per-agent first-pass success rate from trajectory_scores,
+// including the distinct anti-pattern kinds that have been detected for each agent.
 func (h *Handler) firstPassRates(w http.ResponseWriter, r *http.Request) {
+	// Main aggregate: per-agent session count and first-pass sum.
 	rows, err := h.DB.Query(`
 		SELECT agent, COUNT(*), SUM(first_pass)
 		FROM trajectory_scores
@@ -1154,27 +1156,64 @@ func (h *Handler) firstPassRates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	type row struct {
-		Agent     string  `json:"agent"`
-		Sessions  int     `json:"sessions"`
-		FirstPass int     `json:"firstPass"`
-		Rate      float64 `json:"rate"`
+	type fpRow struct {
+		Agent     string   `json:"agent"`
+		Sessions  int      `json:"sessions"`
+		FirstPass int      `json:"firstPass"`
+		Rate      float64  `json:"rate"`
+		Kinds     []string `json:"kinds"`
 	}
-	var out []row
+	byAgent := map[string]*fpRow{}
+	var order []string
 	for rows.Next() {
-		var x row
-		if err := rows.Scan(&x.Agent, &x.Sessions, &x.FirstPass); err != nil {
+		var agent string
+		var sessions, fp int
+		if err := rows.Scan(&agent, &sessions, &fp); err != nil {
 			writeErr(w, err)
 			return
 		}
-		if x.Sessions > 0 {
-			x.Rate = float64(x.FirstPass) / float64(x.Sessions)
+		r := &fpRow{Agent: agent, Sessions: sessions, FirstPass: fp, Kinds: []string{}}
+		if sessions > 0 {
+			r.Rate = float64(fp) / float64(sessions)
 		}
-		out = append(out, x)
+		byAgent[agent] = r
+		order = append(order, agent)
 	}
 	if err := rows.Err(); err != nil {
 		writeErr(w, err)
 		return
+	}
+
+	// Distinct finding kinds per agent (for Retro trajectory chips).
+	krows, err := h.DB.Query(`
+		SELECT s.agent, f.kind
+		FROM trajectory_findings f
+		JOIN trajectory_scores s ON s.id = f.score_id
+		GROUP BY s.agent, f.kind
+		ORDER BY s.agent, f.kind`)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer krows.Close()
+	for krows.Next() {
+		var agent, kind string
+		if err := krows.Scan(&agent, &kind); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if rr, ok := byAgent[agent]; ok {
+			rr.Kinds = append(rr.Kinds, kind)
+		}
+	}
+	if err := krows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	out := make([]fpRow, 0, len(order))
+	for _, agent := range order {
+		out = append(out, *byAgent[agent])
 	}
 	writeJSON(w, out, nil)
 }
