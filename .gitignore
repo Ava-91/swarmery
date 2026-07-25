@@ -27,3 +27,6 @@ node_modules/
 .claude/worktrees/
 .claude/settings.json.bak
 architecture-out/
+
+# Playwright MCP run artifacts (console logs, page snapshots)
+.playwright-mcp/
