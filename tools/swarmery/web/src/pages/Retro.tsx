@@ -1263,7 +1263,7 @@ export function Retro(): JSX.Element {
                 <Scorecard
                   key={row.agent}
                   row={row}
-                  trajectoryKinds={trajectoryKindsMap[row.agent] ?? []}
+                  trajectoryKinds={trajectoryKindsMap[row.agent.toLowerCase()] ?? []}
                   onImprove={onImprove}
                 />
               ))}

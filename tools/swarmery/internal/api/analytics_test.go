@@ -505,8 +505,15 @@ func TestFirstPassRates(t *testing.T) {
 		(2, 'tech-lead', 1, ?),
 		(3, 'tech-lead', 0, ?)`, ts, ts, ts)
 
-	// Plant one finding for session 3 (the failing run) to exercise the kinds
-	// population path — the score row for session 3 has id=3 (insertion order).
+	// explore: 1 first-pass=1 — stored lowercase as normAgent("Explore")="explore".
+	// This seed exercises the path that the Retro chip lookup depends on: the API
+	// must return agent="explore" (not "Explore") so row.agent.toLowerCase() on the
+	// client matches the map key verbatim.
+	mustExec(`INSERT INTO trajectory_scores(session_id, agent, first_pass, computed_at) VALUES
+		(3, 'explore', 1, ?)`, ts)
+
+	// Plant one finding for session 3 tech-lead score (id=3) to exercise the kinds
+	// population path.
 	mustExec(`INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids)
 		VALUES (3, 'verify-skip', 'warn', '[]')`)
 
@@ -525,17 +532,50 @@ func TestFirstPassRates(t *testing.T) {
 		Kinds     []string `json:"kinds"`
 	}
 	getJSON(t, srv.URL+"/api/analytics/first-pass", &out)
-	if len(out) != 1 || out[0].Agent != "tech-lead" || out[0].Sessions != 3 || out[0].FirstPass != 2 {
-		t.Fatalf("got %+v, want tech-lead sessions=3 firstPass=2", out)
+
+	byAgent := make(map[string]struct {
+		Sessions  int
+		FirstPass int
+		Rate      float64
+		Kinds     []string
+	}, len(out))
+	for _, r := range out {
+		byAgent[r.Agent] = struct {
+			Sessions  int
+			FirstPass int
+			Rate      float64
+			Kinds     []string
+		}{r.Sessions, r.FirstPass, r.Rate, r.Kinds}
 	}
-	if out[0].Rate < 0.66 || out[0].Rate > 0.67 {
-		t.Errorf("rate = %v, want ~0.667", out[0].Rate)
+
+	tl, ok := byAgent["tech-lead"]
+	if !ok || tl.Sessions != 3 || tl.FirstPass != 2 {
+		t.Fatalf("tech-lead = %+v (ok=%v), want sessions=3 firstPass=2", tl, ok)
 	}
-	if out[0].Kinds == nil {
-		t.Errorf("kinds = nil, want empty slice or populated")
+	if tl.Rate < 0.66 || tl.Rate > 0.67 {
+		t.Errorf("tech-lead rate = %v, want ~0.667", tl.Rate)
+	}
+	if tl.Kinds == nil {
+		t.Errorf("tech-lead kinds = nil, want empty slice or populated")
 	}
 	// kinds population: the finding we inserted must appear exactly once.
-	if len(out[0].Kinds) != 1 || out[0].Kinds[0] != "verify-skip" {
-		t.Errorf("kinds = %v, want [\"verify-skip\"]", out[0].Kinds)
+	if len(tl.Kinds) != 1 || tl.Kinds[0] != "verify-skip" {
+		t.Errorf("tech-lead kinds = %v, want [\"verify-skip\"]", tl.Kinds)
+	}
+
+	// Verify the explore agent is returned with its key already lowercased —
+	// this is the storage-grain guarantee the Retro chip lookup relies on.
+	ex, ok := byAgent["explore"]
+	if !ok {
+		t.Fatalf("explore agent missing from response; got agents: %v", func() []string {
+			ks := make([]string, 0, len(byAgent))
+			for k := range byAgent {
+				ks = append(ks, k)
+			}
+			return ks
+		}())
+	}
+	if ex.Sessions != 1 || ex.FirstPass != 1 {
+		t.Errorf("explore = %+v, want sessions=1 firstPass=1", ex)
 	}
 }
