@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import type { Session } from '../api/types';
 import { fmtSpan, fmtTime } from '../lib/format';
 import { sessionState, useNowMs, type SessionState } from '../lib/sessionState';
@@ -102,18 +102,27 @@ export function SessionCard({
   session,
   now = null,
   flat = false,
+  hideProject = false,
 }: {
   session: Session;
   /** Live "now: <last action>" line, fed by event_appended WS messages. */
   now?: string | null;
   /** Row inside a grouped list card (no own border — hover fill instead). */
   flat?: boolean;
+  /** Drop the project cell — redundant when the list is already scoped to one
+   * project (project-mode /p/:slug/sessions). */
+  hideProject?: boolean;
 }): JSX.Element {
   const navigate = useNavigate();
+  // Preserve the mode when opening a session: in project mode (/p/:slug/…) stay
+  // under the project subtree so the header/sidebar don't flip to session mode.
+  const { slug } = useParams<{ slug?: string }>();
   const nowMs = useNowMs();
   const tone = toneOf(session, nowMs);
   const liveNow = now !== null && (tone === 'active' || tone === 'waiting');
-  const goToDetail = (): void => { navigate(`/sessions/${session.id}`); };
+  const goToDetail = (): void => {
+    navigate(slug != null ? `/p/${slug}/sessions/${session.id}` : `/sessions/${session.id}`);
+  };
 
   /* Action slot: stuck rows with a confirmed-alive process keep the hard
    * Kill; any other live tone offers the graceful Stop (no PID needed);
@@ -132,11 +141,15 @@ export function SessionCard({
     <>
       <div className="flex items-center gap-2">
         <RowDot tone={tone} />
-        <ProjectName
-          name={session.projectName}
-          slug={session.projectSlug}
-          className="min-w-0 flex-1 truncate font-mono text-[11px]"
-        />
+        {hideProject ? (
+          <span className="min-w-0 flex-1" />
+        ) : (
+          <ProjectName
+            name={session.projectName}
+            slug={session.projectSlug}
+            className="min-w-0 flex-1 truncate font-mono text-[11px]"
+          />
+        )}
         <ProcBadge session={session} />
         {session.outcome != null && (
           <span
@@ -208,17 +221,25 @@ export function SessionCard({
       className="block cursor-pointer transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand"
     >
       <div className="px-3.5 py-[11px] desk:hidden">{card}</div>
-      <div className="hidden grid-cols-[15px_130px_minmax(0,1fr)_150px_90px] items-center gap-3.5 px-1 py-3 desk:grid">
+      <div
+        className={`hidden items-center gap-3.5 px-1 py-3 desk:grid ${
+          hideProject
+            ? 'grid-cols-[15px_minmax(0,1fr)_150px_90px]'
+            : 'grid-cols-[15px_130px_minmax(0,1fr)_150px_90px]'
+        }`}
+      >
         <span className="flex justify-center">
           <RowDot tone={tone} />
         </span>
-        <span className="flex min-w-0 items-center">
-          <ProjectName
-            name={session.projectName}
-            slug={session.projectSlug}
-            className="truncate font-mono text-[11px]"
-          />
-        </span>
+        {!hideProject && (
+          <span className="flex min-w-0 items-center">
+            <ProjectName
+              name={session.projectName}
+              slug={session.projectSlug}
+              className="truncate font-mono text-[11px]"
+            />
+          </span>
+        )}
         <span className="min-w-0">
           <span className="flex min-w-0 items-baseline gap-1.5">
             <span

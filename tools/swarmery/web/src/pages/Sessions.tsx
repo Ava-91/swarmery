@@ -275,7 +275,13 @@ export function Sessions(): JSX.Element {
           <GroupHeader>{g.label}</GroupHeader>
           <div className="divide-y divide-line-soft">
             {g.rows.map((s) => (
-              <SessionCard key={s.id} session={s} now={nowById[s.id] ?? null} flat />
+              <SessionCard
+                key={s.id}
+                session={s}
+                now={nowById[s.id] ?? null}
+                flat
+                hideProject={scope !== null}
+              />
             ))}
           </div>
         </section>
