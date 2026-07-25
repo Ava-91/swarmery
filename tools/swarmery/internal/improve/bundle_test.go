@@ -39,7 +39,11 @@ func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
 	}
 }
 
-// seedAgent registers one agent + current version in the sysscan tables.
+// seedAgent registers one agent + current version in the sysscan tables. The
+// SOURCE file now comes from the apply repo at origin/main (resolveAgentInRepo),
+// not these rows — they remain only to satisfy any DB-keyed evidence lookups —
+// so tests pair a seedAgent with a repoSvc/repoEvidence that supplies the
+// origin/main content.
 func seedAgent(t *testing.T, db *sql.DB, id int64, name, origin, path, content string) {
 	t.Helper()
 	mustExec(t, db, `INSERT INTO agents (id, name, scope, file_path, origin) VALUES (?, ?, 'global', ?, ?)`,
@@ -49,26 +53,49 @@ func seedAgent(t *testing.T, db *sql.DB, id int64, name, origin, path, content s
 	mustExec(t, db, `UPDATE agents SET current_version_id = ? WHERE id = ?`, id, id)
 }
 
+// repoExecFor returns a resolverExec that resolves `agent` at
+// plugins/core/agents/<agent>.md in origin/main with the given content — the
+// fake apply repo the source file is read from.
+func repoExecFor(agent, content string) *resolverExec {
+	rel := "plugins/core/agents/" + agent + ".md"
+	return &resolverExec{
+		lsTree: rel + "\n",
+		show:   map[string]string{rel: content},
+	}
+}
+
+// repoEvidence builds the evidence bundle for `agent`, resolving its source
+// from a fake origin/main whose plugins/core/agents/<agent>.md holds `content`.
+// The DB carries the scorecard/ledger/improvement evidence.
+func repoEvidence(t *testing.T, db *sql.DB, agent, content string) (*Evidence, error) {
+	t.Helper()
+	s := &Service{DB: db, Repo: "/repo", Exec: repoExecFor(agent, content)}
+	return s.buildEvidence(agent)
+}
+
 func TestBuildEvidenceAgentSourceAndSHA(t *testing.T) {
 	db := openDB(t)
-	const localBody = "---\nname: tech-lead\n---\nlocal body"
-	// Collision: the plugin row exists too, but local must win (override rule).
-	seedAgent(t, db, 1, "core:tech-lead", "plugin", "/cache/core/agents/tech-lead.md", "plugin body")
-	seedAgent(t, db, 2, "tech-lead", "local", "/repo/.claude/agents/tech-lead.md", localBody)
+	const originBody = "---\nname: tech-lead\n---\norigin body"
+	seedAgent(t, db, 1, "tech-lead", "local", "/repo/.claude/agents/tech-lead.md", "stale local body")
 
-	ev, err := buildEvidence(db, "tech-lead", "")
+	ev, err := repoEvidence(t, db, "tech-lead", originBody)
 	if err != nil {
 		t.Fatalf("buildEvidence: %v", err)
 	}
-	if ev.AgentPath != "/repo/.claude/agents/tech-lead.md" {
-		t.Errorf("AgentPath = %q, want the local row's path", ev.AgentPath)
+	// Source is the origin/main path (repo-relative), NOT any DB row's path.
+	const wantRel = "plugins/core/agents/tech-lead.md"
+	if ev.AgentPath != wantRel {
+		t.Errorf("AgentPath = %q, want repo-relative %q", ev.AgentPath, wantRel)
 	}
-	if ev.AgentContent != localBody {
-		t.Errorf("AgentContent = %q, want the local version content", ev.AgentContent)
+	if ev.AgentContent != originBody {
+		t.Errorf("AgentContent = %q, want the origin/main content", ev.AgentContent)
 	}
-	sum := sha256.Sum256([]byte(localBody))
+	sum := sha256.Sum256([]byte(originBody))
 	if want := hex.EncodeToString(sum[:]); ev.BaseSHA256 != want {
-		t.Errorf("BaseSHA256 = %q, want %q", ev.BaseSHA256, want)
+		t.Errorf("BaseSHA256 = %q, want sha256 of origin/main content %q", ev.BaseSHA256, want)
+	}
+	if !strings.Contains(ev.Bundle, "Source: "+wantRel) {
+		t.Errorf("bundle Source line missing repo-relative path:\n%s", ev.Bundle)
 	}
 	for _, want := range []string{"# Evidence — agent tech-lead", "## Scorecard", "## Ledger assessments", "## Open improvements", "## Transcript excerpts"} {
 		if !strings.Contains(ev.Bundle, want) {
@@ -77,17 +104,18 @@ func TestBuildEvidenceAgentSourceAndSHA(t *testing.T) {
 	}
 }
 
-// A deleted registry row (or a fold miss) is a typed error the API turns
-// into 404.
+// An agent absent from the apply repo at origin/main is a typed error the API
+// turns into 404 — even if a stale DB row exists.
 func TestBuildEvidenceMissingAgent(t *testing.T) {
 	db := openDB(t)
 	seedAgent(t, db, 1, "tech-lead", "local", "/x/tech-lead.md", "body")
-	mustExec(t, db, `UPDATE agents SET deleted = 1 WHERE id = 1`)
 
-	if _, err := buildEvidence(db, "tech-lead", ""); !errors.Is(err, ErrAgentNotFound) {
-		t.Fatalf("deleted agent: err = %v, want ErrAgentNotFound", err)
+	// origin/main ships no agents → every lookup misses.
+	s := &Service{DB: db, Repo: "/repo", Exec: &resolverExec{lsTree: "README.md\n"}}
+	if _, err := s.buildEvidence("tech-lead"); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("agent absent from repo: err = %v, want ErrAgentNotFound", err)
 	}
-	if _, err := buildEvidence(db, "ghost", ""); !errors.Is(err, ErrAgentNotFound) {
+	if _, err := s.buildEvidence("ghost"); !errors.Is(err, ErrAgentNotFound) {
 		t.Fatalf("unknown agent: err = %v, want ErrAgentNotFound", err)
 	}
 }
@@ -104,7 +132,7 @@ func TestBuildEvidenceAssessmentFilter(t *testing.T) {
 		(1, 3, 'tech-lead',      'phase-3', 'ok',   1, NULL, 'silent scope creep'),
 		(1, 4, 'debugger',       'phase-4', 'redo', 3, 1,    'wrong root cause')`)
 
-	ev, err := buildEvidence(db, "tech-lead", "")
+	ev, err := repoEvidence(t, db, "tech-lead", "body")
 	if err != nil {
 		t.Fatalf("buildEvidence: %v", err)
 	}
@@ -136,7 +164,7 @@ func TestBuildEvidenceImprovements(t *testing.T) {
 		(1, 'tech-lead should stop skipping tests',  'high', 'done'),
 		(1, 'Unrelated tooling cleanup',             'low',  'open')`)
 
-	ev, err := buildEvidence(db, "tech-lead", "")
+	ev, err := repoEvidence(t, db, "tech-lead", "body")
 	if err != nil {
 		t.Fatalf("buildEvidence: %v", err)
 	}
@@ -165,7 +193,7 @@ func TestBuildEvidenceScorecardAndExcerpts(t *testing.T) {
 	mustExec(t, db, `INSERT INTO events (id, session_id, ts, type, status, payload, dedup_key) VALUES
 		(4, 1, ?, 'tool_call', 'ok', '{"note":"context after"}', 'a4')`, day(2))
 
-	ev, err := buildEvidence(db, "tech-lead", "")
+	ev, err := repoEvidence(t, db, "tech-lead", "body")
 	if err != nil {
 		t.Fatalf("buildEvidence: %v", err)
 	}
@@ -192,7 +220,7 @@ func TestBuildEvidenceSizeCaps(t *testing.T) {
 	huge := strings.Repeat("щось пішло не так; ", 4000) // ~100KB, multi-byte runes
 	mustExec(t, db, `INSERT INTO task_delegations (task_id, seq, agent, quality, mistakes) VALUES (1, 1, 'tech-lead', 2, ?)`, huge)
 
-	ev, err := buildEvidence(db, "tech-lead", "")
+	ev, err := repoEvidence(t, db, "tech-lead", "body")
 	if err != nil {
 		t.Fatalf("buildEvidence: %v", err)
 	}
