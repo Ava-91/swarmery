@@ -123,7 +123,13 @@ export function TerminalDock({
     setFullscreen(false);
   };
 
-  if (!state.open || state.tabs.length === 0) return null;
+  // Keep the dock mounted whenever there are tabs, even while collapsed, so
+  // collapsing the footer "Terminal" toggle hides the panel via CSS instead of
+  // unmounting XTerm (which would close the PTY WebSocket and kill the
+  // session — see XTerm.tsx's unmount cleanup). Only closeTab/closeAll should
+  // actually tear the dock down. See dockView() for the pure decision.
+  const view = dockView(state);
+  if (!view.mount) return null;
 
   const effHeight = fullscreen ? Math.max(height, MAX_HEIGHT) : height;
 
@@ -131,6 +137,7 @@ export function TerminalDock({
     <div
       className="flex shrink-0 flex-col border-t border-line bg-bg"
       style={{ height: fullscreen ? '75vh' : effHeight }}
+      hidden={view.hidden}
       role="region"
       aria-label="terminal dock"
     >
@@ -276,6 +283,32 @@ export function TerminalDock({
 /** Build the initial (empty, closed) dock state. */
 export function emptyDock(): DockState {
   return { open: false, tabs: [], activeId: null };
+}
+
+/**
+ * StatusBar "Terminal" toggle. Opens a first project-root terminal when none
+ * exist; otherwise just flips visibility. Collapsing NEVER drops tabs, so the
+ * live PTYs (and their scrollback) survive an expand/collapse cycle — the bug
+ * this guards against was clearing tabs on the second click, which unmounted
+ * XTerm and killed the shell. `projectPath === ''` (project not resolved yet)
+ * is a no-op.
+ */
+export function toggleDock(state: DockState, projectPath: string): DockState {
+  if (state.tabs.length === 0) {
+    if (projectPath === '') return state;
+    return openProjectTerminal(state, projectPath);
+  }
+  return { ...state, open: !state.open };
+}
+
+/**
+ * Render decision for the dock: keep it mounted (every PTY stays live) whenever
+ * tabs exist, and hide via CSS while collapsed. Unmounting would close the
+ * WebSocket and SIGHUP the shell — see XTerm.tsx — so `mount` must stay true
+ * across collapse.
+ */
+export function dockView(state: DockState): { mount: boolean; hidden: boolean } {
+  return { mount: state.tabs.length > 0, hidden: !state.open };
 }
 
 /** Open a fresh project-root terminal, appending a tab and revealing the dock. */
