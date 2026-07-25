@@ -240,8 +240,9 @@ function AppShell(): JSX.Element {
   const pendingCount = pendingIds.size;
   // Session-mode sidebar. A scope switcher sits at the top of the rail (mirrors
   // project mode); the Projects item opens the fleet project list. Tool
-  // dashboards are project-scoped (project-mode sidebar). Settings is pinned to
-  // the bottom, rendered separately below.
+  // dashboards are project-scoped (project-mode sidebar). System / Docs /
+  // Settings are pinned to the bottom of the rail (mirrors the project-mode
+  // System / Settings footer), rendered separately below.
   const sections: NavSection[] = [
     { label: null, items: [{ to: '/', glyph: '◉', label: 'Overview' }] },
     {
@@ -265,23 +266,19 @@ function AppShell(): JSX.Element {
         { to: '/retro', glyph: '↺', label: 'Retro', ...badgeFor(proposedRecs) },
       ],
     },
-    {
-      label: 'System',
-      items: [
-        // Single "System" destination hosting Agents / Toolkit / Hooks /
-        // Insights as tabs (pages/SystemShell.tsx). The promotion/drift/lint
-        // inbox badge rides this one item.
-        { to: '/system', glyph: '☷', label: 'System', ...badgeFor(insightCount) },
-        ...(hasDocs ? [DOCS_NAV] : []),
-      ],
-    },
   ];
-  // Bottom-pinned global settings (session mode); also appended to the flat
-  // mobile nav so it stays reachable on small screens.
-  const SETTINGS_NAV: NavItem = { to: '/settings', glyph: '⚙', label: 'Settings' };
-  // Mobile bottom nav stays flat — sections flattened in order, no labels, with
-  // Settings appended last.
-  const items: NavItem[] = [...sections.flatMap((s) => s.items), SETTINGS_NAV];
+  // Bottom-pinned cluster (session mode): the System destination (tabbed shell,
+  // carrying the promotion/drift/lint inbox badge), Docs when present, and the
+  // global Settings page. Mirrors the project-mode System/Settings footer and
+  // is appended to the flat mobile nav so everything stays reachable.
+  const bottomItems: NavItem[] = [
+    { to: '/system', glyph: '☷', label: 'System', ...badgeFor(insightCount) },
+    ...(hasDocs ? [DOCS_NAV] : []),
+    { to: '/settings', glyph: '⚙', label: 'Settings' },
+  ];
+  // Mobile bottom nav stays flat — sections flattened in order, then the
+  // bottom-pinned cluster, no labels.
+  const items: NavItem[] = [...sections.flatMap((s) => s.items), ...bottomItems];
 
   // Shared NavLink className for a desktop sidebar row (section items + the
   // pinned Settings link) — extracted so the long class string is not duplicated.
@@ -386,17 +383,28 @@ function AppShell(): JSX.Element {
                 ))}
               </div>
             ))}
-          {/* Global settings, pinned to the bottom of the rail. */}
+          {/* System / Docs / Settings, pinned to the bottom of the rail. */}
           <div className="mt-auto flex flex-col gap-0.5 pt-3">
-            <NavLink to={SETTINGS_NAV.to} className={navItemClass}>
-              <span
-                className="w-[16px] shrink-0 text-center text-[16px] leading-none"
-                aria-hidden="true"
-              >
-                {SETTINGS_NAV.glyph}
-              </span>
-              <span className="truncate text-[13.5px] font-medium">{SETTINGS_NAV.label}</span>
-            </NavLink>
+            {bottomItems.map((item) => (
+              <NavLink key={item.to} to={item.to} className={navItemClass}>
+                <span
+                  className="w-[16px] shrink-0 text-center text-[16px] leading-none"
+                  aria-hidden="true"
+                >
+                  {item.glyph}
+                </span>
+                <span className="truncate text-[13.5px] font-medium">{item.label}</span>
+                {item.badge !== undefined && (
+                  <span
+                    className={`ml-auto flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-[5px] font-mono text-[10px] font-bold ${
+                      item.alert === true ? 'bg-amber text-bg' : 'bg-line-strong text-ink-dim'
+                    }`}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+              </NavLink>
+            ))}
           </div>
         </nav>
 
