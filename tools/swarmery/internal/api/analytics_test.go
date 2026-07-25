@@ -472,3 +472,57 @@ func TestStatsBreakdownCache(t *testing.T) {
 		t.Errorf("beta hit rate = %v, want 0", beta.CacheHitRate)
 	}
 }
+
+// TestFirstPassRates validates GET /api/analytics/first-pass returns per-agent
+// first-pass success rates from trajectory_scores.
+func TestFirstPassRates(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "firstpass.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	const tsFmt = "2006-01-02T15:04:05.000Z"
+	now := time.Now()
+	at := func(d time.Time) string { return d.UTC().Format(tsFmt) }
+	ts := at(now)
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES (1, '/work/p', '-work-p', 'P', ?)`, ts)
+	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at) VALUES
+		(1, 1, 'u1', 'completed', ?),
+		(2, 1, 'u2', 'completed', ?),
+		(3, 1, 'u3', 'completed', ?)`, ts, ts, ts)
+
+	// tech-lead: 2 first-pass=1 + 1 first-pass=0 → rate 2/3 ≈ 0.667
+	mustExec(`INSERT INTO trajectory_scores(session_id, agent, first_pass, computed_at) VALUES
+		(1, 'tech-lead', 1, ?),
+		(2, 'tech-lead', 1, ?),
+		(3, 'tech-lead', 0, ?)`, ts, ts, ts)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var out []struct {
+		Agent     string  `json:"agent"`
+		Sessions  int     `json:"sessions"`
+		FirstPass int     `json:"firstPass"`
+		Rate      float64 `json:"rate"`
+	}
+	getJSON(t, srv.URL+"/api/analytics/first-pass", &out)
+	if len(out) != 1 || out[0].Agent != "tech-lead" || out[0].Sessions != 3 || out[0].FirstPass != 2 {
+		t.Fatalf("got %+v, want tech-lead sessions=3 firstPass=2", out)
+	}
+	if out[0].Rate < 0.66 || out[0].Rate > 0.67 {
+		t.Errorf("rate = %v, want ~0.667", out[0].Rate)
+	}
+}

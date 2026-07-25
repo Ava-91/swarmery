@@ -1139,3 +1139,42 @@ func (h *Handler) statsMatrix(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, out, nil)
 }
+
+// ── /api/analytics/first-pass ─────────────────────────────────────────────────
+
+// firstPassRates returns per-agent first-pass success rate from trajectory_scores.
+func (h *Handler) firstPassRates(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.Query(`
+		SELECT agent, COUNT(*), SUM(first_pass)
+		FROM trajectory_scores
+		GROUP BY agent
+		ORDER BY agent`)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		Agent     string  `json:"agent"`
+		Sessions  int     `json:"sessions"`
+		FirstPass int     `json:"firstPass"`
+		Rate      float64 `json:"rate"`
+	}
+	var out []row
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(&x.Agent, &x.Sessions, &x.FirstPass); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if x.Sessions > 0 {
+			x.Rate = float64(x.FirstPass) / float64(x.Sessions)
+		}
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, out, nil)
+}
