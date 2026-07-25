@@ -725,7 +725,8 @@ function StatCard({
   );
 }
 
-function HealthStrip({ data }: { data: RetroAgentsResp }): JSX.Element {
+/** Shared KPI derivations extracted from the old HealthStrip — consumed by RetroLeadCard. */
+function computeRetroKpis(data: RetroAgentsResp) {
   const totalRuns = data.agents.reduce((a, r) => a + r.runs, 0);
   const totalErrors = data.main.errors + data.agents.reduce((a, r) => a + r.errors, 0);
   // The contract carries no prev for main, so vs-prev totals cover subagents.
@@ -733,26 +734,82 @@ function HealthStrip({ data }: { data: RetroAgentsResp }): JSX.Element {
   const prevErrors = data.agents.reduce((a, r) => a + r.prev.errors, 0);
   const prevCost = data.agents.reduce((a, r) => a + r.prev.cost_usd, 0);
   const agentCost = data.agents.reduce((a, r) => a + r.cost_usd, 0);
+  return { totalRuns, totalErrors, prevRuns, prevErrors, prevCost, agentCost };
+}
+
+/** Editorial lead card — Fraunces headline + sub on the left, KPI cluster on the right. */
+function RetroLeadCard({ data }: { data: RetroAgentsResp }): JSX.Element {
+  const { totalRuns, totalErrors, prevRuns, prevErrors, prevCost, agentCost } =
+    computeRetroKpis(data);
+
+  // Synthesize headline copy from the data.
+  const rescued = totalErrors > 0 ? totalErrors : 0;
+  const headline =
+    rescued > 0
+      ? `Your agents shipped ${String(totalRuns)} runs — ${String(rescued)} needed a human rescue.`
+      : `Your agents shipped ${String(totalRuns)} runs cleanly — no errors logged.`;
+  const sub = `Orchestrator ${fmtCost(data.main.cost_usd)} · ${fmtTokens(data.main.tokens_out)} tokens out · agents ${fmtCost(agentCost)}`;
+
   return (
-    <div className="mt-[18px] grid gap-3.5 sm:grid-cols-3">
-      <StatCard
-        label="Orchestrator cost"
-        value={fmtCost(data.main.cost_usd)}
-        sub={`${fmtTokens(data.main.tokens_out)} tokens out · agents ${fmtCost(agentCost)}`}
-        arrow={<DeltaArrow cur={agentCost} prev={prevCost} fmt={fmtCost} />}
-      />
-      <StatCard
-        label="Agent runs"
-        value={String(totalRuns)}
-        sub={`prev window ${String(prevRuns)}`}
-        arrow={<DeltaArrow cur={totalRuns} prev={prevRuns} goodUp />}
-      />
-      <StatCard
-        label="Errors"
-        value={String(totalErrors)}
-        sub={`prev window ${String(prevErrors)} (subagents)`}
-        arrow={<DeltaArrow cur={totalErrors} prev={prevErrors} />}
-      />
+    <div className="mt-4 flex flex-wrap items-center gap-x-7 gap-y-4 rounded-[14px] border border-line bg-surface px-5 py-4">
+      {/* left — editorial copy */}
+      <div className="min-w-0 flex-1 basis-80">
+        <p className="font-display text-[20px] font-medium leading-[1.3] tracking-[-0.01em] text-ink text-balance">
+          {headline}
+        </p>
+        <p className="mt-1.5 font-mono text-[10.5px] text-ink-3">{sub}</p>
+      </div>
+
+      {/* right — KPI cluster */}
+      <div className="flex flex-wrap gap-[22px]">
+        {/* Cost */}
+        <div>
+          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+            Agent cost
+          </div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="font-display text-[18px] font-semibold text-ink">
+              {fmtCost(agentCost)}
+            </span>
+            <DeltaArrow cur={agentCost} prev={prevCost} fmt={fmtCost} />
+          </div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-ink-faint">
+            prev {fmtCost(prevCost)}
+          </div>
+        </div>
+
+        {/* Runs */}
+        <div>
+          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+            Agent runs
+          </div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="font-display text-[18px] font-semibold text-ink">
+              {String(totalRuns)}
+            </span>
+            <DeltaArrow cur={totalRuns} prev={prevRuns} goodUp />
+          </div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-ink-faint">
+            prev {String(prevRuns)}
+          </div>
+        </div>
+
+        {/* Errors */}
+        <div>
+          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+            Errors
+          </div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="font-display text-[18px] font-semibold text-ink">
+              {String(totalErrors)}
+            </span>
+            <DeltaArrow cur={totalErrors} prev={prevErrors} />
+          </div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-ink-faint">
+            prev {String(prevErrors)}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1233,6 +1290,8 @@ export function Retro(): JSX.Element {
         />
       </div>
 
+      {agents !== null && <RetroLeadCard data={agents} />}
+
       <RecommendationsRail />
 
       <ProposalsRail reloadKey={proposalsKey} />
@@ -1251,7 +1310,6 @@ export function Retro(): JSX.Element {
         <Loading label="retro…" />
       ) : agents !== null ? (
         <>
-          <HealthStrip data={agents} />
           {agents.approx && <ApproxHint />}
 
           <SectionTitle>Agent scorecards</SectionTitle>
