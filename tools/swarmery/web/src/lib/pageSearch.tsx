@@ -54,6 +54,7 @@ export function pageSearchPlaceholder(pathname: string): string | null {
   if (pathname === '/sessions') return 'filter sessions by title…';
   if (pathname === '/projects') return 'filter projects by name…';
   if (pathname === '/approvals') return 'filter approvals…';
-  if (pathname === '/system') return 'filter by name…';
+  // /system(/*) is the tabbed System shell — its embedded hubs carry their own
+  // in-pane search box, so the header search is hidden there (like /agents).
   return null;
 }
