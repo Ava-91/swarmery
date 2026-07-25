@@ -1,8 +1,8 @@
 ---
 name: full-stack-feature
 description: Coordinate feature implementation across database, API, UI, deploy, and promotion layers.
-model: claude-opus-4-8
-# Rationale: Multi-step cross-repo sequencing and contract consistency checking exceed Sonnet's reasoning depth. Opus 4.8 brings Dynamic Workflows and adaptive thinking for long-horizon cross-repo coordination, sustaining longer autonomous runs across the DB->API->UI->deploy chain.
+model: claude-opus-5
+# Rationale: Multi-step cross-repo sequencing and contract consistency checking exceed Sonnet's reasoning depth. Opus 5 brings Dynamic Workflows and adaptive thinking for long-horizon cross-repo coordination, sustaining longer autonomous runs across the DB->API->UI->deploy chain.
 effort: max
 # Session-level guidance: cross-repo features benefit from max; consider /effort ultracode to let Claude auto-plan a dynamic workflow for the full chain.
 permissionMode: acceptEdits
@@ -79,7 +79,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Platform
 
-- Model: claude-opus-4-8 -- multi-step cross-repo sequencing and contract consistency checking require top-tier reasoning depth; adaptive thinking (no fixed token budget), effort `max` [PE/Tool-Use/4.5]
+- Model: claude-opus-5 -- multi-step cross-repo sequencing and contract consistency checking require top-tier reasoning depth; adaptive thinking (no fixed token budget), effort `max` [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Task (subagent dispatch), Read/Edit/Write/Bash, MCP tools (auggie), the `graphify` CLI for graph-aware impact queries, and Playwright MCP browser tools (end-to-end smoke of the running feature — see Browser verification section)
 - Limitations: when invoked as a subagent, cannot spawn other subagents (execute inline instead)
 - Reversibility: rollback path is reverse merge order (UI, then API, then schema)
@@ -91,7 +91,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Process [PE/Reasoning/3.1]
 
-## Dynamic Workflows (Opus 4.8)
+## Dynamic Workflows (Opus 5)
 
 When invoked directly (peer-orchestrator mode) on a cross-repo feature that fans out to >5 subtasks or spans repos, prefer expressing the work as a Dynamic Workflow over hand-launched parallel groups: fan out per-layer subagents, verify each layer's contract independently before folding it in, and let adversarial checks refute contract-mismatch findings. Thinking is adaptive -- rely on `effort: xhigh`, do not request a fixed thinking-token budget. Use mid-conversation system messages to re-task a subagent (tighten autonomy on a destructive migration, raise effort on a hard layer) instead of restarting. When running as a subagent (cannot spawn), fall back to inline execution as already described below.
 

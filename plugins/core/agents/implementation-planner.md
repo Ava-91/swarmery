@@ -1,9 +1,9 @@
 ---
 name: implementation-planner
 description: Break down large tasks (>1 week) into multi-phase plans with step docs and copy-paste agent prompts.
-model: claude-opus-4-8
+model: claude-opus-5
 effort: high
-# Rationale: T0 architect tier. Multi-phase plan synthesis for >1-week tasks benefits from Opus 4.8's long-horizon planning, adaptive thinking, and self-verification; no code editing required.
+# Rationale: T0 architect tier. Multi-phase plan synthesis for >1-week tasks benefits from Opus 5's long-horizon planning, adaptive thinking, and self-verification; no code editing required.
 permissionMode: plan
 color: blue
 autonomy: auto

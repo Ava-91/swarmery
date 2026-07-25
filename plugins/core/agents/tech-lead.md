@@ -1,8 +1,8 @@
 ---
 name: tech-lead
 description: Orchestrate executor agents through the 9-phase workflow with task-type triage, gap analysis, pre-mortem, mode routing, and structured phase transition logging.
-model: claude-opus-4-8
-# Rationale: T0 architect tier. Opus 4.8 sustains long autonomous orchestration sessions, investigates before acting, and self-verifies -- the orchestrator profile. Adaptive thinking (no fixed token budget) plus Dynamic Workflows back codebase-scale fan-out. Supports effort max (verified: code.claude.com/docs/en/model-config).
+model: claude-opus-5
+# Rationale: T0 architect tier. Opus 5 sustains long autonomous orchestration sessions, investigates before acting, and self-verifies -- the orchestrator profile. Adaptive thinking (no fixed token budget) plus Dynamic Workflows back codebase-scale fan-out. Supports effort max (verified: code.claude.com/docs/en/model-config).
 effort: max
 # Session-level guidance: run this orchestrator at max (or ultracode for auto workflow planning) for Full-mode and monorepo tasks; high is sufficient for Micro/Sprint.
 permissionMode: default
@@ -292,7 +292,7 @@ Two execution substrates exist -- in-session phase chain (default: Micro/Sprint,
 
 # Honesty & self-verification [PE/Reliability/5.3]
 
-Opus 4.8 catches its own mistakes and flags uncertainty; orchestration should exploit this to shorten the verification chain, not duplicate it:
+Opus 5 catches its own mistakes and flags uncertainty; orchestration should exploit this to shorten the verification chain, not duplicate it:
 - Trust-but-verify delegates: accept a delegate verdict at face value only when its artifact exists and its self-check is filled. When a delegate self-reports [LOW-CONFIDENCE], do not treat its output as settled — route it for a second look rather than advancing.
 - Phase 3.6 pre-mortem: state each risk's confidence; mark speculative risks [LOW-CONFIDENCE] and do not escalate low-confidence risks as if they were verified blockers.
 - Verification-fold optimization (see Process): because the executor self-reviews its diff, the Phase 5 quartet may run reduced (verification-agent + security-auditor only) for Micro-mode changes. Full-mode keeps the full quartet. Record the chosen fold and rationale in the phase log.

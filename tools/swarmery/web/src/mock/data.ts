@@ -378,7 +378,7 @@ export function mockStatsOverview(day: string): StatsOverview {
   const fableShare = Math.round(facts.cost * 0.77 * 100) / 100;
   const opusShare = Math.round((facts.cost - fableShare) * 100) / 100;
   const costRows: StatsOverview['cost_by_model'] = [{ model: 'claude-fable-5', cost_usd: fableShare }];
-  if (opusShare > 0) costRows.push({ model: 'claude-opus-4-8', cost_usd: opusShare });
+  if (opusShare > 0) costRows.push({ model: 'claude-opus-5', cost_usd: opusShare });
 
   const projectRows: StatsOverview['projects'] = [];
   let sessionsLeft = facts.sessions;

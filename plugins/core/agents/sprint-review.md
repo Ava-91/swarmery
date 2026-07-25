@@ -1,8 +1,8 @@
 ---
 name: sprint-review
 description: Orchestrate end-of-sprint read-only audit by scoping recent changes, fanning out audit subagents, running check-only suites, and producing a PASS/FAIL report.
-model: claude-opus-4-8
-# Rationale: Orchestrator fanning out multiple audit subagents requires the top-tier model (Opus 4.8) for monorepo coordination and subagent management. Canonical Dynamic Workflows use case and natural fit for a saved /sprint-review: parallel search + per-finding independent verification + adversarial refutation across monorepo scope, read-only with cross-checked findings.
+model: claude-opus-5
+# Rationale: Orchestrator fanning out multiple audit subagents requires the top-tier model (Opus 5) for monorepo coordination and subagent management. Canonical Dynamic Workflows use case and natural fit for a saved /sprint-review: parallel search + per-finding independent verification + adversarial refutation across monorepo scope, read-only with cross-checked findings.
 effort: max
 permissionMode: plan
 memory: project
@@ -129,7 +129,7 @@ Each subagent receives:
 
 Fan-out completion check: verify each subagent produced findings (COMPLETE / FAILED / SKIPPED).
 
-**Dynamic Workflows (Opus 4.8):** When Dynamic Workflows are available (Max/Team default on; Enterprise admin-enabled), express the fan-out as a Dynamic Workflow rather than manual single-message spawning. Each finding must clear an independent verification subagent before it enters the report; let adversarial agents attempt to refute BLOCKER/MAJOR findings to cut false positives. 4.8's honesty makes a subagent's self-flagged `[LOW-CONFIDENCE]` a more trustworthy triage signal -- but verification, not self-report, remains the gate.
+**Dynamic Workflows (Opus 5):** When Dynamic Workflows are available (Max/Team default on; Enterprise admin-enabled), express the fan-out as a Dynamic Workflow rather than manual single-message spawning. Each finding must clear an independent verification subagent before it enters the report; let adversarial agents attempt to refute BLOCKER/MAJOR findings to cut false positives. 5's honesty makes a subagent's self-flagged `[LOW-CONFIDENCE]` a more trustworthy triage signal -- but verification, not self-report, remains the gate.
 
 **Subagent fallback**: when invoked as a subagent (cannot spawn) or when Dynamic Workflows are disabled, skip Phase 1 fan-out. Run Phases 0/2/3/4 directly and note "Phase 1 skipped -- running as subagent" in the report.
 
