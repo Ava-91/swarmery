@@ -685,7 +685,7 @@ function ProposalsRail({ reloadKey }: { reloadKey: number }): JSX.Element | null
 /** Score bar: n/5 filled segments. Higher = better for all dims. */
 function ScoreBar({ value }: { value: number }): JSX.Element {
   return (
-    <span className="inline-flex gap-[2px]" aria-label={`${String(value)} out of 5`}>
+    <span className="inline-flex gap-[2px]" aria-hidden="true">
       {[1, 2, 3, 4, 5].map((i) => (
         <span
           key={i}
@@ -789,6 +789,7 @@ function JudgmentsSection({ project }: { project?: string }): JSX.Element | null
 
   useEffect(() => {
     let live = true;
+    setJudged([]); // drop the previous scope's rows while the refetch is in flight
     fetchSessions(
       { status: 'completed', ...(project !== undefined ? { project } : {}) },
       { limit: 20 },
