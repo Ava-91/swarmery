@@ -13,7 +13,7 @@ type RunSpec struct {
 	Prompt      string // the read-only verifier prompt (BuildPrompt output)
 	SessionUUID string // daemon-generated; passed as --session-id (explicit link)
 	Cwd         string // the task's worktree path — the process runs here
-	Model       string // optional --model override ("" = account default)
+	Model       string // optional --model override ("" = account default at the spawn layer; the service fills defaultModel before building the spec)
 }
 
 // Run is the outcome of a completed verifier process. Unlike the dispatcher,
@@ -45,6 +45,11 @@ const claudeTimeout = 15 * time.Minute
 
 // stderrTailBytes caps captured stderr landing in verify_detail on an error.
 const stderrTailBytes = 4096
+
+// defaultModel pins verifier runs whose task carries no model override: an
+// unset --model inherits the account default (Fable-5 here — 2× the Opus
+// price). Full ID, not an alias — aliases re-resolve over time.
+const defaultModel = "claude-opus-5"
 
 // ClaudeRunner spawns `claude -p <prompt> --session-id <uuid> [--model <m>]`
 // with cwd set to the worktree. Binary resolution is a plain PATH lookup — the

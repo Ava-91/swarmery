@@ -25,6 +25,11 @@ type Runner interface {
 // provision_jobs.error).
 const stderrTailBytes = 4096
 
+// defaultModel pins headless generator runs: without --model the CLI inherits
+// the account default (Fable-5 here — 2× the Opus price). Full ID, not an
+// alias — aliases re-resolve over time.
+const defaultModel = "claude-opus-5"
+
 // ClaudeRunner is the production Runner: a plain PATH lookup of the claude
 // binary, the same pattern internal/improve and internal/toolproc use.
 type ClaudeRunner struct{}

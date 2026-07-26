@@ -1278,7 +1278,8 @@ func (h *Handler) retroAdvise(w http.ResponseWriter, r *http.Request) {
 		}
 		model := os.Getenv("SWARMERY_TRAJJUDGE_MODEL")
 		if model == "" {
-			model = "sonnet"
+			// Full ID, not the "sonnet" alias — keep in sync with main.go's default.
+			model = "claude-sonnet-5"
 		}
 		capN := 10
 		if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {

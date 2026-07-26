@@ -110,7 +110,7 @@ func (s *Service) Run(ctx context.Context, jobID int64, projectPath, pack string
 	s.set(jobID, "generating", "running "+pack+" generator", "", false)
 	gctx, cancel := context.WithTimeout(ctx, act.Timeout)
 	defer cancel()
-	if _, err := s.Runner.Claude(gctx, projectPath, act.Prompt, "-p", "--output-format", "text"); err != nil {
+	if _, err := s.Runner.Claude(gctx, projectPath, act.Prompt, "-p", "--model", defaultModel, "--output-format", "text"); err != nil {
 		s.set(jobID, "failed", "", err.Error(), true)
 		return err
 	}

@@ -190,11 +190,15 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 	// Step 3: run the read-only verifier + parse the verdict.
 	uuid := s.UUID()
 	s.linkVerifySession(runID, uuid)
+	model := tk.model
+	if model == "" {
+		model = defaultModel
+	}
 	spec := RunSpec{
 		Prompt:      BuildPrompt(tk.title, tk.prompt, tk.branch, strictness),
 		SessionUUID: uuid,
 		Cwd:         tk.worktreePath,
-		Model:       tk.model,
+		Model:       model,
 	}
 	run, rerr := s.Run.Run(ctx, spec)
 	if rerr != nil {

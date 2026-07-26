@@ -25,12 +25,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
 // boardTSFormat matches the millisecond-Z style of the other API timestamps.
@@ -529,6 +531,16 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 	// dispatcher is not attached.
 	if dispatchSvc != nil && columnChanged && (d.BoardColumn == "done" || d.BoardColumn == "archived") {
 		dispatchSvc.RemoveWorktreeFor(id)
+	}
+	// A move to done resolves the plan phase this task was minted from (if any):
+	// check its doc's remaining acceptance boxes so plan progress follows the
+	// board verdict. Archived is excluded — archiving can mean "abandoned".
+	if columnChanged && d.BoardColumn == "done" {
+		if n, err := wsingest.TickPhaseChecklist(h.DB, id); err != nil {
+			log.Printf("warn: api: tick phase checklist (task %d): %v", id, err)
+		} else if n > 0 {
+			log.Printf("api: task %d done — ticked %d phase checkbox(es)", id, n)
+		}
 	}
 	pokeDispatch()
 	writeJSON(w, d, nil)

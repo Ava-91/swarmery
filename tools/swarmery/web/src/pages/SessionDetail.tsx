@@ -552,6 +552,7 @@ export function SessionDetailPage(): JSX.Element {
 
         <div className="hidden min-h-0 wide:block wide:overflow-y-auto wide:py-6">
           <DetailRail
+            turns={detail.turns}
             events={detail.events}
             fileChanges={detail.fileChanges}
             onShowDiffs={showDiffs}

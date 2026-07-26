@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
@@ -243,6 +244,49 @@ func TestActivateDependentPhaseWiresDependency(t *testing.T) {
 	// Phase 2's board task depends on phase 1's board task external_id.
 	if !reflect.DeepEqual(task2.Dependencies, []string{task1.ExternalID}) {
 		t.Errorf("task2.dependencies = %v, want [%s]", task2.Dependencies, task1.ExternalID)
+	}
+}
+
+func TestBoardDoneTicksPhaseChecklist(t *testing.T) {
+	srv, db, taskID, planDir := epicFixture(t)
+	var phase1ID int64
+	if err := db.QueryRow(`SELECT id FROM epic_phases WHERE workspace_task_id=? AND seq=1`, taskID).
+		Scan(&phase1ID); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(
+		srv.URL+"/api/epics/"+itoa(taskID)+"/phases/"+itoa(phase1ID)+"/activate", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("activate = %d, want 201", resp.StatusCode)
+	}
+	var task boardTaskDTO
+	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
+		t.Fatal(err)
+	}
+
+	// Moving the minted board task to done ticks the phase doc's remaining box.
+	if got := doReq(t, http.MethodPatch, srv.URL+"/api/board/tasks/"+itoa(task.ID),
+		`{"boardColumn":"done"}`); got != http.StatusOK {
+		t.Fatalf("patch to done = %d, want 200", got)
+	}
+	body, err := os.ReadFile(filepath.Join(planDir, "phase-1-schema.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "[ ]") {
+		t.Errorf("phase doc still has unchecked boxes after done:\n%s", body)
+	}
+	// The other phase's doc is untouched.
+	other, err := os.ReadFile(filepath.Join(planDir, "phase-2-ui.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(other), "[ ]") {
+		t.Errorf("phase-2 doc was ticked but its task is not done:\n%s", other)
 	}
 }
 

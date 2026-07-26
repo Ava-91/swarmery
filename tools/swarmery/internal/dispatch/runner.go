@@ -38,6 +38,12 @@ type Runner interface {
 // stderrTailBytes caps captured stderr landing in dispatch_error.
 const stderrTailBytes = 4096
 
+// defaultModel pins dispatched implementation runs whose task carries no model
+// override: an unset --model inherits the account default (Fable-5 here — 5×
+// the Sonnet price). Executor tier — full ID, not an alias, because aliases
+// re-resolve over time.
+const defaultModel = "claude-sonnet-5"
+
 // ClaudeRunner spawns `claude -p <prompt> --session-id <uuid> [--model <m>]`
 // with cwd set to the worktree. Binary resolution is a plain PATH lookup — the
 // same pattern as improve.ClaudeRunner and internal/toolproc (the daemon's

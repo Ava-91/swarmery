@@ -42,8 +42,22 @@ function parseTab(value: string | null): ProfileTab {
 
 /* ----- roster card ----- */
 
-function RosterCard({ agent }: { agent: AgentRosterRow }): JSX.Element {
+function RosterCard({
+  agent,
+  projectNames,
+}: {
+  agent: AgentRosterRow;
+  projectNames: Record<string, string>;
+}): JSX.Element {
   const health = healthTone(agent.failedShare);
+  // Project-scoped rows badge with the OWNING project, not the bare word
+  // "project" — several projects can define an agent with the same name, and
+  // "project" alone can't tell those rows apart in a fleet-wide roster. Global
+  // rows keep the plain "global" chip (no project to disambiguate against).
+  const scopeBadge =
+    agent.scope === 'project' && agent.projectSlug !== null
+      ? (projectNames[agent.projectSlug] ?? agent.projectSlug)
+      : agent.scope;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -55,8 +69,11 @@ function RosterCard({ agent }: { agent: AgentRosterRow }): JSX.Element {
         {agent.model !== null && (
           <span className="font-mono text-[10px] text-ink-faint">{agent.model}</span>
         )}
-        <span className="ml-auto rounded-[6px] border border-line-strong px-1.5 py-[1px] font-mono text-[9.5px] text-ink-dim">
-          {agent.scope}
+        <span
+          className="ml-auto max-w-[140px] truncate rounded-[6px] border border-line-strong px-1.5 py-[1px] font-mono text-[9.5px] text-ink-dim"
+          title={agent.scope === 'project' ? (agent.projectSlug ?? undefined) : undefined}
+        >
+          {scopeBadge}
         </span>
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 font-mono text-[10px] text-ink-faint">
@@ -269,7 +286,7 @@ export function AgentHub({
       onRosterRetry={loadRoster}
       rowKey={(a) => String(a.id)}
       rowMatches={rowMatches}
-      renderRow={(a) => <RosterCard agent={a} />}
+      renderRow={(a) => <RosterCard agent={a} projectNames={projectNames} />}
       selectedKey={selectedId === null ? null : String(selectedId)}
       onSelect={onSelect}
       {...(scopeFilters !== undefined ? { topBar: scopeFilters } : {})}
