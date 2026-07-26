@@ -1,0 +1,19 @@
+# task-planner plan-naming contract — the top-level plan unit is a Phase
+# (phase-N-<slug>.md), never step-NN files, and the README must carry the
+# platform-parseable `| # | Phase | Doc | Depends on |` sequencing table.
+
+- description: task-planner names new plan docs phase-N and emits the parseable sequencing table
+  vars:
+    system: file://../../plugins/core/agents/task-planner.md
+    task: >
+      Plan a small feature: add a "favorite" toggle to order line items
+      (Medium complexity, single repo, Phase 2 context available at
+      phases/02-context.md). List the plan directory layout you will write
+      (exact doc filenames) and show the README.md phase sequencing table.
+  assert:
+    - type: regex                           # hard: new docs use phase-N naming
+      value: "phase-\\d+-[a-z0-9-]+\\.md"
+    - type: not-regex                       # hard: no step-NN docs for new plans
+      value: "step-\\d{2}-"
+    - type: contains                        # hard: parseable table header row
+      value: "| # | Phase | Doc | Depends on |"

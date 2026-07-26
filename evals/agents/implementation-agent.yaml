@@ -20,3 +20,17 @@
   assert:
     - type: llm-rubric                      # soft
       value: flags the missing TTL / cache-key / store as assumptions to confirm rather than silently picking values
+
+- description: implementation-agent ticks phase-doc checkboxes before the completion ledger line (Progress contract)
+  vars:
+    system: file://../../plugins/core/agents/implementation-agent.md
+    task: >
+      Plan-execution mode. Step 02 of the plan just returned from its
+      subagent; you re-ran the verification commands yourself and every
+      acceptance criterion in plan/phase-2-backend-logic.md is satisfied.
+      Describe exactly what you do next, in order.
+  assert:
+    - type: regex                           # hard: states flipping criteria to [x] in the phase doc
+      value: "- \\[x\\]|\\[x\\]|tick(s|ed|ing)? the (satisfied )?(acceptance[- ]criteria )?(check)?box"
+    - type: llm-rubric                      # soft: tick happens BEFORE the STEP 02 COMPLETE ledger line
+      value: ticks the checkboxes in the phase doc (Edit) first, and only then logs the STEP 02 COMPLETE ledger line — not the other way around, and not batched at close-out
