@@ -300,12 +300,15 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 		return
 	}
 
-	var prev string
+	// The gate keys on hash AND path: a working→archive zone move keeps the
+	// content identical but relocates plan/ — the path must converge or the
+	// doc endpoints keep resolving into the pruned working/ tree.
+	var prevHash, prevPath string
 	err = s.db.QueryRow(
-		`SELECT content_hash FROM task_artifacts WHERE task_id = ? AND kind = 'plan'`,
-		taskID).Scan(&prev)
+		`SELECT content_hash, path FROM task_artifacts WHERE task_id = ? AND kind = 'plan'`,
+		taskID).Scan(&prevHash, &prevPath)
 	switch {
-	case err == nil && prev == hash:
+	case err == nil && prevHash == hash && prevPath == planDir:
 		return // unchanged — skip the parse entirely
 	case err != nil && err != sql.ErrNoRows:
 		warn("epics task#%d: hash lookup: %v", taskID, err)
@@ -337,6 +340,13 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 	}
 	if err := tx.Commit(); err != nil {
 		warn("epics task#%d: commit: %v", taskID, err)
+		return
+	}
+	// plans-page-lifecycle phase 1: the plan really changed (hash/path gate
+	// passed AND the upsert committed) — let the serve path publish
+	// plan_updated. Nil on the one-shot scan subcommand.
+	if s.cfg.NotifyPlan != nil {
+		s.cfg.NotifyPlan(taskID)
 	}
 }
 

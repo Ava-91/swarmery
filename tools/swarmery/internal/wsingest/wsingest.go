@@ -1,9 +1,12 @@
-// Package wsingest is the phase-3.5 workspace ingester (E-lite scope): a
-// READ-ONLY periodic scanner over the agent-work.sh workspace repo
+// Package wsingest is the phase-3.5 workspace ingester: a READ-ONLY scanner
+// over the agent-work.sh workspace repo
 // ($AGENT_WORKSPACE_ROOT/<slug>/workspace/{working,archive}) that indexes
 // task cards into the tasks table and stitches them to telemetry sessions
 // (task_sessions, explicit via logs/sessions.md + heuristic via cwd/time
-// overlap). It NEVER writes to the workspace — its only output is DB rows.
+// overlap). It NEVER writes to the workspace — its only output is DB rows
+// (plus the optional NotifyPlan callback on plan-hash changes). Scans run
+// periodically AND on debounced fsnotify events over the indexed task dirs
+// (plans-page-lifecycle phase 1).
 //
 // Tolerant by contract: a broken card, missing README field, junk id in
 // logs/sessions.md, or an unmapped workspace warns and degrades — one bad
@@ -21,12 +24,18 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // DefaultRescanInterval is the fallback periodic rescan cadence. Workspace
 // cards change on human/agent cadence, not telemetry cadence — 60s is plenty
-// and fsnotify is deliberately not used (E-lite).
+// as the convergence net behind the fsnotify watcher Run sets up
+// (plans-page-lifecycle phase 1 revoked the earlier E-lite "no fsnotify"
+// decision: plan checkbox flips now reach the DB, and the plan_updated WS
+// message, within ~1 s instead of on the next tick).
 const DefaultRescanInterval = 60 * time.Second
 
 // DefaultWorkspaceRoot is the machine-neutral fallback workspace repo location
@@ -58,6 +67,12 @@ func Root() string {
 type Config struct {
 	WorkspaceRoot  string
 	RescanInterval time.Duration
+	// NotifyPlan, when non-nil, is called with the tasks.id of every task
+	// whose plan/ content hash changed during a scan pass. The serve path
+	// wires it to a bus.Publish(plan_updated) closure; the one-shot scan
+	// subcommand leaves it nil (no publishing). Kept as a plain callback so
+	// wsingest stays free of api/bus imports (pattern: api/dispatch.go Notify).
+	NotifyPlan func(taskID int64)
 }
 
 func (c Config) withDefaults() Config {
@@ -93,6 +108,9 @@ func (s Stats) String() string {
 type Scanner struct {
 	db  *sql.DB
 	cfg Config
+
+	mu        sync.Mutex
+	watchList []string // task dirs + their plan/ subdirs from the last Scan pass
 }
 
 // New builds a scanner.
@@ -100,8 +118,10 @@ func New(db *sql.DB, cfg Config) *Scanner {
 	return &Scanner{db: db, cfg: cfg.withDefaults()}
 }
 
-// Run scans immediately, then on every RescanInterval tick until ctx ends.
-// Scan errors are logged, never fatal — the loop always keeps ticking.
+// Run scans immediately, then rescans on debounced fsnotify events over the
+// indexed task dirs and on every RescanInterval tick until ctx ends. Scan
+// errors are logged, never fatal — the loop always keeps ticking (pattern:
+// internal/sysscan).
 func (s *Scanner) Run(ctx context.Context) error {
 	scan := func() {
 		stats, err := s.Scan()
@@ -112,16 +132,97 @@ func (s *Scanner) Run(ctx context.Context) error {
 		log.Printf("wsingest: %s", stats)
 	}
 	scan()
-	ticker := time.NewTicker(s.cfg.RescanInterval)
-	defer ticker.Stop()
+
+	// fsnotify is a latency optimization: a plan checkbox flip should reach
+	// the DB (and the plan_updated WS message) within ~1 s, not on the next
+	// 60 s tick. On any setup failure the scanner silently degrades to
+	// rescan-only operation; the periodic ticker remains the convergence net
+	// either way — it also picks up brand-new task dirs, whose parents are
+	// not watched.
+	var fsEvents chan fsnotify.Event
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("warn: wsingest: fsnotify unavailable (%v) — rescan-only mode", err)
+	} else {
+		defer watcher.Close()
+		s.addWatches(watcher)
+		fsEvents = make(chan fsnotify.Event, 256)
+		go func() {
+			for {
+				select {
+				case ev, ok := <-watcher.Events:
+					if !ok {
+						return
+					}
+					select {
+					case fsEvents <- ev:
+					default: // burst overflow — rescan covers it
+					}
+				case werr, ok := <-watcher.Errors:
+					if !ok {
+						return
+					}
+					log.Printf("warn: wsingest: fsnotify: %v", werr)
+				}
+			}
+		}()
+	}
+
+	rescanT := time.NewTicker(s.cfg.RescanInterval)
+	defer rescanT.Stop()
+	debounceT := time.NewTicker(500 * time.Millisecond)
+	defer debounceT.Stop()
+	dirty := false
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+
+		case ev := <-fsEvents:
+			// Chmod-only events and backup churn (.backups/ trees the doc
+			// editor + lifecycle endpoint write) never change parse results.
+			if !ev.Op.Has(fsnotify.Chmod) &&
+				!strings.Contains(ev.Name, string(os.PathSeparator)+".backups") {
+				dirty = true
+			}
+
+		case <-debounceT.C:
+			if dirty {
+				dirty = false
+				scan() // full pass: idempotent + hash-gated, no partial states
+				if watcher != nil {
+					s.addWatches(watcher)
+				}
+			}
+
+		case <-rescanT.C:
 			scan()
+			if watcher != nil {
+				s.addWatches(watcher)
+			}
 		}
 	}
+}
+
+// addWatches registers every indexed task dir and its plan/ subdir from the
+// last scan pass. Failures are tolerated silently — the rescan ticker is the
+// safety net (macOS kqueue needs per-directory watches and can hit fd
+// limits). Re-adding an already-watched dir is a no-op in fsnotify.
+func (s *Scanner) addWatches(w *fsnotify.Watcher) {
+	s.mu.Lock()
+	dirs := s.watchList
+	s.mu.Unlock()
+	for _, d := range dirs {
+		_ = w.Add(d)
+	}
+}
+
+// setWatchList records the dirs a scan pass indexed for the watcher.
+func (s *Scanner) setWatchList(dirs []string) {
+	s.mu.Lock()
+	s.watchList = dirs
+	s.mu.Unlock()
 }
 
 // ─── workspace discovery & project mapping ─────────────────────────────────
@@ -274,6 +375,10 @@ func parseCard(dir, zone, externalID string, warn func(string, ...any)) card {
 			c.status = "done"
 		case strings.HasPrefix(v, "active"):
 			c.status = "running"
+		// plans-page-lifecycle phase 1: the pause lifecycle action writes this
+		// value; the archive-zone override below still wins with "done".
+		case strings.HasPrefix(v, "paused"):
+			c.status = "paused"
 		}
 	}
 
@@ -433,6 +538,17 @@ func (s *Scanner) Scan() (Stats, error) {
 		}
 	}
 	stats.Workspaces = len(workspaces)
+
+	// Record the indexed task dirs (+ their plan/ subdirs) for the fsnotify
+	// watcher in Run — .backups trees are filtered at event time, not here.
+	watch := make([]string, 0, 2*len(cards))
+	for _, tc := range cards {
+		watch = append(watch, tc.card.dir)
+		if fi, err := os.Stat(filepath.Join(tc.card.dir, "plan")); err == nil && fi.IsDir() {
+			watch = append(watch, filepath.Join(tc.card.dir, "plan"))
+		}
+	}
+	s.setWatchList(watch)
 
 	// Explicit links: logs/sessions.md uuid refs → task_sessions('explicit').
 	explicitSessions := map[int64]bool{}
