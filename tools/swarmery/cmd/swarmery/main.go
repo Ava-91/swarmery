@@ -54,6 +54,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/term"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/toolproc"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajjudge"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/verify"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
@@ -741,6 +742,20 @@ func cmdServe(args []string) error {
 			approvals.DeliveryUpdatedInput, approvals.DeliveryDenyMessage, *answerDelivery)
 	}
 
+	// trajjudge config (advisory LLM-judge, best-effort; cap<=0 disables).
+	trajjudgeModel := os.Getenv("SWARMERY_TRAJJUDGE_MODEL")
+	if trajjudgeModel == "" {
+		trajjudgeModel = "sonnet"
+	}
+	trajjudgeCap := 10
+	if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			trajjudgeCap = n
+		} else {
+			log.Printf("warn: ignoring invalid SWARMERY_TRAJJUDGE_CAP=%q", v)
+		}
+	}
+
 	// fusion phase 9 (Console/DX): stand up the in-memory structured log ring and
 	// tee both slog and the stdlib `log` package into it. slog gets a tagging
 	// handler (boot code uses logbuf.Tagged / WithGroup for subsystem tags); the
@@ -855,6 +870,9 @@ func cmdServe(args []string) error {
 		runAdvisor := func() {
 			if err := trajeval.Compute(db, time.Now()); err != nil {
 				log.Printf("trajeval.Compute: %v", err)
+			}
+			if err := trajjudge.Score(db, trajjudge.ClaudeRunner{Model: trajjudgeModel}, trajjudgeModel, time.Now(), trajjudgeCap); err != nil {
+				log.Printf("trajjudge.Score: %v", err)
 			}
 			stats, err := advisor.Run(db, time.Now())
 			if err != nil {

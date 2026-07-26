@@ -1140,6 +1140,52 @@ func (h *Handler) statsMatrix(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out, nil)
 }
 
+// ── /api/analytics/trajectory-judgments ──────────────────────────────────────
+
+// trajectoryJudgments returns the advisory LLM-judge verdicts for one session.
+func (h *Handler) trajectoryJudgments(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		http.Error(w, `{"error":"missing session"}`, http.StatusBadRequest)
+		return
+	}
+	rows, err := h.DB.Query(`
+		SELECT agent, model, judged_at, end_result, instruction_compliance,
+		       pitfalls, tool_calls, overall, review
+		FROM trajectory_judgments WHERE session_id = ? ORDER BY agent, model`, sid)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rows.Close()
+
+	type judgmentRow struct {
+		Agent                 string  `json:"agent"`
+		Model                 string  `json:"model"`
+		JudgedAt              string  `json:"judgedAt"`
+		EndResult             int     `json:"endResult"`
+		InstructionCompliance int     `json:"instructionCompliance"`
+		Pitfalls              int     `json:"pitfalls"`
+		ToolCalls             int     `json:"toolCalls"`
+		Overall               float64 `json:"overall"`
+		Review                string  `json:"review"`
+	}
+	out := []judgmentRow{} // empty slice, not nil, so JSON is [] not null
+	for rows.Next() {
+		var row judgmentRow
+		if err := rows.Scan(
+			&row.Agent, &row.Model, &row.JudgedAt,
+			&row.EndResult, &row.InstructionCompliance,
+			&row.Pitfalls, &row.ToolCalls, &row.Overall, &row.Review,
+		); err != nil {
+			writeErr(w, err)
+			return
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, out, rows.Err())
+}
+
 // ── /api/analytics/first-pass ─────────────────────────────────────────────────
 
 // firstPassRates returns per-agent first-pass success rate from trajectory_scores,

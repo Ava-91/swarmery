@@ -20,6 +20,7 @@ import type {
   RetroFrictionResp,
   RetroLesson,
   RetroTaskRow,
+  Session,
 } from '../api/types';
 import {
   applyProposal,
@@ -31,6 +32,9 @@ import {
   fetchRetroFriction,
   fetchRetroLessons,
   fetchRetroTasks,
+  fetchSessions,
+  fetchTrajectoryJudgments,
+  type TrajectoryJudgment,
   patchProposal,
   patchRecommendation,
   retryProposal,
@@ -672,6 +676,151 @@ function ProposalsRail({ reloadKey }: { reloadKey: number }): JSX.Element | null
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+/* ----- LLM-judge trajectory panels (verification contour phase 2) ----- */
+
+/** Score bar: n/5 filled segments. Higher = better for all dims. */
+function ScoreBar({ value }: { value: number }): JSX.Element {
+  return (
+    <span className="inline-flex gap-[2px]" aria-hidden="true">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <span
+          key={i}
+          className={`inline-block h-1.5 w-2.5 rounded-[2px] ${
+            i <= value ? 'bg-brand' : 'bg-line-strong'
+          }`}
+        />
+      ))}
+    </span>
+  );
+}
+
+const JUDGMENT_DIMS: [keyof Pick<TrajectoryJudgment, 'endResult' | 'instructionCompliance' | 'pitfalls' | 'toolCalls'>, string][] = [
+  ['endResult', 'End result'],
+  ['instructionCompliance', 'Instructions'],
+  ['pitfalls', 'Pitfalls'],
+  ['toolCalls', 'Tool use'],
+];
+
+/** Expanded judgment detail: score bars + review text for pre-fetched rows. */
+function JudgmentPanel({ judgments }: { judgments: TrajectoryJudgment[] }): JSX.Element {
+  return (
+    <div className="mt-2.5 border-t border-line pt-2.5 flex flex-col gap-2.5">
+      {judgments.map((j) => (
+        <div key={`${j.agent}:${j.model}`}>
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px] text-ink-faint">
+            <span className="font-medium text-ink-3">{j.agent}</span>
+            <span>·</span>
+            <span>judge {j.model}</span>
+            <span>·</span>
+            <span className="text-brand font-medium">{j.overall.toFixed(1)}/5</span>
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1.5">
+            {JUDGMENT_DIMS.map(([key, label]) => (
+              <div key={key} className="flex items-center gap-1.5 font-mono text-[10.5px] text-ink-dim">
+                <span className="w-[88px] shrink-0">{label}</span>
+                <ScoreBar value={j[key]} />
+                <span className="text-ink-faint">{j[key]}/5</span>
+              </div>
+            ))}
+          </div>
+          {j.review !== '' && (
+            <p className="mt-1.5 font-mono text-[10.5px] leading-relaxed text-ink-3">{j.review}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Row of a judged session in the Retro judgments section: chip in the
+ * header, expands into the full panel on demand. Judgments are pre-fetched
+ * by the parent section, so the row is purely presentational. */
+function JudgedSessionRow({
+  session,
+  judgments,
+}: {
+  session: Session;
+  judgments: TrajectoryJudgment[];
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+
+  const overall = judgments.reduce((s, j) => s + j.overall, 0) / judgments.length;
+
+  return (
+    <div className="rounded-[14px] border border-line bg-surface px-4 py-3.5">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-3">
+          {session.title ?? session.sessionUuid.slice(0, 16)}
+        </span>
+        <span
+          title="LLM-judge trajectory score"
+          className="rounded-[7px] border border-brand/40 bg-brand/10 px-1.5 py-[2px] font-mono text-[10px] text-brand"
+        >
+          judged · {overall.toFixed(1)}
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
+        >
+          {open ? '▾ judgment' : '▸ judgment'}
+        </button>
+      </div>
+      <div className="mt-0.5 font-mono text-[10px] text-ink-faint">
+        {session.projectSlug} · {session.startedAt.slice(0, 10)}
+      </div>
+      {open && <JudgmentPanel judgments={judgments} />}
+    </div>
+  );
+}
+
+/** Section that surfaces recent sessions with LLM-judge verdicts.
+ * Fetches the last 20 completed sessions, then their judgments, and keeps
+ * only judged sessions — the whole section (heading included) renders null
+ * until at least one verdict exists. Advisory — no loading spinners or
+ * error banners. */
+function JudgmentsSection({ project }: { project?: string }): JSX.Element | null {
+  const [judged, setJudged] = useState<{ session: Session; judgments: TrajectoryJudgment[] }[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    setJudged([]); // drop the previous scope's rows while the refetch is in flight
+    fetchSessions(
+      { status: 'completed', ...(project !== undefined ? { project } : {}) },
+      { limit: 20 },
+    )
+      .then(async (r) => {
+        const rows = await Promise.all(
+          r.sessions.map(async (session) => ({
+            session,
+            judgments: await fetchTrajectoryJudgments(session.id).catch(
+              () => [] as TrajectoryJudgment[],
+            ),
+          })),
+        );
+        if (live) setJudged(rows.filter((row) => row.judgments.length > 0));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [project]);
+
+  if (judged.length === 0) return null;
+
+  return (
+    <section className="mt-[18px]">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+        Trajectory judgments
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {judged.map(({ session, judgments }) => (
+          <JudgedSessionRow key={session.id} session={session} judgments={judgments} />
+        ))}
+      </div>
     </section>
   );
 }
@@ -1329,6 +1478,8 @@ export function Retro(): JSX.Element {
           )}
         </>
       ) : null}
+
+      {scope !== null ? <JudgmentsSection project={scope} /> : <JudgmentsSection />}
 
       {lessons !== null && (
         <>

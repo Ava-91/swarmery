@@ -1328,3 +1328,24 @@ export interface FirstPassRow {
 export function fetchFirstPassRates(): Promise<FirstPassRow[]> {
   return get('/api/analytics/first-pass');
 }
+
+// --- verification contour (phase 2) — LLM-judge trajectory judgments ----------
+
+/** Advisory LLM-judge verdict for one session × agent × model. Scores 1–5 (higher = better). */
+export interface TrajectoryJudgment {
+  agent: string;
+  model: string;
+  judgedAt: string;
+  endResult: number;
+  instructionCompliance: number;
+  pitfalls: number;
+  toolCalls: number;
+  overall: number;
+  review: string;
+}
+
+/** GET /api/analytics/trajectory-judgments?session=<id> — verdicts for one session.
+ * Returns [] when no judgments have been recorded yet. */
+export function fetchTrajectoryJudgments(sessionId: number): Promise<TrajectoryJudgment[]> {
+  return get(`/api/analytics/trajectory-judgments?session=${String(sessionId)}`);
+}
