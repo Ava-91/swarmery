@@ -13,7 +13,7 @@
   assert:
     - type: regex                           # hard: new docs use phase-N naming
       value: "phase-\\d+-[a-z0-9-]+\\.md"
-    - type: not-regex                       # hard: no step-NN docs for new plans
-      value: "step-\\d{2}-"
-    - type: contains                        # hard: parseable table header row
-      value: "| # | Phase | Doc | Depends on |"
+    - type: not-regex                       # hard: no step-NN doc FILENAMES for new plans (scoped to listed files so merely mentioning the legacy rule doesn't fail)
+      value: "(^|\\n)\\s*(plan/)?step-\\d{2}-[a-z0-9-]*\\.md"
+    - type: regex                           # hard: parseable table header row (whitespace-tolerant)
+      value: "\\|\\s*#\\s*\\|\\s*Phase\\s*\\|\\s*Doc\\s*\\|\\s*Depends on\\s*\\|"

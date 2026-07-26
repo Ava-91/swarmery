@@ -63,7 +63,7 @@ Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` in
 - `plan` (reference): Phase 3/3.6 plan with file list, implementation order, and acceptance criteria
 - `context` (reference): Phase 2 context artifact (`02-context.md`)
 - `step_file` (path, optional): specific step document with `Reference:` link — selects Leaf mode
-- `task_dir` (path, optional, mutually exclusive with `step_file`): workspace task dir containing `plan/README.md` + `plan/step-NN-*.md` — selects Plan-execution mode (direct user invocation only)
+- `task_dir` (path, optional, mutually exclusive with `step_file`): workspace task dir containing `plan/README.md` + `plan/phase-N-*.md`, or legacy `plan/step-NN-*.md` — selects Plan-execution mode (direct user invocation only)
 
 ## Outputs (to downstream)
 - Format (Leaf mode): Modified/created source files (on disk in worktree) + Completion Report in step file
@@ -222,7 +222,7 @@ Opus 5 is trained to flag uncertainty and avoid unsupported claims. Lean into th
 Input:
 ```
 @implementation-agent implement order line-item editing
-Reference: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/abc123/plan/phase-1/step-1.2-line-item-crud.md
+Reference: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/abc123/plan/phase-1-line-item-crud.md
 Context: Phase 2 context at ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/abc123/phases/02-context.md
 ```
 

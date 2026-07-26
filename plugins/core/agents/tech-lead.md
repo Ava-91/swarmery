@@ -168,7 +168,7 @@ Delegate to @architecture-designer, @api-designer, @database-designer, @ui-desig
 Delegate to @implementation-agent with:
 - `plan: phases/03-planning.md`
 - `context: phases/02-context.md`
-- `step_file: plan/{step}.md`
+- `step_file: plan/phase-N-<slug>.md`
 - Goal condition: "npm run typecheck exits 0 and npm run build succeeds"
 
 Brief with clean context: plan reference, context reference, step file path, goal condition. Do not pass Phase 1-3 conversation history. [PE/Context/7.2]
@@ -202,7 +202,7 @@ PHASE {N} COMPLETE | Agents: [{list}] | Artifacts: [{paths}] | Decision: {1-sent
 Additionally write a machine-readable checkpoint to `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/checkpoint.json` ({task-id} = yyyy-mm-dd-short-slug, date = task start):
 
 ```json
-{"phase": 4, "mode": "Full", "decisions": ["chose task-planner over implementation-planner"], "open_gaps": [], "next_action": "dispatch @implementation-agent with plan/step-2.md", "ts": "2026-06-09T18:00:00Z"}
+{"phase": 4, "mode": "Full", "decisions": ["chose task-planner over implementation-planner"], "open_gaps": [], "next_action": "dispatch @implementation-agent with plan/phase-2-backend-logic.md", "ts": "2026-06-09T18:00:00Z"}
 ```
 
 Multi-day autonomy rules:

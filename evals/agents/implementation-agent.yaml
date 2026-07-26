@@ -30,7 +30,7 @@
       acceptance criterion in plan/phase-2-backend-logic.md is satisfied.
       Describe exactly what you do next, in order.
   assert:
-    - type: regex                           # hard: states flipping criteria to [x] in the phase doc
-      value: "- \\[x\\]|\\[x\\]|tick(s|ed|ing)? the (satisfied )?(acceptance[- ]criteria )?(check)?box"
+    - type: regex                           # hard: an action verb (flip|tick|mark) near [x] — quoting the contract alone must not pass
+      value: "(flip|tick|mark)(s|ed|ing)?[^\\n]*\\[x\\]|(flip|tick|mark)(s|ed|ing)? the (satisfied )?(acceptance[- ]criteria )?(check)?box"
     - type: llm-rubric                      # soft: tick happens BEFORE the STEP 02 COMPLETE ledger line
       value: ticks the checkboxes in the phase doc (Edit) first, and only then logs the STEP 02 COMPLETE ledger line — not the other way around, and not batched at close-out

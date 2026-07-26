@@ -48,6 +48,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CY
 log_info() { echo -e "${BLUE}ℹ${NC} $1" >&2; }
 log_success() { echo -e "${GREEN}✓${NC} $1" >&2; }
 log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}⚠${NC} $1" >&2; }
 
 trace_log() {
     local log_file
@@ -77,7 +78,11 @@ _task_dir_for() {
     local y="${task_id:0:4}" m="${task_id:5:2}" d="${task_id:8:2}" slug="${task_id:11}"
     local dir="${WORKING_DIR}/${y}/${m}/${d}/${slug}"
     if [ -d "$dir" ]; then echo "$dir"; return; fi
-    find "${WORKING_DIR}" -type d \( -path "*/${slug}" -o -name "$task_id" \) 2>/dev/null | head -1
+    # Fallback stays at task depth (zone root is YYYY/MM/DD/<slug>) so a slug can never
+    # match a task-INTERNAL dir (plan/, logs/, reports/) belonging to another task.
+    dir=$(find "${WORKING_DIR}" -mindepth 4 -maxdepth 4 -type d -path "*/${slug}" 2>/dev/null | head -1)
+    [ -n "$dir" ] || dir=$(find "${WORKING_DIR}" -type d -name "$task_id" 2>/dev/null | head -1)
+    echo "$dir"
 }
 
 # Reconstruct the canonical task-id (yyyy-mm-dd-slug) from a YYYY/MM/DD/slug dir path.
@@ -91,11 +96,15 @@ _id_from_dir() {
 }
 
 # Newest task id (by dir mtime) under a working/- or archive/-shaped root.
+# Emits nothing and returns 0 when the zone is empty — callers own the error message
+# (a plain rc=1 here would kill the whole script under set -e before it could print).
 _latest_id_in() {
     local root="$1" dir
-    dir=$(find "$root" -mindepth 4 -maxdepth 4 -type d -exec stat -f '%m %N' {} + 2>/dev/null \
+    dir=$( { find "$root" -mindepth 4 -maxdepth 4 -type d -exec stat -f '%m %N' {} + 2>/dev/null \
+             || find "$root" -mindepth 4 -maxdepth 4 -type d -exec stat -c '%Y %n' {} + 2>/dev/null; } \
         | sort -rn | head -1 | sed -E 's|^[0-9]+ ||')
-    [ -n "$dir" ] && _id_from_dir "$dir"
+    [ -n "$dir" ] || return 0
+    _id_from_dir "$dir"
 }
 
 _latest_task_id() { _latest_id_in "${WORKING_DIR}"; }
@@ -106,7 +115,11 @@ _archived_dir_for() {
     local y="${task_id:0:4}" m="${task_id:5:2}" d="${task_id:8:2}" slug="${task_id:11}"
     local dir="${ARCHIVE_DIR}/${y}/${m}/${d}/${slug}"
     if [ -d "$dir" ]; then echo "$dir"; return; fi
-    find "${ARCHIVE_DIR}" -type d \( -path "*/${slug}" -o -name "$task_id" \) 2>/dev/null | head -1
+    # Fallback stays at task depth (zone root is YYYY/MM/DD/<slug>) so a slug can never
+    # match a task-INTERNAL dir (plan/, logs/, reports/) belonging to another task.
+    dir=$(find "${ARCHIVE_DIR}" -mindepth 4 -maxdepth 4 -type d -path "*/${slug}" 2>/dev/null | head -1)
+    [ -n "$dir" ] || dir=$(find "${ARCHIVE_DIR}" -type d -name "$task_id" 2>/dev/null | head -1)
+    echo "$dir"
 }
 
 # Flip the README card status value in place (gsed-free, BSD-sed compatible;
@@ -115,13 +128,17 @@ _archived_dir_for() {
 _set_status() {
     local task_dir="$1" from="$2" to="$3"
     [ -f "${task_dir}/README.md" ] || { log_error "No README.md card in ${task_dir}"; return 1; }
+    # BSD-first sed idiom: on GNU the -i '' call "fails" yet still applies the edit before the || retry — substitutions here must stay idempotent.
     sed -i '' -e "s/\*\*Статус\*\*: ${from}/\*\*Статус\*\*: ${to}/" "${task_dir}/README.md" 2>/dev/null \
     || sed -i -e "s/\*\*Статус\*\*: ${from}/\*\*Статус\*\*: ${to}/" "${task_dir}/README.md"
 }
 
 _resolve_task_dir() {
     local task_id="$1"
-    [ "$task_id" = "--latest" ] && task_id=$(_latest_task_id)
+    if [ "$task_id" = "--latest" ]; then
+        task_id=$(_latest_task_id)
+        [ -z "$task_id" ] && { log_error "No active tasks in working/ — nothing to resolve with --latest"; exit 1; }
+    fi
     [ -z "$task_id" ] && { log_error "Task ID required (or --latest)"; exit 1; }
     local dir; dir=$(_task_dir_for "$task_id")
     [ -n "$dir" ] && [ -d "$dir" ] || { log_error "Not found in working/: ${task_id}"; exit 1; }
@@ -189,6 +206,15 @@ cmd_phase() {
 cmd_pause() {
     local task_dir; task_dir=$(_resolve_task_dir "$1")
     local task_id; task_id=$(_id_from_dir "$task_dir")
+    local st; st=$(_readme_field "${task_dir}/README.md" "Статус")
+    if [ "$st" != "active" ]; then
+        if [ "$st" = "paused" ]; then
+            log_warn "Already paused: ${task_id} — nothing to do"
+        else
+            log_warn "Cannot pause ${task_id}: status is '${st}', expected 'active'"
+        fi
+        return 0
+    fi
     _set_status "$task_dir" "active" "paused" || exit 1
     cmd_index >/dev/null 2>&1 || true
     trace_log "task.paused" "${task_id}"
@@ -199,6 +225,15 @@ cmd_pause() {
 cmd_resume() {
     local task_dir; task_dir=$(_resolve_task_dir "$1")
     local task_id; task_id=$(_id_from_dir "$task_dir")
+    local st; st=$(_readme_field "${task_dir}/README.md" "Статус")
+    if [ "$st" != "paused" ]; then
+        if [ "$st" = "active" ]; then
+            log_warn "Already active: ${task_id} — nothing to do"
+        else
+            log_warn "Cannot resume ${task_id}: status is '${st}', expected 'paused'"
+        fi
+        return 0
+    fi
     _set_status "$task_dir" "paused" "active" || exit 1
     cmd_index >/dev/null 2>&1 || true
     trace_log "task.resumed" "${task_id}"
@@ -209,11 +244,20 @@ cmd_resume() {
 # back to working/, status → active, completion date → —, prune empty parents.
 cmd_restore() {
     local task_id="$1"
-    [ "$task_id" = "--latest" ] && task_id=$(_latest_id_in "${ARCHIVE_DIR}")
+    if [ "$task_id" = "--latest" ]; then
+        task_id=$(_latest_id_in "${ARCHIVE_DIR}")
+        [ -z "$task_id" ] && { log_error "Archive is empty — nothing to restore"; exit 1; }
+    fi
     [ -z "$task_id" ] && { log_error "Task ID required (or --latest)"; exit 1; }
     local src; src=$(_archived_dir_for "$task_id")
     [ -n "$src" ] && [ -d "$src" ] || { log_error "Not found in archive/: ${task_id}"; exit 1; }
     task_id=$(_id_from_dir "$src")  # canonical id from the dir's actual archive location
+    # Safety: a real task dir reconstructs to yyyy-mm-dd-slug. Anything else means the
+    # lookup matched a non-task dir (e.g. a task-internal plan/) — moving it would corrupt the archive.
+    if ! [[ "$task_id" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}- ]]; then
+        log_error "Refusing to restore: '${src}' is not a task-depth dir (resolved id: '${task_id}')"
+        exit 1
+    fi
 
     local dest_parent="${WORKING_DIR}/${task_id:0:4}/${task_id:5:2}/${task_id:8:2}"
     local dest="${dest_parent}/${task_id:11}"
@@ -222,6 +266,7 @@ cmd_restore() {
     mv "$src" "${dest_parent}/"
 
     # README: any status back to active + reset the completion date.
+    # BSD-first sed idiom: on GNU the -i '' call "fails" yet still applies the edit before the || retry — substitutions here must stay idempotent.
     if [ -f "${dest}/README.md" ]; then
         sed -i '' -e "s/\*\*Статус\*\*: [a-z][a-z]*/\*\*Статус\*\*: active/" \
                   -e "s/\*\*Завершено\*\*: [0-9][0-9-]*/\*\*Завершено\*\*: —/" \
@@ -368,15 +413,15 @@ cmd_view() {
 }
 
 cmd_metrics() {
-    local active=0 done_n=0 archived=0
+    local active=0 done_n=0 paused=0 archived=0
     for dir in "${WORKING_DIR}"/*/*/*/*/; do
         [ -d "$dir" ] || continue
         case "$(_readme_field "${dir}README.md" "Статус")" in
-            done) done_n=$((done_n+1));; *) active=$((active+1));;
+            done) done_n=$((done_n+1));; paused) paused=$((paused+1));; *) active=$((active+1));;
         esac
     done
     archived=$(find "${ARCHIVE_DIR}" -mindepth 4 -maxdepth 4 -type d 2>/dev/null | wc -l | tr -d ' ')
-    echo "Working: active=${active} done-not-archived=${done_n} | Archived: ${archived}"
+    echo "Working: active=${active} paused=${paused} done-not-archived=${done_n} | Archived: ${archived}"
 }
 
 cmd_cleanup() {
