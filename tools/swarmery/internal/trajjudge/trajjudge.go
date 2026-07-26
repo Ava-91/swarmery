@@ -81,7 +81,7 @@ func Score(db *sql.DB, runner Runner, model string, now time.Time, capN int) err
 		return nil
 	}
 	defer inFlight.Store(false)
-	cands, err := selectCandidates(db, model, now, capN)
+	cands, err := selectCandidates(db, model, capN)
 	if err != nil {
 		return err
 	}
@@ -118,20 +118,23 @@ type candidate struct {
 
 // selectCandidates returns up to capN (session, agent) rows from
 // trajectory_scores that have no judgment for this model, ordered
-// flagged-first (has a trajectory_findings row) then by a stable pseudo-random
-// key seeded from now so the unflagged sample is reproducible in tests.
-func selectCandidates(db *sql.DB, model string, now time.Time, capN int) ([]candidate, error) {
-	seed := now.UTC().Format("2006-01-02T15") // hour-stable seed
+// flagged-first (has a trajectory_findings row) then by session recency.
+// Recency, not random sampling: Retro surfaces the most recent completed
+// sessions, so judging newest-first is what makes verdicts visible instead
+// of draining the pool oldest-first.
+func selectCandidates(db *sql.DB, model string, capN int) ([]candidate, error) {
 	rows, err := db.Query(`
 		SELECT s.session_id, s.agent
 		FROM trajectory_scores s
+		JOIN sessions sess ON sess.id = s.session_id
 		LEFT JOIN trajectory_judgments j
 		  ON j.session_id = s.session_id AND j.agent = s.agent AND j.model = ?
 		WHERE j.id IS NULL
 		ORDER BY
 		  (SELECT COUNT(*) FROM trajectory_findings f WHERE f.score_id = s.id) DESC,
-		  (s.session_id || s.agent || ?)
-		LIMIT ?`, model, seed, capN)
+		  sess.started_at DESC,
+		  s.session_id DESC, s.agent
+		LIMIT ?`, model, capN)
 	if err != nil {
 		return nil, err
 	}
