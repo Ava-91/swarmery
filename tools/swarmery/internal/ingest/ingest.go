@@ -1159,6 +1159,49 @@ type dbtx interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
+// worktreeRootOverride pins the dispatcher worktree base in tests; empty
+// means <home>/.swarmery/worktrees (mirrors internal/worktree.DefaultRoot,
+// which this package must not import — worktree imports store).
+var worktreeRootOverride string
+
+func worktreeBase() string {
+	if worktreeRootOverride != "" {
+		return worktreeRootOverride
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".swarmery", "worktrees")
+}
+
+// CanonicalProjectPath maps a raw session cwd to the path of the registered
+// project it belongs to, so satellite cwds never mint phantom project rows:
+//   - a dispatcher worktree <root>/<parentSlug>/<task> resolves to the
+//     project whose slug is the first segment under the worktree root;
+//   - a subdirectory of a registered project resolves to that project
+//     (deepest registered ancestor wins).
+//
+// Unknown paths return unchanged — attribution never invents projects.
+func CanonicalProjectPath(q dbtx, path string) string {
+	if root := worktreeBase(); root != "" {
+		if rel, ok := strings.CutPrefix(path, root+"/"); ok {
+			seg, _, _ := strings.Cut(rel, "/")
+			var parent string
+			if err := q.QueryRow(`SELECT path FROM projects WHERE slug = ?`, seg).Scan(&parent); err == nil && parent != "" {
+				return parent
+			}
+		}
+	}
+	var ancestor string
+	if err := q.QueryRow(
+		`SELECT path FROM projects WHERE ? LIKE path || '/%' ORDER BY LENGTH(path) DESC LIMIT 1`,
+		path).Scan(&ancestor); err == nil && ancestor != "" {
+		return ancestor
+	}
+	return path
+}
+
 // UpsertProject resolves or creates the projects row for a cwd path with the
 // canonical derivation (slug '/'→'-', display name = path base, name filled
 // only while NULL so a future rename UI always wins). It is THE single place
@@ -1168,6 +1211,14 @@ func UpsertProject(q dbtx, path, firstSeen, lastActivity string) (id int64, crea
 	err = q.QueryRow(`SELECT id FROM projects WHERE path = ?`, path).Scan(&id)
 	switch {
 	case err == sql.ErrNoRows:
+		// Not registered under this exact path — attribute satellite cwds
+		// (dispatcher worktrees, in-repo subdirectories) to their parent
+		// project instead of minting a phantom row.
+		if canon := CanonicalProjectPath(q, path); canon != path {
+			if err := q.QueryRow(`SELECT id FROM projects WHERE path = ?`, canon).Scan(&id); err == nil {
+				return id, false, nil
+			}
+		}
 		res, ierr := q.Exec(
 			`INSERT INTO projects (path, slug, name, first_seen, last_activity) VALUES (?, ?, ?, ?, ?)`,
 			path, SlugForPath(path), projectNameFor(path), firstSeen, lastActivity)
@@ -1223,6 +1274,138 @@ func HealProjectNames(db *sql.DB) (int, error) {
 		}
 	}
 	return len(todo), nil
+}
+
+// HealProjectAttribution merges phantom project rows (satellite cwds minted
+// before canonicalization existed — dispatcher worktrees, in-repo
+// subdirectories) into the project their path canonicalizes to: every
+// project_id reference in every table is re-pointed, then the phantom row is
+// dropped. A project with a linked workspaces row is never treated as a
+// phantom — real projects carry workspaces, satellites don't. Returns the
+// number of phantoms merged. Called from every Backfill pass, so existing
+// databases heal on the first daemon restart after upgrading.
+func HealProjectAttribution(db *sql.DB) (int, error) {
+	rows, err := db.Query(`SELECT id, path FROM projects`)
+	if err != nil {
+		return 0, err
+	}
+	type row struct {
+		id   int64
+		path string
+	}
+	var projs []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.path); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		projs = append(projs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	tables, err := projectRefTables(db)
+	if err != nil {
+		return 0, err
+	}
+
+	moved := 0
+	for _, p := range projs {
+		canon := CanonicalProjectPath(db, p.path)
+		if canon == p.path {
+			continue
+		}
+		var target int64
+		if err := db.QueryRow(`SELECT id FROM projects WHERE path = ?`, canon).Scan(&target); err != nil || target == p.id {
+			continue
+		}
+		var linked int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM workspaces WHERE project_id = ?`, p.id).Scan(&linked); err == nil && linked > 0 {
+			continue // workspace-linked → a real project, not a phantom
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return moved, err
+		}
+		ok := true
+		for _, tbl := range tables {
+			// OR IGNORE + sweep: rows that would collide with the target's
+			// (e.g. a PRIMARY KEY on project_id) are dropped with the phantom.
+			if _, err := tx.Exec(`UPDATE OR IGNORE `+tbl+` SET project_id = ? WHERE project_id = ?`, target, p.id); err != nil {
+				ok = false
+				break
+			}
+			if _, err := tx.Exec(`DELETE FROM `+tbl+` WHERE project_id = ?`, p.id); err != nil {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			if _, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, p.id); err != nil {
+				ok = false
+			}
+		}
+		if !ok {
+			tx.Rollback()
+			continue
+		}
+		if err := tx.Commit(); err != nil {
+			return moved, err
+		}
+		log.Printf("heal: merged phantom project %q into %q", p.path, canon)
+		moved++
+	}
+	return moved, nil
+}
+
+// projectRefTables lists user tables carrying a project_id column (the
+// projects table itself excluded).
+func projectRefTables(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(
+		`SELECT name FROM sqlite_master
+		 WHERE type = 'table' AND name != 'projects' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, n := range names {
+		cols, err := db.Query(`SELECT name FROM pragma_table_info(?)`, n)
+		if err != nil {
+			return nil, err
+		}
+		for cols.Next() {
+			var c string
+			if err := cols.Scan(&c); err != nil {
+				cols.Close()
+				return nil, err
+			}
+			if c == "project_id" {
+				out = append(out, n)
+				break
+			}
+		}
+		cols.Close()
+		if err := cols.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // ── small utilities ──────────────────────────────────────────────────────────

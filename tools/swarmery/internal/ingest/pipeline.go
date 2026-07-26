@@ -142,6 +142,14 @@ func (p *Pipeline) Backfill(ctx context.Context) Metrics {
 	} else if healed > 0 {
 		log.Printf("ingest: healed %d project name(s) from path", healed)
 	}
+	// Merge phantom projects (worktree / in-repo-subdir cwds) into their
+	// canonical parent: rows minted before path canonicalization existed
+	// would otherwise sit on the Projects page forever.
+	if merged, err := HealProjectAttribution(p.db); err != nil {
+		log.Printf("warn: ingest: heal project attribution: %v", err)
+	} else if merged > 0 {
+		log.Printf("ingest: merged %d phantom project(s) into their parents", merged)
+	}
 	// Heal stub sessions ('(unknown)' project / empty cwd / empty started_at):
 	// unchanged transcripts are offset no-ops, so the per-batch upsert heal
 	// would never see them again — re-attribute from the transcript files and
