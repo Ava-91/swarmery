@@ -38,6 +38,9 @@ type PhaseStatus = 'pending' | 'in_progress' | 'done' | 'blocked';
 
 /** Derives a phase's display status from checkbox progress and the dependency gate. */
 function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
+  // An activated phase whose board task is resolved is done regardless of
+  // checkbox progress — the board is the source of truth once dispatched.
+  if (isResolvedColumn(p.boardColumn)) return 'done';
   if (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) return 'done';
   if (p.dependsOn.some((seq) => !resolvedSeqs.has(seq))) return 'blocked';
   if (p.checkboxesDone > 0 || p.boardColumn === 'in_progress' || p.boardColumn === 'in_review')
@@ -179,7 +182,11 @@ export function Plans(): JSX.Element {
     setActionError(null);
     epicLifecycle(epic.taskId, action)
       .then(() => reload())
-      .catch((e: unknown) => setActionError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => {
+        setActionError(e instanceof Error ? e.message : String(e));
+        // A 409 usually means the UI acted on stale state — refresh to reconcile.
+        reload();
+      })
       .finally(() => setBusyLifecycle(false));
   };
 
@@ -389,7 +396,7 @@ function EpicDetail({
               key={p.id}
               role="button"
               tabIndex={0}
-              aria-label={`open Phase ${String(p.seq)} doc`}
+              aria-label={`open Phase ${String(p.seq)} — ${p.name}`}
               onClick={openDoc}
               onKeyDown={(e) => {
                 if (e.target !== e.currentTarget) return; // inner buttons handle their own keys
