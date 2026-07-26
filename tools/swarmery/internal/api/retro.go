@@ -45,9 +45,13 @@ import (
 	"strings"
 	"time"
 
+	"os"
+	"strconv"
+
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/advisor"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajjudge"
 )
 
 // ── /api/retro/agents ─────────────────────────────────────────────────────
@@ -1272,6 +1276,19 @@ func (h *Handler) retroAdvise(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if err := trajeval.Compute(h.DB, time.Now()); err != nil {
 			log.Printf("trajeval.Compute: %v", err)
+		}
+		model := os.Getenv("SWARMERY_TRAJJUDGE_MODEL")
+		if model == "" {
+			model = "sonnet"
+		}
+		cap := 10
+		if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cap = n
+			}
+		}
+		if err := trajjudge.Score(h.DB, trajjudge.ClaudeRunner{Model: model}, model, time.Now(), cap); err != nil {
+			log.Printf("trajjudge.Score: %v", err)
 		}
 	}()
 	stats, err := advisor.Run(h.DB, time.Now())
