@@ -18,6 +18,11 @@ type Runner interface {
 // claudeTimeout bounds one headless generation run.
 const claudeTimeout = 10 * time.Minute
 
+// defaultModel pins headless runs that carry no explicit override: without
+// --model the CLI inherits the account default (Fable-5 here — 2× the Opus
+// price). Full ID, not an alias — aliases re-resolve over time.
+const defaultModel = "claude-opus-5"
+
 // stderrTailBytes caps how much captured stderr lands in the error (and thus
 // in agent_change_proposals.error).
 const stderrTailBytes = 4096
@@ -29,6 +34,8 @@ const stderrTailBytes = 4096
 type ClaudeRunner struct {
 	// Timeout overrides claudeTimeout when > 0 (tests shrink it).
 	Timeout time.Duration
+	// Model overrides defaultModel when non-empty.
+	Model string
 }
 
 func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
@@ -39,7 +46,11 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--output-format", "text")
+	model := r.Model
+	if model == "" {
+		model = defaultModel
+	}
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text")
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

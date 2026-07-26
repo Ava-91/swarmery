@@ -745,7 +745,9 @@ func cmdServe(args []string) error {
 	// trajjudge config (advisory LLM-judge, best-effort; cap<=0 disables).
 	trajjudgeModel := os.Getenv("SWARMERY_TRAJJUDGE_MODEL")
 	if trajjudgeModel == "" {
-		trajjudgeModel = "sonnet"
+		// Full ID, not the "sonnet" alias — aliases re-resolve over time and the
+		// judged model is stored per verdict, so the pin keeps scores comparable.
+		trajjudgeModel = "claude-sonnet-5"
 	}
 	trajjudgeCap := 10
 	if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {

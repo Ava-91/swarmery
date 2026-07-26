@@ -13,6 +13,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
 // tsFormat matches the millisecond-Z style the api package writes.
@@ -569,7 +570,11 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resol
 			PreviousStageOutput: prevOutput,
 		}
 		prompt := BuildStagePrompt(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, c.FileScope)
-		spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path, Model: c.Model.String}
+		model := c.Model.String
+		if model == "" {
+			model = defaultModel
+		}
+		spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path, Model: model}
 
 		run, err := s.runStage(spec)
 		if err != nil {
@@ -705,6 +710,13 @@ func (s *Service) finishDone(c candidate, line string) {
 		 WHERE id=? AND source='queue'`, line, s.ts(), s.ts(), c.ID); err != nil {
 		log.Printf("error: dispatch: finish done (task %d): %v", c.ID, err)
 		return
+	}
+	// Board says done — check the phase doc's remaining acceptance boxes so plan
+	// progress follows (a sentinel exit like PREMISE STALE never touched the doc).
+	if n, err := wsingest.TickPhaseChecklist(s.DB, c.ID); err != nil {
+		log.Printf("warn: dispatch: tick phase checklist (task %d): %v", c.ID, err)
+	} else if n > 0 {
+		log.Printf("dispatch: task %d done — ticked %d phase checkbox(es)", c.ID, n)
 	}
 	s.removeWorktree(c.ProjectPath, wtpath.String, branch.String)
 	s.notify(c.ID)

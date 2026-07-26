@@ -44,6 +44,11 @@ const planTimeout = 20 * time.Minute
 // stderrTailBytes caps captured stderr landing in the run error.
 const stderrTailBytes = 4096
 
+// defaultModel pins planner runs: without --model the CLI inherits the account
+// default (Fable-5 here — 2× the Opus price). Full ID, not an alias — aliases
+// re-resolve over time.
+const defaultModel = "claude-opus-5"
+
 // ClaudeRunner spawns `claude -p <prompt> --session-id <uuid>` with cwd set to
 // the project path. Binary resolution mirrors session_message.go's claudeBin:
 // launchd starts the daemon with a minimal PATH that omits npm/homebrew, so a
@@ -53,6 +58,8 @@ const stderrTailBytes = 4096
 type ClaudeRunner struct {
 	// Timeout overrides planTimeout when > 0 (tests shrink it).
 	Timeout time.Duration
+	// Model overrides defaultModel when non-empty.
+	Model string
 }
 
 func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
@@ -69,7 +76,11 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, bin, "-p", spec.Prompt, "--session-id", spec.SessionUUID)
+	model := r.Model
+	if model == "" {
+		model = defaultModel
+	}
+	cmd := exec.CommandContext(ctx, bin, "-p", spec.Prompt, "--session-id", spec.SessionUUID, "--model", model)
 	cmd.Dir = spec.Cwd
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
