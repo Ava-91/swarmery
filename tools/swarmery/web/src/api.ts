@@ -1269,6 +1269,38 @@ export class PhaseAlreadyActivatedError extends Error {
   }
 }
 
+export type EpicLifecycleAction = 'pause' | 'resume' | 'archive' | 'restore';
+
+/**
+ * POST /api/epics/{taskId}/lifecycle {action} → 200 {status}. File-backed on
+ * the daemon side (README status rewrite / working↔archive zone move); 409 on
+ * an invalid transition, 404 when the task has no plan dir.
+ */
+export async function epicLifecycle(
+  taskId: number,
+  action: EpicLifecycleAction,
+): Promise<{ status: Epic['status'] }> {
+  if (MOCK) {
+    const next: Record<EpicLifecycleAction, Epic['status']> = {
+      pause: 'paused',
+      resume: 'active',
+      archive: 'archived',
+      restore: 'active',
+    };
+    return { status: next[action] };
+  }
+  const res = await fetch(`/api/epics/${String(taskId)}/lifecycle`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `lifecycle ${action} failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: Epic['status'] };
+}
+
 /** GET /api/epics/{taskId}/docs?path= — read a plan doc (path-confined). */
 export function fetchPlanDoc(taskId: number, path: string): Promise<PlanDoc> {
   if (MOCK) return mockApi.planDoc(taskId, path);

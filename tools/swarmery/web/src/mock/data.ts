@@ -1247,7 +1247,7 @@ const mockEpics: Epic[] = [
     projectId: 3,
     projectSlug: 'swarmery',
     title: 'Fusion-inspired orchestration',
-    status: 'running',
+    status: 'active',
     startedAt: iso(-3 * 86400),
     planDir: '/ws/plan',
     phases: [
