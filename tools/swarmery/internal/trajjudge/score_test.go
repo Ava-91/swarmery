@@ -116,3 +116,58 @@ func TestScoreSkipsWhenBatchInFlight(t *testing.T) {
 		t.Errorf("judgments = %d, want 0 (overlapping batch must be skipped)", n)
 	}
 }
+
+// seedScoredSession inserts a project-1 session with a trajectory score and
+// one event, at the given started_at. flagged adds a deterministic finding.
+func seedScoredSession(t *testing.T, db *sql.DB, id int64, startedAt string, flagged bool) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO sessions(id,project_id,session_uuid,started_at) VALUES (?,1,?,?)`,
+		id, "u"+startedAt+string(rune('0'+id%10)), startedAt)
+	mustExec(t, db, `INSERT INTO turns(id,session_id,seq,role,started_at,agent_name) VALUES (?,?,1,'assistant',?,'tech-lead')`,
+		id, id, startedAt)
+	mustExec(t, db, `INSERT INTO events(id,session_id,turn_id,ts,type,tool_name) VALUES (?,?,?,?,'file_change',NULL)`,
+		id, id, id, startedAt)
+	mustExec(t, db, `INSERT INTO trajectory_scores(id,session_id,agent,first_pass,computed_at) VALUES (?,?,'tech-lead',1,?)`,
+		id, id, startedAt)
+	if flagged {
+		mustExec(t, db, `INSERT INTO trajectory_findings(score_id,kind,severity,evidence_turn_ids) VALUES (?,'verify-skip','warn','[1]')`, id)
+	}
+}
+
+// Recency contract: among unflagged candidates the judge works newest-first,
+// so verdicts surface in Retro's recent-sessions window instead of draining
+// the pool oldest-first. Flagged candidates still take absolute priority.
+func TestSelectCandidatesPrefersRecentSessions(t *testing.T) {
+	db := openMigratedDB(t)
+	mustExec(t, db, `INSERT INTO projects(id,name,path,slug,first_seen) VALUES (1,'p','/p','p','2026-07-01T00:00:00Z')`)
+	seedScoredSession(t, db, 1, "2026-06-01T00:00:00Z", false) // oldest
+	seedScoredSession(t, db, 2, "2026-07-20T00:00:00Z", false) // newest
+	seedScoredSession(t, db, 3, "2026-07-01T00:00:00Z", false) // middle
+
+	cands, err := selectCandidates(db, "sonnet", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []int64
+	for _, c := range cands {
+		order = append(order, c.sessionID)
+	}
+	if len(order) != 3 || order[0] != 2 || order[1] != 3 || order[2] != 1 {
+		t.Errorf("candidate order = %v, want [2 3 1] (newest session first)", order)
+	}
+}
+
+func TestSelectCandidatesFlaggedBeatsRecency(t *testing.T) {
+	db := openMigratedDB(t)
+	mustExec(t, db, `INSERT INTO projects(id,name,path,slug,first_seen) VALUES (1,'p','/p','p','2026-07-01T00:00:00Z')`)
+	seedScoredSession(t, db, 1, "2026-06-01T00:00:00Z", true)  // old but flagged
+	seedScoredSession(t, db, 2, "2026-07-20T00:00:00Z", false) // new, clean
+
+	cands, err := selectCandidates(db, "sonnet", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 || cands[0].sessionID != 1 {
+		t.Errorf("cands = %+v, want the old flagged session 1 first", cands)
+	}
+}
