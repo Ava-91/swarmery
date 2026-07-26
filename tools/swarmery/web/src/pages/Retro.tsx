@@ -736,23 +736,17 @@ function JudgmentPanel({ judgments }: { judgments: TrajectoryJudgment[] }): JSX.
   );
 }
 
-/** Row of a judged session in the Retro judgments section.
- * Fetches judgments once on mount; shows a chip in the header and expands
- * into the full panel on demand. Renders nothing when there are no judgments. */
-function JudgedSessionRow({ session }: { session: Session }): JSX.Element | null {
-  const [judgments, setJudgments] = useState<TrajectoryJudgment[] | null>(null);
+/** Row of a judged session in the Retro judgments section: chip in the
+ * header, expands into the full panel on demand. Judgments are pre-fetched
+ * by the parent section, so the row is purely presentational. */
+function JudgedSessionRow({
+  session,
+  judgments,
+}: {
+  session: Session;
+  judgments: TrajectoryJudgment[];
+}): JSX.Element {
   const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    fetchTrajectoryJudgments(session.id)
-      .then((r) => { if (live) setJudgments(r.length > 0 ? r : []); })
-      .catch(() => { if (live) setJudgments([]); });
-    return () => { live = false; };
-  }, [session.id]);
-
-  // null = not yet loaded, [] = loaded with no judgments (hide the row)
-  if (judgments === null || judgments.length === 0) return null;
 
   const overall = judgments.reduce((s, j) => s + j.overall, 0) / judgments.length;
 
@@ -786,11 +780,12 @@ function JudgedSessionRow({ session }: { session: Session }): JSX.Element | null
 }
 
 /** Section that surfaces recent sessions with LLM-judge verdicts.
- * Fetches the last 20 completed sessions; each row queries judgments lazily
- * (JudgmentPanel, silent on empty). Advisory — no loading
- * spinners or error banners. */
+ * Fetches the last 20 completed sessions, then their judgments, and keeps
+ * only judged sessions — the whole section (heading included) renders null
+ * until at least one verdict exists. Advisory — no loading spinners or
+ * error banners. */
 function JudgmentsSection({ project }: { project?: string }): JSX.Element | null {
-  const [sessions, setSessions] = useState<Session[] | null>(null);
+  const [judged, setJudged] = useState<{ session: Session; judgments: TrajectoryJudgment[] }[]>([]);
 
   useEffect(() => {
     let live = true;
@@ -798,12 +793,22 @@ function JudgmentsSection({ project }: { project?: string }): JSX.Element | null
       { status: 'completed', ...(project !== undefined ? { project } : {}) },
       { limit: 20 },
     )
-      .then((r) => { if (live) setSessions(r.sessions); })
+      .then(async (r) => {
+        const rows = await Promise.all(
+          r.sessions.map(async (session) => ({
+            session,
+            judgments: await fetchTrajectoryJudgments(session.id).catch(
+              () => [] as TrajectoryJudgment[],
+            ),
+          })),
+        );
+        if (live) setJudged(rows.filter((row) => row.judgments.length > 0));
+      })
       .catch(() => {});
     return () => { live = false; };
   }, [project]);
 
-  if (sessions === null || sessions.length === 0) return null;
+  if (judged.length === 0) return null;
 
   return (
     <section className="mt-[18px]">
@@ -811,8 +816,8 @@ function JudgmentsSection({ project }: { project?: string }): JSX.Element | null
         Trajectory judgments
       </div>
       <div className="flex flex-col gap-2.5">
-        {sessions.map((s) => (
-          <JudgedSessionRow key={s.id} session={s} />
+        {judged.map(({ session, judgments }) => (
+          <JudgedSessionRow key={session.id} session={session} judgments={judgments} />
         ))}
       </div>
     </section>
