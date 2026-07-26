@@ -237,7 +237,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// 409 when already activated); the docs GET/PUT/PATCH read/edit/checkbox-flip
 	// the plan markdown, path-confined to that task's plan/ dir. The writes carry
 	// the same D4 origin hardening as every other mutating endpoint.
+	// plans-page-lifecycle phase 1: lifecycle actions (pause|resume|archive|
+	// restore) as workspace file operations + a plan_updated WS publish.
 	mux.HandleFunc("GET /api/epics", h.listEpics)
+	mux.HandleFunc("POST /api/epics/{taskId}/lifecycle", requireLocalOrigin(h.epicLifecycle))
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/activate", requireLocalOrigin(h.activateEpicPhase))
 	mux.HandleFunc("GET /api/epics/{taskId}/docs", h.getPlanDoc)
 	mux.HandleFunc("PUT /api/epics/{taskId}/docs", requireLocalOrigin(h.putPlanDoc))
