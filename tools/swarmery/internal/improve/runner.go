@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -51,6 +53,11 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 		model = defaultModel
 	}
 	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text")
+	// System home, not the inherited launchd cwd "/": transcripts then
+	// attribute to the deliberate "System" project (see internal/ingest).
+	if home, err := os.UserHomeDir(); err == nil {
+		cmd.Dir = filepath.Join(home, ".swarmery")
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
