@@ -1,10 +1,12 @@
 package api
 
 import (
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -544,12 +546,19 @@ func TestTrajectoryJudgments(t *testing.T) {
 	})
 
 	t.Run("empty result for unknown session", func(t *testing.T) {
-		var out []struct {
-			Agent string `json:"agent"`
+		// Assert the raw body: decoding would accept `null` too, but the wire
+		// contract is an empty array.
+		res, err := http.Get(srv.URL + "/api/analytics/trajectory-judgments?session=999")
+		if err != nil {
+			t.Fatal(err)
 		}
-		getJSON(t, srv.URL+"/api/analytics/trajectory-judgments?session=999", &out)
-		if len(out) != 0 {
-			t.Errorf("got %d rows for unknown session, want 0", len(out))
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(string(body)); got != "[]" {
+			t.Errorf("body = %q, want []", got)
 		}
 	})
 
