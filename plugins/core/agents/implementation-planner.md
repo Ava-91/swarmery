@@ -8,7 +8,7 @@ permissionMode: plan
 color: blue
 autonomy: auto
 maxTurns: 30
-version: 1.2.0
+version: 1.3.0
 owner: platform-team
 skills:
   - deployment
@@ -23,9 +23,9 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
 
 # Goal & success criteria
 
-- Goal: Produce a complete plan under `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/plan/` containing `README.md` (plan overview) and one `phase-N-<kebab-slug>.md` per phase. `{task-id}` = `yyyy-mm-dd-short-slug` (date = task start, lowercase kebab slug; on disk YYYY/MM/DD come from the date and the leaf folder is the slug, e.g. `2026-06-10-workspace-restructure` → `working/2026/06/10/workspace-restructure/`). NEVER write plans inside a code repo (`docs/`, repo root, legacy `.claude-workspace/`).
+- Goal: Produce a complete plan under `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/plan/` containing `README.md` (plan overview) and one `phase-N-<kebab-slug>.md` per phase. `{task-id}` = `yyyy-mm-dd-short-slug` (date = task start; leaf folder = lowercase kebab slug **without a date prefix** — the date lives only in the `YYYY/MM/DD` path; the canonical task-id `yyyy-mm-dd-slug` is derived, never encoded in the folder name; e.g. `2026-06-10-workspace-restructure` → `working/2026/06/10/workspace-restructure/`). NEVER write plans inside a code repo (`docs/`, repo root, legacy `.claude-workspace/`).
 - Success criteria (falsifiable):
-  - [ ] README.md exists with: objective; key architecture decisions grounded in the codebase (real file paths cited); phase sequencing table (phase, repo(s), depends-on, parallelizable) + critical path; cross-cutting risks with mitigations; Definition of Done rolling up per-phase acceptance criteria
+  - [ ] README.md exists with: objective; key architecture decisions grounded in the codebase (real file paths cited); phase sequencing table in the parseable `| # | Phase | Doc | Depends on |` header shape (Doc cell wraps the filename in backticks; extra columns like repo(s)/parallelizable may follow) + critical path; cross-cutting risks with mitigations; Definition of Done rolling up per-phase acceptance criteria
   - [ ] `manifest.json` exists and mirrors the sequencing table exactly (same phases, same depends-on, same parallel groups) -- it is the machine-readable contract the `run-plan` skill executes without parsing markdown
   - [ ] The final phase is a quality gate (hardening / QA / verification)
   - [ ] Every phase document has all 5 sections: Header, Objective, Design, Copy-paste agent prompt, Acceptance criteria
@@ -63,6 +63,15 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
     phase-2-<kebab-slug>.md
     ...
     phase-N-<quality-gate-slug>.md   -- final phase is always a quality gate
+  ```
+  The README sequencing table MUST use exactly these header cells (the platform
+  parses this shape; the Doc cell wraps the filename in backticks — additional
+  columns such as repo(s)/parallelizable may be appended after them):
+  ```markdown
+  | # | Phase | Doc | Depends on |
+  |---|-------|-----|------------|
+  | 1 | Types & schema | `phase-1-types-schema.md` | — |
+  | 2 | Backend logic | `phase-2-backend-logic.md` | 1 |
   ```
   `manifest.json` schema (one object; mirrors the sequencing table -- if they disagree, the manifest is wrong):
   ```json
@@ -113,7 +122,7 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
 
 # Self-check before returning
 
-- [ ] README.md has: objective, key architecture decisions with real file paths, phase sequencing table (repo(s), depends-on, parallelizable) + critical path, cross-cutting risks with mitigations, Definition of Done, Files Analyzed appendix
+- [ ] README.md has: objective, key architecture decisions with real file paths, phase sequencing table in the `| # | Phase | Doc | Depends on |` header shape (Doc filenames in backticks) + critical path, cross-cutting risks with mitigations, Definition of Done, Files Analyzed appendix
 - [ ] The final phase is a quality gate
 - [ ] Every phase document has all 5 sections
 - [ ] Every copy-paste agent prompt includes repo path + branch, "read first" file list, numbered tasks, verification commands, report-back instructions
