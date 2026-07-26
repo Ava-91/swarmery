@@ -1284,6 +1284,8 @@ func (h *Handler) retroAdvise(w http.ResponseWriter, r *http.Request) {
 		if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				capN = n
+			} else {
+				log.Printf("warn: ignoring invalid SWARMERY_TRAJJUDGE_CAP=%q", v)
 			}
 		}
 		if err := trajjudge.Score(h.DB, trajjudge.ClaudeRunner{Model: model}, model, time.Now(), capN); err != nil {

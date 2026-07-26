@@ -14,6 +14,7 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,12 @@ func parseJudgment(raw string) (judgment, error) {
 
 const judgeCtxTimeout = 90 * time.Second
 
+// inFlight serializes Score batches. The daemon tick and the manual retro
+// trigger can overlap for up to capN×judgeCtxTimeout; candidates only leave
+// the pool at persist time, so a concurrent batch would re-judge — and re-pay
+// for — the same sessions. Skipping is safe: the next tick picks them up.
+var inFlight atomic.Bool
+
 // Score judges up to capN un-judged (session, agent) candidates for the given
 // judge model, flagged-first then a bounded random sample. Best-effort: any
 // candidate failure is logged and skipped; the batch never aborts. Advisory
@@ -69,6 +76,11 @@ func Score(db *sql.DB, runner Runner, model string, now time.Time, capN int) err
 	if capN <= 0 {
 		return nil
 	}
+	if !inFlight.CompareAndSwap(false, true) {
+		log.Printf("trajjudge: previous batch still in flight, skipping")
+		return nil
+	}
+	defer inFlight.Store(false)
 	cands, err := selectCandidates(db, model, now, capN)
 	if err != nil {
 		return err

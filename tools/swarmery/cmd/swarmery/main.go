@@ -751,6 +751,8 @@ func cmdServe(args []string) error {
 	if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			trajjudgeCap = n
+		} else {
+			log.Printf("warn: ignoring invalid SWARMERY_TRAJJUDGE_CAP=%q", v)
 		}
 	}
 
