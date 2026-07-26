@@ -40,13 +40,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	"os"
-	"strconv"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/advisor"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
@@ -1281,13 +1280,13 @@ func (h *Handler) retroAdvise(w http.ResponseWriter, r *http.Request) {
 		if model == "" {
 			model = "sonnet"
 		}
-		cap := 10
+		capN := 10
 		if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
-				cap = n
+				capN = n
 			}
 		}
-		if err := trajjudge.Score(h.DB, trajjudge.ClaudeRunner{Model: model}, model, time.Now(), cap); err != nil {
+		if err := trajjudge.Score(h.DB, trajjudge.ClaudeRunner{Model: model}, model, time.Now(), capN); err != nil {
 			log.Printf("trajjudge.Score: %v", err)
 		}
 	}()
