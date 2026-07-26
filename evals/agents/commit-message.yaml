@@ -1,0 +1,28 @@
+# commit-message conventional-commit contract suite
+# Hard assert: regex for conventional-commit subject prefix — agent emits "<type>(<scope>): <emoji> <subject>"
+# Soft assert: llm-rubric for fix type, imperative mood, length
+
+- description: commit-message produces a conventional-commit subject
+  vars:
+    system: file://../../plugins/core/agents/commit-message.md
+    task: >
+      Staged diff: added a null check in the telemetry parser that previously
+      crashed on empty payloads. Produce the commit message.
+  assert:
+    - type: regex
+      value: '(?m)^(feat|fix|refactor|chore|docs|test|perf|build|ci)(\(.+\))?!?:'   # hard — (?m): match the subject at line start even if the agent prepends a preamble
+    - type: llm-rubric                                                              # soft
+      value: subject uses the fix type, is imperative mood, and is under ~72 chars
+
+- description: commit-message derives scopes from project config
+  vars:
+    system: file://../../plugins/core/agents/commit-message.md
+    task: >
+      Staged change: modified apps/web-app/src/pages/pricing.tsx (copy tweaks).
+      project.json commitScopes: ["web-app","marketing-site","docs","infra"].
+      Write the commit message.
+  assert:
+    - type: regex
+      value: "^[a-z]+\\((web-app)\\):"    # hard — scope must come from the provided commitScopes list
+    - type: llm-rubric
+      value: a conventional commit message with a type, the web-app scope, and an imperative subject line

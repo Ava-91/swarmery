@@ -29,6 +29,8 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// a fenced per-pack toggle (PUT added in step 03).
 	mux.HandleFunc("GET /api/projects/{id}/plugins", h.projectPlugins)
 	mux.HandleFunc("PUT /api/projects/{id}/plugins/{name}", requireLocalOrigin(h.putProjectPlugin))
+	// canvas v2 parity: project editorial aggregate (rightNow + thisWeek + attention).
+	mux.HandleFunc("GET /api/projects/{id}/overview", h.projectOverview)
 	// onboarding: bootstrap a new consumer project from the dashboard. Fenced
 	// by requireLocalOrigin + an explicit root allow-list (disabled when unset).
 	// The GET exposes defaults (workspace root, enabled state) to the modal.
@@ -58,6 +60,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/stats/timeseries", h.statsTimeseries)
 	mux.HandleFunc("GET /api/stats/breakdown", h.statsBreakdown)
 	mux.HandleFunc("GET /api/stats/matrix", h.statsMatrix)
+	// verification contour v2: per-agent first-pass success rate (analytics.go).
+	mux.HandleFunc("GET /api/analytics/first-pass", h.firstPassRates)
+	// trajjudge phase 2: LLM-judge verdicts for a session (analytics.go).
+	mux.HandleFunc("GET /api/analytics/trajectory-judgments", h.trajectoryJudgments)
 
 	// analytics uplift: tools / skills / durations / errors.
 	mux.HandleFunc("GET /api/stats/tools", h.statsTools)
@@ -233,7 +239,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// 409 when already activated); the docs GET/PUT/PATCH read/edit/checkbox-flip
 	// the plan markdown, path-confined to that task's plan/ dir. The writes carry
 	// the same D4 origin hardening as every other mutating endpoint.
+	// plans-page-lifecycle phase 1: lifecycle actions (pause|resume|archive|
+	// restore) as workspace file operations + a plan_updated WS publish.
 	mux.HandleFunc("GET /api/epics", h.listEpics)
+	mux.HandleFunc("POST /api/epics/{taskId}/lifecycle", requireLocalOrigin(h.epicLifecycle))
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/activate", requireLocalOrigin(h.activateEpicPhase))
 	mux.HandleFunc("GET /api/epics/{taskId}/docs", h.getPlanDoc)
 	mux.HandleFunc("PUT /api/epics/{taskId}/docs", requireLocalOrigin(h.putPlanDoc))

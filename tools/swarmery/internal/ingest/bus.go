@@ -19,6 +19,10 @@ const (
 	// board task row is created or patched. The ONE message type the
 	// fusion-orchestration program adds; nothing above this line may change.
 	NoteTaskUpdated = "task_updated"
+	// plans-page-lifecycle phase 1 — epics (additive): published by wsingest
+	// when a task's plan/ content hash changes, and by the epic lifecycle
+	// endpoint after a pause/resume/archive/restore. Reuses Notification.TaskID.
+	NotePlanUpdated = "plan_updated"
 )
 
 // Notification is one ingest event on the internal bus. It carries row ids

@@ -55,6 +55,10 @@ func shrinkKnobs(t *testing.T) {
 	urlWait = 150 * time.Millisecond
 	killWait = 2 * time.Second
 	probeTimeout = 500 * time.Millisecond
+	// Never probe serena's real default ports from tests: a live serena on
+	// this machine (e.g. :24282) would answer and beat the stub's stdout
+	// parse. Tests that exercise the probe set their own port explicitly.
+	probePorts = nil
 }
 
 func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {

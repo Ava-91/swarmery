@@ -1,10 +1,12 @@
 package api
 
 import (
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -470,5 +472,211 @@ func TestStatsBreakdownCache(t *testing.T) {
 	beta := byKey["-work-beta"]
 	if beta.CacheHitRate == nil || *beta.CacheHitRate != 0 {
 		t.Errorf("beta hit rate = %v, want 0", beta.CacheHitRate)
+	}
+}
+
+// TestTrajectoryJudgments validates GET /api/analytics/trajectory-judgments
+// returns the LLM-judge verdicts for a given session.
+func TestTrajectoryJudgments(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "trajjudge.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	const tsFmt = "2006-01-02T15:04:05.000Z"
+	now := time.Now()
+	at := func(d time.Time) string { return d.UTC().Format(tsFmt) }
+	ts := at(now)
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES (1, '/work/p', '-work-p', 'P', ?)`, ts)
+	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at) VALUES (1, 1, 'u1', 'completed', ?)`, ts)
+	mustExec(`INSERT INTO trajectory_judgments
+		(session_id, agent, model, judged_at, end_result, instruction_compliance, pitfalls, tool_calls, overall, review)
+		VALUES (1, 'tech-lead', 'sonnet', '2026-07-25T00:00:00Z', 4, 5, 2, 4, 3.75, 'skipped tests [t1]')`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	t.Run("returns judgments for session", func(t *testing.T) {
+		// Binds every wire key, camelCase — pins the JSON contract the web
+		// client (Retro) depends on, not just the casing-invariant fields.
+		var out []struct {
+			Agent                 string  `json:"agent"`
+			Model                 string  `json:"model"`
+			JudgedAt              string  `json:"judgedAt"`
+			EndResult             int     `json:"endResult"`
+			InstructionCompliance int     `json:"instructionCompliance"`
+			Pitfalls              int     `json:"pitfalls"`
+			ToolCalls             int     `json:"toolCalls"`
+			Overall               float64 `json:"overall"`
+			Review                string  `json:"review"`
+		}
+		getJSON(t, srv.URL+"/api/analytics/trajectory-judgments?session=1", &out)
+		if len(out) != 1 {
+			t.Fatalf("got %d rows, want 1", len(out))
+		}
+		if out[0].Agent != "tech-lead" || out[0].Model != "sonnet" {
+			t.Errorf("agent/model = %q/%q, want tech-lead/sonnet", out[0].Agent, out[0].Model)
+		}
+		if out[0].JudgedAt == "" {
+			t.Errorf("judgedAt is empty, want non-empty")
+		}
+		if out[0].EndResult != 4 || out[0].InstructionCompliance != 5 ||
+			out[0].Pitfalls != 2 || out[0].ToolCalls != 4 {
+			t.Errorf("dims = %d/%d/%d/%d, want 4/5/2/4", out[0].EndResult,
+				out[0].InstructionCompliance, out[0].Pitfalls, out[0].ToolCalls)
+		}
+		if out[0].Overall < 3.7 {
+			t.Errorf("overall = %v, want >= 3.7", out[0].Overall)
+		}
+		if out[0].Review == "" {
+			t.Errorf("review is empty, want non-empty")
+		}
+	})
+
+	t.Run("empty result for unknown session", func(t *testing.T) {
+		// Assert the raw body: decoding would accept `null` too, but the wire
+		// contract is an empty array.
+		res, err := http.Get(srv.URL + "/api/analytics/trajectory-judgments?session=999")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(string(body)); got != "[]" {
+			t.Errorf("body = %q, want []", got)
+		}
+	})
+
+	t.Run("missing session param returns 400", func(t *testing.T) {
+		res, err := http.Get(srv.URL + "/api/analytics/trajectory-judgments")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", res.StatusCode)
+		}
+	})
+}
+
+// TestFirstPassRates validates GET /api/analytics/first-pass returns per-agent
+// first-pass success rates from trajectory_scores.
+func TestFirstPassRates(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "firstpass.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	const tsFmt = "2006-01-02T15:04:05.000Z"
+	now := time.Now()
+	at := func(d time.Time) string { return d.UTC().Format(tsFmt) }
+	ts := at(now)
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES (1, '/work/p', '-work-p', 'P', ?)`, ts)
+	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at) VALUES
+		(1, 1, 'u1', 'completed', ?),
+		(2, 1, 'u2', 'completed', ?),
+		(3, 1, 'u3', 'completed', ?)`, ts, ts, ts)
+
+	// tech-lead: 2 first-pass=1 + 1 first-pass=0 → rate 2/3 ≈ 0.667
+	mustExec(`INSERT INTO trajectory_scores(session_id, agent, first_pass, computed_at) VALUES
+		(1, 'tech-lead', 1, ?),
+		(2, 'tech-lead', 1, ?),
+		(3, 'tech-lead', 0, ?)`, ts, ts, ts)
+
+	// explore: 1 first-pass=1 — stored lowercase as normAgent("Explore")="explore".
+	// This seed exercises the path that the Retro chip lookup depends on: the API
+	// must return agent="explore" (not "Explore") so row.agent.toLowerCase() on the
+	// client matches the map key verbatim.
+	mustExec(`INSERT INTO trajectory_scores(session_id, agent, first_pass, computed_at) VALUES
+		(3, 'explore', 1, ?)`, ts)
+
+	// Plant one finding for session 3 tech-lead score (id=3) to exercise the kinds
+	// population path.
+	mustExec(`INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids)
+		VALUES (3, 'verify-skip', 'warn', '[]')`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var out []struct {
+		Agent     string   `json:"agent"`
+		Sessions  int      `json:"sessions"`
+		FirstPass int      `json:"firstPass"`
+		Rate      float64  `json:"rate"`
+		Kinds     []string `json:"kinds"`
+	}
+	getJSON(t, srv.URL+"/api/analytics/first-pass", &out)
+
+	byAgent := make(map[string]struct {
+		Sessions  int
+		FirstPass int
+		Rate      float64
+		Kinds     []string
+	}, len(out))
+	for _, r := range out {
+		byAgent[r.Agent] = struct {
+			Sessions  int
+			FirstPass int
+			Rate      float64
+			Kinds     []string
+		}{r.Sessions, r.FirstPass, r.Rate, r.Kinds}
+	}
+
+	tl, ok := byAgent["tech-lead"]
+	if !ok || tl.Sessions != 3 || tl.FirstPass != 2 {
+		t.Fatalf("tech-lead = %+v (ok=%v), want sessions=3 firstPass=2", tl, ok)
+	}
+	if tl.Rate < 0.66 || tl.Rate > 0.67 {
+		t.Errorf("tech-lead rate = %v, want ~0.667", tl.Rate)
+	}
+	if tl.Kinds == nil {
+		t.Errorf("tech-lead kinds = nil, want empty slice or populated")
+	}
+	// kinds population: the finding we inserted must appear exactly once.
+	if len(tl.Kinds) != 1 || tl.Kinds[0] != "verify-skip" {
+		t.Errorf("tech-lead kinds = %v, want [\"verify-skip\"]", tl.Kinds)
+	}
+
+	// Verify the explore agent is returned with its key already lowercased —
+	// this is the storage-grain guarantee the Retro chip lookup relies on.
+	ex, ok := byAgent["explore"]
+	if !ok {
+		t.Fatalf("explore agent missing from response; got agents: %v", func() []string {
+			ks := make([]string, 0, len(byAgent))
+			for k := range byAgent {
+				ks = append(ks, k)
+			}
+			return ks
+		}())
+	}
+	if ex.Sessions != 1 || ex.FirstPass != 1 {
+		t.Errorf("explore = %+v, want sessions=1 firstPass=1", ex)
 	}
 }

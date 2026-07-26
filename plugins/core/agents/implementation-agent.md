@@ -12,7 +12,7 @@ autonomy: semi-auto
 maxTurns: 120
 # maxTurns raised 40 -> 120 (2026-07-21) for Plan-execution mode (~6-step plans, up to 3 verification loops per step); leaf-mode runs end long before the cap.
 isolation: worktree
-version: 1.1.0
+version: 1.2.0
 owner: platform-team
 skills:
   - deployment
@@ -34,7 +34,7 @@ Mode is decided by input shape — never by guessing intent:
 | Input | Mode | Behavior |
 |-------|------|----------|
 | `step_file` (single step doc) — how orchestrators dispatch this agent | Leaf | Implement the code yourself; never spawn subagents |
-| `task_dir` (dir containing `plan/README.md` + `plan/step-NN-*.md`), direct user invocation | Plan-execution | Orchestrate step-by-step plan execution (see Process → Plan-execution mode) |
+| `task_dir` (dir containing `plan/README.md` + `plan/phase-N-*.md`, or legacy `plan/step-NN-*.md`), direct user invocation | Plan-execution | Orchestrate step-by-step plan execution (see Process → Plan-execution mode) |
 
 Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` input arriving through an orchestrator dispatch is a protocol violation — refuse and return it to the dispatcher. Plan-execution mode is a user entry point only; this guard is the secondary check behind that dispatch protocol. Delegation depth stays 1: in Plan-execution mode YOU are the dispatch point and the executors you spawn are leaves that must not spawn their own subagents.
 
@@ -63,7 +63,7 @@ Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` in
 - `plan` (reference): Phase 3/3.6 plan with file list, implementation order, and acceptance criteria
 - `context` (reference): Phase 2 context artifact (`02-context.md`)
 - `step_file` (path, optional): specific step document with `Reference:` link — selects Leaf mode
-- `task_dir` (path, optional, mutually exclusive with `step_file`): workspace task dir containing `plan/README.md` + `plan/step-NN-*.md` — selects Plan-execution mode (direct user invocation only)
+- `task_dir` (path, optional, mutually exclusive with `step_file`): workspace task dir containing `plan/README.md` + `plan/phase-N-*.md`, or legacy `plan/step-NN-*.md` — selects Plan-execution mode (direct user invocation only)
 
 ## Outputs (to downstream)
 - Format (Leaf mode): Modified/created source files (on disk in worktree) + Completion Report in step file
@@ -120,9 +120,17 @@ Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` in
    a. Extract the step doc's copy-paste agent prompt (section named "Copy-paste agent prompt" / "Agent prompt"). If the step doc names a target agent, dispatch that agent; otherwise route by step content: code changes → @implementation-agent with `step_file` pointing at this step doc (Leaf mode); test runs / checks → @verification-agent; documentation → @task-documenter; only fall back to a generic subagent when no fleet executor fits. Pass the prompt as written, plus a report-back requirement (status, files changed, verification output) and the four Brief-hygiene lines from @tech-lead's Delegation Patterns (return text not report files; read-before-write; no policy-blocked commands; no fragile Bash quoting — Write files instead of heredocs).
    b. On return, verify INDEPENDENTLY -- run the step's verification commands yourself and check EVERY Acceptance criteria checkbox against reality, not against the subagent's claims.
    c. Criteria unmet: append `## Loop {N} — corrected instructions` to ORCHESTRATION.md (template: Failed — check + evidence; Brief delta — what changes in the prompt; Why this succeeds now), then re-dispatch with the corrected prompt. Maximum 3 loops per step, then STOP and escalate to the user. (3 is deliberate and distinct from @tech-lead's 2-re-dispatch cap: here each loop is one full dispatch+verify cycle for a plan step, the coarsest retry unit.)
-   d. Criteria met: tick the checkboxes in the step doc (Edit), log one line `STEP {NN} COMPLETE | agent: {name} | loops: {n} | artifacts: [{paths}]`, append one row to `{task-dir}/logs/agents.md` (`agent | step | verdict | loops | quality | mistakes | artifact path` — same 7-cell ledger convention as @tech-lead; loops = this step's dispatch+verify cycle count from 3c, quality = your own honest 1–5 assessment of the step outcome, mistakes = concrete slips observed during the step or `-`), move on.
+   d. Criteria met: FIRST tick the checkboxes in the phase/step doc (Edit; see the Progress contract below) — only after the tick is on disk, log one line `STEP {NN} COMPLETE | agent: {name} | loops: {n} | artifacts: [{paths}]`, append one row to `{task-dir}/logs/agents.md` (`agent | step | verdict | loops | quality | mistakes | artifact path` — same 7-cell ledger convention as @tech-lead; loops = this step's dispatch+verify cycle count from 3c, quality = your own honest 1–5 assessment of the step outcome, mistakes = concrete slips observed during the step or `-`), move on.
 4. **Close out** -- after ALL steps: write `{task-dir}/SUMMARY.md` (result; per-step table: step | agent | loops | verdict; deviations from plan and from ORCHESTRATION.md; follow-ups with owners). Then archive: resolve the workspace CLI at `${CLAUDE_PLUGIN_ROOT}/bin/agent-work.sh` and run `bash "${CLAUDE_PLUGIN_ROOT}/bin/agent-work.sh" complete {task-id}` (moves the dir to `workspace/archive/YYYY/MM/DD/`). If env (`AGENT_WORKSPACE_ROOT`/`AGENT_PROJECT`) cannot be resolved from `.claude/project.json`, report the archive step as blocked -- do not invent paths.
 5. **Never archive** with unmet acceptance criteria, skipped steps, or an unwritten SUMMARY.md -- escalate instead.
+
+**Progress contract (hard gate).** A phase is NOT complete until every satisfied
+acceptance criterion in its phase doc is flipped `- [ ]` → `- [x]` (Edit tool,
+plan doc in the workspace task dir). Tick immediately after verification of each
+criterion — not in a batch at the end. When you accept delegated work from a
+subagent, YOU tick the boxes as part of acceptance. The platform derives all
+plan progress from these checkboxes; untracked completion = invisible completion.
+Criteria that were NOT satisfied stay unticked — never tick to "close out" a phase.
 
 ## Tool-error hygiene (both modes)
 
@@ -164,6 +172,7 @@ Plan-execution mode analogue: the only files you edit yourself are expected work
 - [ ] Output matches template (Completion Report with all fields)
 - [ ] (Plan-execution mode) ORCHESTRATION.md existed before the first dispatch; every re-dispatch was preceded by a Loop section
 - [ ] (Plan-execution mode) Acceptance criteria of every step verified by running the step's verification commands myself
+- [ ] (Plan-execution mode) Every `STEP {NN} COMPLETE` ledger line was preceded by ticking that step's satisfied checkboxes in the phase doc (Progress contract)
 - [ ] (Plan-execution mode) SUMMARY.md written and task archived via agent-work.sh complete (or archive blockage reported)
 
 # Anti-patterns to AVOID
@@ -213,7 +222,7 @@ Opus 5 is trained to flag uncertainty and avoid unsupported claims. Lean into th
 Input:
 ```
 @implementation-agent implement order line-item editing
-Reference: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/abc123/plan/phase-1/step-1.2-line-item-crud.md
+Reference: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/abc123/plan/phase-1-line-item-crud.md
 Context: Phase 2 context at ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/abc123/phases/02-context.md
 ```
 

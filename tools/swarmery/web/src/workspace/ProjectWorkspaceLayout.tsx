@@ -18,8 +18,8 @@ import { useScope } from '../lib/scope';
 import {
   TerminalDock,
   emptyDock,
-  openProjectTerminal,
   openWorktreeTerminal,
+  toggleDock,
   type DockState,
 } from '../terminal/TerminalDock';
 import { ProjectWorkspaceProvider, useProjectWorkspace } from './ProjectContext';
@@ -159,13 +159,7 @@ function WorkspaceInner(): JSX.Element {
   // StatusBar toggle: opens a first project-root terminal if none exist, else
   // just flips the dock's visibility.
   const toggleTerminal = useCallback(() => {
-    setDock((prev) => {
-      if (prev.tabs.length === 0) {
-        if (projectPath === '') return prev; // project not resolved yet
-        return openProjectTerminal(prev, projectPath);
-      }
-      return { ...prev, open: !prev.open };
-    });
+    setDock((prev) => toggleDock(prev, projectPath));
   }, [projectPath]);
   const openWorktree = useCallback((taskLabel: string, worktreePath: string) => {
     setDock((prev) => openWorktreeTerminal(prev, taskLabel, worktreePath));

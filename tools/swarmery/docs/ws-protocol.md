@@ -32,7 +32,9 @@ type WSMessage =
   | { type: 'permission_requested'; payload: PermissionRequest }
   | { type: 'permission_resolved';  payload: PermissionRequest }
   // phase 4 — system registry (frozen at step-03):
-  | { type: 'system_item_updated'; payload: SystemItemUpdate };
+  | { type: 'system_item_updated'; payload: SystemItemUpdate }
+  // plans-page-lifecycle phase 1 — epics:
+  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } };
 ```
 
 `Session` and `Event` are byte-for-byte the same JSON DTOs the REST API
@@ -138,6 +140,28 @@ payload contract are frozen at step-03; the WS-side hydration of this frame is
 wired together with the `/api/system/*` endpoints at step-05. Until then the
 note exists on the internal bus only.
 
+### `plan_updated` (plans-page-lifecycle phase 1)
+
+Added by the plans-page-lifecycle program; everything above is unchanged.
+Published on the internal bus (`ingest.NotePlanUpdated`) by two emitters:
+
+1. **wsingest** — whenever a workspace task's `plan/` content hash (or its
+   on-disk location) changes during a scan pass, i.e. a checkbox flip, a plan
+   doc edit, or a zone move was ingested;
+2. **the epic lifecycle endpoint** (`POST /api/epics/{taskId}/lifecycle`) —
+   after every pause / resume / archive / restore action.
+
+The payload is intentionally thin — a **cache-invalidation hint**, not data:
+clients refetch `GET /api/epics` (the same pattern the Plans page uses for
+`task_updated`). `taskId` is the workspace task (`tasks.id`), `projectId` its
+owning project.
+
+```json
+{"type":"plan_updated","payload":{"taskId":42,"projectId":1}}
+```
+
+`web/src/api/types.ts` picks the union member up in phase 2 of the program.
+
 ## Delivery semantics
 
 - **Hint stream, not a source of truth.** Delivery is at-most-once: a slow
@@ -164,3 +188,5 @@ note exists on the internal bus only.
 | Approvals: new `permission_requests` row (phase 2) | `permission_requested` |
 | Approvals: request leaves `pending` — any terminal status (phase 2) | `permission_resolved` |
 | sysscan: config item created / new content version / soft-deleted (phase 4, WS wiring at step-05) | `system_item_updated` |
+| wsingest: a task's `plan/` content hash or location changed during a scan pass | `plan_updated` |
+| Epic lifecycle endpoint: pause / resume / archive / restore applied | `plan_updated` |

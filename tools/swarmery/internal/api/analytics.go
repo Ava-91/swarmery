@@ -1139,3 +1139,127 @@ func (h *Handler) statsMatrix(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, out, nil)
 }
+
+// ── /api/analytics/trajectory-judgments ──────────────────────────────────────
+
+// trajectoryJudgments returns the advisory LLM-judge verdicts for one session.
+func (h *Handler) trajectoryJudgments(w http.ResponseWriter, r *http.Request) {
+	sid := r.URL.Query().Get("session")
+	if sid == "" {
+		http.Error(w, `{"error":"missing session"}`, http.StatusBadRequest)
+		return
+	}
+	rows, err := h.DB.Query(`
+		SELECT agent, model, judged_at, end_result, instruction_compliance,
+		       pitfalls, tool_calls, overall, review
+		FROM trajectory_judgments WHERE session_id = ? ORDER BY agent, model`, sid)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rows.Close()
+
+	type judgmentRow struct {
+		Agent                 string  `json:"agent"`
+		Model                 string  `json:"model"`
+		JudgedAt              string  `json:"judgedAt"`
+		EndResult             int     `json:"endResult"`
+		InstructionCompliance int     `json:"instructionCompliance"`
+		Pitfalls              int     `json:"pitfalls"`
+		ToolCalls             int     `json:"toolCalls"`
+		Overall               float64 `json:"overall"`
+		Review                string  `json:"review"`
+	}
+	out := []judgmentRow{} // empty slice, not nil, so JSON is [] not null
+	for rows.Next() {
+		var row judgmentRow
+		if err := rows.Scan(
+			&row.Agent, &row.Model, &row.JudgedAt,
+			&row.EndResult, &row.InstructionCompliance,
+			&row.Pitfalls, &row.ToolCalls, &row.Overall, &row.Review,
+		); err != nil {
+			writeErr(w, err)
+			return
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, out, rows.Err())
+}
+
+// ── /api/analytics/first-pass ─────────────────────────────────────────────────
+
+// firstPassRates returns per-agent first-pass success rate from trajectory_scores,
+// including the distinct anti-pattern kinds that have been detected for each agent.
+func (h *Handler) firstPassRates(w http.ResponseWriter, r *http.Request) {
+	// Main aggregate: per-agent session count and first-pass sum.
+	rows, err := h.DB.Query(`
+		SELECT agent, COUNT(*), SUM(first_pass)
+		FROM trajectory_scores
+		GROUP BY agent
+		ORDER BY agent`)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rows.Close()
+	type fpRow struct {
+		Agent     string   `json:"agent"`
+		Sessions  int      `json:"sessions"`
+		FirstPass int      `json:"firstPass"`
+		Rate      float64  `json:"rate"`
+		Kinds     []string `json:"kinds"`
+	}
+	byAgent := map[string]*fpRow{}
+	var order []string
+	for rows.Next() {
+		var agent string
+		var sessions, fp int
+		if err := rows.Scan(&agent, &sessions, &fp); err != nil {
+			writeErr(w, err)
+			return
+		}
+		r := &fpRow{Agent: agent, Sessions: sessions, FirstPass: fp, Kinds: []string{}}
+		if sessions > 0 {
+			r.Rate = float64(fp) / float64(sessions)
+		}
+		byAgent[agent] = r
+		order = append(order, agent)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	// Distinct finding kinds per agent (for Retro trajectory chips).
+	krows, err := h.DB.Query(`
+		SELECT s.agent, f.kind
+		FROM trajectory_findings f
+		JOIN trajectory_scores s ON s.id = f.score_id
+		GROUP BY s.agent, f.kind
+		ORDER BY s.agent, f.kind`)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer krows.Close()
+	for krows.Next() {
+		var agent, kind string
+		if err := krows.Scan(&agent, &kind); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if rr, ok := byAgent[agent]; ok {
+			rr.Kinds = append(rr.Kinds, kind)
+		}
+	}
+	if err := krows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	out := make([]fpRow, 0, len(order))
+	for _, agent := range order {
+		out = append(out, *byAgent[agent])
+	}
+	writeJSON(w, out, nil)
+}

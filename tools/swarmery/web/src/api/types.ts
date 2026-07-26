@@ -1038,7 +1038,8 @@ export type WSMessageType =
   | 'permission_requested'
   | 'permission_resolved'
   | 'system_item_updated'
-  | 'task_updated';
+  | 'task_updated'
+  | 'plan_updated';
 
 /** Messages pushed over /api/ws — see docs/ws-protocol.md. */
 export type WSMessage =
@@ -1048,7 +1049,8 @@ export type WSMessage =
   | { type: 'permission_requested'; payload: PermissionRequest }
   | { type: 'permission_resolved'; payload: PermissionRequest }
   | { type: 'system_item_updated'; payload: SystemItemUpdate }
-  | { type: 'task_updated'; payload: BoardTask };
+  | { type: 'task_updated'; payload: BoardTask }
+  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } };
 
 // --- Fusion phase 1: task board — additive contracts --------------------------
 
@@ -1823,6 +1825,43 @@ export interface ConnectorsResponse {
   connectors: Connector[];
 }
 
+// --- Project overview (GET /api/projects/{id}/overview, Canvas v2 phase 1) ----
+
+/** One "Right now" live-count tile. tone: green | amber | red | neutral. */
+export interface OverviewTile {
+  label: string;
+  value: number;
+  sub: string;
+  tone: 'green' | 'amber' | 'red' | 'neutral';
+}
+
+/** One "This week" delta metric. Value/delta/deltaTone are null when no data. */
+export interface WeekMetric {
+  label: string;
+  /** Null when the current window has no data (honesty rule). */
+  value: string | null;
+  /** Null when there is no previous-window data to compare against. */
+  delta: string | null;
+  /** green | red | neutral; null when delta is null. */
+  deltaTone: 'green' | 'red' | 'neutral' | null;
+  sub: string;
+}
+
+/** One "Needs attention" action row. tone: amber | red. */
+export interface AttentionItem {
+  text: string;
+  action: string;
+  href: string;
+  tone: 'amber' | 'red';
+}
+
+/** GET /api/projects/{id}/overview — editorial aggregate for the Canvas v2 home. */
+export interface ProjectOverviewResp {
+  rightNow: OverviewTile[];
+  thisWeek: WeekMetric[];
+  attention: AttentionItem[];
+}
+
 /** POST body for adding a server. command/args apply to stdio; url to http/sse.
  * The page only offers 'stdio' | 'http' | 'sse' and scope 'local' | 'user'. */
 export interface AddConnectorInput {
@@ -1933,14 +1972,15 @@ export interface EpicRollup {
   pct: number;
 }
 
-/** One epic (a workspace plan) — mirrors epicDTO in internal/api/epics.go. */
+/** One epic (a workspace plan) — mirrors epicDTO in internal/api/epics.go.
+ * `status` is the derived planStatus (zone > README > rollup precedence). */
 export interface Epic {
   taskId: number;
   externalId: string;
   projectId: number;
   projectSlug: string;
   title: string;
-  status: string;
+  status: 'active' | 'paused' | 'done' | 'archived';
   startedAt: string | null;
   planDir: string;
   phases: EpicPhase[];

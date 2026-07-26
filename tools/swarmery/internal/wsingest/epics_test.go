@@ -1,10 +1,13 @@
 package wsingest
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCountCheckboxes(t *testing.T) {
@@ -309,5 +312,149 @@ func TestScanEpicsPreservesActivation(t *testing.T) {
 	}
 	if at != "2026-07-24T00:00:00Z" || boardID != 999 {
 		t.Errorf("activation lost after rescan: at=%q board=%d", at, boardID)
+	}
+}
+
+// demoWorkspace builds a minimal temp workspace with one epic task
+// (working/2026/07/26/demo: card README + plan/README.md phase table +
+// plan/phase-1-demo.md with checkboxes) and returns the root and the phase
+// doc path.
+func demoWorkspace(t *testing.T) (root, phaseDoc string) {
+	t.Helper()
+	root = t.TempDir()
+	taskDir := filepath.Join(root, "demo", "workspace", "working", "2026", "07", "26", "demo")
+	planDir := filepath.Join(taskDir, "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(taskDir, "README.md"): "# Task: Demo epic\n\n" +
+			"- **Статус**: active\n- **Старт**: 2026-07-26 · **Завершено**: —\n- **Ціль**: demo goal\n",
+		filepath.Join(planDir, "README.md"): "# Demo plan\n\n" +
+			"| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
+			"| 1 | Demo | `phase-1-demo.md` | — |\n",
+		filepath.Join(planDir, "phase-1-demo.md"): "# Phase 1 — Demo\n\n" +
+			"## Acceptance criteria\n- [ ] a\n- [ ] b\n",
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, filepath.Join(planDir, "phase-1-demo.md")
+}
+
+// TestScanNotifiesPlanUpdated: Config.NotifyPlan fires exactly once per task
+// whose plan hash changed — on first index, NOT on an unchanged rescan, and
+// again after a checkbox flip.
+func TestScanNotifiesPlanUpdated(t *testing.T) {
+	db := testDB(t)
+	root, phaseDoc := demoWorkspace(t)
+
+	var fired []int64
+	s := New(db, Config{
+		WorkspaceRoot: root,
+		NotifyPlan:    func(taskID int64) { fired = append(fired, taskID) },
+	})
+
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+	if len(fired) != 1 {
+		t.Fatalf("after first scan fired = %v, want exactly one notification", fired)
+	}
+	var taskID int64
+	if err := db.QueryRow(`SELECT id FROM tasks WHERE external_id='2026-07-26-demo'`).Scan(&taskID); err != nil {
+		t.Fatalf("demo task row: %v", err)
+	}
+	if fired[0] != taskID {
+		t.Errorf("notified task = %d, want %d", fired[0], taskID)
+	}
+
+	// Unchanged rescan → hash gate holds, no notification.
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+	if len(fired) != 1 {
+		t.Errorf("after unchanged rescan fired = %v, want still one", fired)
+	}
+
+	// Checkbox flip → hash changes → one more notification.
+	raw, err := os.ReadFile(phaseDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipped := []byte(strings.Replace(string(raw), "- [ ] a", "- [x] a", 1))
+	if err := os.WriteFile(phaseDoc, flipped, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 3: %v", err)
+	}
+	if len(fired) != 2 || fired[1] != taskID {
+		t.Errorf("after checkbox flip fired = %v, want [%d %d]", fired, taskID, taskID)
+	}
+}
+
+// TestRunWatcherTriggersRescan: with an effectively-disabled ticker (1 h), a
+// plan-doc edit must still cause a rescan (and thus NotifyPlan) via the
+// fsnotify watcher within the debounce window — the phase-1 latency contract.
+func TestRunWatcherTriggersRescan(t *testing.T) {
+	db := testDB(t)
+	root, phaseDoc := demoWorkspace(t)
+
+	fired := make(chan int64, 16)
+	s := New(db, Config{
+		WorkspaceRoot:  root,
+		RescanInterval: time.Hour, // only fsnotify can trigger the second scan
+		NotifyPlan:     func(taskID int64) { fired <- taskID },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Run(ctx)
+	}()
+	t.Cleanup(func() { // stop Run BEFORE testDB's cleanup closes the DB
+		cancel()
+		<-done
+	})
+
+	// Initial scan indexes the plan and fires once. NotifyPlan fires
+	// mid-scan (from scanEpics) — Run only registers the watches AFTER that
+	// scan returns, so the edit below is re-applied on an interval until its
+	// rescan lands (same poll-handshake pattern as api's newFrameReader).
+	select {
+	case <-fired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial scan did not notify")
+	}
+
+	raw, err := os.ReadFile(phaseDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flip := func(on bool) {
+		body := string(raw)
+		if on {
+			body = strings.Replace(body, "- [ ] b", "- [x] b", 1)
+		}
+		if err := os.WriteFile(phaseDoc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.After(10 * time.Second)
+	on := true
+	for {
+		flip(on)
+		on = !on // alternate so every write really changes the plan hash
+		select {
+		case <-fired:
+			return // fsnotify → debounce → rescan → NotifyPlan: contract holds
+		case <-time.After(300 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("fsnotify-triggered rescan did not fire (watcher dead?)")
+		}
 	}
 }

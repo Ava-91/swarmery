@@ -48,6 +48,7 @@ import type {
   ProjectDetail,
   ProjectMeta,
   ProjectMetaPatch,
+  ProjectOverviewResp,
   ProjectPluginsResponse,
   ProjectPluginToggleResponse,
   ProjectsHealthResponse,
@@ -104,6 +105,11 @@ export function fetchProjects(includeArchived = false): Promise<ProjectsResponse
 export function fetchProject(id: number | string): Promise<ProjectDetail> {
   if (MOCK) return mockApi.project(id);
   return get(`/api/projects/${encodeURIComponent(id)}`);
+}
+
+/** GET /api/projects/{id}/overview — Canvas v2 editorial aggregate (rightNow / thisWeek / attention). */
+export function fetchProjectOverview(id: number | string): Promise<ProjectOverviewResp> {
+  return get(`/api/projects/${encodeURIComponent(id)}/overview`);
 }
 
 /** DELETE /api/projects/{id} — soft-archive (remove from the default list). */
@@ -1263,6 +1269,38 @@ export class PhaseAlreadyActivatedError extends Error {
   }
 }
 
+export type EpicLifecycleAction = 'pause' | 'resume' | 'archive' | 'restore';
+
+/**
+ * POST /api/epics/{taskId}/lifecycle {action} → 200 {status}. File-backed on
+ * the daemon side (README status rewrite / working↔archive zone move); 409 on
+ * an invalid transition, 404 when the task has no plan dir.
+ */
+export async function epicLifecycle(
+  taskId: number,
+  action: EpicLifecycleAction,
+): Promise<{ status: Epic['status'] }> {
+  if (MOCK) {
+    const next: Record<EpicLifecycleAction, Epic['status']> = {
+      pause: 'paused',
+      resume: 'active',
+      archive: 'archived',
+      restore: 'active',
+    };
+    return { status: next[action] };
+  }
+  const res = await fetch(`/api/epics/${String(taskId)}/lifecycle`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `lifecycle ${action} failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: Epic['status'] };
+}
+
 /** GET /api/epics/{taskId}/docs?path= — read a plan doc (path-confined). */
 export function fetchPlanDoc(taskId: number, path: string): Promise<PlanDoc> {
   if (MOCK) return mockApi.planDoc(taskId, path);
@@ -1305,4 +1343,41 @@ export async function togglePlanCheckbox(
     throw new Error(data.error ?? `toggle checkbox failed: ${String(res.status)}`);
   }
   return (await res.json()) as PlanDoc;
+}
+
+// --- verification contour (phase 2) ------------------------------------------
+
+/** Per-agent first-pass success rate from trajectory_scores. */
+export interface FirstPassRow {
+  agent: string;
+  sessions: number;
+  firstPass: number;
+  rate: number;
+  /** Distinct anti-pattern kinds detected for this agent (for Retro chips). */
+  kinds: string[];
+}
+
+export function fetchFirstPassRates(): Promise<FirstPassRow[]> {
+  return get('/api/analytics/first-pass');
+}
+
+// --- verification contour (phase 2) — LLM-judge trajectory judgments ----------
+
+/** Advisory LLM-judge verdict for one session × agent × model. Scores 1–5 (higher = better). */
+export interface TrajectoryJudgment {
+  agent: string;
+  model: string;
+  judgedAt: string;
+  endResult: number;
+  instructionCompliance: number;
+  pitfalls: number;
+  toolCalls: number;
+  overall: number;
+  review: string;
+}
+
+/** GET /api/analytics/trajectory-judgments?session=<id> — verdicts for one session.
+ * Returns [] when no judgments have been recorded yet. */
+export function fetchTrajectoryJudgments(sessionId: number): Promise<TrajectoryJudgment[]> {
+  return get(`/api/analytics/trajectory-judgments?session=${String(sessionId)}`);
 }

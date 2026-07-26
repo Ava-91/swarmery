@@ -42,6 +42,16 @@ func publishSessionUpdated(id int64) {
 	}
 }
 
+// publishPlanUpdated notifies WS subscribers that a workspace task's plan
+// changed (plan/ content hash or lifecycle state) so the Plans page refetches
+// without waiting for the next rescan tick. A no-op when the bus is not
+// attached (e.g. serve --no-ingest).
+func publishPlanUpdated(taskID int64) {
+	if wsBus != nil {
+		wsBus.Publish(ingest.Notification{Type: ingest.NotePlanUpdated, TaskID: taskID})
+	}
+}
+
 const (
 	wsSubscriberBuffer = 256
 	wsWriteTimeout     = 5 * time.Second
@@ -161,6 +171,18 @@ func (h *Handler) buildWSMessage(n ingest.Notification) ([]byte, error) {
 			return nil, nil
 		}
 		payload = bt
+	case ingest.NotePlanUpdated:
+		// plans-page-lifecycle phase 1: intentionally thin {taskId, projectId}
+		// hint — the client refetches the epic list, same pattern the Plans
+		// page already uses for task_updated (see docs/ws-protocol.md).
+		p, err := h.planUpdatedPayload(n.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		if p == nil {
+			return nil, nil
+		}
+		payload = p
 	default:
 		return nil, errors.New("unknown notification type " + n.Type)
 	}

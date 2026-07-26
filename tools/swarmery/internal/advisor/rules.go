@@ -864,6 +864,53 @@ func r7StaleArchitectureMap(db *sql.DB, win window, now time.Time) ([]finding, e
 	return out, rows.Err()
 }
 
+// ── R8: recurring trajectory anti-patterns ────────────────────────────────────
+
+// R8MinHits is the anti-pattern count within the window that makes R8 fire.
+const R8MinHits = 3
+
+// r8TrajectoryAntiPatterns proposes a review when one agent accumulates
+// R8MinHits+ trajectory anti-patterns of the same kind in-window. Notification
+// only — advisor findings never block a merge.
+func r8TrajectoryAntiPatterns(db *sql.DB, win window) ([]finding, error) {
+	rows, err := db.Query(`
+		SELECT s.agent, f.kind, COUNT(*)
+		FROM trajectory_findings f
+		JOIN trajectory_scores s ON s.id = f.score_id
+		WHERE s.computed_at >= ? AND s.computed_at < ?
+		GROUP BY s.agent, f.kind
+		HAVING COUNT(*) >= ?
+		ORDER BY s.agent, f.kind`, win.From, win.To, R8MinHits)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []finding
+	for rows.Next() {
+		var agent, kind string
+		var n int
+		if err := rows.Scan(&agent, &kind, &n); err != nil {
+			return nil, err
+		}
+		agent = normAgent(agent)
+		out = append(out, finding{
+			rule:       "R8",
+			targetKind: "agent",
+			target:     agent,
+			title:      "Recurring trajectory anti-pattern: " + kind + " (" + agent + ")",
+			detail: fmt.Sprintf(
+				"agent %s hit %q %d times in-window. Deterministic trajectory detector (search-loop / verify-skip). Review the agent's harness — a missing verification step or a search that never converges.",
+				agent, kind, n),
+			evidence: map[string]any{
+				"window": win,
+				"counts": map[string]int{kind: n},
+			},
+		})
+	}
+	sortFindings(out)
+	return out, rows.Err()
+}
+
 // sortFindings orders findings by target for deterministic upsert order.
 func sortFindings(fs []finding) {
 	sort.Slice(fs, func(i, j int) bool { return fs[i].target < fs[j].target })

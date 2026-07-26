@@ -20,16 +20,21 @@ import type {
   RetroFrictionResp,
   RetroLesson,
   RetroTaskRow,
+  Session,
 } from '../api/types';
 import {
   applyProposal,
   createApprovalRule,
+  fetchFirstPassRates,
   fetchProposals,
   fetchRecommendations,
   fetchRetroAgents,
   fetchRetroFriction,
   fetchRetroLessons,
   fetchRetroTasks,
+  fetchSessions,
+  fetchTrajectoryJudgments,
+  type TrajectoryJudgment,
   patchProposal,
   patchRecommendation,
   retryProposal,
@@ -675,6 +680,151 @@ function ProposalsRail({ reloadKey }: { reloadKey: number }): JSX.Element | null
   );
 }
 
+/* ----- LLM-judge trajectory panels (verification contour phase 2) ----- */
+
+/** Score bar: n/5 filled segments. Higher = better for all dims. */
+function ScoreBar({ value }: { value: number }): JSX.Element {
+  return (
+    <span className="inline-flex gap-[2px]" aria-hidden="true">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <span
+          key={i}
+          className={`inline-block h-1.5 w-2.5 rounded-[2px] ${
+            i <= value ? 'bg-brand' : 'bg-line-strong'
+          }`}
+        />
+      ))}
+    </span>
+  );
+}
+
+const JUDGMENT_DIMS: [keyof Pick<TrajectoryJudgment, 'endResult' | 'instructionCompliance' | 'pitfalls' | 'toolCalls'>, string][] = [
+  ['endResult', 'End result'],
+  ['instructionCompliance', 'Instructions'],
+  ['pitfalls', 'Pitfalls'],
+  ['toolCalls', 'Tool use'],
+];
+
+/** Expanded judgment detail: score bars + review text for pre-fetched rows. */
+function JudgmentPanel({ judgments }: { judgments: TrajectoryJudgment[] }): JSX.Element {
+  return (
+    <div className="mt-2.5 border-t border-line pt-2.5 flex flex-col gap-2.5">
+      {judgments.map((j) => (
+        <div key={`${j.agent}:${j.model}`}>
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px] text-ink-faint">
+            <span className="font-medium text-ink-3">{j.agent}</span>
+            <span>·</span>
+            <span>judge {j.model}</span>
+            <span>·</span>
+            <span className="text-brand font-medium">{j.overall.toFixed(1)}/5</span>
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1.5">
+            {JUDGMENT_DIMS.map(([key, label]) => (
+              <div key={key} className="flex items-center gap-1.5 font-mono text-[10.5px] text-ink-dim">
+                <span className="w-[88px] shrink-0">{label}</span>
+                <ScoreBar value={j[key]} />
+                <span className="text-ink-faint">{j[key]}/5</span>
+              </div>
+            ))}
+          </div>
+          {j.review !== '' && (
+            <p className="mt-1.5 font-mono text-[10.5px] leading-relaxed text-ink-3">{j.review}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Row of a judged session in the Retro judgments section: chip in the
+ * header, expands into the full panel on demand. Judgments are pre-fetched
+ * by the parent section, so the row is purely presentational. */
+function JudgedSessionRow({
+  session,
+  judgments,
+}: {
+  session: Session;
+  judgments: TrajectoryJudgment[];
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+
+  const overall = judgments.reduce((s, j) => s + j.overall, 0) / judgments.length;
+
+  return (
+    <div className="rounded-[14px] border border-line bg-surface px-4 py-3.5">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-3">
+          {session.title ?? session.sessionUuid.slice(0, 16)}
+        </span>
+        <span
+          title="LLM-judge trajectory score"
+          className="rounded-[7px] border border-brand/40 bg-brand/10 px-1.5 py-[2px] font-mono text-[10px] text-brand"
+        >
+          judged · {overall.toFixed(1)}
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
+        >
+          {open ? '▾ judgment' : '▸ judgment'}
+        </button>
+      </div>
+      <div className="mt-0.5 font-mono text-[10px] text-ink-faint">
+        {session.projectSlug} · {session.startedAt.slice(0, 10)}
+      </div>
+      {open && <JudgmentPanel judgments={judgments} />}
+    </div>
+  );
+}
+
+/** Section that surfaces recent sessions with LLM-judge verdicts.
+ * Fetches the last 20 completed sessions, then their judgments, and keeps
+ * only judged sessions — the whole section (heading included) renders null
+ * until at least one verdict exists. Advisory — no loading spinners or
+ * error banners. */
+function JudgmentsSection({ project }: { project?: string }): JSX.Element | null {
+  const [judged, setJudged] = useState<{ session: Session; judgments: TrajectoryJudgment[] }[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    setJudged([]); // drop the previous scope's rows while the refetch is in flight
+    fetchSessions(
+      { status: 'completed', ...(project !== undefined ? { project } : {}) },
+      { limit: 20 },
+    )
+      .then(async (r) => {
+        const rows = await Promise.all(
+          r.sessions.map(async (session) => ({
+            session,
+            judgments: await fetchTrajectoryJudgments(session.id).catch(
+              () => [] as TrajectoryJudgment[],
+            ),
+          })),
+        );
+        if (live) setJudged(rows.filter((row) => row.judgments.length > 0));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [project]);
+
+  if (judged.length === 0) return null;
+
+  return (
+    <section className="mt-[18px]">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+        Trajectory judgments
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {judged.map(({ session, judgments }) => (
+          <JudgedSessionRow key={session.id} session={session} judgments={judgments} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /* ----- health strip ----- */
 
 /** vs-prev arrow: `up` colors follow "up is costly" unless `goodUp`.
@@ -724,7 +874,8 @@ function StatCard({
   );
 }
 
-function HealthStrip({ data }: { data: RetroAgentsResp }): JSX.Element {
+/** Shared KPI derivations extracted from the old HealthStrip — consumed by RetroLeadCard. */
+function computeRetroKpis(data: RetroAgentsResp) {
   const totalRuns = data.agents.reduce((a, r) => a + r.runs, 0);
   const totalErrors = data.main.errors + data.agents.reduce((a, r) => a + r.errors, 0);
   // The contract carries no prev for main, so vs-prev totals cover subagents.
@@ -732,26 +883,82 @@ function HealthStrip({ data }: { data: RetroAgentsResp }): JSX.Element {
   const prevErrors = data.agents.reduce((a, r) => a + r.prev.errors, 0);
   const prevCost = data.agents.reduce((a, r) => a + r.prev.cost_usd, 0);
   const agentCost = data.agents.reduce((a, r) => a + r.cost_usd, 0);
+  return { totalRuns, totalErrors, prevRuns, prevErrors, prevCost, agentCost };
+}
+
+/** Editorial lead card — Fraunces headline + sub on the left, KPI cluster on the right. */
+function RetroLeadCard({ data }: { data: RetroAgentsResp }): JSX.Element {
+  const { totalRuns, totalErrors, prevRuns, prevErrors, prevCost, agentCost } =
+    computeRetroKpis(data);
+
+  // Synthesize headline copy from the data.
+  const rescued = totalErrors > 0 ? totalErrors : 0;
+  const headline =
+    rescued > 0
+      ? `Your agents shipped ${String(totalRuns)} runs — ${String(rescued)} needed a human rescue.`
+      : `Your agents shipped ${String(totalRuns)} runs cleanly — no errors logged.`;
+  const sub = `Orchestrator ${fmtCost(data.main.cost_usd)} · ${fmtTokens(data.main.tokens_out)} tokens out · agents ${fmtCost(agentCost)}`;
+
   return (
-    <div className="mt-[18px] grid gap-3.5 sm:grid-cols-3">
-      <StatCard
-        label="Orchestrator cost"
-        value={fmtCost(data.main.cost_usd)}
-        sub={`${fmtTokens(data.main.tokens_out)} tokens out · agents ${fmtCost(agentCost)}`}
-        arrow={<DeltaArrow cur={agentCost} prev={prevCost} fmt={fmtCost} />}
-      />
-      <StatCard
-        label="Agent runs"
-        value={String(totalRuns)}
-        sub={`prev window ${String(prevRuns)}`}
-        arrow={<DeltaArrow cur={totalRuns} prev={prevRuns} goodUp />}
-      />
-      <StatCard
-        label="Errors"
-        value={String(totalErrors)}
-        sub={`prev window ${String(prevErrors)} (subagents)`}
-        arrow={<DeltaArrow cur={totalErrors} prev={prevErrors} />}
-      />
+    <div className="mt-4 flex flex-wrap items-center gap-x-7 gap-y-4 rounded-[14px] border border-line bg-surface px-5 py-4">
+      {/* left — editorial copy */}
+      <div className="min-w-0 flex-1 basis-80">
+        <p className="font-display text-[20px] font-medium leading-[1.3] tracking-[-0.01em] text-ink text-balance">
+          {headline}
+        </p>
+        <p className="mt-1.5 font-mono text-[10.5px] text-ink-3">{sub}</p>
+      </div>
+
+      {/* right — KPI cluster */}
+      <div className="flex flex-wrap gap-[22px]">
+        {/* Cost */}
+        <div>
+          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+            Agent cost
+          </div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="font-display text-[18px] font-semibold text-ink">
+              {fmtCost(agentCost)}
+            </span>
+            <DeltaArrow cur={agentCost} prev={prevCost} fmt={fmtCost} />
+          </div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-ink-faint">
+            prev {fmtCost(prevCost)}
+          </div>
+        </div>
+
+        {/* Runs */}
+        <div>
+          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+            Agent runs
+          </div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="font-display text-[18px] font-semibold text-ink">
+              {String(totalRuns)}
+            </span>
+            <DeltaArrow cur={totalRuns} prev={prevRuns} goodUp />
+          </div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-ink-faint">
+            prev {String(prevRuns)}
+          </div>
+        </div>
+
+        {/* Errors */}
+        <div>
+          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+            Errors
+          </div>
+          <div className="mt-1 flex items-baseline gap-1.5">
+            <span className="font-display text-[18px] font-semibold text-ink">
+              {String(totalErrors)}
+            </span>
+            <DeltaArrow cur={totalErrors} prev={prevErrors} />
+          </div>
+          <div className="mt-0.5 font-mono text-[9.5px] text-ink-faint">
+            prev {String(prevErrors)}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -785,9 +992,11 @@ function runsDelta(row: RetroAgentRow): string {
 
 function Scorecard({
   row,
+  trajectoryKinds,
   onImprove,
 }: {
   row: RetroAgentRow;
+  trajectoryKinds: string[];
   onImprove: (row: RetroAgentRow) => void;
 }): JSX.Element {
   const split = errClassSplit(row.errors_by_class);
@@ -852,7 +1061,7 @@ function Scorecard({
           sessions <b className="font-medium text-ink-2">{row.sessions}</b>
         </span>
       </div>
-      {(row.re_dispatch_rate !== null || row.eval !== null) && (
+      {(row.re_dispatch_rate !== null || row.eval !== null || trajectoryKinds.length > 0) && (
         <div className="mt-2.5 flex flex-wrap gap-1.5">
           {row.re_dispatch_rate !== null && (
             <span
@@ -874,6 +1083,15 @@ function Scorecard({
               evals {String(row.eval.passed)}/{String(row.eval.passed + row.eval.failed)}
             </span>
           )}
+          {trajectoryKinds.map((kind) => (
+            <span
+              key={kind}
+              title={`trajectory anti-pattern detected: ${kind}`}
+              className="rounded-[7px] border border-amber/40 px-1.5 py-[2px] font-mono text-[10px] text-amber"
+            >
+              {kind}
+            </span>
+          ))}
         </div>
       )}
     </div>
@@ -1138,6 +1356,8 @@ export function Retro(): JSX.Element {
   const [lessons, setLessons] = useState<RetroLesson[] | null>(null);
   const [taskRows, setTaskRows] = useState<RetroTaskRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Map of folded agent name → distinct trajectory anti-pattern kinds. */
+  const [trajectoryKindsMap, setTrajectoryKindsMap] = useState<Record<string, string[]>>({});
 
   // Proposals gate: bumping proposalsKey refetches the Proposals rail after a
   // successful generation. The Improve button now opens a preview modal that
@@ -1177,6 +1397,16 @@ export function Retro(): JSX.Element {
     fetchRetroTasks(range)
       .then((r) => setTaskRows(r.tasks))
       .catch(() => setTaskRows(null));
+    // Trajectory anti-pattern kinds per agent (best-effort).
+    fetchFirstPassRates()
+      .then((rows) => {
+        const m: Record<string, string[]> = {};
+        for (const r of rows) {
+          if (r.kinds.length > 0) m[r.agent] = r.kinds;
+        }
+        setTrajectoryKindsMap(m);
+      })
+      .catch(() => setTrajectoryKindsMap({}));
   }, [from, to, scope]);
 
   useEffect(load, [load]);
@@ -1209,6 +1439,8 @@ export function Retro(): JSX.Element {
         />
       </div>
 
+      {agents !== null && <RetroLeadCard data={agents} />}
+
       <RecommendationsRail />
 
       <ProposalsRail reloadKey={proposalsKey} />
@@ -1227,7 +1459,6 @@ export function Retro(): JSX.Element {
         <Loading label="retro…" />
       ) : agents !== null ? (
         <>
-          <HealthStrip data={agents} />
           {agents.approx && <ApproxHint />}
 
           <SectionTitle>Agent scorecards</SectionTitle>
@@ -1236,12 +1467,19 @@ export function Retro(): JSX.Element {
           ) : (
             <div className="grid gap-3.5 sm:grid-cols-2 wide:grid-cols-3">
               {agents.agents.map((row) => (
-                <Scorecard key={row.agent} row={row} onImprove={onImprove} />
+                <Scorecard
+                  key={row.agent}
+                  row={row}
+                  trajectoryKinds={trajectoryKindsMap[row.agent.toLowerCase()] ?? []}
+                  onImprove={onImprove}
+                />
               ))}
             </div>
           )}
         </>
       ) : null}
+
+      {scope !== null ? <JudgmentsSection project={scope} /> : <JudgmentsSection />}
 
       {lessons !== null && (
         <>

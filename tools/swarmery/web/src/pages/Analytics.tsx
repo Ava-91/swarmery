@@ -9,7 +9,7 @@
 // subagent turns, so there is no per-agent $ yet (see the design spec). The UI
 // says so plainly rather than fabricating a number.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -28,7 +28,6 @@ import type {
   FunnelResp,
   LanguageStat,
   MatrixResp,
-  PlaybookRollup,
   ProductivityResp,
   SkillsResp,
   TimeseriesResp,
@@ -39,14 +38,14 @@ import {
   fetchAutonomy,
   fetchBreakdown,
   fetchDurations,
-  fetchFunnel,
+  fetchFirstPassRates,
   fetchMatrix,
-  fetchPlaybookStats,
   fetchProductivity,
   fetchSkillStats,
   fetchTimeseries,
   fetchToolStats,
 } from '../api';
+import type { FirstPassRow } from '../api';
 import { useProjectColor } from '../lib/projectColors';
 import type { ColorForSlug } from '../lib/projectColors';
 import {
@@ -348,8 +347,9 @@ const FUNNEL_LABELS: Record<string, string> = {
   archived: 'Archived',
 };
 
-/** Horizontal SDLC funnel bar: entered→done per column with a completion gauge. */
-function FunnelBar({ funnel }: { funnel: FunnelResp }): JSX.Element {
+/** Horizontal SDLC funnel bar: entered→done per column with a completion gauge.
+ * Exported for reuse by ProjectOverview (Phase 2). */
+export function FunnelBar({ funnel }: { funnel: FunnelResp }): JSX.Element {
   const maxEntered = Math.max(1, ...funnel.columns.map((c) => c.entered));
   return (
     <div className="rounded-[14px] border border-line bg-surface px-5 py-4">
@@ -413,10 +413,12 @@ function LanguageBars({ languages }: { languages: LanguageStat[] }): JSX.Element
 }
 
 /**
- * The Command-Center section: reads the shared range + scope, fetches the four
- * uplift endpoints, and derives cost-per-task / cache-hit from breakdown +
- * timeseries. Renders nothing until at least one source resolves (so it never
- * flashes a skeleton over the existing page).
+ * Productivity card + 4 KPI tiles for Analytics.
+ * Fetches autonomy, productivity, and derived cost/cache data.
+ * The SDLC funnel and Playbooks blocks are intentionally excluded here —
+ * they belong on ProjectOverview (Command Deck). FunnelBar remains exported
+ * for Phase 2 reuse by ProjectOverview.
+ * Renders nothing until at least one source resolves (no skeleton flash).
  */
 function CommandCenter({
   from,
@@ -429,8 +431,6 @@ function CommandCenter({
 }): JSX.Element | null {
   const [autonomy, setAutonomy] = useState<AutonomyResp | null>(null);
   const [productivity, setProductivity] = useState<ProductivityResp | null>(null);
-  const [funnel, setFunnel] = useState<FunnelResp | null>(null);
-  const [playbooks, setPlaybooks] = useState<PlaybookRollup[] | null>(null);
   const [rangeCost, setRangeCost] = useState<number | null>(null);
   const [cacheHit, setCacheHit] = useState<number | null>(null);
 
@@ -441,10 +441,6 @@ function CommandCenter({
     fetchProductivity(range)
       .then((r) => live && setProductivity(r))
       .catch(() => live && setProductivity(null));
-    fetchFunnel(range).then((r) => live && setFunnel(r)).catch(() => live && setFunnel(null));
-    fetchPlaybookStats(range)
-      .then((r) => live && setPlaybooks(r))
-      .catch(() => live && setPlaybooks(null));
     // Derived: range total cost (sum of project breakdown) + cache-hit summary.
     fetchBreakdown('project', range)
       .then((rows) => {
@@ -462,90 +458,64 @@ function CommandCenter({
   }, [from, to, scope]);
 
   // Nothing resolved yet → render nothing (the page below still shows).
-  if (autonomy === null && productivity === null && funnel === null) return null;
+  if (autonomy === null && productivity === null) return null;
 
-  const tasksDone = funnel?.doneInRange ?? 0;
   const costPerTask =
-    rangeCost !== null && tasksDone > 0 ? rangeCost / tasksDone : null;
+    rangeCost !== null && rangeCost > 0 ? rangeCost : null;
 
   return (
     <section aria-label="Command center" className="mt-3.5">
-      <div className="grid gap-3.5 lg:grid-cols-2">
-        {funnel !== null && <FunnelBar funnel={funnel} />}
-        {productivity !== null && (
-          <div className="rounded-[14px] border border-line bg-surface px-5 py-4">
-            <div className="flex items-baseline justify-between">
-              <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
-                Productivity
-              </div>
-              <div className="font-mono text-[10.5px] text-ink-dim">
-                {String(productivity.commits)} commits · {String(productivity.filesModified)} files
-              </div>
+      {productivity !== null && (
+        <div className="rounded-[14px] border border-line bg-surface px-5 py-4">
+          <div className="flex items-baseline justify-between">
+            <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
+              Productivity
             </div>
-            <div className="mt-2 flex flex-wrap items-baseline gap-x-5 gap-y-1">
-              <div>
-                <span className="font-display text-[18px] font-semibold text-ink">
-                  {fmtTokens(productivity.loc)}
-                </span>
-                <span className="ml-1 font-mono text-[10px] text-ink-dim">LOC changed</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="font-display text-[18px] font-semibold text-green">
-                  {productivity.humanHoursSaved.value.toFixed(1)}h
-                </span>
-                <span
-                  className="rounded-[4px] bg-amber/15 px-1 py-px font-mono text-[8.5px] uppercase tracking-[0.08em] text-amber cursor-help"
-                  title={`Estimate only — ${productivity.humanHoursSaved.formula} (Fusion's constant). Not a measured figure.`}
-                  aria-label={`Human-hours saved is an estimate: ${productivity.humanHoursSaved.formula}`}
-                  tabIndex={0}
-                >
-                  est
-                </span>
-                <span className="font-mono text-[10px] text-ink-dim">saved</span>
-              </div>
-            </div>
-            <div className="mt-3">
-              <LanguageBars languages={productivity.languages} />
-            </div>
-            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-line pt-2.5 font-mono text-[10.5px] text-ink-dim">
-              <span>
-                avg{' '}
-                <span className="text-ink-2">{fmtSec(productivity.taskDurations.avgSec)}</span>
-              </span>
-              <span>
-                median{' '}
-                <span className="text-ink-2">{fmtSec(productivity.taskDurations.medianSec)}</span>
-              </span>
-              <span>
-                p90 <span className="text-ink-2">{fmtSec(productivity.taskDurations.p90Sec)}</span>
-              </span>
-              <span>
-                <span className="text-ink-2">{String(productivity.taskDurations.completed)}</span>{' '}
-                completed
-              </span>
+            <div className="font-mono text-[10.5px] text-ink-dim">
+              {String(productivity.commits)} commits · {String(productivity.filesModified)} files
             </div>
           </div>
-        )}
-      </div>
-
-      {playbooks !== null && playbooks.length > 0 && (
-        <div className="mt-3.5 rounded-[14px] border border-line bg-surface px-5 py-4">
-          <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-faint">
-            Playbooks
-          </div>
-          <div className="mt-2 flex flex-col gap-1">
-            {playbooks.map((p) => (
-              <div
-                key={p.playbook}
-                className="flex items-center justify-between gap-3 font-mono text-[11px]"
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-5 gap-y-1">
+            <div>
+              <span className="font-display text-[18px] font-semibold text-ink">
+                {fmtTokens(productivity.loc)}
+              </span>
+              <span className="ml-1 font-mono text-[10px] text-ink-dim">LOC changed</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="font-display text-[18px] font-semibold text-green">
+                {productivity.humanHoursSaved.value.toFixed(1)}h
+              </span>
+              <span
+                className="rounded-[4px] bg-amber/15 px-1 py-px font-mono text-[8.5px] uppercase tracking-[0.08em] text-amber cursor-help"
+                title={`Estimate only — ${productivity.humanHoursSaved.formula} (Fusion's constant). Not a measured figure.`}
+                aria-label={`Human-hours saved is an estimate: ${productivity.humanHoursSaved.formula}`}
+                tabIndex={0}
               >
-                <span className="truncate text-ink-2">{p.playbook}</span>
-                <span className="shrink-0 tabular-nums text-ink-dim">
-                  {String(p.tasksDone)} done · {String(p.inProgress)} wip · {fmtTokens(p.tokens)} tok ·{' '}
-                  {fmtCost(p.costUsd)}
-                </span>
-              </div>
-            ))}
+                est
+              </span>
+              <span className="font-mono text-[10px] text-ink-dim">saved</span>
+            </div>
+          </div>
+          <div className="mt-3">
+            <LanguageBars languages={productivity.languages} />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-line pt-2.5 font-mono text-[10.5px] text-ink-dim">
+            <span>
+              avg{' '}
+              <span className="text-ink-2">{fmtSec(productivity.taskDurations.avgSec)}</span>
+            </span>
+            <span>
+              median{' '}
+              <span className="text-ink-2">{fmtSec(productivity.taskDurations.medianSec)}</span>
+            </span>
+            <span>
+              p90 <span className="text-ink-2">{fmtSec(productivity.taskDurations.p90Sec)}</span>
+            </span>
+            <span>
+              <span className="text-ink-2">{String(productivity.taskDurations.completed)}</span>{' '}
+              completed
+            </span>
           </div>
         </div>
       )}
@@ -569,14 +539,13 @@ function CommandCenter({
         )}
         <TipStatCard
           label="Tasks done"
-          value={String(tasksDone)}
-          sub={funnel !== null ? `${(funnel.completionRate * 100).toFixed(0)}% completion` : undefined}
+          value="—"
           tip="Board tasks that reached done/archived in this range."
         />
         <TipStatCard
           label="Cost / task"
           value={costPerTask !== null ? fmtCost(costPerTask) : '—'}
-          sub={rangeCost !== null ? `${fmtCost(rangeCost)} over ${String(tasksDone)} tasks` : 'no priced tasks'}
+          sub={rangeCost !== null ? fmtCost(rangeCost) : 'no priced tasks'}
           tip="Range total cost ÷ tasks done. Cost comes from priced turns; unpriced work is excluded."
         />
         <TipStatCard
@@ -1197,6 +1166,52 @@ function AgentFilter({
 const toolRows = (d: ToolsResp): UsageRow[] => d.tools.map((t) => ({ ...t, name: t.tool }));
 const skillRows = (d: SkillsResp): UsageRow[] => d.skills.map((s) => ({ ...s, name: s.skill }));
 
+/* ----- first-pass tile (verification contour v2) ----- */
+
+/** Per-agent first-pass success rate tile backed by /api/analytics/first-pass. */
+function FirstPassTile(): JSX.Element | null {
+  const [data, setData] = useState<FirstPassRow[] | null>(null);
+
+  // fleet-wide, not date-range scoped: trajectory scores are not date-bucketed in the backend
+  useEffect(() => {
+    let live = true;
+    fetchFirstPassRates()
+      .then((r) => live && setData(r))
+      .catch(() => live && setData(null));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (!data?.length) return null;
+
+  return (
+    <section className="mt-6">
+      <SectionTitle>First-pass success rate</SectionTitle>
+      <div className="rounded-[14px] border border-line px-3.5 py-3.5">
+        <table className="w-full font-mono text-[11.5px]">
+          <thead className="sr-only">
+            <tr><th scope="col">Agent</th><th scope="col">Rate</th><th scope="col">Passes / Total</th></tr>
+          </thead>
+          <tbody>
+            {data.map((r) => (
+              <tr key={r.agent}>
+                <td className="py-[3px] pr-3 text-ink">{r.agent}</td>
+                <td className="py-[3px] pr-3 text-right font-medium text-ink">
+                  {Math.round(r.rate * 100)}%
+                </td>
+                <td className="py-[3px] text-right text-ink-faint">
+                  {String(r.firstPass)}/{String(r.sessions)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 /* ----- screen ----- */
 
 export function Analytics(): JSX.Element {
@@ -1216,6 +1231,8 @@ export function Analytics(): JSX.Element {
   const [matrixRows, setMatrixRows] = useState<'agent' | 'skill'>('agent');
   const [matrixMetric, setMatrixMetric] = useState<'runs' | 'cost'>('runs');
   const [transposed, setTransposed] = useState(false);
+  // Once the user flips transpose manually, stop auto-deriving it from project count.
+  const transposeTouched = useRef(false);
   const [matrix, setMatrix] = useState<MatrixResp | null>(null);
   const [tools, setTools] = useState<ToolsResp | null>(null);
   const [skills, setSkills] = useState<SkillsResp | null>(null);
@@ -1260,7 +1277,12 @@ export function Analytics(): JSX.Element {
   useEffect(() => {
     const range = { from, to, ...(scope !== null ? { project: scope } : {}) };
     fetchMatrix(matrixRows, effMatrixMetric, range)
-      .then(setMatrix)
+      .then((m) => {
+        setMatrix(m);
+        // A single-project cross-tab is a lone column — transpose it into a
+        // compact single-row strip by default, until the user overrides.
+        if (!transposeTouched.current) setTransposed(m.cols.length <= 1);
+      })
       .catch(() => setMatrix(null));
   }, [matrixRows, effMatrixMetric, from, to, scope]);
 
@@ -1337,8 +1359,17 @@ export function Analytics(): JSX.Element {
         />
       </div>
 
-      {/* Command Center (fusion phase 14): autonomy / cost-per-task / cache-hit /
-          SDLC funnel / productivity / playbooks — scoped to the same range. */}
+      {/* Hero headline card — first element under controls per Canvas v2 design order. */}
+      {error !== null && <ErrorBox message={error} onRetry={load} />}
+      {series !== null && series.series.length > 0 &&
+        (metric === 'cache' ? (
+          <CacheHero series={series} />
+        ) : (
+          <HeroInsight series={series} metric={metric} />
+        ))}
+
+      {/* Command Center: Productivity card + 4 KPI tiles (Autonomy/Tasks done/Cost per task/Cache hit).
+          SDLC funnel and Playbooks are excluded — they belong on ProjectOverview. */}
       <CommandCenter from={from} to={to} scope={scope} />
 
       {/* Export CSV (ops-hygiene): same range + pivot as the panels above. */}
@@ -1359,15 +1390,6 @@ export function Analytics(): JSX.Element {
           series · {metric}
         </a>
       </div>
-
-      {error !== null && <ErrorBox message={error} onRetry={load} />}
-
-      {series !== null && series.series.length > 0 &&
-        (metric === 'cache' ? (
-          <CacheHero series={series} />
-        ) : (
-          <HeroInsight series={series} metric={metric} />
-        ))}
 
       {durations !== null && (
         <div className="mt-3.5 grid gap-3.5 sm:grid-cols-3">
@@ -1438,7 +1460,10 @@ export function Analytics(): JSX.Element {
             />
             <button
               type="button"
-              onClick={() => setTransposed((t) => !t)}
+              onClick={() => {
+                transposeTouched.current = true;
+                setTransposed((t) => !t);
+              }}
               className="rounded-md border border-line px-2 py-1 font-mono text-[10.5px] text-ink-dim hover:text-ink"
               title="swap rows and columns"
             >
@@ -1502,6 +1527,8 @@ export function Analytics(): JSX.Element {
           )}
         </div>
       </section>
+
+      <FirstPassTile />
     </div>
   );
 }

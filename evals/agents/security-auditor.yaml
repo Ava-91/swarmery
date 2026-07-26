@@ -1,0 +1,16 @@
+# security-auditor OWASP-finding contract suite
+# Hard assert: regex for SQL injection terminology (agent must name the vulnerability class)
+# Soft assert: llm-rubric for severity + remediation recommendation
+
+- description: security-auditor flags a SQL-injection sink
+  vars:
+    system: file://../../plugins/core/agents/security-auditor.md
+    task: >
+      Review: the handler builds a query as
+      "SELECT * FROM users WHERE id = " + req.query.id
+      and executes it directly. Audit for OWASP issues.
+  assert:
+    - type: regex
+      value: '(?i)(sql[- ]?injection|injection|parameteriz)'   # hard — must name the vuln class or remediation
+    - type: llm-rubric                                           # soft
+      value: identifies SQL injection, rates it high severity, and recommends parameterized queries / prepared statements

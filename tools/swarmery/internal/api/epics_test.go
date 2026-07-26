@@ -488,3 +488,45 @@ func TestListEpicsEmptyForUnknownProject(t *testing.T) {
 		t.Errorf("epics = %d, want 0 for an unknown project", len(epics))
 	}
 }
+
+// TestPlanStatusDerivation: planStatus precedence is zone > README > rollup.
+func TestPlanStatusDerivation(t *testing.T) {
+	cases := []struct {
+		name       string
+		archived   bool
+		taskStatus string
+		done, tot  int
+		want       string
+	}{
+		{"archived wins over everything", true, "paused", 3, 3, "archived"},
+		{"archived with running readme", true, "running", 0, 3, "archived"},
+		{"paused beats a complete rollup", false, "paused", 3, 3, "paused"},
+		{"paused with open boxes", false, "paused", 1, 3, "paused"},
+		{"full rollup reads done", false, "running", 3, 3, "done"},
+		{"readme done but boxes open stays active", false, "done", 1, 3, "active"},
+		{"running with open boxes", false, "running", 1, 3, "active"},
+		{"zero checkboxes never done", false, "running", 0, 0, "active"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := planStatus(c.archived, c.taskStatus, c.done, c.tot); got != c.want {
+				t.Errorf("planStatus(%v,%q,%d,%d) = %q, want %q",
+					c.archived, c.taskStatus, c.done, c.tot, got, c.want)
+			}
+		})
+	}
+}
+
+// TestListEpicsDerivedStatus: the fixture epic (running, rollup 1/3) reads
+// "active" — the raw tasks.status value never leaks through the DTO.
+func TestListEpicsDerivedStatus(t *testing.T) {
+	srv, _, taskID, _ := epicFixture(t)
+	var epics []epicDTO
+	getJSON(t, srv.URL+"/api/epics", &epics)
+	if len(epics) != 1 || epics[0].TaskID != taskID {
+		t.Fatalf("epics = %+v", epics)
+	}
+	if epics[0].Status != "active" {
+		t.Errorf("status = %q, want active (raw running normalized)", epics[0].Status)
+	}
+}

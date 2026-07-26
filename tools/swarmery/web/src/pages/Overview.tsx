@@ -1,15 +1,23 @@
-// Command deck (Canvas restyle): a status-sentence hero derived from live
-// counts, a reliability/cost/quality tri-stat bar, a vertical "spine" of
-// today's notable sessions plus any still-running or stuck ones regardless of
-// start day (expandable to a lazy-fetched tool trace), and a
-// sticky right rail of pending approvals + error triage. Data wiring is 100%
-// the existing hooks (sessions + stats/overview + approvals). The Quality tile
-// reads stats.tests_passed/failed/skipped (test_run aggregates); on days with
-// no test signal those fields are absent and it degrades to a neutral dash.
+// Command deck (Canvas v2 restyle): the home reframed around HUMAN WAIT TIME.
+// A wait-narrative hero ("Agents waited X on you today · N tools caused Y% of
+// it") over a three-cell ledger (waited / auto-approved / still-blocked), then
+// "The day" — per-project timeline lanes rasterised into working / waiting /
+// idle segments — then "Where your time went", today's approvals grouped by
+// tool with an inline "stop asking" that writes an auto-approve rule. Below
+// that the vertical "spine" of today's notable sessions, and a sticky right
+// rail of what's blocked on you plus error triage.
+//
+// Data wiring is 100% existing endpoints: sessions + stats/overview +
+// approvals (pending AND resolved) + approval-rules. Wait time is derived from
+// each PermissionRequest (resolvedAt − requestedAt; live age for pendings);
+// auto-approved rows are the ones the daemon resolved via 'rule'. No backend
+// change. On days with no approval signal the wait sections degrade to a
+// neutral "nothing waited on you" line.
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type {
+  ApprovalRule,
   ErrorGroup,
   Event,
   PermissionRequest,
@@ -19,13 +27,16 @@ import type {
   WSMessage,
 } from '../api/types';
 import {
+  MOCK,
+  createApprovalRule,
+  fetchApprovalRules,
   fetchApprovals,
   fetchErrorGroups,
   fetchSession,
   fetchSessions,
   fetchStatsOverview,
 } from '../api';
-import { requestSummary } from '../lib/approvals';
+import { questionsOf, requestSummary, suggestRulePattern } from '../lib/approvals';
 import { projectColor } from '../lib/colors';
 import {
   addDays,
@@ -42,12 +53,42 @@ import { useScope } from '../lib/scope';
 import { sessionState, useNowMs } from '../lib/sessionState';
 import { applyPermissionMessage, applySessionMessage, useLiveUpdates } from '../lib/ws';
 import { PageSearchInput } from '../components/PageSearchInput';
-import { ApproxHint, Empty, ErrorBox, Loading } from '../components/ui';
+import { Empty, ErrorBox, Loading } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
 
 const MAX_SPINE_ROWS = 8;
 function sessionDay(s: Session): string {
   return isoDay(new Date(s.startedAt));
+}
+
+/* ----- wait-time helpers (shared by hero, ledger, day, interrupts) ----- */
+
+/** Compact human wait, e.g. "38s", "47m", "1h 12m". Never shows seconds past a minute. */
+function fmtWait(ms: number): string {
+  if (ms < 1000) return '0s';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/** Wait a request cost the human: resolved → its span; still pending → its live age. */
+function waitMs(r: PermissionRequest, nowMs: number): number {
+  const start = new Date(r.requestedAt).getTime();
+  const end = r.resolvedAt !== null ? new Date(r.resolvedAt).getTime() : nowMs;
+  return Math.max(0, end - start);
+}
+
+/** Auto-approved rows are the ones the daemon resolved via a rule — no human stop. */
+function wasAutoApproved(r: PermissionRequest): boolean {
+  return r.resolvedVia === 'rule';
+}
+
+function isToday(iso: string): boolean {
+  return isoDay(new Date(iso)) === isoDay();
 }
 
 /* ----- eyebrow date/time ----- */
@@ -73,148 +114,340 @@ function EyebrowClock(): JSX.Element {
   );
 }
 
-/* ----- hero status sentence ----- */
+/* ----- hero: how long agents waited on you ----- */
 
-function HeroHeadline({
-  active,
-  stuck,
-  pending,
-  errors,
-}: {
-  active: number;
-  stuck: number;
-  pending: number;
-  errors: number;
-}): JSX.Element {
-  const activePart =
-    active === 0 ? (
-      'Nothing is running.'
-    ) : active === 1 ? (
-      <>
-        One agent is <em className="not-italic text-green">still working</em>.
-      </>
-    ) : (
-      <>
-        {active} agents are <em className="not-italic text-green">still working</em>.
-      </>
-    );
-  const stuckPart =
-    stuck === 0 ? null : (
-      <span className="text-amber">
-        {' '}
-        {stuck === 1 ? 'One session looks stuck.' : `${String(stuck)} sessions look stuck.`}
-      </span>
-    );
-  const pendingPart =
-    pending === 0 ? null : (
-      <span className="text-ink-dim">
-        {' '}
-        {pending === 1 ? 'One thing waits' : `${String(pending)} things wait`} on you —
-      </span>
-    );
-  const errorsPart =
-    errors === 0 ? (
-      ' nothing is on fire.'
-    ) : (
-      <span className="text-red"> {errors} error{errors === 1 ? '' : 's'} today.</span>
-    );
+interface ToolWait {
+  /** Rule-pattern key, e.g. "Bash(git *)" or "Edit" — the "stop asking" target. */
+  key: string;
+  count: number;
+  waitedMs: number;
+  covered: boolean;
+}
 
+function WaitHero({ waitedMs, tools }: { waitedMs: number; tools: ToolWait[] }): JSX.Element {
+  if (waitedMs < 1000 || tools.length === 0) {
+    return (
+      <h1 className="mt-3.5 max-w-[22ch] text-balance font-display text-[28px] leading-[1.16] font-medium tracking-[-0.015em] desk:text-[38px]">
+        Nothing waited on you today. <span className="text-ink-dim">Agents ran clean.</span>
+      </h1>
+    );
+  }
+  // Smallest set of tools whose cumulative wait covers the majority (≥60%) — the
+  // honest reading of "N tools caused Y% of it".
+  const sorted = [...tools].sort((a, b) => b.waitedMs - a.waitedMs);
+  let acc = 0;
+  let topCount = 0;
+  for (const t of sorted) {
+    acc += t.waitedMs;
+    topCount += 1;
+    if (acc >= waitedMs * 0.6) break;
+  }
+  const topShare = Math.round((acc / waitedMs) * 100);
   return (
-    <h1 className="mt-3.5 max-w-[20ch] text-balance font-display text-[28px] leading-[1.16] font-medium tracking-[-0.015em] desk:text-[38px]">
-      {activePart}
-      {stuckPart}
-      {pendingPart}
-      {errorsPart}
+    <h1 className="mt-3.5 max-w-[22ch] text-balance font-display text-[28px] leading-[1.16] font-medium tracking-[-0.015em] desk:text-[38px]">
+      Agents waited <em className="not-italic text-red">{fmtWait(waitedMs)}</em> on you today.{' '}
+      <span className="text-ink-dim">
+        {topCount} tool{topCount === 1 ? '' : 's'} caused {topShare}% of it.
+      </span>
     </h1>
   );
 }
 
-/* ----- KPI tri-stat bar ----- */
+/* ----- ledger: waited / auto-approved / still-blocked ----- */
 
-function TriStatCell({
-  label,
-  children,
-  border = true,
-}: {
+interface LedgerCell {
   label: string;
-  children: ReactNode;
-  border?: boolean;
-}): JSX.Element {
+  value: string;
+  sub: string;
+  tone: string;
+  big: boolean;
+}
+
+function Ledger({ cells }: { cells: LedgerCell[] }): JSX.Element {
   return (
-    <div className={`flex-1 min-w-[150px] px-[18px] py-3.5 ${border ? 'border-r border-line' : ''}`}>
-      <div className="font-mono text-[10px] tracking-[0.14em] text-ink-faint uppercase">
-        {label}
-      </div>
-      <div className="mt-1.5 flex items-baseline gap-2">{children}</div>
+    <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-x-10 gap-y-[22px] border-t border-line pt-5">
+      {cells.map((c) => (
+        <div key={c.label} className="min-w-0">
+          <div className="font-mono text-[10px] tracking-[0.14em] text-ink-faint uppercase">
+            {c.label}
+          </div>
+          <div
+            className={`mt-[7px] font-display leading-none font-semibold ${c.tone} ${
+              c.big ? 'text-[32px]' : 'text-[26px]'
+            }`}
+          >
+            {c.value}
+          </div>
+          <div className="mt-[5px] font-mono text-[10.5px] text-ink-dim">{c.sub}</div>
+        </div>
+      ))}
     </div>
   );
 }
 
-function TriStat({ stats, prevErrors }: { stats: StatsOverview; prevErrors: number | null }): JSX.Element {
-  const trend =
-    prevErrors !== null && prevErrors > 0
-      ? stats.errors / prevErrors
-      : prevErrors === 0 && stats.errors > 0
-        ? null
-        : 1;
-  const prevIdx = stats.series.findIndex((p) => p.day === stats.day) - 1;
-  const prevDayLabel =
-    prevIdx >= 0 && stats.series[prevIdx] !== undefined ? fmtDayShort(stats.series[prevIdx].day) : null;
+/* ----- "the day": per-project timeline lanes ----- */
 
+interface DaySeg {
+  /** flex-grow weight (bucket count). */
+  weight: number;
+  tone: 'work' | 'wait' | 'error' | 'idle';
+}
+interface DayLane {
+  slug: string;
+  name: string;
+  task: string;
+  color: string;
+  segs: DaySeg[];
+  waitedMs: number;
+  approvals: number;
+  latestSessionId: number;
+}
+
+const DAY_BUCKETS = 64;
+const SEG_BG: Record<DaySeg['tone'], string> = {
+  work: 'var(--color-green)',
+  wait: 'var(--color-amber)',
+  error: 'var(--color-red)',
+  idle: 'var(--color-line-soft)',
+};
+
+/** Rasterise a project's sessions + approval waits over [start,end] into segments. */
+function buildLane(
+  slug: string,
+  name: string,
+  sessions: Session[],
+  approvals: PermissionRequest[],
+  startMs: number,
+  endMs: number,
+  nowMs: number,
+): DayLane {
+  const span = Math.max(1, endMs - startMs);
+  // Interval sources with a priority so overlaps resolve deterministically:
+  // error > wait > work. Idle is the absence of any interval.
+  interface Ival {
+    s: number;
+    e: number;
+    tone: DaySeg['tone'];
+    prio: number;
+  }
+  const ivals: Ival[] = [];
+  for (const s of sessions) {
+    const ss = new Date(s.startedAt).getTime();
+    const se = s.endedAt !== null ? new Date(s.endedAt).getTime() : nowMs;
+    const st = sessionState(s, nowMs);
+    const tone: DaySeg['tone'] = s.status === 'killed' ? 'error' : st === 'stuck' ? 'wait' : 'work';
+    ivals.push({ s: ss, e: se, tone, prio: tone === 'error' ? 3 : tone === 'wait' ? 2 : 1 });
+  }
+  let waitedMs = 0;
+  for (const a of approvals) {
+    const ws = new Date(a.requestedAt).getTime();
+    const we = a.resolvedAt !== null ? new Date(a.resolvedAt).getTime() : nowMs;
+    waitedMs += Math.max(0, we - ws);
+    ivals.push({ s: ws, e: we, tone: 'wait', prio: 2 });
+  }
+  // Sample each bucket midpoint; keep the highest-priority interval covering it.
+  const tones: DaySeg['tone'][] = [];
+  for (let i = 0; i < DAY_BUCKETS; i++) {
+    const mid = startMs + ((i + 0.5) / DAY_BUCKETS) * span;
+    let best: Ival | null = null;
+    for (const v of ivals) {
+      if (mid >= v.s && mid <= v.e && (best === null || v.prio > best.prio)) best = v;
+    }
+    tones.push(best?.tone ?? 'idle');
+  }
+  // Coalesce adjacent same-tone buckets into weighted segments.
+  const segs: DaySeg[] = [];
+  for (const tone of tones) {
+    const last = segs[segs.length - 1];
+    if (last !== undefined && last.tone === tone) last.weight += 1;
+    else segs.push({ tone, weight: 1 });
+  }
+  const latest = [...sessions].sort((a, b) =>
+    (b.endedAt ?? b.startedAt).localeCompare(a.endedAt ?? a.startedAt),
+  )[0];
+  const task = latest?.title ?? latest?.gitBranch ?? 'session';
+  return {
+    slug,
+    name,
+    task,
+    color: projectColor(slug),
+    segs,
+    waitedMs,
+    approvals: approvals.length,
+    latestSessionId: latest?.id ?? 0,
+  };
+}
+
+function DayTimeline({
+  lanes,
+  startMs,
+  endMs,
+}: {
+  lanes: DayLane[];
+  startMs: number;
+  endMs: number;
+}): JSX.Element {
+  const navigate = useNavigate();
+  const ticks = [startMs, startMs + (endMs - startMs) / 2, endMs].map((t) =>
+    fmtTime(new Date(t).toISOString()),
+  );
+  const legend: { label: string; tone: DaySeg['tone'] }[] = [
+    { label: 'working', tone: 'work' },
+    { label: 'waiting', tone: 'wait' },
+    { label: 'idle', tone: 'idle' },
+  ];
   return (
-    <div className="mt-[22px] flex flex-wrap overflow-hidden rounded-[14px] border border-line bg-surface">
-      <TriStatCell label="Reliability">
-        <span className="font-display text-[22px] leading-none font-semibold text-red desk:text-[26px]">
-          {stats.errors}
+    <>
+      <div className="mt-9 flex flex-wrap items-center gap-3">
+        <h2 className="font-mono text-[11px] tracking-[0.16em] text-ink-dim uppercase">The day</h2>
+        <span className="font-mono text-[10px] text-ink-faint">
+          {fmtTime(new Date(startMs).toISOString())} → {fmtTime(new Date(endMs).toISOString())}
         </span>
-        <span className="font-mono text-[11px] text-ink-dim">
-          errors
-          {trend !== 1 && prevDayLabel !== null && (
-            <>
-              {' · '}
-              <span className="text-red">
-                {trend === null ? 'new' : `↑ ${trend.toFixed(1)}×`} vs {prevDayLabel}
+        <span className="h-px flex-1 bg-line" aria-hidden="true" />
+        <span className="flex flex-wrap gap-[11px] font-mono text-[10px] text-ink-faint">
+          {legend.map((g) => (
+            <span key={g.label} className="inline-flex items-center gap-[5px]">
+              <span
+                className="h-[8px] w-[8px] rounded-[2px]"
+                style={{ background: SEG_BG[g.tone] }}
+                aria-hidden="true"
+              />
+              {g.label}
+            </span>
+          ))}
+        </span>
+      </div>
+      <div className="mt-3">
+        {lanes.map((ln) => (
+          <div
+            key={ln.slug}
+            className="grid grid-cols-[132px_minmax(0,1fr)] items-center gap-3.5 border-b border-line-soft py-[9px]"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="h-[6px] w-[6px] shrink-0 rounded-full"
+                  style={{ background: ln.color }}
+                  aria-hidden="true"
+                />
+                <span className="min-w-0 truncate font-mono text-[10.5px] text-ink-2">{ln.name}</span>
+              </div>
+              <div className="mt-0.5 truncate font-mono text-[9.5px] text-ink-faint">{ln.task}</div>
+            </div>
+            <div className="min-w-0">
+              <button
+                type="button"
+                onClick={() =>
+                  ln.latestSessionId > 0
+                    ? void navigate(`/sessions/${String(ln.latestSessionId)}`)
+                    : void navigate('/sessions')
+                }
+                className="flex h-[19px] w-full overflow-hidden rounded focus-visible:outline-2 focus-visible:outline-brand"
+                title={`open ${ln.name}`}
+              >
+                {ln.segs.map((sg, i) => (
+                  <span
+                    key={i}
+                    style={{ flexGrow: sg.weight, flexBasis: 0, background: SEG_BG[sg.tone] }}
+                    aria-hidden="true"
+                  />
+                ))}
+              </button>
+              <div
+                className={`mt-1 font-mono text-[9.5px] ${ln.waitedMs > 0 ? 'text-amber' : 'text-ink-faint'}`}
+              >
+                {ln.waitedMs > 0
+                  ? `waited ${fmtWait(ln.waitedMs)} · ${ln.approvals} approval${ln.approvals === 1 ? '' : 's'}`
+                  : 'no waiting'}
+              </div>
+            </div>
+          </div>
+        ))}
+        <div className="mt-[7px] grid grid-cols-[132px_minmax(0,1fr)] gap-3.5">
+          <span />
+          <div className="flex justify-between font-mono text-[9.5px] text-ink-faint">
+            {ticks.map((t, i) => (
+              <span key={i} className="whitespace-nowrap">
+                {t}
               </span>
-            </>
-          )}
-        </span>
-      </TriStatCell>
-      <TriStatCell label="Cost">
-        <span className="font-display text-[22px] leading-none font-semibold text-brand desk:text-[26px]">
-          {fmtCost(stats.cost_usd)}
-        </span>
-        <span className="font-mono text-[11px] text-ink-dim">
-          {fmtTokens(stats.tokens_in + stats.tokens_out)} tokens
-        </span>
-      </TriStatCell>
-      <TriStatCell label="Quality" border={false}>
-        {stats.tests_passed != null ? (
-          <>
-            <span className="font-display text-[22px] leading-none font-semibold text-green desk:text-[26px]">
-              {stats.tests_passed}
-            </span>
-            <span className="font-mono text-[11px] text-ink-dim">
-              tests green
-              {stats.tests_failed != null && stats.tests_failed > 0 && (
-                <>
-                  {' · '}
-                  <span className="text-red">{stats.tests_failed} failed</span>
-                </>
-              )}
-              {' · '}
-              {stats.tests_skipped ?? 0} skipped
-            </span>
-          </>
-        ) : (
-          <>
-            <span className="font-display text-[22px] leading-none font-semibold text-ink-dim desk:text-[26px]">
-              —
-            </span>
-            <span className="font-mono text-[11px] text-ink-dim">no test data yet</span>
-          </>
-        )}
-      </TriStatCell>
-    </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ----- "where your time went": interrupts by tool + stop-asking ----- */
+
+function Interrupts({
+  tools,
+  maxWait,
+  onStopAsking,
+}: {
+  tools: ToolWait[];
+  maxWait: number;
+  onStopAsking: (key: string) => void;
+}): JSX.Element {
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  return (
+    <>
+      <div className="mt-[38px] flex items-center gap-3">
+        <h2 className="font-mono text-[11px] tracking-[0.16em] text-ink-dim uppercase">
+          Where your time went
+        </h2>
+        <span className="h-px flex-1 bg-line" aria-hidden="true" />
+        <Link to="/approvals" className="font-mono text-[10.5px] text-ink-faint hover:text-brand">
+          all approvals →
+        </Link>
+      </div>
+      <div className="mt-1.5">
+        {tools.map((t) => {
+          const busy = pending.has(t.key);
+          const covered = t.covered || busy;
+          return (
+            <div key={t.key} className="flex items-center gap-3 border-b border-line-soft py-[11px]">
+              <span className="w-[148px] shrink-0 truncate font-mono text-[12px] text-ink">
+                {t.key}
+              </span>
+              <span className="w-[92px] shrink-0 font-mono text-[11px] whitespace-nowrap text-ink-dim">
+                {t.count} stop{t.count === 1 ? '' : 's'}
+              </span>
+              <span className="h-[5px] min-w-[24px] flex-1 overflow-hidden rounded-full bg-line-soft">
+                <span
+                  className="block h-full rounded-full bg-red/70"
+                  style={{ width: `${String(maxWait > 0 ? Math.round((t.waitedMs / maxWait) * 100) : 0)}%` }}
+                />
+              </span>
+              <span className="w-[58px] shrink-0 text-right font-display text-[15px] font-semibold text-red">
+                {fmtWait(t.waitedMs)}
+              </span>
+              <span className="w-[108px] shrink-0 text-right">
+                {covered ? (
+                  <span className="font-mono text-[10px] text-green">✓ auto-approved</span>
+                ) : (
+                  <button
+                    type="button"
+                    title="auto-approve this tool from now on"
+                    onClick={() => {
+                      setPending((p) => new Set(p).add(t.key));
+                      onStopAsking(t.key);
+                    }}
+                    className="rounded-[7px] border border-line-strong px-2.5 py-[3px] font-mono text-[10px] text-ink-dim transition-colors hover:border-green/50 hover:text-green focus-visible:outline-2 focus-visible:outline-brand"
+                  >
+                    stop asking
+                  </button>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 max-w-[70ch] font-mono text-[10.5px] leading-[1.6] text-ink-faint">
+        Every rule you add here removes a stop from tomorrow. Rules stay per-tool and per-project —
+        narrow or revoke them in Approvals.
+      </p>
+    </>
   );
 }
 
@@ -250,10 +483,6 @@ function spineKind(s: Session, nowMs: number): SpineKind {
 }
 
 function NodeDot({ kind }: { kind: SpineKind }): JSX.Element {
-  // Hollow colour ring centred ON the spine line. The line sits at 52px/66px,
-  // the content column starts at 56px/70px → the line is -4px from the column
-  // edge on both breakpoints, so a single -left-[9px] on a 10px ring (centre at
-  // -4px) lands the ring dead-centre on the line. bg-bg masks the line inside.
   const cls =
     kind === 'active'
       ? 'border-green animate-pulse-dot'
@@ -482,17 +711,38 @@ function Spine({
   );
 }
 
-/* ----- right rail: waiting on you ----- */
+/* ----- right rail: blocked on you ----- */
 
-function WaitingCard({ request }: { request: PermissionRequest }): JSX.Element {
+/**
+ * One glanceable line of context per card. AskUserQuestion never dumps its raw
+ * `{questions:[…]}` payload — it reads as the first question plus a "+N more"
+ * tail; the full form lives one click away under review →. Everything else is
+ * the normal request summary. The card clamps this to two lines, so every card
+ * in the rail is the same height regardless of tool.
+ */
+function blockedContext(request: PermissionRequest): string {
+  if (request.toolName === 'AskUserQuestion') {
+    const qs = questionsOf(request);
+    if (qs !== null && qs.length > 0) {
+      const first = qs[0]?.question ?? 'answer required';
+      return qs.length > 1 ? `${first} · +${String(qs.length - 1)} more` : first;
+    }
+  }
+  return requestSummary(request);
+}
+
+function BlockedCard({ request, nowMs }: { request: PermissionRequest; nowMs: number }): JSX.Element {
   const okLabel = request.toolName === 'AskUserQuestion' ? 'answer' : 'approve';
+  const age = fmtWait(waitMs(request, nowMs));
   return (
     <div className="mt-3.5 rounded-xl border border-amber/28 bg-amber/5 px-3.5 py-3">
       <div className="flex items-center gap-2">
         <span className="font-mono text-[12px] font-bold text-ink">{request.toolName}</span>
-        <span className="ml-auto font-mono text-[10px] text-amber">{fmtAgo(request.requestedAt)}</span>
+        <span className="ml-auto font-mono text-[10px] text-amber">idle {age}</span>
       </div>
-      <div className="mt-1.5 text-[12.5px] leading-[1.45] text-ink-3 [text-wrap:pretty]">{requestSummary(request)}</div>
+      <div className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.45] break-words text-ink-3 [text-wrap:pretty]">
+        {blockedContext(request)}
+      </div>
       <div className="mt-2 flex items-center gap-[7px]">
         <span
           className="h-[5px] w-[5px] shrink-0 rounded-full"
@@ -521,7 +771,7 @@ function WaitingCard({ request }: { request: PermissionRequest }): JSX.Element {
   );
 }
 
-function WaitingRail({ pending }: { pending: PermissionRequest[] }): JSX.Element | null {
+function BlockedRail({ pending, nowMs }: { pending: PermissionRequest[]; nowMs: number }): JSX.Element | null {
   if (pending.length === 0) return null;
   const top = [...pending].sort((a, b) => a.requestedAt.localeCompare(b.requestedAt)).slice(0, 3);
   return (
@@ -532,11 +782,15 @@ function WaitingRail({ pending }: { pending: PermissionRequest[] }): JSX.Element
           aria-hidden="true"
         />
         <h2 className="font-mono text-[11px] tracking-[0.14em] text-amber uppercase">
-          Waiting on you · {pending.length}
+          Blocked on you · {pending.length}
         </h2>
       </div>
+      <div className="mt-[7px] font-mono text-[10.5px] text-ink-faint">
+        {pending.length === 1 ? 'one agent is' : `${String(pending.length)} agents are`} idle until
+        you answer
+      </div>
       {top.map((r) => (
-        <WaitingCard key={r.id} request={r} />
+        <BlockedCard key={r.id} request={r} nowMs={nowMs} />
       ))}
     </div>
   );
@@ -616,7 +870,9 @@ function ErrorDrilldown({
         {groups !== null && groups.length === 0 && (
           <div className="mt-3 font-mono text-[11px] text-ink-dim">no errors for this day</div>
         )}
-        {approx && <ApproxHint />}
+        {approx && (
+          <div className="mt-3 font-mono text-[10.5px] text-ink-faint">approximate — sampled</div>
+        )}
 
         {groups !== null &&
           groups.map((g) => (
@@ -665,7 +921,7 @@ function TriageRail({
   const rows = stats.errors_by_project;
   const total = rows.reduce((a, r) => a + r.errors, 0);
   return (
-    <div className="mt-4">
+    <div className="mt-[30px]">
       <div className="flex items-center gap-2">
         <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-red" aria-hidden="true" />
         <h2 className="font-mono text-[11px] tracking-[0.14em] text-red uppercase">Needs triage</h2>
@@ -710,6 +966,14 @@ function TriageRail({
 
 /* ----- screen ----- */
 
+/** 09:00 local today in ms — the day-timeline window start (or the earliest
+ *  session start, whichever is earlier). */
+function nineAmMs(): number {
+  const d = new Date();
+  d.setHours(9, 0, 0, 0);
+  return d.getTime();
+}
+
 export function Overview(): JSX.Element {
   const day = isoDay();
   const { scope } = useScope();
@@ -718,9 +982,10 @@ export function Overview(): JSX.Element {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<StatsOverview | null>(null);
-  const [prevStats, setPrevStats] = useState<StatsOverview | null>(null);
   const [statsError, setStatsError] = useState(false);
   const [approvals, setApprovals] = useState<PermissionRequest[] | null>(null);
+  const [resolved, setResolved] = useState<PermissionRequest[]>([]);
+  const [rules, setRules] = useState<ApprovalRule[]>([]);
   const [drill, setDrill] = useState<{ project: string | null; name: string | null } | null>(null);
 
   const loadSessions = useCallback((): void => {
@@ -737,6 +1002,17 @@ export function Overview(): JSX.Element {
     fetchApprovals('pending')
       .then(setApprovals)
       .catch(() => setApprovals(null)); // approvals API absent → rail card hidden
+    // Resolved history powers the wait ledger + interrupts; failure degrades to
+    // an empty set (the sections just read "nothing waited on you").
+    fetchApprovals('resolved')
+      .then((rs) => setResolved(rs.filter((r) => isToday(r.requestedAt))))
+      .catch(() => setResolved([]));
+  }, []);
+
+  const loadRules = useCallback((): void => {
+    fetchApprovalRules()
+      .then(setRules)
+      .catch(() => setRules([]));
   }, []);
 
   const loadStats = useCallback((): void => {
@@ -744,21 +1020,21 @@ export function Overview(): JSX.Element {
       .then((s) => {
         setStats(s);
         setStatsError(false);
-        const prevIdx = s.series.findIndex((p) => p.day === s.day) - 1;
-        setPrevStats(prevIdx >= 0 ? { ...s, errors: s.series[prevIdx]?.errors ?? 0 } : null);
       })
       .catch(() => setStatsError(true));
   }, [day, scope]);
 
   useEffect(loadSessions, [loadSessions]);
   useEffect(loadApprovals, [loadApprovals]);
+  useEffect(loadRules, [loadRules]);
   useEffect(loadStats, [loadStats]);
 
   const reload = useCallback((): void => {
     loadSessions();
     loadStats();
     loadApprovals();
-  }, [loadSessions, loadStats, loadApprovals]);
+    loadRules();
+  }, [loadSessions, loadStats, loadApprovals, loadRules]);
 
   // Mirrors Sessions.tsx: loadSessions is server-scoped, so WS-applied
   // sessions must pass the same scope filter or an out-of-scope
@@ -777,48 +1053,160 @@ export function Overview(): JSX.Element {
             ? prev
             : applyPermissionMessage(prev, msg).filter((r) => r.status === 'pending'),
         );
+        // A resolution moves a row into today's history → refresh the ledger.
+        if (msg.type === 'permission_resolved') loadApprovals();
         return;
       }
       setSessions((prev) =>
         prev === null ? prev : applySessionMessage(prev, msg).filter(matchesProject),
       );
     },
-    [matchesProject],
+    [matchesProject, loadApprovals],
   );
   useLiveUpdates(onMessage, reload);
 
-  const states = (sessions ?? []).map((s) => sessionState(s, nowMs));
-  const activeCount = states.filter((st) => st === 'running').length;
-  const stuckCount = states.filter((st) => st === 'stuck').length;
-  const pendingCount = approvals?.length ?? 0;
+  const pending = approvals ?? [];
+
+  // Rule-covered tool patterns (enabled rules only) — drives "✓ auto-approved".
+  const coveredPatterns = useMemo(
+    () => new Set(rules.filter((r) => r.enabled).map((r) => r.toolPattern)),
+    [rules],
+  );
+
+  // Per-tool wait, grouped by rule pattern across today's approvals (pending +
+  // resolved). Auto-approved (resolvedVia 'rule') rows cost no human wait but
+  // still show as covered.
+  const toolWaits = useMemo<ToolWait[]>(() => {
+    const all = [...pending, ...resolved];
+    const map = new Map<string, ToolWait>();
+    for (const r of all) {
+      const key = suggestRulePattern(r);
+      const w = wasAutoApproved(r) ? 0 : waitMs(r, nowMs);
+      const cur = map.get(key) ?? { key, count: 0, waitedMs: 0, covered: coveredPatterns.has(key) };
+      cur.count += wasAutoApproved(r) ? 0 : 1;
+      cur.waitedMs += w;
+      map.set(key, cur);
+    }
+    return [...map.values()].filter((t) => t.count > 0).sort((a, b) => b.waitedMs - a.waitedMs);
+  }, [pending, resolved, nowMs, coveredPatterns]);
+
+  const waitedTotal = useMemo(() => toolWaits.reduce((a, t) => a + t.waitedMs, 0), [toolWaits]);
+  const autoApprovedCount = useMemo(
+    () => resolved.filter(wasAutoApproved).length,
+    [resolved],
+  );
+  const requestTotal = pending.length + resolved.length;
+
+  const ledger: LedgerCell[] = [
+    {
+      label: 'waited today',
+      value: waitedTotal > 0 ? fmtWait(waitedTotal) : '0m',
+      sub: `across ${String(toolWaits.reduce((a, t) => a + t.count, 0))} stop${
+        toolWaits.reduce((a, t) => a + t.count, 0) === 1 ? '' : 's'
+      }`,
+      tone: waitedTotal > 0 ? 'text-red' : 'text-ink-dim',
+      big: true,
+    },
+    {
+      label: 'auto-approved',
+      value: String(autoApprovedCount),
+      sub:
+        requestTotal > 0
+          ? `${String(Math.round((autoApprovedCount / requestTotal) * 100))}% of requests · no stop`
+          : 'no requests yet',
+      tone: 'text-green',
+      big: false,
+    },
+    {
+      label: 'still blocked',
+      value: String(pending.length),
+      sub: pending.length === 0 ? 'nothing idle' : 'agents idle now',
+      tone: pending.length > 0 ? 'text-amber' : 'text-ink-dim',
+      big: false,
+    },
+  ];
+
+  // The day: window is 09:00 → now (widened if a session started earlier), lanes
+  // one per project that has sessions today.
+  const dayWindow = useMemo(() => {
+    const todaySessions = (sessions ?? []).filter((s) => sessionDay(s) === day);
+    const starts = todaySessions.map((s) => new Date(s.startedAt).getTime());
+    const start = Math.min(nineAmMs(), ...(starts.length > 0 ? starts : [nineAmMs()]));
+    return { start, end: nowMs, sessions: todaySessions };
+  }, [sessions, day, nowMs]);
+
+  const dayLanes = useMemo<DayLane[]>(() => {
+    const bySlug = new Map<string, Session[]>();
+    for (const s of dayWindow.sessions) {
+      const slug = s.projectSlug ?? 'unknown';
+      const arr = bySlug.get(slug) ?? [];
+      arr.push(s);
+      bySlug.set(slug, arr);
+    }
+    const lanes = [...bySlug.entries()].map(([slug, ss]) => {
+      const name = ss[0]?.projectName ?? slug;
+      const projApprovals = [...pending, ...resolved].filter((r) =>
+        ss.some((s) => s.id === r.sessionId),
+      );
+      return buildLane(slug, name, ss, projApprovals, dayWindow.start, dayWindow.end, nowMs);
+    });
+    return lanes.sort((a, b) => b.waitedMs - a.waitedMs).slice(0, 6);
+  }, [dayWindow, pending, resolved, nowMs]);
+
+  const onStopAsking = useCallback(
+    (toolPattern: string): void => {
+      // Optimistic: mark covered locally so the row flips to "✓ auto-approved"
+      // immediately; a MOCK build skips the network write (no rules endpoint).
+      setRules((prev) => [
+        ...prev,
+        {
+          id: -Date.now(),
+          projectId: null,
+          projectSlug: null,
+          toolPattern,
+          action: 'approve',
+          enabled: true,
+          note: 'stop asking (command deck)',
+          createdAt: new Date().toISOString(),
+          source: 'manual',
+        },
+      ]);
+      if (MOCK) return;
+      createApprovalRule({ projectId: null, toolPattern, note: 'stop asking (command deck)' })
+        .then(() => loadRules())
+        .catch(() => loadRules()); // reconcile on failure — drops the optimistic row
+    },
+    [loadRules],
+  );
 
   return (
     <div className="wide:grid wide:grid-cols-[minmax(0,1fr)_320px] wide:items-start">
       <div className="min-w-0 px-4 pt-6 pb-10 desk:px-10 desk:pt-[34px] desk:pb-[60px]">
         <EyebrowClock />
-        {stats !== null ? (
-          <HeroHeadline
-            active={activeCount}
-            stuck={stuckCount}
-            pending={pendingCount}
-            errors={stats.errors}
-          />
+        {approvals !== null ? (
+          <WaitHero waitedMs={waitedTotal} tools={toolWaits} />
         ) : (
-          <h1 className="mt-3.5 max-w-[20ch] font-display text-[28px] leading-[1.16] font-medium tracking-[-0.015em] text-ink-dim desk:text-[38px]">
+          <h1 className="mt-3.5 max-w-[22ch] font-display text-[28px] leading-[1.16] font-medium tracking-[-0.015em] text-ink-dim desk:text-[38px]">
             Reading today's activity…
           </h1>
         )}
 
-        {stats !== null ? (
-          <TriStat stats={stats} prevErrors={prevStats?.errors ?? null} />
-        ) : statsError ? (
-          <div className="mt-5 font-mono text-[11px] text-ink-dim">stats unavailable</div>
-        ) : (
-          <Loading label="stats…" />
+        <Ledger cells={ledger} />
+
+        {dayLanes.length > 0 && (
+          <DayTimeline lanes={dayLanes} startMs={dayWindow.start} endMs={dayWindow.end} />
+        )}
+
+        {toolWaits.length > 0 && (
+          <Interrupts
+            tools={toolWaits}
+            maxWait={toolWaits[0]?.waitedMs ?? 0}
+            onStopAsking={onStopAsking}
+          />
         )}
 
         {/* In-page session-title filter (moved out of the header). */}
-        <PageSearchInput className="mt-5" />
+        <PageSearchInput className="mt-9" />
         {error !== null && <ErrorBox message={error} onRetry={loadSessions} />}
         {sessions === null && error === null ? (
           <Loading label="sessions…" />
@@ -828,7 +1216,7 @@ export function Overview(): JSX.Element {
       </div>
 
       <aside className="min-w-0 border-line px-4 pb-10 wide:sticky wide:top-14 wide:min-h-[calc(100vh-56px)] wide:border-l wide:px-7 wide:pt-[34px] wide:pb-10">
-        {approvals !== null && approvals.length > 0 && <WaitingRail pending={approvals} />}
+        {pending.length > 0 && <BlockedRail pending={pending} nowMs={nowMs} />}
         {stats !== null && (
           <TriageRail
             stats={stats}
@@ -848,6 +1236,9 @@ export function Overview(): JSX.Element {
               });
             }}
           />
+        )}
+        {stats === null && statsError && (
+          <div className="mt-4 font-mono text-[11px] text-ink-dim">triage unavailable</div>
         )}
       </aside>
 
