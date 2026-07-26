@@ -1,7 +1,7 @@
 ---
 name: run-plan
 description: "EXECUTES an existing plan produced by @implementation-planner or @task-planner -- parses the phase DAG, routes sequential phases through a per-phase implementer+review loop and parallel groups through concurrent isolated dispatches, preserving ASK gates and durable progress. NOT for creating plans (use @task-planner / @implementation-planner), NOT for ad-hoc single-file fixes (no plan needed), NOT usable from inside a subagent (subagents cannot spawn subagents -- this playbook runs in the main session only)."
-version: "1.0.0"
+version: "1.1.0"
 owner: "swarmery-core"
 ---
 
@@ -42,7 +42,8 @@ the user says "run the plan") and executed by the main loop.
 | 2–4 phases share a `parallel_group` | **P — parallel group dispatch** |
 | ≥5 independent same-shaped items (audit/migration/sweep) | **W — Workflow script** |
 
-**Hand-off alternative:** a strictly-sequential `step-NN` plan (task-planner output)
+**Hand-off alternative:** a strictly-sequential flat plan (task-planner output —
+`phase-N` docs; legacy `step-NN` plans read the same way)
 can instead be given whole to `@implementation-agent` in its Plan-execution mode
 (`task_dir` input, direct user invocation — see its Mode selection): it orchestrates
 per-step leaf dispatch + verification loops itself. Prefer that when the user asked
@@ -102,7 +103,10 @@ Route modifiers, any route:
    (spec compliance against the phase's §5 Acceptance criteria + code quality; two
    verdicts required). Critical/Important findings → dispatch a fix subagent →
    re-review. Never skip the re-review.
-4. Ledger line (see Durable progress), then next phase.
+4. Tick the phase doc's satisfied acceptance-criteria checkboxes (Edit, in the
+   workspace plan dir) — "review clean" INCLUDES this tick; the ledger line
+   `phase N: review clean …` may only be written after the tick is on disk.
+5. Ledger line (see Durable progress), then next phase.
 
 ## Route P — parallel group
 
@@ -137,6 +141,14 @@ phase 2: [MANUAL] browser leg DEFERRED — env down
 On invocation, **read the ledger first**: phases marked reviewed-clean are DONE —
 never re-dispatch them (re-dispatching completed work is the most expensive known
 failure after context compaction). Trust ledger + `git log` over recollection.
+
+**Progress contract (hard gate).** A phase is NOT complete until every satisfied
+acceptance criterion in its phase doc is flipped `- [ ]` → `- [x]` (Edit tool,
+plan doc in the workspace task dir). Tick immediately after verification of each
+criterion — not in a batch at the end. When you accept delegated work from a
+subagent, YOU tick the boxes as part of acceptance. The platform derives all
+plan progress from these checkboxes; untracked completion = invisible completion.
+Criteria that were NOT satisfied stay unticked — never tick to "close out" a phase.
 
 # Invariants (all routes)
 

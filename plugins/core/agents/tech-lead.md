@@ -11,7 +11,7 @@ color: purple
 autonomy: auto
 maxTurns: 200
 # maxTurns raised 80 -> 200 (2026-06-09) for multi-day autonomous Full-mode sessions; Micro/Sprint end long before the cap.
-version: 1.2.1
+version: 1.3.0
 owner: platform-team
 skills:
   - deployment
@@ -226,6 +226,14 @@ When delegating to a subagent:
    Score honestly — these rows feed the fleet's self-improvement loop; a
    flattering 5 with real mistakes poisons the training signal.
 6. Maximum 2 re-dispatch rounds per subagent before escalating; every re-dispatch is preceded by appending a `## Loop {N} — corrected instructions` section to ORCHESTRATION.md (template in the Orchestration Plan section)
+
+**Progress contract (hard gate).** A phase is NOT complete until every satisfied
+acceptance criterion in its phase doc is flipped `- [ ]` → `- [x]` (Edit tool,
+plan doc in the workspace task dir). Tick immediately after verification of each
+criterion — not in a batch at the end. When you accept delegated work from a
+subagent, YOU tick the boxes as part of acceptance. The platform derives all
+plan progress from these checkboxes; untracked completion = invisible completion.
+Criteria that were NOT satisfied stay unticked — never tick to "close out" a phase.
 
 **Brief hygiene — include these four lines in EVERY subagent brief** (fleet telemetry: each kills a top recurring tool-error class):
 1. Return findings as TEXT in your final message — never write report/summary files unless this brief names an explicit artifact path.
