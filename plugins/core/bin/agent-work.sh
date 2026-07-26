@@ -1,10 +1,14 @@
 #!/bin/bash
 # Agent Work CLI
-# Version: 5.2 (workspace standard: working/YYYY/MM/DD/<slug> task dirs grouped by
-#               start year/month/day (mirrors archive/), README card, SUMMARY.md,
-#               filesystem-generated INDEX.md — no manifest.json/index.json.
-#               Canonical task-id stays <yyyy-mm-dd-slug>; the date is the YYYY/MM/DD
-#               path prefix and the leaf folder is just the slug.)
+# Version: 5.3 (lifecycle parity with the control-plane UI: pause/resume flip the
+#               README card status active↔paused, restore moves an archived task
+#               back to working/ and re-activates it, and `archive` is an alias
+#               of `complete`. Workspace standard: working/YYYY/MM/DD/<slug> task
+#               dirs grouped by start year/month/day (mirrors archive/), README
+#               card, SUMMARY.md, filesystem-generated INDEX.md — no
+#               manifest.json/index.json. Canonical task-id stays
+#               <yyyy-mm-dd-slug>; the date is the YYYY/MM/DD path prefix and the
+#               leaf folder is just the slug — never date-prefixed.)
 # Location: .claude/scripts/agent-work.sh
 # Standard: .claude/docs/03-usage-guides/AGENT-WORK-DOCUMENTATION.md
 set -e
@@ -86,11 +90,33 @@ _id_from_dir() {
     echo "${y}-${m}-${d}-${slug}"
 }
 
-_latest_task_id() {
-    local dir
-    dir=$(find "${WORKING_DIR}" -mindepth 4 -maxdepth 4 -type d -exec stat -f '%m %N' {} + 2>/dev/null \
+# Newest task id (by dir mtime) under a working/- or archive/-shaped root.
+_latest_id_in() {
+    local root="$1" dir
+    dir=$(find "$root" -mindepth 4 -maxdepth 4 -type d -exec stat -f '%m %N' {} + 2>/dev/null \
         | sort -rn | head -1 | sed -E 's|^[0-9]+ ||')
     [ -n "$dir" ] && _id_from_dir "$dir"
+}
+
+_latest_task_id() { _latest_id_in "${WORKING_DIR}"; }
+
+# Same lookup as _task_dir_for, but under archive/ (for restore).
+_archived_dir_for() {
+    local task_id="$1"
+    local y="${task_id:0:4}" m="${task_id:5:2}" d="${task_id:8:2}" slug="${task_id:11}"
+    local dir="${ARCHIVE_DIR}/${y}/${m}/${d}/${slug}"
+    if [ -d "$dir" ]; then echo "$dir"; return; fi
+    find "${ARCHIVE_DIR}" -type d \( -path "*/${slug}" -o -name "$task_id" \) 2>/dev/null | head -1
+}
+
+# Flip the README card status value in place (gsed-free, BSD-sed compatible;
+# same edit style as cmd_complete — the daemon's lifecycle endpoint writes the
+# identical values, so CLI and UI stay convergent).
+_set_status() {
+    local task_dir="$1" from="$2" to="$3"
+    [ -f "${task_dir}/README.md" ] || { log_error "No README.md card in ${task_dir}"; return 1; }
+    sed -i '' -e "s/\*\*Статус\*\*: ${from}/\*\*Статус\*\*: ${to}/" "${task_dir}/README.md" 2>/dev/null \
+    || sed -i -e "s/\*\*Статус\*\*: ${from}/\*\*Статус\*\*: ${to}/" "${task_dir}/README.md"
 }
 
 _resolve_task_dir() {
@@ -113,11 +139,11 @@ cmd_init() {
     local task_name="$1" task_type="${2:-feature}"
     [ -z "$task_name" ] && { log_error "Task name required"; exit 1; }
 
-    local slug task_id
+    local slug task_id task_dir
     slug="$(slugify "$task_name")"
     task_id="$(date +%Y-%m-%d)-${slug}"
     # Group task dirs by start year/month/day — working/YYYY/MM/DD/<slug> — mirroring archive/.
-    local task_dir="${WORKING_DIR}/$(date +%Y)/$(date +%m)/$(date +%d)/${slug}"
+    task_dir="${WORKING_DIR}/$(date +%Y)/$(date +%m)/$(date +%d)/${slug}"
     [ -d "$task_dir" ] && { log_error "Already exists: ${task_id}"; exit 1; }
 
     mkdir -p "${task_dir}/plan" "${task_dir}/reports" "${task_dir}/logs"
@@ -159,7 +185,65 @@ cmd_phase() {
     log_success "Phase file: ${target}"
 }
 
+# pause <id|--latest> — README card status active → paused (UI parity: Pause)
+cmd_pause() {
+    local task_dir; task_dir=$(_resolve_task_dir "$1")
+    local task_id; task_id=$(_id_from_dir "$task_dir")
+    _set_status "$task_dir" "active" "paused" || exit 1
+    cmd_index >/dev/null 2>&1 || true
+    trace_log "task.paused" "${task_id}"
+    log_success "Paused: ${task_id}"
+}
+
+# resume <id|--latest> — README card status paused → active (UI parity: Resume)
+cmd_resume() {
+    local task_dir; task_dir=$(_resolve_task_dir "$1")
+    local task_id; task_id=$(_id_from_dir "$task_dir")
+    _set_status "$task_dir" "paused" "active" || exit 1
+    cmd_index >/dev/null 2>&1 || true
+    trace_log "task.resumed" "${task_id}"
+    log_success "Resumed: ${task_id}"
+}
+
+# restore <id|--latest> — inverse of complete: move archive/YYYY/MM/DD/<slug>
+# back to working/, status → active, completion date → —, prune empty parents.
+cmd_restore() {
+    local task_id="$1"
+    [ "$task_id" = "--latest" ] && task_id=$(_latest_id_in "${ARCHIVE_DIR}")
+    [ -z "$task_id" ] && { log_error "Task ID required (or --latest)"; exit 1; }
+    local src; src=$(_archived_dir_for "$task_id")
+    [ -n "$src" ] && [ -d "$src" ] || { log_error "Not found in archive/: ${task_id}"; exit 1; }
+    task_id=$(_id_from_dir "$src")  # canonical id from the dir's actual archive location
+
+    local dest_parent="${WORKING_DIR}/${task_id:0:4}/${task_id:5:2}/${task_id:8:2}"
+    local dest="${dest_parent}/${task_id:11}"
+    [ -d "$dest" ] && { log_error "Already exists in working/: ${task_id}"; exit 1; }
+    mkdir -p "$dest_parent"
+    mv "$src" "${dest_parent}/"
+
+    # README: any status back to active + reset the completion date.
+    if [ -f "${dest}/README.md" ]; then
+        sed -i '' -e "s/\*\*Статус\*\*: [a-z][a-z]*/\*\*Статус\*\*: active/" \
+                  -e "s/\*\*Завершено\*\*: [0-9][0-9-]*/\*\*Завершено\*\*: —/" \
+                  "${dest}/README.md" 2>/dev/null \
+        || sed -i -e "s/\*\*Статус\*\*: [a-z][a-z]*/\*\*Статус\*\*: active/" \
+                  -e "s/\*\*Завершено\*\*: [0-9][0-9-]*/\*\*Завершено\*\*: —/" \
+                  "${dest}/README.md"
+    else
+        log_info "README.md відсутній у ${dest} — відновлюю без статус-картки"
+    fi
+
+    # Prune now-empty archive/YYYY/MM/DD (and MM, YYYY) parents left behind by the move.
+    rmdir "$(dirname "$src")" 2>/dev/null \
+      && rmdir "$(dirname "$(dirname "$src")")" 2>/dev/null \
+      && rmdir "$(dirname "$(dirname "$(dirname "$src")")")" 2>/dev/null || true
+    cmd_index >/dev/null 2>&1 || true
+    trace_log "task.restored" "${task_id}"
+    log_success "Restored to working/: ${dest} (id: ${task_id})"
+}
+
 # complete <id|--latest> — README → done, SUMMARY skeleton, move to archive/YYYY/MM/
+# (aliased as `archive` so CLI vocabulary matches the control-plane UI)
 cmd_complete() {
     local task_dir; task_dir=$(_resolve_task_dir "$1")
     local task_id; task_id=$(_id_from_dir "$task_dir")
@@ -262,6 +346,7 @@ cmd_list() {
         case "$st" in
             done) echo -e "${GREEN}✓${NC} ${id}";;
             active) echo -e "${YELLOW}◐${NC} ${id}";;
+            paused) echo -e "${CYAN}⏸${NC} ${id}";;
             *) echo -e "${BLUE}?${NC} ${id} (${st})";;
         esac
     done
@@ -303,15 +388,18 @@ cmd_cleanup() {
 }
 
 cmd_help() {
-    echo "Agent Work CLI v5.2 — workspace standard working/YYYY/MM/DD/<slug> (id: yyyy-mm-dd-slug)"
+    echo "Agent Work CLI v5.3 — workspace standard working/YYYY/MM/DD/<slug> (id: yyyy-mm-dd-slug)"
     echo "Usage: agent-work.sh <command> [options]"
     echo ""
     echo "  setup                       Create workspace directories"
     echo "  init <name> [type]          New task dir working/YYYY/MM/DD/<slug> (type: audit|feature|refactor|research|incident|infra)"
     echo "  phase <id|--latest> <NN-x>  Create phases/NN-x.md from template"
-    echo "  complete <id|--latest>      README→done + SUMMARY skeleton + move to archive/YYYY/MM/DD/"
+    echo "  pause <id|--latest>         README status active→paused"
+    echo "  resume <id|--latest>        README status paused→active"
+    echo "  complete <id|--latest>      README→done + SUMMARY skeleton + move to archive/YYYY/MM/DD/ (alias: archive)"
+    echo "  restore <id|--latest>       Move archived task back to working/ + status→active"
     echo "  index                       Regenerate .claude-workspace/INDEX.md"
-    echo "  list [active|done]          List working tasks"
+    echo "  list [active|paused|done]   List working tasks"
     echo "  search <query>              Grep across working/ + archive/"
     echo "  view <id|--latest>          Show task card + file tree"
     echo "  metrics                     Counts"
@@ -320,7 +408,8 @@ cmd_help() {
 
 case "${1:-help}" in
     setup) cmd_setup;; init) cmd_init "$2" "$3";; phase) cmd_phase "$2" "$3";;
-    complete) cmd_complete "$2";; index) cmd_index;; list) cmd_list "$2";;
+    pause) cmd_pause "$2";; resume) cmd_resume "$2";; restore) cmd_restore "$2";;
+    complete|archive) cmd_complete "$2";; index) cmd_index;; list) cmd_list "$2";;
     search) cmd_search "$2";; view) cmd_view "$2";; metrics) cmd_metrics;;
     cleanup) cmd_cleanup "$2";; help|--help|-h) cmd_help;;
     *) log_error "Unknown: $1"; cmd_help; exit 1;;
