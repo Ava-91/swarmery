@@ -1344,6 +1344,17 @@ func HealProjectAttribution(db *sql.DB) (int, error) {
 		return 0, err
 	}
 
+	// Upgrade the System row's derived default name (a pre-existing row
+	// minted from the raw path reads ".swarmery"); a user-set name is never
+	// touched — only the exact derived default is replaced.
+	if s := systemBase(); s != "" {
+		if _, err := db.Exec(
+			`UPDATE projects SET name = 'System' WHERE path = ? AND name = ?`,
+			s, projectNameFor(s)); err != nil {
+			return 0, err
+		}
+	}
+
 	moved := 0
 	for _, p := range projs {
 		canon := CanonicalProjectPath(db, p.path)
