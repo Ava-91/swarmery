@@ -1038,7 +1038,8 @@ export type WSMessageType =
   | 'permission_requested'
   | 'permission_resolved'
   | 'system_item_updated'
-  | 'task_updated';
+  | 'task_updated'
+  | 'plan_updated';
 
 /** Messages pushed over /api/ws — see docs/ws-protocol.md. */
 export type WSMessage =
@@ -1048,7 +1049,8 @@ export type WSMessage =
   | { type: 'permission_requested'; payload: PermissionRequest }
   | { type: 'permission_resolved'; payload: PermissionRequest }
   | { type: 'system_item_updated'; payload: SystemItemUpdate }
-  | { type: 'task_updated'; payload: BoardTask };
+  | { type: 'task_updated'; payload: BoardTask }
+  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } };
 
 // --- Fusion phase 1: task board — additive contracts --------------------------
 
@@ -1970,14 +1972,15 @@ export interface EpicRollup {
   pct: number;
 }
 
-/** One epic (a workspace plan) — mirrors epicDTO in internal/api/epics.go. */
+/** One epic (a workspace plan) — mirrors epicDTO in internal/api/epics.go.
+ * `status` is the derived planStatus (zone > README > rollup precedence). */
 export interface Epic {
   taskId: number;
   externalId: string;
   projectId: number;
   projectSlug: string;
   title: string;
-  status: string;
+  status: 'active' | 'paused' | 'done' | 'archived';
   startedAt: string | null;
   planDir: string;
   phases: EpicPhase[];

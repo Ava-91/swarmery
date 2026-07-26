@@ -65,11 +65,52 @@ type epicDTO struct {
 	ProjectID   int64          `json:"projectId"`
 	ProjectSlug string         `json:"projectSlug"`
 	Title       string         `json:"title"`
-	Status      string         `json:"status"`
+	Status      string         `json:"status"` // active | paused | done | archived (planStatus)
 	StartedAt   *string        `json:"startedAt"`
 	PlanDir     string         `json:"planDir"`
 	Phases      []epicPhaseDTO `json:"phases"`
 	Rollup      epicRollupDTO  `json:"rollup"`
+}
+
+// wsPlanPayload is the plan_updated WS payload (frozen once shipped) — a thin
+// cache-invalidation hint, not data: clients refetch GET /api/epics.
+type wsPlanPayload struct {
+	TaskID    int64 `json:"taskId"`
+	ProjectID int64 `json:"projectId"`
+}
+
+// planUpdatedPayload resolves the plan_updated payload for one workspace task
+// (the same task→project resolution listEpics performs). nil when the row is
+// gone — the WS layer then skips the frame.
+func (h *Handler) planUpdatedPayload(taskID int64) (*wsPlanPayload, error) {
+	var p wsPlanPayload
+	err := h.DB.QueryRow(
+		`SELECT id, project_id FROM tasks WHERE id = ? AND source = 'workspace'`,
+		taskID).Scan(&p.TaskID, &p.ProjectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// planStatus derives the plan lifecycle state. Precedence: zone > README >
+// rollup — an archived task is "archived" whatever its README says, a paused
+// README beats a complete rollup, and a full rollup reads "done" even before
+// the plan is archived. epicDTO.Status is always one of these four values.
+func planStatus(archived bool, taskStatus string, done, total int) string {
+	switch {
+	case archived:
+		return "archived"
+	case taskStatus == "paused":
+		return "paused"
+	case total > 0 && done == total:
+		return "done"
+	default:
+		return "active"
+	}
 }
 
 // ── GET /api/epics ──────────────────────────────────────────────────────────
@@ -79,7 +120,7 @@ type epicDTO struct {
 func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 	q := `
 		SELECT t.id, COALESCE(t.external_id,''), t.project_id, p.slug, t.title,
-		       t.status, t.started_at,
+		       t.status, t.archived_at IS NOT NULL, t.started_at,
 		       (SELECT path FROM task_artifacts WHERE task_id = t.id AND kind = 'plan')
 		FROM tasks t
 		JOIN projects p ON p.id = t.project_id
@@ -101,17 +142,20 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 	// is single-connection, so hydrating phases (a nested Query) while this
 	// cursor is open would deadlock. Second pass runs the per-epic queries.
 	out := []epicDTO{}
+	archived := []bool{} // parallel to out — feeds the planStatus derivation
 	for rows.Next() {
 		var e epicDTO
+		var arch bool
 		var planDir sql.NullString
 		if err := rows.Scan(&e.TaskID, &e.ExternalID, &e.ProjectID, &e.ProjectSlug,
-			&e.Title, &e.Status, &e.StartedAt, &planDir); err != nil {
+			&e.Title, &e.Status, &arch, &e.StartedAt, &planDir); err != nil {
 			rows.Close()
 			writeErr(w, err)
 			return
 		}
 		e.PlanDir = planDir.String
 		out = append(out, e)
+		archived = append(archived, arch)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -127,6 +171,9 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		}
 		out[i].Phases = phases
 		out[i].Rollup = rollup
+		// Normalize the raw tasks.status (running|paused|done) into the plan
+		// lifecycle contract: active | paused | done | archived.
+		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
 	}
 	writeJSON(w, out, nil)
 }

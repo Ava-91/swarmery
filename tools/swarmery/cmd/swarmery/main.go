@@ -820,6 +820,12 @@ func cmdServe(args []string) error {
 		// phase 3.5: workspaces — read-only periodic scan of the agent-work.sh
 		// workspace repo (tasks + task↔session links). Missing root is not
 		// fatal: the scanner logs and keeps ticking.
+		// plans-page-lifecycle phase 1: a plan hash change publishes
+		// plan_updated so the Plans page refetches live (the one-shot scan
+		// subcommand leaves NotifyPlan nil = no publishing).
+		wsCfg.NotifyPlan = func(taskID int64) {
+			bus.Publish(ingest.Notification{Type: ingest.NotePlanUpdated, TaskID: taskID})
+		}
 		scanner := wsingest.New(db, *wsCfg)
 		go func() {
 			if err := scanner.Run(context.Background()); err != nil && err != context.Canceled {

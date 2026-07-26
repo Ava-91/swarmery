@@ -36,18 +36,21 @@ export function PlanDocDrawer({
   taskId,
   path,
   title,
+  initialMode = 'preview',
   onClose,
   onChanged,
 }: {
   taskId: number;
   path: string;
   title: string;
+  /** Starting tab — 'preview' (default) or 'edit' to jump straight to raw mode. */
+  initialMode?: Mode;
   onClose: () => void;
   onChanged: () => void;
 }): JSX.Element {
   const [content, setContent] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
-  const [mode, setMode] = useState<Mode>('preview');
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [busyLine, setBusyLine] = useState<number | null>(null);

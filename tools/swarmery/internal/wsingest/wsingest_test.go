@@ -265,3 +265,22 @@ func TestRescanIsIdempotent(t *testing.T) {
 		t.Errorf("explicit links after rescan = %d, want 2", got)
 	}
 }
+
+// TestParseCardPaused: the pause lifecycle action writes `**Статус**: paused`
+// into the card README — parseCard must map it to tasks.status "paused" in the
+// working zone, while the archive-zone override still wins with "done".
+func TestParseCardPaused(t *testing.T) {
+	dir := t.TempDir()
+	readme := "# Task: Paused card\n\n- **Статус**: paused\n- **Ціль**: hold my beer\n"
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	warn := func(string, ...any) {}
+
+	if c := parseCard(dir, "working", "2026-07-26-paused-card", warn); c.status != "paused" {
+		t.Errorf("working-zone paused card status = %q, want paused", c.status)
+	}
+	if c := parseCard(dir, "archive", "2026-07-26-paused-card", warn); c.status != "done" {
+		t.Errorf("archive-zone paused card status = %q, want done (zone override wins)", c.status)
+	}
+}
