@@ -19,7 +19,10 @@
 // After every action the tasks row (and the plan artifact/doc paths on a
 // move) is updated directly so the API answer is immediately consistent, then
 // plan_updated is published; the next watcher/periodic scan converges on the
-// file state (idempotent upsert keyed on workspace_id+external_id).
+// file state (idempotent upsert keyed on workspace_id+external_id). If a zone
+// move or the row tx fails mid-action, the files can briefly lead the DB and
+// a retry may 500 on resolveEpicDirs until the watcher-triggered rescan
+// (~1 s) reconverges — transient by design, not a bug.
 //
 // Responses: 200 {"status": <new derived planStatus>}; 400 unknown action /
 // bad id; 404 unknown or non-workspace task / no plan dir; 409 invalid
@@ -212,6 +215,8 @@ func (h *Handler) lifecycleRestore(taskID int64, taskDir, planDir string) error 
 // lifecycleUpdateRows applies the tasks-row update plus the path rewrites a
 // zone move requires (task_artifacts.path + epic_phases.doc_path) in one tx,
 // so the doc/activate endpoints keep resolving without waiting for a rescan.
+// A concurrently running scan pass may briefly overwrite this row; the
+// watcher rescan converges it.
 func (h *Handler) lifecycleUpdateRows(taskID int64, oldTaskDir, newTaskDir, oldPlanDir string,
 	taskUpdate string, args ...any) error {
 	newPlanDir := filepath.Join(newTaskDir, filepath.Base(oldPlanDir))

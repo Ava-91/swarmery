@@ -252,9 +252,19 @@ func TestEpicLifecycleRoundTrip(t *testing.T) {
 	expectFrame("restore")
 
 	// A follow-up rescan converges (idempotent upsert on workspace_id +
-	// external_id — no duplicate task rows, paths already fresh).
-	if _, err := wsingest.New(db, wsingest.Config{WorkspaceRoot: filepath.Dir(filepath.Dir(wsDir))}).Scan(); err != nil {
+	// external_id — no duplicate task rows, paths already fresh). NotifyPlan
+	// must stay silent: the endpoint already wrote the moved
+	// task_artifacts.path directly, so the rescan hits the unchanged
+	// hash+path gate — no duplicate plan_updated notification.
+	var rescanFired []int64
+	if _, err := wsingest.New(db, wsingest.Config{
+		WorkspaceRoot: filepath.Dir(filepath.Dir(wsDir)),
+		NotifyPlan:    func(id int64) { rescanFired = append(rescanFired, id) },
+	}).Scan(); err != nil {
 		t.Fatalf("converging rescan: %v", err)
+	}
+	if len(rescanFired) != 0 {
+		t.Errorf("converging rescan fired NotifyPlan for %v, want none (hash+path unchanged)", rescanFired)
 	}
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE external_id='2026-07-20-demo'`).Scan(&n); err != nil {

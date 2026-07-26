@@ -182,8 +182,7 @@ func (s *Scanner) Run(ctx context.Context) error {
 		case ev := <-fsEvents:
 			// Chmod-only events and backup churn (.backups/ trees the doc
 			// editor + lifecycle endpoint write) never change parse results.
-			if !ev.Op.Has(fsnotify.Chmod) &&
-				!strings.Contains(ev.Name, string(os.PathSeparator)+".backups") {
+			if !ev.Op.Has(fsnotify.Chmod) && !inBackups(ev.Name) {
 				dirty = true
 			}
 
@@ -205,16 +204,36 @@ func (s *Scanner) Run(ctx context.Context) error {
 	}
 }
 
-// addWatches registers every indexed task dir and its plan/ subdir from the
-// last scan pass. Failures are tolerated silently — the rescan ticker is the
-// safety net (macOS kqueue needs per-directory watches and can hit fd
-// limits). Re-adding an already-watched dir is a no-op in fsnotify.
+// inBackups reports whether the path IS a .backups dir or lives inside one —
+// a whole-segment match, so a task slug that merely contains ".backups" as a
+// substring (e.g. ".backups-migration") still triggers a rescan.
+func inBackups(path string) bool {
+	sep := string(os.PathSeparator)
+	return strings.Contains(path, sep+".backups"+sep) ||
+		filepath.Base(path) == ".backups"
+}
+
+// addWatches reconciles the watcher with the task dirs (and plan/ subdirs) the
+// last scan pass indexed: wanted dirs are added, no-longer-wanted ones removed
+// — archive/restore renames would otherwise leave stale inode-based watches
+// accumulating (fd creep on kqueue). Failures are tolerated silently in both
+// directions — Add because the rescan ticker is the safety net (macOS kqueue
+// needs per-directory watches and can hit fd limits; re-adding an
+// already-watched dir is a no-op in fsnotify), Remove because the watch may
+// already be dead.
 func (s *Scanner) addWatches(w *fsnotify.Watcher) {
 	s.mu.Lock()
 	dirs := s.watchList
 	s.mu.Unlock()
+	want := make(map[string]bool, len(dirs))
 	for _, d := range dirs {
+		want[d] = true
 		_ = w.Add(d)
+	}
+	for _, d := range w.WatchList() {
+		if !want[d] {
+			_ = w.Remove(d)
+		}
 	}
 }
 
