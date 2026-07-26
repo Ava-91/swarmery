@@ -473,6 +473,82 @@ func TestStatsBreakdownCache(t *testing.T) {
 	}
 }
 
+// TestTrajectoryJudgments validates GET /api/analytics/trajectory-judgments
+// returns the LLM-judge verdicts for a given session.
+func TestTrajectoryJudgments(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "trajjudge.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	const tsFmt = "2006-01-02T15:04:05.000Z"
+	now := time.Now()
+	at := func(d time.Time) string { return d.UTC().Format(tsFmt) }
+	ts := at(now)
+
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES (1, '/work/p', '-work-p', 'P', ?)`, ts)
+	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at) VALUES (1, 1, 'u1', 'completed', ?)`, ts)
+	mustExec(`INSERT INTO trajectory_judgments
+		(session_id, agent, model, judged_at, end_result, instruction_compliance, pitfalls, tool_calls, overall, review)
+		VALUES (1, 'tech-lead', 'sonnet', '2026-07-25T00:00:00Z', 4, 5, 2, 4, 3.75, 'skipped tests [t1]')`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	t.Run("returns judgments for session", func(t *testing.T) {
+		var out []struct {
+			Agent   string  `json:"agent"`
+			Overall float64 `json:"overall"`
+			Review  string  `json:"review"`
+		}
+		getJSON(t, srv.URL+"/api/analytics/trajectory-judgments?session=1", &out)
+		if len(out) != 1 {
+			t.Fatalf("got %d rows, want 1", len(out))
+		}
+		if out[0].Agent != "tech-lead" {
+			t.Errorf("agent = %q, want tech-lead", out[0].Agent)
+		}
+		if out[0].Overall < 3.7 {
+			t.Errorf("overall = %v, want >= 3.7", out[0].Overall)
+		}
+		if out[0].Review == "" {
+			t.Errorf("review is empty, want non-empty")
+		}
+	})
+
+	t.Run("empty result for unknown session", func(t *testing.T) {
+		var out []struct {
+			Agent string `json:"agent"`
+		}
+		getJSON(t, srv.URL+"/api/analytics/trajectory-judgments?session=999", &out)
+		if len(out) != 0 {
+			t.Errorf("got %d rows for unknown session, want 0", len(out))
+		}
+	})
+
+	t.Run("missing session param returns 400", func(t *testing.T) {
+		res, err := http.Get(srv.URL + "/api/analytics/trajectory-judgments")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", res.StatusCode)
+		}
+	})
+}
+
 // TestFirstPassRates validates GET /api/analytics/first-pass returns per-agent
 // first-pass success rates from trajectory_scores.
 func TestFirstPassRates(t *testing.T) {
