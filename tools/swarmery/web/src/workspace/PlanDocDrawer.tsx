@@ -1,15 +1,30 @@
-// Plan-doc editor drawer (fusion phase 10): opens one plan markdown doc for a
-// workspace epic and lets the user (a) read it, (b) toggle acceptance
+// Plan-doc reader/editor modal (fusion phase 10; upgraded from a narrow side
+// drawer to a large centered dialog per reading-comfort feedback): opens one
+// plan markdown doc for a workspace epic and lets the user (a) read it in a
+// comfortable measure with generous line-height, (b) toggle acceptance
 // checkboxes directly in preview — which PATCHes the exact `- [ ]`↔`- [x]` line
 // so the rollup follows on the next rescan, and (c) switch to a raw editor and
 // Save (PUT, which writes a timestamped backup on the daemon side). Same
 // versioned-backup write idiom as the System/Memory surfaces; the daemon
 // confines every path to that task's plan/ dir.
+//
+// Shell follows the app's existing centered-dialog idiom (AttachModal /
+// DetachModal / ConfirmDialog: `fixed inset-0 … bg-bg/70` + backdrop-click +
+// stopPropagation panel) rather than the side-drawer idiom, just sized for
+// prose (max-w-4xl, ~88vh, sticky header, scrollable body capped at ~75ch).
+// Adds what none of those dialogs have yet: a focus trap, focus restoration
+// to the trigger element on close, and a body-scroll lock — all needed
+// because this is the first dialog whose body content is itself scrollable
+// and long-form.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchPlanDoc, savePlanDoc, togglePlanCheckbox } from '../api';
 import { Markdown } from '../lib/markdown';
 import { Loading } from '../components/ui';
+
+/** Selector for elements that can hold keyboard focus, for the Tab-trap. */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 type Mode = 'preview' | 'edit';
 
@@ -55,6 +70,9 @@ export function PlanDocDrawer({
   const [saving, setSaving] = useState(false);
   const [busyLine, setBusyLine] = useState<number | null>(null);
   const [savedNote, setSavedNote] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
 
   const load = useCallback((): void => {
     setContent(null);
@@ -71,10 +89,50 @@ export function PlanDocDrawer({
     load();
   }, [load]);
 
-  // Esc closes the drawer.
+  // On open: remember the trigger element (to restore focus on close), move
+  // focus into the dialog, and lock page scroll so the backdrop doesn't
+  // scroll behind a long doc. All undone on unmount.
+  useEffect(() => {
+    previouslyFocused.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeBtnRef.current?.focus();
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      previouslyFocused.current?.focus();
+    };
+  }, []);
+
+  // Escape closes; Tab/Shift+Tab is trapped inside the dialog (WCAG 2.2 AA).
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const root = dialogRef.current;
+      if (root === null) return;
+      const focusable = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+        (el) => el.offsetParent !== null,
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first === undefined || last === undefined) return;
+      const activeInRoot = root.contains(document.activeElement);
+      if (e.shiftKey) {
+        if (!activeInRoot || document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (!activeInRoot || document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -112,17 +170,25 @@ export function PlanDocDrawer({
   const dirty = draft !== content;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/40" onClick={onClose} role="presentation">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+      onClick={onClose}
+      role="presentation"
+    >
       <div
-        className="flex h-full w-full max-w-[720px] flex-col border-l border-line bg-surface shadow-2xl"
+        ref={dialogRef}
+        className="flex h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label={`plan doc ${title}`}
+        aria-modal="true"
+        aria-labelledby="plan-doc-title"
       >
-        {/* Header. */}
-        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+        {/* Sticky header. */}
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold text-ink">{title}</div>
+            <div id="plan-doc-title" className="truncate text-[14px] font-semibold text-ink">
+              {title}
+            </div>
             <div className="truncate font-mono text-[10px] text-ink-faint">{path}</div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -132,7 +198,7 @@ export function PlanDocDrawer({
                 type="button"
                 onClick={() => setMode(m)}
                 aria-pressed={mode === m}
-                className={`rounded-md border px-2 py-1 font-mono text-[10.5px] capitalize transition-colors ${
+                className={`rounded-md border px-2.5 py-1.5 font-mono text-[10.5px] capitalize transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand ${
                   mode === m ? 'border-line-strong bg-surface2 text-brand' : 'border-transparent text-ink-dim hover:text-ink'
                 }`}
               >
@@ -140,10 +206,11 @@ export function PlanDocDrawer({
               </button>
             ))}
             <button
+              ref={closeBtnRef}
               type="button"
               onClick={onClose}
               aria-label="close"
-              className="ml-1 rounded-md px-2 py-1 text-ink-dim transition-colors hover:text-ink"
+              className="ml-1 flex h-[30px] w-[30px] items-center justify-center rounded-md text-ink-dim transition-colors hover:bg-surface2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
             >
               ×
             </button>
@@ -151,18 +218,21 @@ export function PlanDocDrawer({
         </div>
 
         {error !== null && (
-          <div role="alert" className="border-b border-red/30 bg-red/10 px-4 py-1.5 font-mono text-[11px] text-red">
+          <div
+            role="alert"
+            className="shrink-0 border-b border-red/30 bg-red/10 px-5 py-1.5 font-mono text-[11px] text-red"
+          >
             {error}
           </div>
         )}
         {savedNote !== null && mode === 'preview' && (
-          <div className="border-b border-green/30 bg-green/10 px-4 py-1.5 font-mono text-[11px] text-green">
+          <div className="shrink-0 border-b border-green/30 bg-green/10 px-5 py-1.5 font-mono text-[11px] text-green">
             {savedNote}
           </div>
         )}
 
-        {/* Body. */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {/* Scrollable body — prose constrained to a comfortable measure. */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {content === null && error === null ? (
             <Loading label="doc…" />
           ) : mode === 'edit' ? (
@@ -170,14 +240,14 @@ export function PlanDocDrawer({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               spellCheck={false}
-              className="h-full min-h-[400px] w-full resize-none rounded-lg border border-line bg-field px-3 py-2 font-mono text-[12px] leading-relaxed text-ink outline-none focus:border-ink-dim"
+              className="h-full min-h-[400px] w-full resize-none rounded-lg border border-line bg-field px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-ink outline-none focus:border-ink-dim"
               aria-label="plan doc source"
             />
           ) : (
-            <div className="space-y-4">
+            <div className="mx-auto max-w-[75ch] space-y-4">
               {/* Interactive acceptance checkboxes (toggling PATCHes the line). */}
               {checkboxes.length > 0 && (
-                <div className="rounded-lg border border-line bg-surface/40 p-3">
+                <div className="rounded-lg border border-line bg-surface/40 p-3.5">
                   <div className="mb-2 font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">
                     Acceptance ({checkboxes.filter((c) => c.done).length}/{checkboxes.length})
                   </div>
@@ -188,7 +258,7 @@ export function PlanDocDrawer({
                           type="button"
                           disabled={busyLine === cb.line}
                           onClick={() => toggle(cb)}
-                          className="flex w-full items-start gap-2 rounded px-1 py-0.5 text-left text-[12.5px] text-ink transition-colors hover:bg-surface2/50 disabled:opacity-50"
+                          className="flex min-h-[30px] w-full items-start gap-2 rounded px-1 py-1 text-left text-[13px] text-ink transition-colors hover:bg-surface2/50 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
                         >
                           <span
                             aria-hidden="true"
@@ -205,22 +275,24 @@ export function PlanDocDrawer({
                   </ul>
                 </div>
               )}
-              {/* Rendered markdown (read-only). */}
-              <div className="text-[13px] text-ink-2">{content !== null && <Markdown text={content} />}</div>
+              {/* Rendered markdown (read-only) — generous line-height for long-form reading. */}
+              <div className="text-[14px] leading-[1.75] text-ink-2">
+                {content !== null && <Markdown text={content} />}
+              </div>
             </div>
           )}
         </div>
 
         {/* Footer (edit mode only). */}
         {mode === 'edit' && (
-          <div className="flex items-center justify-end gap-2 border-t border-line px-4 py-2.5">
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 py-3">
             <button
               type="button"
               onClick={() => {
                 setDraft(content ?? '');
                 setMode('preview');
               }}
-              className="rounded-md border border-line px-2.5 py-1 font-mono text-[11px] text-ink-dim transition-colors hover:text-ink"
+              className="rounded-md border border-line px-3 py-1.5 font-mono text-[11px] text-ink-dim transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
             >
               cancel
             </button>
@@ -228,7 +300,7 @@ export function PlanDocDrawer({
               type="button"
               onClick={save}
               disabled={saving || !dirty}
-              className="rounded-md border border-line-strong bg-surface2 px-2.5 py-1 font-mono text-[11px] text-brand transition-colors hover:bg-surface2/70 disabled:cursor-not-allowed disabled:text-ink-faint"
+              className="rounded-md border border-line-strong bg-surface2 px-3 py-1.5 font-mono text-[11px] text-brand transition-colors hover:bg-surface2/70 disabled:cursor-not-allowed disabled:text-ink-faint focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
             >
               {saving ? 'saving…' : 'Save'}
             </button>
