@@ -1140,8 +1140,6 @@ func (h *Handler) statsMatrix(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out, nil)
 }
 
-// ── /api/analytics/first-pass ─────────────────────────────────────────────────
-
 // ── /api/analytics/trajectory-judgments ──────────────────────────────────────
 
 // trajectoryJudgments returns the advisory LLM-judge verdicts for one session.
@@ -1164,11 +1162,11 @@ func (h *Handler) trajectoryJudgments(w http.ResponseWriter, r *http.Request) {
 	type judgmentRow struct {
 		Agent                 string  `json:"agent"`
 		Model                 string  `json:"model"`
-		JudgedAt              string  `json:"judged_at"`
-		EndResult             int     `json:"end_result"`
-		InstructionCompliance int     `json:"instruction_compliance"`
+		JudgedAt              string  `json:"judgedAt"`
+		EndResult             int     `json:"endResult"`
+		InstructionCompliance int     `json:"instructionCompliance"`
 		Pitfalls              int     `json:"pitfalls"`
-		ToolCalls             int     `json:"tool_calls"`
+		ToolCalls             int     `json:"toolCalls"`
 		Overall               float64 `json:"overall"`
 		Review                string  `json:"review"`
 	}
@@ -1187,6 +1185,8 @@ func (h *Handler) trajectoryJudgments(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, out, rows.Err())
 }
+
+// ── /api/analytics/first-pass ─────────────────────────────────────────────────
 
 // firstPassRates returns per-agent first-pass success rate from trajectory_scores,
 // including the distinct anti-pattern kinds that have been detected for each agent.

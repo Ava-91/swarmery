@@ -507,17 +507,33 @@ func TestTrajectoryJudgments(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	t.Run("returns judgments for session", func(t *testing.T) {
+		// Binds every wire key, camelCase — pins the JSON contract the web
+		// client (Retro) depends on, not just the casing-invariant fields.
 		var out []struct {
-			Agent   string  `json:"agent"`
-			Overall float64 `json:"overall"`
-			Review  string  `json:"review"`
+			Agent                 string  `json:"agent"`
+			Model                 string  `json:"model"`
+			JudgedAt              string  `json:"judgedAt"`
+			EndResult             int     `json:"endResult"`
+			InstructionCompliance int     `json:"instructionCompliance"`
+			Pitfalls              int     `json:"pitfalls"`
+			ToolCalls             int     `json:"toolCalls"`
+			Overall               float64 `json:"overall"`
+			Review                string  `json:"review"`
 		}
 		getJSON(t, srv.URL+"/api/analytics/trajectory-judgments?session=1", &out)
 		if len(out) != 1 {
 			t.Fatalf("got %d rows, want 1", len(out))
 		}
-		if out[0].Agent != "tech-lead" {
-			t.Errorf("agent = %q, want tech-lead", out[0].Agent)
+		if out[0].Agent != "tech-lead" || out[0].Model != "sonnet" {
+			t.Errorf("agent/model = %q/%q, want tech-lead/sonnet", out[0].Agent, out[0].Model)
+		}
+		if out[0].JudgedAt == "" {
+			t.Errorf("judgedAt is empty, want non-empty")
+		}
+		if out[0].EndResult != 4 || out[0].InstructionCompliance != 5 ||
+			out[0].Pitfalls != 2 || out[0].ToolCalls != 4 {
+			t.Errorf("dims = %d/%d/%d/%d, want 4/5/2/4", out[0].EndResult,
+				out[0].InstructionCompliance, out[0].Pitfalls, out[0].ToolCalls)
 		}
 		if out[0].Overall < 3.7 {
 			t.Errorf("overall = %v, want >= 3.7", out[0].Overall)
