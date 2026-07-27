@@ -282,9 +282,16 @@ export function Plans(): JSX.Element {
         </div>
 
         {/* Epic detail: phase timeline. */}
-        <div className="min-w-0 flex-1 overflow-y-auto">
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {activeEpic === null ? (
-            <Empty>select an epic</Empty>
+            <>
+              {/* Invisible spacer — same height as the tablist above the list column so the
+                  empty states in both columns share the same vertical baseline. */}
+              <div className="mb-2 flex items-center gap-1 opacity-0 pointer-events-none" aria-hidden="true">
+                <span className="rounded-md border px-2 py-1 font-mono text-[10.5px]">&nbsp;</span>
+              </div>
+              <Empty>select an epic</Empty>
+            </>
           ) : (
             <EpicDetail
               epic={activeEpic}
