@@ -17,8 +17,11 @@ import type {
   PermissionRequest,
   PlanDoc,
   Playbook,
+  PlanningQuestion,
   PlanningStart,
   PlanningStatus,
+  PlanningSummary,
+  PlanningTurn,
   Project,
   ProjectComponents,
   ProjectDetail,
@@ -1299,7 +1302,10 @@ const mockPlaybooks: Playbook[] = [
 
 // fusion phase 8 (reworked by interactive planning v2): planner wizard state
 // per project id — startPlanning flips a project to an awaiting_answer wizard
-// so the demo shows the two-pane question/plan UI.
+// so the demo shows the two-pane question/plan UI; answer advances to a
+// follow-up question, refine restyles the plan, proceed finishes with a plan
+// dir. History mirrors the Go shape: the newest turn is the CURRENT question
+// with answer:null.
 const mockPlanning: Record<number, PlanningStatus> = {};
 
 /** The extended-DTO idle shape (Go sends status:"" when no wizard row exists). */
@@ -1315,6 +1321,100 @@ const mockPlanningIdle: PlanningStatus = {
   history: [],
   planDir: null,
 };
+
+/** Running plan v1 — shown beside the first interview question. */
+const mockPlanSummary: PlanningSummary = {
+  title: 'Bulk CSV export for the reports page',
+  description:
+    'Add a streaming CSV export to the reports list: a server route that pages through the filtered result set and a toolbar button that downloads it without blocking the UI.',
+  proposedChanges: [
+    'GET /api/reports/export — streamed CSV with the current filter set',
+    'Export button in the reports toolbar with a progress toast',
+    'Shared column-serializer reused by the table and the exporter',
+  ],
+  acceptanceCriteria: [
+    'A 100k-row export streams without a server timeout',
+    'The downloaded CSV matches the on-screen filters and column order',
+  ],
+  suggestedSize: 'M',
+};
+
+/** The 3-option demo question: one option with pros/cons, one isOther. */
+const mockPlanQuestion: PlanningQuestion = {
+  id: 'q3-export-transport',
+  type: 'single_select',
+  question: 'How should the export endpoint deliver the CSV?',
+  description:
+    'The reports table already paginates via keyset cursors, so the exporter can reuse that path. The delivery mechanism decides memory profile and retry semantics.',
+  options: [
+    {
+      id: 'stream',
+      label: 'Stream the response (chunked transfer)',
+      description: 'Page through the result set and flush rows as they serialize.',
+      pros: ['Constant memory on the server', 'First bytes arrive immediately'],
+      cons: ['Harder to resume a broken download', 'No Content-Length progress bar'],
+    },
+    {
+      id: 'job',
+      label: 'Background job + signed download link',
+      description: 'Queue an export job, notify when the file is ready in object storage.',
+    },
+    {
+      id: 'other',
+      label: 'Other',
+      description: 'Describe your own delivery approach.',
+      isOther: true,
+    },
+  ],
+  runningPlan: mockPlanSummary,
+};
+
+/** Follow-up question served after the first answer. */
+const mockPlanQuestion2: PlanningQuestion = {
+  id: 'q4-export-limits',
+  type: 'multi_select',
+  question: 'Which guardrails should the export ship with?',
+  options: [
+    { id: 'cap', label: 'Hard row cap (500k) with a clear error' },
+    { id: 'rate', label: 'Per-user rate limit (1 concurrent export)' },
+    { id: 'audit', label: 'Audit-log every export with the filter set' },
+  ],
+  runningPlan: mockPlanSummary,
+};
+
+/** Two answered turns of history + the current one is appended per state. */
+const mockPlanHistory: PlanningTurn[] = [
+  {
+    seq: 1,
+    question: {
+      id: 'q1-scope',
+      type: 'single_select',
+      question: 'Is the export scoped to the current filter set or the full table?',
+      options: [
+        { id: 'filters', label: 'Respect the active filters' },
+        { id: 'all', label: 'Always export everything' },
+      ],
+    },
+    answer: { kind: 'answer', selectedOptionIds: ['filters'] },
+    reasoning:
+      'The reports page keeps its filter state in the URL, so the exporter can reuse the exact query the table renders. Exporting everything would surprise users who filtered down to a segment.',
+  },
+  {
+    seq: 2,
+    question: {
+      id: 'q2-columns',
+      type: 'single_select',
+      question: 'Should the CSV columns follow the visible table columns?',
+      options: [
+        { id: 'visible', label: 'Visible columns only' },
+        { id: 'all-cols', label: 'All columns, hidden ones included' },
+      ],
+    },
+    answer: { kind: 'refine', instructions: 'Include the audit columns even when hidden.' },
+    reasoning:
+      'Column visibility is a per-user preference; compliance exports usually need the audit columns regardless. The refine instruction pins that down.',
+  },
+];
 
 // fusion phase 12: project memory fixtures — one file per kind, backed by a
 // mutable store so an edit→save→reread round-trips in VITE_MOCK.
@@ -1908,38 +2008,99 @@ export const mockApi = {
   async startPlanning(projectId: number, _idea: string): Promise<PlanningStart> {
     await delay(120);
     const uuid = `mock-plan-${String(projectId)}-${String(Date.now())}`;
+    // Jump straight to the awaiting_answer wizard: 2 answered history turns +
+    // the current 3-option question (pros/cons on one, an isOther) + the
+    // running plan — the full §5 demo state.
     mockPlanning[projectId] = {
       ...mockPlanningIdle,
       active: true,
       sessionUuid: uuid,
-      sessionId: 9001, // a canned session so the demo shows the active panel
+      sessionId: 9001, // a canned session so the demo shows the session link
       startedAt: new Date().toISOString(),
-      status: 'generating',
+      status: 'awaiting_answer',
+      currentQuestion: mockPlanQuestion,
+      runningPlan: mockPlanSummary,
+      history: [
+        ...mockPlanHistory,
+        { seq: 3, question: mockPlanQuestion, answer: null, reasoning: '' },
+      ],
     };
     return { sessionUuid: uuid };
   },
 
   async answerPlanning(
     projectId: number,
-    _body: { questionId: string; selectedOptionIds: string[]; otherText?: string },
+    body: { questionId: string; selectedOptionIds: string[]; otherText?: string },
   ): Promise<{ status: string }> {
     await delay(120);
     const cur = mockPlanning[projectId];
-    if (cur !== undefined) mockPlanning[projectId] = { ...cur, status: 'generating' };
+    if (cur !== undefined) {
+      // Stamp the answer on the newest turn, then serve the follow-up question
+      // (the page's optimistic 'generating' resolves on its next refetch).
+      const answered = cur.history.map((t, i) =>
+        i === cur.history.length - 1
+          ? {
+              ...t,
+              answer: {
+                kind: 'answer' as const,
+                selectedOptionIds: body.selectedOptionIds,
+                ...(body.otherText !== undefined ? { otherText: body.otherText } : {}),
+              },
+            }
+          : t,
+      );
+      mockPlanning[projectId] = {
+        ...cur,
+        status: 'awaiting_answer',
+        currentQuestion: mockPlanQuestion2,
+        rawReply: null,
+        history: [
+          ...answered,
+          { seq: answered.length + 1, question: mockPlanQuestion2, answer: null, reasoning: '' },
+        ],
+      };
+    }
     return { status: 'generating' };
   },
 
-  async refinePlanning(projectId: number, _instructions: string): Promise<{ status: string }> {
+  async refinePlanning(projectId: number, instructions: string): Promise<{ status: string }> {
     await delay(120);
     const cur = mockPlanning[projectId];
-    if (cur !== undefined) mockPlanning[projectId] = { ...cur, status: 'generating' };
+    if (cur !== undefined) {
+      // A refine keeps the current question but folds the instructions into the
+      // running plan description, mirroring the real course-correct loop.
+      const plan = cur.runningPlan ?? mockPlanSummary;
+      mockPlanning[projectId] = {
+        ...cur,
+        status: 'awaiting_answer',
+        runningPlan: { ...plan, description: `${plan.description}\n\nRefined: ${instructions}` },
+        history: [
+          ...cur.history,
+          {
+            seq: cur.history.length + 1,
+            question: cur.currentQuestion,
+            answer: { kind: 'refine', instructions },
+            reasoning: '',
+          },
+        ],
+      };
+    }
     return { status: 'generating' };
   },
 
   async proceedPlanning(projectId: number): Promise<{ status: string }> {
     await delay(120);
     const cur = mockPlanning[projectId];
-    if (cur !== undefined) mockPlanning[projectId] = { ...cur, status: 'proceeding' };
+    if (cur !== undefined) {
+      mockPlanning[projectId] = {
+        ...cur,
+        active: false,
+        status: 'done',
+        currentQuestion: null,
+        planDir:
+          '/Volumes/Work/swarmery-workspace/demo/workspace/working/2026/07/27/bulk-csv-export/plan',
+      };
+    }
     return { status: 'proceeding' };
   },
 
