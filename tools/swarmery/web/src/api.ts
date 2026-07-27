@@ -810,6 +810,69 @@ export async function cancelPlanning(projectId: number): Promise<void> {
   }
 }
 
+/**
+ * POST /api/projects/{id}/planning/answer — consume the current wizard
+ * question. Structured mode sends the question id + selected option ids
+ * (otherText fills the "Other" option); raw-fallback mode sends questionId ""
+ * with empty selectedOptionIds and the whole free-text reply as otherText.
+ * Non-2xx (400 empty selection, 404 no wizard, 409 not awaiting / wrong
+ * question / resume in flight) throws the server's {error} text.
+ */
+export async function answerPlanning(
+  projectId: number,
+  body: { questionId: string; selectedOptionIds: string[]; otherText?: string },
+): Promise<{ status: string }> {
+  if (MOCK) return mockApi.answerPlanning(projectId, body);
+  const res = await fetch(`/api/projects/${String(projectId)}/planning/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `answer planning failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+/**
+ * POST /api/projects/{id}/planning/refine {instructions} — free-form
+ * course-correction: the plan updates and the next questions follow the
+ * operator's direction. Same error matrix as answer.
+ */
+export async function refinePlanning(
+  projectId: number,
+  instructions: string,
+): Promise<{ status: string }> {
+  if (MOCK) return mockApi.refinePlanning(projectId, instructions);
+  const res = await fetch(`/api/projects/${String(projectId)}/planning/refine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instructions }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `refine planning failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+/**
+ * POST /api/projects/{id}/planning/proceed — end the interview and trigger
+ * plan writing (PHASE B). 404/409 as answer.
+ */
+export async function proceedPlanning(projectId: number): Promise<{ status: string }> {
+  if (MOCK) return mockApi.proceedPlanning(projectId);
+  const res = await fetch(`/api/projects/${String(projectId)}/planning/proceed`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `proceed planning failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
 /** POST /api/dispatch/pause — global or per-project pause toggle. */
 export async function pauseDispatch(
   scope: 'global' | 'project',

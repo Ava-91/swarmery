@@ -1155,19 +1155,94 @@ export interface DispatchStatus {
 
 // --- fusion phase 8: planning mode -------------------------------------------
 
+/** Go `planning.PlanningOption` (internal/planning/protocol.go) — one
+ * selectable answer of a wizard question. */
+export interface PlanningOption {
+  id: string;
+  label: string;
+  description?: string;
+  pros?: string[];
+  cons?: string[];
+  isOther?: boolean;
+}
+
 /**
- * Go `planning.Status` (internal/planning/service.go) — GET
- * /api/projects/{id}/planning. `sessionUuid` is the pre-generated planner
- * session id (present while active, so the page links to /sessions/{uuid} and
- * matches the transcript before the numeric row is minted); `sessionId` is that
- * numeric row once ingest/the hook mints it (null until then — the page filters
- * approvals + reads turns by it); `startedAt` is the RFC3339 run start.
+ * Go `planning.PlanningSummary` — the running plan rebuilt after every answer.
+ * `suggestedSize` is a free string on the wire (the protocol asks for S|M|L but
+ * the Go side does not enforce the set — mirror, don't narrow).
+ */
+export interface PlanningSummary {
+  title: string;
+  description: string;
+  proposedChanges?: string[];
+  acceptanceCriteria?: string[];
+  suggestedSize?: string;
+}
+
+/** Go `planning.PlanningQuestion` — one structured interview question. */
+export interface PlanningQuestion {
+  id: string;
+  type: 'single_select' | 'multi_select';
+  question: string;
+  description?: string;
+  options: PlanningOption[];
+  runningPlan?: PlanningSummary;
+}
+
+/** Go `planning.wizardAnswer` — the JSON stamped onto a history turn. */
+export interface PlanningAnswer {
+  kind: 'answer' | 'refine';
+  selectedOptionIds?: string[];
+  otherText?: string;
+  instructions?: string;
+}
+
+/**
+ * Go `planning.WizardTurn` — one history entry. `question` is null when the
+ * stored JSON failed to re-parse (Go sends the pointer); `answer` is null until
+ * the operator answered (a PROCEED dismisses a question without an answer).
+ */
+export interface PlanningTurn {
+  seq: number;
+  question: PlanningQuestion | null;
+  answer: PlanningAnswer | null;
+  reasoning: string;
+}
+
+/** The closed wizard status set persisted in planning_sessions.status. */
+export type PlanningWizardStatus =
+  | 'generating'
+  | 'awaiting_answer'
+  | 'proceeding'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * Go `planning.WizardStatus` (internal/planning/state.go) — GET
+ * /api/projects/{id}/planning. Field names are FROZEN (mirrored verbatim from
+ * the Go json tags; see TestWizardGET_DTOFieldNames). `sessionUuid` is the
+ * pre-generated planner session id (present while active, so the page links to
+ * /sessions/{uuid} and matches the transcript before the numeric row is
+ * minted); `sessionId` is that numeric row once ingest/the hook mints it (null
+ * until then); `startedAt` is the RFC3339 run start.
+ *
+ * `status` is the wire shape as Go sends it: the EMPTY STRING when the project
+ * has no wizard row yet (legacy idle) — NOT null. Kept as `'' |
+ * PlanningWizardStatus` rather than the plan sketch's `| null` so the TS type
+ * matches the bytes on the wire.
  */
 export interface PlanningStatus {
   active: boolean;
   sessionUuid: string;
   sessionId: number | null;
   startedAt: string | null;
+  status: PlanningWizardStatus | '';
+  currentQuestion: PlanningQuestion | null;
+  runningPlan: PlanningSummary | null;
+  rawReply: string | null;
+  history: PlanningTurn[];
+  planDir: string | null;
 }
 
 /** POST /api/projects/{id}/planning → 202 body. */

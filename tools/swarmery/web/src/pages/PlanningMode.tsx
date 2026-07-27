@@ -238,7 +238,18 @@ export function PlanningMode(): JSX.Element {
     startPlanning(projectId, idea.trim())
       .then((res) => {
         if (!aliveRef.current) return;
-        setStatus({ active: true, sessionUuid: res.sessionUuid, sessionId: null, startedAt: new Date().toISOString() });
+        setStatus({
+          active: true,
+          sessionUuid: res.sessionUuid,
+          sessionId: null,
+          startedAt: new Date().toISOString(),
+          status: 'generating',
+          currentQuestion: null,
+          runningPlan: null,
+          rawReply: null,
+          history: [],
+          planDir: null,
+        });
       })
       .catch((e: unknown) => {
         if (!aliveRef.current) return;

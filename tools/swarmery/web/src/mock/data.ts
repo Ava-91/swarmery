@@ -1297,9 +1297,24 @@ const mockPlaybooks: Playbook[] = [
   },
 ];
 
-// fusion phase 8: planner state per project id — startPlanning flips a project
-// to active so the demo shows the running-planner panel.
+// fusion phase 8 (reworked by interactive planning v2): planner wizard state
+// per project id — startPlanning flips a project to an awaiting_answer wizard
+// so the demo shows the two-pane question/plan UI.
 const mockPlanning: Record<number, PlanningStatus> = {};
+
+/** The extended-DTO idle shape (Go sends status:"" when no wizard row exists). */
+const mockPlanningIdle: PlanningStatus = {
+  active: false,
+  sessionUuid: '',
+  sessionId: null,
+  startedAt: null,
+  status: '',
+  currentQuestion: null,
+  runningPlan: null,
+  rawReply: null,
+  history: [],
+  planDir: null,
+};
 
 // fusion phase 12: project memory fixtures — one file per kind, backed by a
 // mutable store so an edit→save→reread round-trips in VITE_MOCK.
@@ -1887,19 +1902,45 @@ export const mockApi = {
 
   async planning(projectId: number): Promise<PlanningStatus> {
     await delay(60);
-    return mockPlanning[projectId] ?? { active: false, sessionUuid: '', sessionId: null, startedAt: null };
+    return mockPlanning[projectId] ?? mockPlanningIdle;
   },
 
   async startPlanning(projectId: number, _idea: string): Promise<PlanningStart> {
     await delay(120);
     const uuid = `mock-plan-${String(projectId)}-${String(Date.now())}`;
     mockPlanning[projectId] = {
+      ...mockPlanningIdle,
       active: true,
       sessionUuid: uuid,
       sessionId: 9001, // a canned session so the demo shows the active panel
       startedAt: new Date().toISOString(),
+      status: 'generating',
     };
     return { sessionUuid: uuid };
+  },
+
+  async answerPlanning(
+    projectId: number,
+    _body: { questionId: string; selectedOptionIds: string[]; otherText?: string },
+  ): Promise<{ status: string }> {
+    await delay(120);
+    const cur = mockPlanning[projectId];
+    if (cur !== undefined) mockPlanning[projectId] = { ...cur, status: 'generating' };
+    return { status: 'generating' };
+  },
+
+  async refinePlanning(projectId: number, _instructions: string): Promise<{ status: string }> {
+    await delay(120);
+    const cur = mockPlanning[projectId];
+    if (cur !== undefined) mockPlanning[projectId] = { ...cur, status: 'generating' };
+    return { status: 'generating' };
+  },
+
+  async proceedPlanning(projectId: number): Promise<{ status: string }> {
+    await delay(120);
+    const cur = mockPlanning[projectId];
+    if (cur !== undefined) mockPlanning[projectId] = { ...cur, status: 'proceeding' };
+    return { status: 'proceeding' };
   },
 
   // --- phase 2 — approvals (mutable store in ./approvals.ts) ---
