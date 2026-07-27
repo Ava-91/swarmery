@@ -2,24 +2,27 @@
 // plan IS an epic. This tab lists the project's epics (plan dirs the ingester
 // parsed) behind Active/Done/Archived filter tabs, drills into a phase
 // timeline (seq order, depends-on badges, per-phase progress, derived status
-// chips, an Activate button that mints a board task and stays disabled until
-// the phases it depends on are resolved), offers plan lifecycle controls
-// (Pause / Resume / Archive / Restore — file operations on the daemon side),
-// and opens any plan doc in a preview/edit drawer — the workspace folder
-// becomes invisible infrastructure (read, edit, activate, track from the
-// platform; files stay the storage).
+// chips), offers plan lifecycle controls (Pause / Resume / Archive / Restore —
+// file operations on the daemon side), and opens any plan doc in a
+// preview/edit drawer — the workspace folder becomes invisible infrastructure
+// (read, edit, track from the platform; files stay the storage).
+//
+// Legacy chip: phases that were activated into a board task before the
+// plan↔board decoupling (interactive-planning-v2 phase 4) still show the
+// "activated · <column>" chip from the DTO's boardTaskExternalId/boardColumn
+// fields. No new activations can be created; the Board page is exclusively for
+// tasks created on the board. Phase runs are handled by the phase-run mechanism
+// (phase 5).
 //
 // Liveness: the epic list refetches on the board's `task_updated` WS signal
-// (activation, column moves) AND on `plan_updated` (checkbox flips, lifecycle
-// transitions, plan rescans) so progress ticks without a reload.
+// (column moves on legacy-linked board tasks) AND on `plan_updated` (checkbox
+// flips, lifecycle transitions, plan rescans) so progress ticks without a reload.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { BoardColumn, Epic, EpicPhase, WSMessage } from '../api/types';
 import {
-  activateEpicPhase,
   epicLifecycle,
   fetchEpics,
-  PhaseAlreadyActivatedError,
   type EpicLifecycleAction,
 } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
@@ -93,7 +96,6 @@ export function Plans(): JSX.Element {
   const [selected, setSelected] = useState<number | null>(null); // taskId
   const [filter, setFilter] = useState<EpicFilter>('active');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [busyPhase, setBusyPhase] = useState<number | null>(null);
   const [busyLifecycle, setBusyLifecycle] = useState(false);
   const [editDoc, setEditDoc] = useState<{
     taskId: number;
@@ -155,22 +157,6 @@ export function Plans(): JSX.Element {
     () => (selected !== null ? (filtered.find((e) => e.taskId === selected) ?? null) : null),
     [filtered, selected],
   );
-
-  const activate = (epic: Epic, phase: EpicPhase): void => {
-    setBusyPhase(phase.id);
-    setActionError(null);
-    activateEpicPhase(epic.taskId, phase.id)
-      .then(() => reload())
-      .catch((e: unknown) => {
-        if (e instanceof PhaseAlreadyActivatedError) {
-          // Someone already activated it — just refresh to show the board link.
-          reload();
-          return;
-        }
-        setActionError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setBusyPhase(null));
-  };
 
   const lifecycle = (epic: Epic, action: EpicLifecycleAction): void => {
     if (
@@ -295,9 +281,7 @@ export function Plans(): JSX.Element {
           ) : (
             <EpicDetail
               epic={activeEpic}
-              busyPhase={busyPhase}
               busyLifecycle={busyLifecycle}
-              onActivate={activate}
               onLifecycle={lifecycle}
               onOpenDoc={(path, title, mode) =>
                 setEditDoc({ taskId: activeEpic.taskId, path, title, mode })
@@ -323,22 +307,18 @@ export function Plans(): JSX.Element {
 
 function EpicDetail({
   epic,
-  busyPhase,
   busyLifecycle,
-  onActivate,
   onLifecycle,
   onOpenDoc,
 }: {
   epic: Epic;
-  busyPhase: number | null;
   busyLifecycle: boolean;
-  onActivate: (epic: Epic, phase: EpicPhase) => void;
   onLifecycle: (epic: Epic, action: EpicLifecycleAction) => void;
   onOpenDoc: (path: string, title: string, mode: DrawerMode) => void;
 }): JSX.Element {
   // Which seq numbers are "resolved" — their board task is done/archived OR
   // every checkbox in their doc is ticked (file-driven completion without
-  // board activation). Used to gate the Activate button of dependent phases.
+  // board activation). Used to render depends-on badges.
   const resolvedSeqs = useMemo(() => {
     const s = new Set<number>();
     for (const p of epic.phases) {
@@ -386,15 +366,8 @@ function EpicDetail({
 
       <ol className="space-y-2">
         {epic.phases.map((p) => {
-          const unmetDeps = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
           const activated = p.activatedAt !== null;
           const status = phaseStatus(p, resolvedSeqs);
-          const showActivate = !activated && status !== 'done' && epic.status === 'active';
-          const canActivate = showActivate && unmetDeps.length === 0;
-          const disabledReason =
-            unmetDeps.length > 0
-              ? `waiting on Phase ${unmetDeps.join(', ')} (not done yet)`
-              : undefined;
           const openDoc = (): void => {
             onOpenDoc(p.docRelPath, `Phase ${String(p.seq)} — ${p.name}`, 'preview');
           };
@@ -449,28 +422,15 @@ function EpicDetail({
                 </div>
 
                 <div className="flex shrink-0 flex-col items-end gap-1.5">
-                  {activated ? (
+                  {/* Legacy chip: phases activated into a board task before the plan↔board
+                      decoupling still show their board column for historical context. */}
+                  {activated && (
                     <span
                       className="rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
                       title={p.boardTaskExternalId ?? undefined}
                     >
                       activated{p.boardColumn !== null ? ` · ${p.boardColumn}` : ''}
                     </span>
-                  ) : (
-                    showActivate && (
-                      <button
-                        type="button"
-                        disabled={!canActivate || busyPhase === p.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onActivate(epic, p);
-                        }}
-                        title={disabledReason}
-                        className="rounded-md border border-line-strong bg-surface2 px-2 py-1 font-mono text-[10.5px] text-brand transition-colors hover:bg-surface2/70 disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint"
-                      >
-                        {busyPhase === p.id ? 'activating…' : 'Activate'}
-                      </button>
-                    )
                   )}
                   <button
                     type="button"
@@ -484,9 +444,6 @@ function EpicDetail({
                   </button>
                 </div>
               </div>
-              {showActivate && disabledReason !== undefined && (
-                <div className="mt-1.5 font-mono text-[9.5px] text-ink-faint">{disabledReason}</div>
-              )}
             </li>
           );
         })}

@@ -1751,31 +1751,6 @@ export const mockApi = {
       .map((e) => ({ ...e, phases: e.phases.map((p) => ({ ...p })) }));
   },
 
-  async activateEpicPhase(taskId: number, phaseId: number): Promise<BoardTask> {
-    await delay(120);
-    const epic = mockEpics.find((e) => e.taskId === taskId);
-    const phase = epic?.phases.find((p) => p.id === phaseId);
-    if (!epic || !phase) throw new Error('mock: phase not found');
-    mockBoardSeq += 1;
-    const ext = `T-${mockBoardSeq.toString(36)}`;
-    const created = boardTask({
-      id: mockBoardSeq,
-      externalId: ext,
-      projectId: epic.projectId,
-      title: phase.name,
-      prompt: `# ${phase.name}\n\n(mock activation)`,
-      boardColumn: 'todo',
-      columnMovedAt: iso(0),
-      createdAt: iso(0),
-    });
-    mockBoard = [created, ...mockBoard];
-    phase.activatedAt = iso(0);
-    phase.boardTaskId = created.id;
-    phase.boardTaskExternalId = ext;
-    phase.boardColumn = 'todo';
-    return { ...created };
-  },
-
   async planDoc(_taskId: number, path: string): Promise<PlanDoc> {
     await delay(60);
     return {

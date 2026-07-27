@@ -1238,37 +1238,6 @@ export function fetchEpics(projectId?: number): Promise<Epic[]> {
   return get(`/api/epics${qs}`);
 }
 
-/**
- * POST /api/epics/{taskId}/phases/{phaseId}/activate → 201 BoardTask. A second
- * call for an already-activated phase throws {@link PhaseAlreadyActivatedError}
- * (409) carrying the existing board task.
- */
-export async function activateEpicPhase(taskId: number, phaseId: number): Promise<BoardTask> {
-  if (MOCK) return mockApi.activateEpicPhase(taskId, phaseId);
-  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/activate`, {
-    method: 'POST',
-  });
-  if (res.status === 409) {
-    const payload = (await res.json().catch(() => ({}))) as { error?: string; task?: BoardTask };
-    throw new PhaseAlreadyActivatedError(payload.error ?? 'phase already activated', payload.task);
-  }
-  if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(data.error ?? `activate failed: ${String(res.status)}`);
-  }
-  return (await res.json()) as BoardTask;
-}
-
-/** Thrown on a 409 from activateEpicPhase — carries the existing board task. */
-export class PhaseAlreadyActivatedError extends Error {
-  readonly task: BoardTask | undefined;
-  constructor(message: string, task: BoardTask | undefined) {
-    super(message);
-    this.name = 'PhaseAlreadyActivatedError';
-    this.task = task;
-  }
-}
-
 export type EpicLifecycleAction = 'pause' | 'resume' | 'archive' | 'restore';
 
 /**
