@@ -19,10 +19,13 @@
 // flips, lifecycle transitions, plan rescans) so progress ticks without a reload.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { BoardColumn, Epic, EpicPhase, WSMessage } from '../api/types';
 import {
+  cancelEpicPhaseRun,
   epicLifecycle,
   fetchEpics,
+  runEpicPhase,
   type EpicLifecycleAction,
 } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
@@ -49,6 +52,28 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   if (p.checkboxesDone > 0 || p.boardColumn === 'in_progress' || p.boardColumn === 'in_review')
     return 'in_progress';
   return 'pending';
+}
+
+/** Re-renders on an interval so elapsed labels on running phases stay fresh. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNow(Date.now());
+    }, intervalMs);
+    return () => {
+      clearInterval(id);
+    };
+  }, [intervalMs]);
+  return now;
+}
+
+function fmtElapsed(fromIso: string, now: number): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
+  if (s < 60) return `${String(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${String(m)}m ${String(s % 60)}s`;
+  return `${String(Math.floor(m / 60))}h ${String(m % 60)}m`;
 }
 
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
@@ -133,6 +158,20 @@ export function Plans(): JSX.Element {
     [projectId, reload],
   );
   useLiveUpdates(onMessage, reload);
+
+  // Reconcile net while any visible phase run is live: plan_updated covers the
+  // run edges, this 5s poll covers a missed frame mid-run. Cleared when none run.
+  const anyRunning = useMemo(
+    () => (epics ?? []).some((e) => e.phases.some((p) => p.runState === 'running')),
+    [epics],
+  );
+  useEffect(() => {
+    if (!anyRunning) return;
+    const id = setInterval(reload, 5000);
+    return () => {
+      clearInterval(id);
+    };
+  }, [anyRunning, reload]);
 
   const filtered = useMemo(
     () => (epics ?? []).filter((e) => epicFilterOf(e.status) === filter),
@@ -286,6 +325,7 @@ export function Plans(): JSX.Element {
               onOpenDoc={(path, title, mode) =>
                 setEditDoc({ taskId: activeEpic.taskId, path, title, mode })
               }
+              onChanged={reload}
             />
           )}
         </div>
@@ -310,11 +350,13 @@ function EpicDetail({
   busyLifecycle,
   onLifecycle,
   onOpenDoc,
+  onChanged,
 }: {
   epic: Epic;
   busyLifecycle: boolean;
   onLifecycle: (epic: Epic, action: EpicLifecycleAction) => void;
   onOpenDoc: (path: string, title: string, mode: DrawerMode) => void;
+  onChanged: () => void;
 }): JSX.Element {
   // Which seq numbers are "resolved" — their board task is done/archived OR
   // every checkbox in their doc is ticked (file-driven completion without
@@ -322,11 +364,39 @@ function EpicDetail({
   const resolvedSeqs = useMemo(() => {
     const s = new Set<number>();
     for (const p of epic.phases) {
-      if (isResolvedColumn(p.boardColumn) || (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal))
+      if (
+        isResolvedColumn(p.boardColumn) ||
+        (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
+        p.runState === 'done'
+      )
         s.add(p.seq);
     }
     return s;
   }, [epic.phases]);
+
+  // Phase-run controls (interactive-planning-v2 phase 6). The server re-checks
+  // every gate; the client-side disable is a courtesy, and a 409 body (unmet
+  // deps, already running) surfaces in the inline error strip below.
+  const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
+  const [runMsg, setRunMsg] = useState<string | null>(null);
+  const now = useNow(1000);
+
+  const startRun = (phaseId: number): void => {
+    setRunBusy(phaseId);
+    setRunMsg(null);
+    runEpicPhase(epic.taskId, phaseId)
+      .then(() => onChanged())
+      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunBusy(null));
+  };
+  const cancelRun = (phaseId: number): void => {
+    setRunBusy(phaseId);
+    setRunMsg(null);
+    cancelEpicPhaseRun(epic.taskId, phaseId)
+      .then(() => onChanged())
+      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunBusy(null));
+  };
 
   return (
     <div className="pr-1">
@@ -364,10 +434,25 @@ function EpicDetail({
         ))}
       </div>
 
+      {runMsg !== null && (
+        <div className="mb-2 rounded-md border border-red/40 bg-red/10 px-2.5 py-1.5 font-mono text-[10.5px] text-red">
+          {runMsg}
+        </div>
+      )}
+
       <ol className="space-y-2">
         {epic.phases.map((p) => {
           const activated = p.activatedAt !== null;
           const status = phaseStatus(p, resolvedSeqs);
+          const depsUnmet = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
+          const runDisabled =
+            runBusy !== null || epic.status !== 'active' || depsUnmet.length > 0;
+          const runTitle =
+            epic.status !== 'active'
+              ? 'plan is not active'
+              : depsUnmet.length > 0
+                ? `waiting on phase ${depsUnmet.join(', ')}`
+                : 'run this phase headlessly in an isolated worktree';
           const openDoc = (): void => {
             onOpenDoc(p.docRelPath, `Phase ${String(p.seq)} — ${p.name}`, 'preview');
           };
@@ -432,6 +517,76 @@ function EpicDetail({
                       activated{p.boardColumn !== null ? ` · ${p.boardColumn}` : ''}
                     </span>
                   )}
+
+                  {/* Direct phase run (no board task): idle/failed offer Run,
+                      running shows elapsed + Cancel + session link, done a chip. */}
+                  {p.runState === 'running' ? (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      <span
+                        className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
+                        title="headless run in progress"
+                      >
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
+                        Running
+                        {p.runStartedAt !== null ? ` · ${fmtElapsed(p.runStartedAt, now)}` : ''}
+                      </span>
+                      {p.runSessionUuid !== null && (
+                        <Link
+                          to={`/sessions/${p.runSessionUuid}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="font-mono text-[9.5px] text-ink-dim underline-offset-2 transition-colors hover:text-brand hover:underline"
+                        >
+                          session
+                        </Link>
+                      )}
+                      <button
+                        type="button"
+                        disabled={runBusy !== null}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelRun(p.id);
+                        }}
+                        className="rounded-md border border-red/40 px-1.5 py-px font-mono text-[9.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : p.runState === 'done' ? (
+                    <span
+                      className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+                      title="headless run finished"
+                    >
+                      Run done
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      {p.runState === 'failed' && (
+                        <span
+                          className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
+                          title={p.runError ?? 'run failed'}
+                        >
+                          Failed
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={runDisabled}
+                        title={runTitle}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRun(p.id);
+                        }}
+                        className={`rounded-md border px-1.5 py-px font-mono text-[9.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
+                          p.runState === 'failed'
+                            ? 'border-red/40 text-red hover:bg-red/10'
+                            : 'border-brand/40 text-brand hover:bg-brand/10'
+                        }`}
+                      >
+                        {runBusy === p.id ? '…' : p.runState === 'failed' ? 'Retry run' : 'Run phase'}
+                      </button>
+                    </span>
+                  )}
+
                   <button
                     type="button"
                     onClick={(e) => {
