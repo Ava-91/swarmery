@@ -254,6 +254,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/epics/{taskId}/docs", h.getPlanDoc)
 	mux.HandleFunc("PUT /api/epics/{taskId}/docs", requireLocalOrigin(h.putPlanDoc))
 	mux.HandleFunc("PATCH /api/epics/{taskId}/docs", requireLocalOrigin(h.patchPlanDoc))
+	// interactive planning v2 phase 5: run ONE plan phase headlessly in an
+	// isolated worktree straight from its phase doc (no board task). 503 until
+	// AttachPhaseRun wires the service.
+	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run", requireLocalOrigin(h.runPhase))
+	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run/cancel", requireLocalOrigin(h.cancelPhaseRun))
 
 	// fusion phase 13: playbooks — selectable execution recipes. GET lists the
 	// registry (built-ins overlaid by a project's own files); the duplicate POST

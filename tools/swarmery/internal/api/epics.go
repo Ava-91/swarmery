@@ -51,6 +51,13 @@ type epicPhaseDTO struct {
 	BoardTaskExternalID *string `json:"boardTaskExternalId"`
 	BoardTaskID         *int64  `json:"boardTaskId"`
 	BoardColumn         *string `json:"boardColumn"`
+	// Phase-run state (interactive planning v2 phase 5, migration 0034):
+	// idle | running | done | failed, plus the run's session uuid / start /
+	// error. Consumed by the Plans page's Run/Cancel UI (phase 6).
+	RunState       string  `json:"runState"`
+	RunSessionUUID *string `json:"runSessionUuid"`
+	RunStartedAt   *string `json:"runStartedAt"`
+	RunError       *string `json:"runError"`
 }
 
 // epicRollupDTO is a checkbox rollup across all of an epic's phases.
@@ -187,7 +194,8 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 	rows, err := h.DB.Query(`
 		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on,
 		       e.checkboxes_total, e.checkboxes_done, e.activated_at,
-		       e.activated_board_task_id, bt.external_id, bt.board_column
+		       e.activated_board_task_id, bt.external_id, bt.board_column,
+		       e.run_state, e.run_session_uuid, e.run_started_at, e.run_error
 		FROM epic_phases e
 		LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
 		WHERE e.workspace_task_id = ?
@@ -201,15 +209,19 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 	var rollup epicRollupDTO
 	for rows.Next() {
 		var (
-			p           epicPhaseDTO
-			depsJSON    string
-			boardTaskID sql.NullInt64
-			boardExtID  sql.NullString
-			boardCol    sql.NullString
+			p            epicPhaseDTO
+			depsJSON     string
+			boardTaskID  sql.NullInt64
+			boardExtID   sql.NullString
+			boardCol     sql.NullString
+			runUUID      sql.NullString
+			runStartedAt sql.NullString
+			runError     sql.NullString
 		)
 		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.DocPath, &depsJSON,
 			&p.CheckboxesTotal, &p.CheckboxesDone, &p.ActivatedAt,
-			&boardTaskID, &boardExtID, &boardCol); err != nil {
+			&boardTaskID, &boardExtID, &boardCol,
+			&p.RunState, &runUUID, &runStartedAt, &runError); err != nil {
 			return nil, epicRollupDTO{}, err
 		}
 		p.DependsOn = decodeIntList(depsJSON)
@@ -222,6 +234,15 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		}
 		if boardCol.Valid {
 			p.BoardColumn = &boardCol.String
+		}
+		if runUUID.Valid {
+			p.RunSessionUUID = &runUUID.String
+		}
+		if runStartedAt.Valid {
+			p.RunStartedAt = &runStartedAt.String
+		}
+		if runError.Valid {
+			p.RunError = &runError.String
 		}
 		rollup.Done += p.CheckboxesDone
 		rollup.Total += p.CheckboxesTotal

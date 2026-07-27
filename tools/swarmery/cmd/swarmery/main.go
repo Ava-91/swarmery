@@ -43,6 +43,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/mcpcfg"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/notify"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
@@ -1045,6 +1046,17 @@ func cmdServe(args []string) error {
 	// any orphaned run (the plan it wrote is still picked up by wsingest).
 	planningSvc := planning.NewService(db, planning.ClaudeRunner{})
 	api.AttachPlanning(planningSvc)
+
+	// interactive planning v2 phase 5: phase runs — execute ONE plan phase
+	// headlessly in an isolated worktree straight from its phase doc (state on
+	// epic_phases, no board task). Shares the worktree.Manager with dispatch/
+	// verify so all three agree on the worktree root and git boundary. Heal any
+	// 'running' rows a crashed daemon left behind to failed before serving.
+	phaserunSvc := phaserun.NewService(db, phaserun.ClaudeRunner{}, wtMgr)
+	if err := phaserunSvc.HealStale(); err != nil {
+		log.Printf("warning: phaserun heal on startup: %v", err)
+	}
+	api.AttachPhaseRun(phaserunSvc)
 
 	buildStart := time.Now()
 	handler, err := api.NewServer(db, !*noIngest)
