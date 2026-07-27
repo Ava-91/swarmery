@@ -1333,6 +1333,43 @@ export async function epicLifecycle(
   return (await res.json()) as { status: Epic['status'] };
 }
 
+/**
+ * POST /api/epics/{taskId}/phases/{phaseId}/run — execute one plan phase
+ * headlessly in an isolated worktree (no board task). 202 {status, sessionUuid};
+ * 409 carries the gate reason (already running / unmet deps / no doc) in the
+ * error body — surfaced verbatim for the toast.
+ */
+export async function runEpicPhase(
+  taskId: number,
+  phaseId: number,
+): Promise<{ status: string; sessionUuid: string }> {
+  if (MOCK) return { status: 'running', sessionUuid: 'mock-run-uuid' };
+  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/run`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `phase run failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: string; sessionUuid: string };
+}
+
+/** POST /api/epics/{taskId}/phases/{phaseId}/run/cancel — 202 / 409 when idle. */
+export async function cancelEpicPhaseRun(
+  taskId: number,
+  phaseId: number,
+): Promise<{ status: string }> {
+  if (MOCK) return { status: 'cancelling' };
+  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/run/cancel`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `phase run cancel failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: string };
+}
+
 /** GET /api/epics/{taskId}/docs?path= — read a plan doc (path-confined). */
 export function fetchPlanDoc(taskId: number, path: string): Promise<PlanDoc> {
   if (MOCK) return mockApi.planDoc(taskId, path);

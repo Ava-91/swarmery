@@ -2019,6 +2019,9 @@ export interface RoutineInput {
 
 // --- fusion phase 10: epic rollups + plan-doc editor --------------------------
 
+/** Direct phase-run lifecycle (interactive planning v2 phase 5). */
+export type PhaseRunState = 'idle' | 'running' | 'done' | 'failed';
+
 /** One epic phase — mirrors epicPhaseDTO in internal/api/epics.go. */
 export interface EpicPhase {
   id: number;
@@ -2037,6 +2040,12 @@ export interface EpicPhase {
   boardTaskId: number | null;
   /** The current board column of that board task (null until activated). */
   boardColumn: BoardColumn | null;
+  /** Direct phase-run state (no board task involved). */
+  runState: PhaseRunState;
+  runSessionUuid: string | null;
+  runStartedAt: string | null;
+  /** Failure detail (stderr tail / timeout / cancelled) when runState==='failed'. */
+  runError: string | null;
 }
 
 /** Checkbox rollup across an epic's phases. */

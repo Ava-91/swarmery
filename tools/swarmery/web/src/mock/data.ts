@@ -1228,6 +1228,7 @@ const mockEpicPhase = (
   dependsOn: number[],
   done: number,
   total: number,
+  run?: Partial<Pick<EpicPhase, 'runState' | 'runSessionUuid' | 'runStartedAt' | 'runError'>>,
 ): EpicPhase => ({
   id,
   seq,
@@ -1241,8 +1242,15 @@ const mockEpicPhase = (
   boardTaskExternalId: null,
   boardTaskId: null,
   boardColumn: null,
+  runState: 'idle',
+  runSessionUuid: null,
+  runStartedAt: null,
+  runError: null,
+  ...run,
 });
 
+// Phase-run states cover all four chips: 1 run-done, 2 running (elapsed ticks),
+// 3 failed (error tooltip + retry Run), 4 idle behind an unmet dep (gated Run).
 const mockEpics: Epic[] = [
   {
     taskId: 7010,
@@ -1254,9 +1262,22 @@ const mockEpics: Epic[] = [
     startedAt: iso(-3 * 86400),
     planDir: '/ws/plan',
     phases: [
-      mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5),
-      mockEpicPhase(2, 2, 'Dispatcher', [1], 3, 6),
-      mockEpicPhase(3, 3, 'Board UI', [1], 2, 8),
+      mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-done-uuid',
+        runStartedAt: iso(-2 * 86400),
+      }),
+      mockEpicPhase(2, 2, 'Dispatcher', [1], 3, 6, {
+        runState: 'running',
+        runSessionUuid: 'mock-run-live-uuid',
+        runStartedAt: iso(-380),
+      }),
+      mockEpicPhase(3, 3, 'Board UI', [1], 2, 8, {
+        runState: 'failed',
+        runSessionUuid: 'mock-run-failed-uuid',
+        runStartedAt: iso(-3600),
+        runError: 'exit 1: npm run build failed — TS2339 in Board.tsx',
+      }),
       mockEpicPhase(4, 4, 'Epics rollup + graph', [2, 3], 0, 6),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
