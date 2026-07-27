@@ -300,22 +300,47 @@ func closeUnclosed(s string) string {
 // stripTrailingCommas removes commas that immediately precede a `}` or `]`
 // (possibly with whitespace between them), which are invalid in JSON but
 // emitted by some models.
+//
+// Uses the same inString/escaped scanning idiom as braceEnd, trimTrailingGarbage,
+// and closeUnclosed so that commas inside string literals are never touched.
 func stripTrailingCommas(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
-	runes := []rune(s)
-	for i, r := range runes {
-		if r == ',' {
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			b.WriteByte(ch)
+			continue
+		}
+		if inString {
+			b.WriteByte(ch)
+			continue
+		}
+		// Outside a string literal: check if this is a trailing comma.
+		if ch == ',' {
 			// Look ahead (skipping whitespace) for } or ].
 			j := i + 1
-			for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\n' || runes[j] == '\r') {
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
 				j++
 			}
-			if j < len(runes) && (runes[j] == '}' || runes[j] == ']') {
-				continue // drop this comma
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				continue // drop this trailing comma
 			}
 		}
-		b.WriteRune(r)
+		b.WriteByte(ch)
 	}
 	return b.String()
 }

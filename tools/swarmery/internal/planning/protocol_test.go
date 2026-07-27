@@ -12,18 +12,18 @@ func minimalQuestion(qType string) string {
 
 func TestParseTurn(t *testing.T) {
 	tests := []struct {
-		name          string
-		text          string
-		wantNilQ      bool   // true ⇒ Question must be nil
-		wantQID       string // non-empty ⇒ check Question.ID
-		wantQType     string // non-empty ⇒ check Question.Type
-		reasoningHas  string // non-empty ⇒ Reasoning must contain this
-		reasoningNot  string // non-empty ⇒ Reasoning must NOT contain this (block removed)
-		wantIsOther   bool   // check that an isOther option is present
+		name         string
+		text         string
+		wantNilQ     bool   // true ⇒ Question must be nil
+		wantQID      string // non-empty ⇒ check Question.ID
+		wantQType    string // non-empty ⇒ check Question.Type
+		reasoningHas string // non-empty ⇒ Reasoning must contain this
+		reasoningNot string // non-empty ⇒ Reasoning must NOT contain this (block removed)
+		wantIsOther  bool   // check that an isOther option is present
 	}{
 		{
-			name: "clean fenced block",
-			text: "Here is the analysis.\n```json\n" + minimalQuestion("single_select") + "\n```",
+			name:         "clean fenced block",
+			text:         "Here is the analysis.\n```json\n" + minimalQuestion("single_select") + "\n```",
 			wantQID:      "q1",
 			wantQType:    "single_select",
 			reasoningHas: "Here is the analysis.",
@@ -44,8 +44,8 @@ func TestParseTurn(t *testing.T) {
 		{
 			name: "truncated block repaired",
 			// Unclosed brace — repairJSON should close it and the parse should succeed.
-			text: "Analysis.\n```json\n" + `{"type":"question","data":{"id":"q-trunc","type":"single_select","question":"Pick one?","options":[{"id":"a","label":"A"},{"id":"b","label":"B"` + "\n```",
-			wantQID:  "q-trunc",
+			text:      "Analysis.\n```json\n" + `{"type":"question","data":{"id":"q-trunc","type":"single_select","question":"Pick one?","options":[{"id":"a","label":"A"},{"id":"b","label":"B"` + "\n```",
+			wantQID:   "q-trunc",
 			wantQType: "single_select",
 		},
 		{
@@ -53,7 +53,7 @@ func TestParseTurn(t *testing.T) {
 			text: "Analysis.\n```json\n" +
 				`{"type":"question","data":{"id":"q-comma","type":"single_select","question":"Choose?","options":[{"id":"a","label":"A"},{"id":"b","label":"B"},],"runningPlan":{"title":"T","description":"D"},}}` +
 				"\n```",
-			wantQID:  "q-comma",
+			wantQID:   "q-comma",
 			wantQType: "single_select",
 		},
 		{
@@ -105,6 +105,20 @@ func TestParseTurn(t *testing.T) {
 			wantQID:      "uk-q",
 			reasoningHas: "Аналіз зроблено.",
 		},
+		{
+			// stripTrailingCommas must not corrupt a comma inside a string literal.
+			// The option label contains "pick: [a, ]" — the comma before ] is INSIDE
+			// a JSON string and must survive verbatim.  The trailing comma after the
+			// last option IS a real trailing comma that must be stripped so
+			// json.Unmarshal succeeds.  The description field also contains ", }" to
+			// cover the brace variant of the same bug.
+			name: "comma inside string literal preserved by stripTrailingCommas",
+			text: "```json\n" +
+				`{"type":"question","data":{"id":"q-str","type":"single_select","question":"Pick?","description":"example: {\"a\", }","options":[{"id":"a","label":"pick: [a, ]"},{"id":"b","label":"B"},]}}` +
+				"\n```",
+			wantQID:   "q-str",
+			wantQType: "single_select",
+		},
 	}
 
 	for _, tc := range tests {
@@ -146,6 +160,56 @@ func TestParseTurn(t *testing.T) {
 				t.Errorf("Reasoning should NOT contain %q, got %q", tc.reasoningNot, got.Reasoning)
 			}
 		})
+	}
+}
+
+// TestStripTrailingCommasStringAware verifies that commas inside JSON string
+// literals are never dropped, even when they appear before whitespace + `}` or
+// `]` — the exact pattern that the naive (non-string-aware) implementation
+// silently corrupts.
+func TestStripTrailingCommasStringAware(t *testing.T) {
+	// A real trailing comma that SHOULD be removed + commas inside strings that
+	// must survive.
+	input := `{"options":[{"id":"a","label":"pick: [a, ]"},{"id":"b","label":"B"},]}`
+	got := stripTrailingCommas(input)
+
+	// The trailing comma after {"id":"b","label":"B"} must be gone so the JSON parses.
+	if strings.Contains(got, `"B"},]`) {
+		t.Errorf("real trailing comma was not removed; got: %s", got)
+	}
+	// The comma inside the string literal "pick: [a, ]" must be preserved.
+	if !strings.Contains(got, `"pick: [a, ]"`) {
+		t.Errorf("comma inside string literal was corrupted; got: %s", got)
+	}
+
+	// Brace variant: ", }" inside a string value must not be touched.
+	input2 := `{"desc":"example: {\"a\", }","x":1}`
+	got2 := stripTrailingCommas(input2)
+	if !strings.Contains(got2, `"example: {\"a\", }"`) {
+		t.Errorf("comma inside string literal (brace variant) was corrupted; got: %s", got2)
+	}
+}
+
+// TestParseTurnStringLiteralComma confirms that ParseTurn correctly round-trips
+// an option label and description that contain ", ]" / ", }" when the block
+// also has a real trailing comma requiring repair.
+func TestParseTurnStringLiteralComma(t *testing.T) {
+	text := "```json\n" +
+		`{"type":"question","data":{"id":"q-str","type":"single_select","question":"Pick?","description":"example: {\"a\", }","options":[{"id":"a","label":"pick: [a, ]"},{"id":"b","label":"B"},]}}` +
+		"\n```"
+	got := ParseTurn(text)
+	if got.Question == nil {
+		t.Fatalf("want Question != nil, got nil (Reasoning=%q)", got.Reasoning)
+	}
+	if got.Question.Description != `example: {"a", }` {
+		t.Errorf("Description corrupted: want %q, got %q", `example: {"a", }`, got.Question.Description)
+	}
+	if len(got.Question.Options) == 0 || got.Question.Options[0].Label != "pick: [a, ]" {
+		label := ""
+		if len(got.Question.Options) > 0 {
+			label = got.Question.Options[0].Label
+		}
+		t.Errorf("Option[0].Label corrupted: want %q, got %q", "pick: [a, ]", label)
 	}
 }
 

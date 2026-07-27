@@ -1,6 +1,9 @@
 package planning
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // ---------------------------------------------------------------------------
 // BuildPrompt
@@ -10,7 +13,7 @@ func TestBuildPrompt(t *testing.T) {
 	p := BuildPrompt("  add a dark mode toggle  ")
 
 	// Idea is interpolated verbatim (trimmed).
-	if want := "The user's idea:\nadd a dark mode toggle"; !contains(p, want) {
+	if want := "The user's idea:\nadd a dark mode toggle"; !strings.Contains(p, want) {
 		t.Errorf("prompt missing trimmed idea; got tail:\n%s", tailStr(p, 200))
 	}
 	// Wizard-protocol invariants.
@@ -26,7 +29,7 @@ func TestBuildPrompt(t *testing.T) {
 		"fenced json block",                   // structured-output contract
 		"runningPlan",                         // running plan required every turn
 	} {
-		if !contains(p, must) {
+		if !strings.Contains(p, must) {
 			t.Errorf("prompt missing required instruction %q", must)
 		}
 	}
@@ -34,7 +37,7 @@ func TestBuildPrompt(t *testing.T) {
 
 func TestBuildPromptEmptyIdea(t *testing.T) {
 	p := BuildPrompt("")
-	if !contains(p, "The user's idea:") {
+	if !strings.Contains(p, "The user's idea:") {
 		t.Fatalf("empty idea dropped the frame:\n%s", p)
 	}
 }
@@ -55,19 +58,19 @@ func TestBuildAnswerMessageSingleSelect(t *testing.T) {
 	msg := BuildAnswerMessage(q, []string{"opt-a"}, "")
 
 	mustContain := []string{
-		`"approach"`,                   // question id
-		"opt-a — Option A",             // id — label
-		"Rebuild the running plan",     // closing instruction
-		"continue the interview",       // protocol reminder
-		"fenced json block",            // format hint
+		`"approach"`,               // question id
+		"opt-a — Option A",         // id — label
+		"Rebuild the running plan", // closing instruction
+		"continue the interview",   // protocol reminder
+		"fenced json block",        // format hint
 	}
 	for _, want := range mustContain {
-		if !contains(msg, want) {
+		if !strings.Contains(msg, want) {
 			t.Errorf("BuildAnswerMessage missing %q\nmessage:\n%s", want, msg)
 		}
 	}
 	// The non-selected option must not appear.
-	if contains(msg, "opt-b") {
+	if strings.Contains(msg, "opt-b") {
 		t.Errorf("BuildAnswerMessage should not include non-selected opt-b")
 	}
 }
@@ -83,7 +86,7 @@ func TestBuildAnswerMessageWithOther(t *testing.T) {
 	}
 	msg := BuildAnswerMessage(q, []string{"other"}, "Use the existing API layer")
 
-	if !contains(msg, "Other: Use the existing API layer") {
+	if !strings.Contains(msg, "Other: Use the existing API layer") {
 		t.Errorf("BuildAnswerMessage missing other text\nmessage:\n%s", msg)
 	}
 }
@@ -100,13 +103,13 @@ func TestBuildAnswerMessageMultiSelect(t *testing.T) {
 	}
 	msg := BuildAnswerMessage(q, []string{"feat-a", "feat-c"}, "")
 
-	if !contains(msg, "feat-a — Feature A") {
+	if !strings.Contains(msg, "feat-a — Feature A") {
 		t.Errorf("BuildAnswerMessage missing feat-a\nmessage:\n%s", msg)
 	}
-	if !contains(msg, "feat-c — Feature C") {
+	if !strings.Contains(msg, "feat-c — Feature C") {
 		t.Errorf("BuildAnswerMessage missing feat-c\nmessage:\n%s", msg)
 	}
-	if contains(msg, "feat-b") {
+	if strings.Contains(msg, "feat-b") {
 		t.Errorf("BuildAnswerMessage should not include non-selected feat-b")
 	}
 }
@@ -119,7 +122,7 @@ func TestBuildAnswerMessageUnknownID(t *testing.T) {
 		Options: []PlanningOption{{ID: "a", Label: "A"}, {ID: "b", Label: "B"}},
 	}
 	msg := BuildAnswerMessage(q, []string{"unknown-id"}, "")
-	if !contains(msg, "unknown-id — unknown-id") {
+	if !strings.Contains(msg, "unknown-id — unknown-id") {
 		t.Errorf("BuildAnswerMessage should echo unknown id as fallback\nmessage:\n%s", msg)
 	}
 }
@@ -139,7 +142,7 @@ func TestBuildRefineMessage(t *testing.T) {
 		"per the protocol",                // format reminder
 	}
 	for _, want := range mustContain {
-		if !contains(msg, want) {
+		if !strings.Contains(msg, want) {
 			t.Errorf("BuildRefineMessage missing %q\nmessage:\n%s", want, msg)
 		}
 	}
@@ -157,7 +160,7 @@ func TestBuildProceedMessage(t *testing.T) {
 		"PHASE B",                       // phase reference
 	}
 	for _, want := range mustContain {
-		if !contains(msg, want) {
+		if !strings.Contains(msg, want) {
 			t.Errorf("BuildProceedMessage missing %q\nmessage:\n%s", want, msg)
 		}
 	}
@@ -166,19 +169,6 @@ func TestBuildProceedMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 // helpers (local, dependency-free)
 // ---------------------------------------------------------------------------
-
-func contains(s, sub string) bool {
-	return len(sub) == 0 || indexOf(s, sub) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}
 
 func tailStr(s string, n int) string {
 	if len(s) <= n {
