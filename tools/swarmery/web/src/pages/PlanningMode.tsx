@@ -93,6 +93,11 @@ export function PlanningMode(): JSX.Element {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const aliveRef = useRef(true);
+  // Monotonic counter incremented on every optimistic state flip (answer,
+  // refine, proceed, start). Each loadStatus() call captures the counter at
+  // launch time; if the counter advanced by the time the response arrives the
+  // mutation won and we discard the stale GET — optimistic state wins.
+  const mutationSeqRef = useRef(0);
 
   const wstatus = status?.status ?? '';
   const sessionUuid = status?.sessionUuid ?? '';
@@ -104,9 +109,13 @@ export function PlanningMode(): JSX.Element {
 
   const loadStatus = useCallback((): void => {
     if (projectId === null) return;
+    // Capture the mutation counter at call time; discard the response if a
+    // mutation (answer/refine/proceed/start) incremented it while we awaited.
+    const seq = mutationSeqRef.current;
     fetchPlanning(projectId)
       .then((s) => {
         if (!aliveRef.current) return;
+        if (mutationSeqRef.current !== seq) return; // stale GET — mutation won
         setStatus(s);
       })
       .catch((e: unknown) => {
@@ -199,8 +208,11 @@ export function PlanningMode(): JSX.Element {
     [loadStatus],
   );
 
-  /** Optimistic status flip after a wizard action is accepted (202). */
+  /** Optimistic status flip after a wizard action is accepted (202). Increments
+   * mutationSeqRef so any in-flight loadStatus() calls initiated before this
+   * mutation are discarded (stale-GET guard). */
   const optimistic = useCallback((next: PlanningStatus['status']): void => {
+    mutationSeqRef.current += 1;
     setStatus((prev) => (prev === null ? prev : { ...prev, status: next }));
   }, []);
 
@@ -212,12 +224,15 @@ export function PlanningMode(): JSX.Element {
     startPlanning(projectId, idea.trim())
       .then(() => {
         if (!aliveRef.current) return;
-        loadStatus();
+        // Optimistic flip BEFORE loadStatus so the stale-GET guard in
+        // loadStatus treats a response that arrives after the flip as stale.
+        mutationSeqRef.current += 1;
         setStatus((prev) =>
           prev === null
             ? prev
             : { ...prev, active: true, status: 'generating', startedAt: new Date().toISOString() },
         );
+        loadStatus();
       })
       .catch(fail)
       .finally(() => {
@@ -430,31 +445,49 @@ export function PlanningMode(): JSX.Element {
         </div>
       )}
 
-      {/* GENERATING / PROCEEDING — the planner is thinking */}
+      {/* GENERATING / PROCEEDING — the planner is thinking: spinner in the left
+          column, RunningPlanPanel in the right column (buttons disabled because
+          status !== 'awaiting_answer'). This keeps the running plan visible
+          between questions — matching the Fusion reference UX. */}
       {thinking && (
-        <Card>
-          {runHeader(wstatus === 'proceeding' ? 'Writing the plan' : 'Planner thinking', true)}
-          <div className="mt-3 flex items-center gap-2 font-mono text-[11.5px] text-ink-dim">
-            <span
-              className="inline-block h-3 w-3 animate-spin rounded-full border border-line border-t-brand"
-              aria-hidden="true"
-            />
-            {wstatus === 'proceeding'
-              ? 'interview closed — writing the full plan into the workspace…'
-              : 'reading the repo and preparing the next question…'}
-            {status?.startedAt != null && <span>· {fmtElapsed(status.startedAt, nowMs)}</span>}
-          </div>
-          {lastReasoning !== '' && (
-            <div className="mt-3">
-              <div className="mb-1 font-mono text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">
-                latest reasoning
+        <div className="mt-3 grid items-start gap-3 desk:grid-cols-3">
+          <div className="min-w-0 desk:col-span-2">
+            <Card>
+              {runHeader(wstatus === 'proceeding' ? 'Writing the plan' : 'Planner thinking', true)}
+              <div className="mt-3 flex items-center gap-2 font-mono text-[11.5px] text-ink-dim">
+                <span
+                  className="inline-block h-3 w-3 animate-spin rounded-full border border-line border-t-brand"
+                  aria-hidden="true"
+                />
+                {wstatus === 'proceeding'
+                  ? 'interview closed — writing the full plan into the workspace…'
+                  : 'reading the repo and preparing the next question…'}
+                {status?.startedAt != null && <span>· {fmtElapsed(status.startedAt, nowMs)}</span>}
               </div>
-              <pre className="max-h-40 overflow-y-auto rounded-lg border border-line bg-bg px-3 py-2.5 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap text-ink-2">
-                {lastReasoning}
-              </pre>
+              {lastReasoning !== '' && (
+                <div className="mt-3">
+                  <div className="mb-1 font-mono text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">
+                    latest reasoning
+                  </div>
+                  <pre className="max-h-40 overflow-y-auto rounded-lg border border-line bg-bg px-3 py-2.5 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap text-ink-2">
+                    {lastReasoning}
+                  </pre>
+                </div>
+              )}
+            </Card>
+          </div>
+          {status?.runningPlan != null && (
+            <div className="min-w-0 desk:sticky desk:top-4">
+              <RunningPlanPanel
+                plan={status.runningPlan}
+                status={wstatus}
+                busy={busy}
+                onRefine={() => setRefineOpen(true)}
+                onProceed={submitProceed}
+              />
             </div>
           )}
-        </Card>
+        </div>
       )}
 
       {/* AWAITING — the two-pane wizard (structured question) */}

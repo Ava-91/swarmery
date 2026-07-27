@@ -4,6 +4,7 @@
 // collapsible "Show AI Reasoning" block with the planner's pre-JSON analysis
 // prose. Same overlay pattern as the Routines editor drawer.
 
+import { useEffect, useRef } from 'react';
 import type { PlanningTurn } from '../../api/types';
 
 /** Human form of one stamped answer, resolved against the turn's options. */
@@ -29,6 +30,42 @@ export function HistoryDrawer({
   onClose: () => void;
 }): JSX.Element | null {
   if (!open) return null;
+  return <HistoryDrawerInner turns={turns} onClose={onClose} />;
+}
+
+/** Mounted only when open=true so all refs/effects start fresh every open. */
+function HistoryDrawerInner({
+  turns,
+  onClose,
+}: {
+  turns: PlanningTurn[];
+  onClose: () => void;
+}): JSX.Element {
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
+  // Remember the element that had focus before this overlay opened so we can
+  // return focus to it on close (WCAG 2.2 §2.4.3 Focus Order).
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    // Capture trigger on mount; restore on unmount.
+    previouslyFocused.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Move initial focus to the close button (drawer pattern — TaskDrawer:132).
+    closeBtnRef.current?.focus();
+    return () => {
+      previouslyFocused.current?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Escape closes the drawer (TaskDrawer:133-137).
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex justify-end bg-bg/60"
@@ -45,6 +82,7 @@ export function HistoryDrawer({
           <div className="flex items-center justify-between">
             <span className="font-display text-[14px] font-bold text-ink">History</span>
             <button
+              ref={closeBtnRef}
               type="button"
               onClick={onClose}
               aria-label="close"
@@ -64,6 +102,9 @@ export function HistoryDrawer({
           )}
           {turns.map((turn) => {
             const response = responseText(turn);
+            // Guard: only render the response box when there is actual text
+            // (empty string or null both mean "no answer recorded yet").
+            const hasResponse = response !== null && response !== '';
             return (
               <div key={turn.seq} className="rounded-[10px] border border-line bg-bg px-3 py-2.5">
                 <div className="flex items-start gap-2">
@@ -75,7 +116,7 @@ export function HistoryDrawer({
                   </div>
                 </div>
 
-                {response !== null && (
+                {hasResponse && (
                   <div className="mt-2 rounded-lg border border-line bg-surface px-2.5 py-2">
                     <div className="mb-0.5 font-mono text-[10px] tracking-[0.08em] text-ink-faint uppercase">
                       {turn.answer?.kind === 'refine' ? 'Your refinement' : 'Your response'}

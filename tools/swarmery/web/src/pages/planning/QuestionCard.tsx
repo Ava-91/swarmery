@@ -44,14 +44,23 @@ export function QuestionCard({
       <div className="mb-1 font-mono text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">
         the planner is asking
       </div>
-      <div className="font-display text-[15px] font-semibold text-ink">{question.question}</div>
+      <div
+        id={`planning-q-label-${question.id}`}
+        className="font-display text-[15px] font-semibold text-ink"
+      >
+        {question.question}
+      </div>
       {question.description !== undefined && question.description !== '' && (
         <p className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-dim">
           {question.description}
         </p>
       )}
 
-      <div className="mt-3.5 space-y-2" role={single ? 'radiogroup' : 'group'}>
+      <div
+        className="mt-3.5 space-y-2"
+        role={single ? 'radiogroup' : 'group'}
+        aria-labelledby={`planning-q-label-${question.id}`}
+      >
         {question.options.map((opt) => {
           const checked = selected.includes(opt.id);
           const hasProsCons =

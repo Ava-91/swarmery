@@ -3,7 +3,7 @@
 // follow the operator's direction. Same overlay pattern as ImproveModal /
 // ConfirmDialog.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function RefineModal({
   open,
@@ -18,6 +18,81 @@ export function RefineModal({
 }): JSX.Element | null {
   const [text, setText] = useState('');
   if (!open) return null;
+  return (
+    <RefineModalInner text={text} setText={setText} busy={busy} onClose={onClose} onApply={onApply} />
+  );
+}
+
+/** Mounted only when open=true so all refs/effects start fresh every open. */
+function RefineModalInner({
+  text,
+  setText,
+  busy,
+  onClose,
+  onApply,
+}: {
+  text: string;
+  setText: (v: string) => void;
+  busy: boolean;
+  onClose: () => void;
+  onApply: (instructions: string) => void;
+}): JSX.Element {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Remember the element that had focus before this modal opened so we can
+  // return focus to it on close (WCAG 2.2 §2.4.3 Focus Order).
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+  // Tab focus trap selector — mirrors PlanDocDrawer's FOCUSABLE_SELECTOR approach.
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // Capture trigger on mount; restore on unmount.
+    previouslyFocused.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Auto-focus the textarea so the user can type immediately (modal pattern —
+    // PlanDocDrawer:97 focuses the primary interactive element on open).
+    textareaRef.current?.focus();
+    return () => {
+      previouslyFocused.current?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Escape closes the modal; Tab/Shift+Tab stays trapped inside the dialog
+    // (PlanDocDrawer:106-139 — WCAG 2.2 AA).
+    const FOCUSABLE =
+      'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (!busy) onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const root = dialogRef.current;
+      if (root === null) return;
+      const focusable = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (el) => el.offsetParent !== null,
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first === undefined || last === undefined) return;
+      const activeInRoot = root.contains(document.activeElement);
+      if (e.shiftKey) {
+        if (!activeInRoot || document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (!activeInRoot || document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onClose]);
 
   const apply = (): void => {
     const trimmed = text.trim();
@@ -35,6 +110,7 @@ export function RefineModal({
       onClick={busy ? undefined : onClose}
     >
       <div
+        ref={dialogRef}
         className="w-full max-w-lg rounded-xl border border-line bg-surface px-4 py-4"
         onClick={(e) => e.stopPropagation()}
       >
@@ -52,6 +128,7 @@ export function RefineModal({
           refinement instructions
         </label>
         <textarea
+          ref={textareaRef}
           id="planning-refine-instructions"
           value={text}
           onChange={(e) => setText(e.target.value)}
