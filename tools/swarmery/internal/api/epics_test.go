@@ -121,12 +121,30 @@ func TestListEpics(t *testing.T) {
 	}
 }
 
+// epicRoutesServer builds a routes-only httptest.Server for the epics fixture
+// DB — no SPA fallback. This is the preferred harness for negative-routing
+// assertions: an unregistered API path returns a genuine 404 from the mux
+// (methodNotAllowed or 404), rather than the SPA index.html 200 that
+// NewServer's "mux.Handle("/")" catch-all produces.
+func epicRoutesServer(t *testing.T, db *sql.DB) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	Routes(mux, &Handler{DB: db})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // TestActivateRouteGone asserts that the activate route no longer exists — the
 // route was removed in interactive-planning-v2 phase 4 (Board is exclusively
 // for tasks created on the board; plan phases run via the phase-run mechanism
-// instead). A well-formed URL must 404 — the mux has no handler registered.
+// instead). We use a routes-only mux (no SPA fallback) so an unregistered path
+// returns a genuine 404 from the mux rather than the index.html 200 that the
+// full NewServer catch-all would produce.
 func TestActivateRouteGone(t *testing.T) {
-	srv, db, taskID, _ := epicFixture(t)
+	_, db, taskID, _ := epicFixture(t)
+	srv := epicRoutesServer(t, db)
+
 	var phase1ID int64
 	if err := db.QueryRow(`SELECT id FROM epic_phases WHERE workspace_task_id=? AND seq=1`, taskID).
 		Scan(&phase1ID); err != nil {
@@ -139,7 +157,7 @@ func TestActivateRouteGone(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("activate route = %d, want 404 (route removed)", resp.StatusCode)
+		t.Errorf("activate route = %d, want 404 (route removed; routes-only mux, no SPA fallback)", resp.StatusCode)
 	}
 }
 
@@ -353,7 +371,6 @@ func TestPlanDocEndpointErrorBranches(t *testing.T) {
 		})
 	}
 }
-
 
 func TestListEpicsEmptyForUnknownProject(t *testing.T) {
 	srv, _, _, _ := epicFixture(t)
