@@ -241,15 +241,16 @@ func Routes(mux *http.ServeMux, h *Handler) {
 
 	// fusion phase 10: epic rollups + plan-doc editor. A workspace plan IS an
 	// epic; GET lists epics (workspace tasks with parsed plan/ phases) + their
-	// checkbox rollups; activate mints a board task from a phase doc (idempotent,
-	// 409 when already activated); the docs GET/PUT/PATCH read/edit/checkbox-flip
-	// the plan markdown, path-confined to that task's plan/ dir. The writes carry
-	// the same D4 origin hardening as every other mutating endpoint.
+	// checkbox rollups; the docs GET/PUT/PATCH read/edit/checkbox-flip the plan
+	// markdown, path-confined to that task's plan/ dir. The writes carry the same
+	// D4 origin hardening as every other mutating endpoint.
 	// plans-page-lifecycle phase 1: lifecycle actions (pause|resume|archive|
 	// restore) as workspace file operations + a plan_updated WS publish.
+	// NOTE: POST /activate was removed in interactive-planning-v2 phase 4 —
+	// Board is exclusively for tasks created on the board; phase 5 adds a direct
+	// phase-run mechanism. Route is intentionally absent (→ 404).
 	mux.HandleFunc("GET /api/epics", h.listEpics)
 	mux.HandleFunc("POST /api/epics/{taskId}/lifecycle", requireLocalOrigin(h.epicLifecycle))
-	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/activate", requireLocalOrigin(h.activateEpicPhase))
 	mux.HandleFunc("GET /api/epics/{taskId}/docs", h.getPlanDoc)
 	mux.HandleFunc("PUT /api/epics/{taskId}/docs", requireLocalOrigin(h.putPlanDoc))
 	mux.HandleFunc("PATCH /api/epics/{taskId}/docs", requireLocalOrigin(h.patchPlanDoc))
