@@ -519,16 +519,194 @@ func TestRevertToAwaiting(t *testing.T) {
 	db := testDB(t)
 	insertWizardRow(t, db, "uuid-revert", StatusGenerating)
 	s := newInlineService(t, db, &stubRunner{})
-	s.RevertToAwaiting(1)
+	s.RevertToAwaiting("uuid-revert")
 	status, _, _, _ := wizardState(t, db, "uuid-revert")
 	if status != StatusAwaiting {
 		t.Errorf("status = %q, want awaiting_answer after revert", status)
 	}
 	// Terminal states are never revived.
 	db.Exec(`UPDATE planning_sessions SET status='done' WHERE session_uuid='uuid-revert'`)
-	s.RevertToAwaiting(1)
+	s.RevertToAwaiting("uuid-revert")
 	status, _, _, _ = wizardState(t, db, "uuid-revert")
 	if status != StatusDone {
 		t.Errorf("status = %q, want done (revert must not touch terminal states)", status)
+	}
+}
+
+// A stale resume's failure (cancel + start a new idea while a 15-min resume is
+// in flight) must roll back ITS OWN row only — never the project's newer wizard.
+func TestRevertToAwaiting_StaleUUIDDoesNotTouchNewerWizard(t *testing.T) {
+	db := testDB(t)
+	insertWizardRow(t, db, "uuid-stale-resume", StatusCancelled) // superseded by Start
+	insertWizardRow(t, db, "uuid-newer", StatusGenerating)       // the new wizard
+	s := newInlineService(t, db, &stubRunner{})
+
+	s.RevertToAwaiting("uuid-stale-resume")
+
+	if st, _, _, _ := wizardState(t, db, "uuid-stale-resume"); st != StatusCancelled {
+		t.Errorf("stale row status = %q, want cancelled (terminal, never revived)", st)
+	}
+	if st, _, _, _ := wizardState(t, db, "uuid-newer"); st != StatusGenerating {
+		t.Errorf("newer row status = %q, want generating (stale revert must not touch it)", st)
+	}
+}
+
+// ── CAS status writes (TOCTOU hardening) ──
+
+// Cancel landing between admitAwaiting's read and setStatus's write must win:
+// the stale flip gets ErrNotAwaiting and cancelled is never overwritten.
+func TestSetStatus_CancelBetweenAdmitAndFlip(t *testing.T) {
+	db := testDB(t)
+	insertWizardRow(t, db, "uuid-cas-cancel", StatusAwaiting)
+	s := newInlineService(t, db, &stubRunner{})
+	row, err := s.admitAwaiting(1)
+	if err != nil {
+		t.Fatalf("admitAwaiting: %v", err)
+	}
+	if !s.Cancel(1) {
+		t.Fatal("Cancel returned false with an open wizard row")
+	}
+	if err := s.setStatus(row, StatusGenerating); !errors.Is(err, ErrNotAwaiting) {
+		t.Fatalf("setStatus after concurrent Cancel err = %v, want ErrNotAwaiting", err)
+	}
+	if st, _, _, _ := wizardState(t, db, "uuid-cas-cancel"); st != StatusCancelled {
+		t.Errorf("status = %q, want cancelled (stale flip must not overwrite Cancel)", st)
+	}
+}
+
+// Two concurrent Answers both pass admission; the loser's flip must fail
+// cleanly (409 sentinel) and leave the winner's 'generating' in place.
+func TestSetStatus_DoubleAnswerLoser(t *testing.T) {
+	db := testDB(t)
+	s, uuid := answeredFixture(t, db)
+	rowA, err := s.admitAwaiting(1)
+	if err != nil {
+		t.Fatalf("admit A: %v", err)
+	}
+	rowB, err := s.admitAwaiting(1)
+	if err != nil {
+		t.Fatalf("admit B: %v", err)
+	}
+	if err := s.setStatus(rowA, StatusGenerating); err != nil {
+		t.Fatalf("winner setStatus: %v", err)
+	}
+	if err := s.setStatus(rowB, StatusGenerating); !errors.Is(err, ErrNotAwaiting) {
+		t.Fatalf("loser setStatus err = %v, want ErrNotAwaiting", err)
+	}
+	if st, _, _, _ := wizardState(t, db, uuid); st != StatusGenerating {
+		t.Errorf("status = %q, want generating (loser must not disturb the winner)", st)
+	}
+}
+
+// A stale in-memory row (loaded before a concurrent Cancel) must not let
+// applyQuestionTurn resurrect a cancelled wizard to awaiting_answer.
+func TestApplyQuestionTurn_StaleRowNeverResurrectsCancelled(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusGenerating, questionTurnText("q-scope"))
+	row, err := s.wizardByUUID(uuid)
+	if err != nil || row == nil {
+		t.Fatalf("wizardByUUID: row=%v err=%v", row, err)
+	}
+	// Cancel lands after the read, before the write.
+	db.Exec(`UPDATE planning_sessions SET status=? WHERE session_uuid=?`, StatusCancelled, uuid)
+	s.Notify = func(int64) { t.Error("Notify fired for a write that must have lost the CAS") }
+
+	s.applyQuestionTurn(row, ParseTurn(questionTurnText("q-scope")))
+
+	if st, _, _, _ := wizardState(t, db, uuid); st != StatusCancelled {
+		t.Errorf("status = %q, want cancelled (stale question turn must not resurrect)", st)
+	}
+}
+
+// Same TOCTOU for the raw fallback: a stale row must not flip cancelled back
+// to awaiting_answer.
+func TestApplyRawTurn_StaleRowNeverResurrectsCancelled(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusGenerating, "prose only")
+	row, err := s.wizardByUUID(uuid)
+	if err != nil || row == nil {
+		t.Fatalf("wizardByUUID: row=%v err=%v", row, err)
+	}
+	db.Exec(`UPDATE planning_sessions SET status=? WHERE session_uuid=?`, StatusCancelled, uuid)
+	s.Notify = func(int64) { t.Error("Notify fired for a write that must have lost the CAS") }
+
+	s.applyRawTurn(row, "prose only")
+
+	if st, _, _, _ := wizardState(t, db, uuid); st != StatusCancelled {
+		t.Errorf("status = %q, want cancelled (stale raw turn must not resurrect)", st)
+	}
+}
+
+// ── proceeding un-wedge (item 3) ──
+
+// A PROCEED resume that exits with prose lacking the PLAN SAVED sentinel must
+// not wedge the wizard: with no process alive the raw fallback applies, so the
+// operator sees the reply and can Proceed again.
+func TestOnSessionTurns_ProceedingDeadProcessRawFallback(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusProceeding, "Here is the plan narrative, sentinel forgotten.")
+
+	s.OnSessionTurns(uuid)
+
+	status, cq, raw, _ := wizardState(t, db, uuid)
+	if status != StatusAwaiting {
+		t.Fatalf("status = %q, want awaiting_answer (proceeding + prose + dead process)", status)
+	}
+	if cq.Valid {
+		t.Errorf("current_question = %q, want NULL", cq.String)
+	}
+	if !raw.Valid || !strings.Contains(raw.String, "sentinel forgotten") {
+		t.Errorf("raw_reply = %+v, want the prose turn", raw)
+	}
+}
+
+// While the PROCEED resume is still alive its intermediate prose must NOT
+// flip proceeding back — the fall-through is for dead processes only.
+func TestOnSessionTurns_ProceedingGatedWhileProcessAlive(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusProceeding, "writing the plan…")
+	s.ResumeInFlight = func(u string) bool { return u == uuid }
+
+	s.OnSessionTurns(uuid)
+
+	status, _, raw, _ := wizardState(t, db, uuid)
+	if status != StatusProceeding || raw.Valid {
+		t.Errorf("status=%q raw=%v — live proceeding prose must stay proceeding", status, raw)
+	}
+}
+
+// Belt for the no-new-turn case: a 'proceeding' row past the resume window
+// with no live process reconciles to awaiting_answer on read, like generating.
+func TestWizardSnapshot_StaleProceedingReconcile(t *testing.T) {
+	db := testDB(t)
+	insertWizardRow(t, db, "uuid-stale-proceed", StatusProceeding)
+	// updated_at 2026-01-01 is far older than the 16-minute window vs real now.
+	s := newInlineService(t, db, &stubRunner{})
+
+	st, err := s.WizardSnapshot(1)
+	if err != nil {
+		t.Fatalf("WizardSnapshot: %v", err)
+	}
+	if st.Status != StatusAwaiting {
+		t.Errorf("snapshot status = %q, want awaiting_answer (stale proceeding reconcile)", st.Status)
+	}
+	status, _, _, _ := wizardState(t, db, "uuid-stale-proceed")
+	if status != StatusAwaiting {
+		t.Errorf("persisted status = %q, want awaiting_answer", status)
+	}
+}
+
+// ── raw-fallback answer validation (item 4) ──
+
+func TestAnswer_RawFallbackEmptyTextRejected(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusGenerating, "prose only, protocol violated")
+	s.OnSessionTurns(uuid) // → awaiting_answer raw fallback (no current_question)
+
+	if _, _, err := s.Answer(1, "", []string{"opt-a"}, "   "); !errors.Is(err, ErrEmptyAnswer) {
+		t.Fatalf("err = %v, want ErrEmptyAnswer for blank otherText in raw mode", err)
+	}
+	if st, _, _, _ := wizardState(t, db, uuid); st != StatusAwaiting {
+		t.Errorf("status = %q, want awaiting_answer (rejected answer must not flip)", st)
 	}
 }

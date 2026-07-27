@@ -12,13 +12,20 @@ package planning
 //
 //	Start            →  generating           (row inserted)
 //	OnSessionTurns   →  awaiting_answer      (question parsed, or raw fallback
-//	                                          once no process is alive)
+//	                                          once no process is alive — incl. a
+//	                                          proceeding run whose reply lacked
+//	                                          the "PLAN SAVED:" sentinel)
 //	Answer / Refine  →  generating           (resume spawned by the api layer)
 //	Proceed          →  proceeding
 //	OnSessionTurns   →  done + plan_dir      ("PLAN SAVED:" sentinel)
 //	runner failure   →  failed               (only while generating)
 //	Cancel / Start   →  cancelled            (explicit, or superseded)
-//	stale reconcile  →  awaiting_answer      (generating >16min, no process)
+//	stale reconcile  →  awaiting_answer      (generating/proceeding >16min,
+//	                                          no process)
+//
+// Every status UPDATE is guarded on the expected prior status (CAS predicate),
+// so a writer holding a stale in-memory row can never overwrite a concurrent
+// Cancel/Answer/Start — the loser observes 0 rows affected and backs off.
 
 import (
 	"database/sql"
@@ -42,10 +49,11 @@ const (
 // planSavedMarker is the PHASE B completion sentinel the prompt mandates.
 const planSavedMarker = "PLAN SAVED:"
 
-// staleGenerating is the reconcile window for a 'generating' row with no live
-// process: the api resume timeout (15 min) + 1 min grace, so a daemon restart
-// or a lost exit edge cannot wedge the wizard in a spinner forever.
-const staleGenerating = 16 * time.Minute
+// staleWindow is the reconcile window for a 'generating' or 'proceeding' row
+// with no live process: the api resume timeout (15 min) + 1 min grace, so a
+// daemon restart or a lost exit edge cannot wedge the wizard in a spinner
+// forever.
+const staleWindow = 16 * time.Minute
 
 // Sentinel errors mapped to HTTP statuses by the api layer (409/404).
 var (
@@ -55,6 +63,9 @@ var (
 	ErrNotAwaiting = errors.New("planning session is not awaiting an answer")
 	// ErrWrongQuestion: the answered question id is not the current one (409).
 	ErrWrongQuestion = errors.New("answer does not match the current question")
+	// ErrEmptyAnswer: a raw-fallback answer (no structured question) carried no
+	// free text — there is nothing to resume with (400, client-shape error).
+	ErrEmptyAnswer = errors.New("raw-fallback answer requires non-empty otherText")
 )
 
 // wizardAnswer is the JSON stamped onto planning_turns.answer.
@@ -208,11 +219,17 @@ func (s *Service) OnSessionTurns(sessionUUID string) {
 	// may write the plan without a PROCEED if the idea needed no interview.
 	if (row.status == StatusProceeding || row.status == StatusGenerating) &&
 		strings.Contains(text, planSavedMarker) {
-		if _, err := s.DB.Exec(
-			`UPDATE planning_sessions SET status=?, plan_dir=?, updated_at=? WHERE id=?`,
-			StatusDone, extractPlanDir(text), s.ts(), row.id); err != nil {
+		// CAS: a Cancel landing between the row read and this write must win —
+		// 'done' may only replace the still-open statuses the read observed.
+		res, err := s.DB.Exec(
+			`UPDATE planning_sessions SET status=?, plan_dir=?, updated_at=? WHERE id=? AND status IN (?, ?)`,
+			StatusDone, extractPlanDir(text), s.ts(), row.id, StatusProceeding, StatusGenerating)
+		if err != nil {
 			log.Printf("error: planning: mark done uuid=%s: %v", sessionUUID, err)
 			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return // lost to a concurrent terminal write — never overwrite it
 		}
 		log.Printf("planning: wizard uuid=%s done — plan at %q", sessionUUID, extractPlanDir(text))
 		s.notify(row.projectID)
@@ -297,14 +314,21 @@ func (s *Service) applyQuestionTurn(row *wizardRow, pt ParsedTurn) {
 			rpJSON = string(b)
 		}
 	}
-	if _, err := s.DB.Exec(
+	// CAS: only the open statuses the read observed may flip to awaiting — a
+	// Cancel/Start racing this write must not be resurrected by a stale row.
+	res, err := s.DB.Exec(
 		`UPDATE planning_sessions
 		    SET current_question=?, running_plan=COALESCE(?, running_plan),
 		        raw_reply=NULL, status=?, updated_at=?
-		  WHERE id=?`,
-		string(qJSON), rpJSON, StatusAwaiting, s.ts(), row.id); err != nil {
+		  WHERE id=? AND status IN (?, ?, ?)`,
+		string(qJSON), rpJSON, StatusAwaiting, s.ts(), row.id,
+		StatusGenerating, StatusAwaiting, StatusProceeding)
+	if err != nil {
 		log.Printf("error: planning: apply question uuid=%s: %v", row.uuid, err)
 		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return // lost to a concurrent terminal write — never overwrite it
 	}
 	s.notify(row.projectID)
 }
@@ -319,20 +343,28 @@ func (s *Service) applyRawTurn(row *wizardRow, text string) {
 	if s.processAlive(row.projectID, row.uuid) {
 		return
 	}
-	if row.status == StatusProceeding {
-		// The old question's prose re-parsed while the plan is being written;
-		// the PLAN SAVED sentinel (or the operator's retry) resolves this.
-		return
-	}
+	// 'proceeding' with NO live process falls through to the fallback: a
+	// PROCEED resume that exited with prose lacking the "PLAN SAVED:" sentinel
+	// would otherwise wedge the wizard forever (admitAwaiting 409s every
+	// retry) — surfacing the prose as raw_reply puts the operator back in
+	// control (they can read the reply and Proceed again).
 	if row.status == StatusAwaiting && !row.currentQuestion.Valid &&
 		row.rawReply.Valid && row.rawReply.String == text {
 		return // idempotent re-ingest — no notify (loop guard)
 	}
-	if _, err := s.DB.Exec(
-		`UPDATE planning_sessions SET current_question=NULL, raw_reply=?, status=?, updated_at=? WHERE id=?`,
-		text, StatusAwaiting, s.ts(), row.id); err != nil {
+	// CAS: only the open statuses the read observed may flip to awaiting — a
+	// Cancel/Start racing this write must not be resurrected by a stale row.
+	res, err := s.DB.Exec(
+		`UPDATE planning_sessions SET current_question=NULL, raw_reply=?, status=?, updated_at=?
+		  WHERE id=? AND status IN (?, ?, ?)`,
+		text, StatusAwaiting, s.ts(), row.id,
+		StatusGenerating, StatusAwaiting, StatusProceeding)
+	if err != nil {
 		log.Printf("error: planning: apply raw turn uuid=%s: %v", row.uuid, err)
 		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return // lost to a concurrent terminal write — never overwrite it
 	}
 	s.notify(row.projectID)
 }
@@ -368,46 +400,66 @@ func (s *Service) stampNewestTurn(sessionID int64, ans wizardAnswer) {
 	}
 }
 
-// setStatus moves the wizard row and notifies the project.
+// setStatus CAS-moves the wizard row from the status the caller loaded to the
+// target, and notifies the project. Guarded on the expected prior status so a
+// concurrent writer that already moved the row wins: (a) a Cancel landing
+// between admitAwaiting's read and this write is never overwritten back to
+// generating; (b) of two concurrent Answers only one flips — the loser gets
+// ErrNotAwaiting (a clean 409 upstream, no spawn, no revert).
 func (s *Service) setStatus(row *wizardRow, status string) error {
-	if _, err := s.DB.Exec(
-		`UPDATE planning_sessions SET status=?, updated_at=? WHERE id=?`,
-		status, s.ts(), row.id); err != nil {
+	res, err := s.DB.Exec(
+		`UPDATE planning_sessions SET status=?, updated_at=? WHERE id=? AND status=?`,
+		status, s.ts(), row.id, row.status)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotAwaiting
 	}
 	s.notify(row.projectID)
 	return nil
 }
 
-// Answer consumes the current question: validates admission, stamps the
-// answer JSON on the newest turn, flips to generating, and returns the resume
+// Answer consumes the current question: validates admission, CAS-flips to
+// generating (the consumption point — of two concurrent Answers only one
+// wins), stamps the answer JSON on the newest turn, and returns the resume
 // text the api layer sends via startResume. Raw-fallback mode (parse failed,
-// current_question NULL) accepts free text through otherText with an empty
-// questionID and forwards it verbatim.
+// current_question NULL) requires non-blank free text through otherText with
+// an empty questionID and forwards it verbatim.
 func (s *Service) Answer(projectID int64, questionID string, selected []string, otherText string) (text, sessionUUID string, err error) {
 	row, err := s.admitAwaiting(projectID)
 	if err != nil {
 		return "", "", err
 	}
-	if !row.currentQuestion.Valid {
-		// Raw-fallback: there is no structured question to match.
+	var q PlanningQuestion
+	raw := !row.currentQuestion.Valid
+	if raw {
+		// Raw-fallback: there is no structured question to match, and the free
+		// text IS the whole resume message — blank would resume with nothing.
 		if questionID != "" {
 			return "", "", ErrWrongQuestion
 		}
-		text = otherText
+		if strings.TrimSpace(otherText) == "" {
+			return "", "", ErrEmptyAnswer
+		}
 	} else {
-		var q PlanningQuestion
 		if uerr := json.Unmarshal([]byte(row.currentQuestion.String), &q); uerr != nil {
 			return "", "", uerr
 		}
 		if q.ID != questionID {
 			return "", "", ErrWrongQuestion
 		}
-		s.stampNewestTurn(row.id, wizardAnswer{Kind: "answer", SelectedOptionIDs: selected, OtherText: otherText})
-		text = BuildAnswerMessage(q, selected, otherText)
 	}
+	// CAS flip BEFORE the stamp: a concurrent loser must leave the winner's
+	// answer stamp untouched.
 	if err := s.setStatus(row, StatusGenerating); err != nil {
 		return "", "", err
+	}
+	if raw {
+		text = otherText
+	} else {
+		s.stampNewestTurn(row.id, wizardAnswer{Kind: "answer", SelectedOptionIDs: selected, OtherText: otherText})
+		text = BuildAnswerMessage(q, selected, otherText)
 	}
 	return text, row.uuid, nil
 }
@@ -419,10 +471,11 @@ func (s *Service) Refine(projectID int64, instructions string) (text, sessionUUI
 	if err != nil {
 		return "", "", err
 	}
-	s.stampNewestTurn(row.id, wizardAnswer{Kind: "refine", Instructions: instructions})
+	// CAS flip BEFORE the stamp — see Answer.
 	if err := s.setStatus(row, StatusGenerating); err != nil {
 		return "", "", err
 	}
+	s.stampNewestTurn(row.id, wizardAnswer{Kind: "refine", Instructions: instructions})
 	return BuildRefineMessage(instructions), row.uuid, nil
 }
 
@@ -442,19 +495,25 @@ func (s *Service) Proceed(projectID int64) (text, sessionUUID string, err error)
 
 // RevertToAwaiting rolls a generating/proceeding wizard back to
 // awaiting_answer — the api layer's onExit error path (failed resume spawn ⇒
-// the operator's action is retryable). Terminal states are never revived.
-func (s *Service) RevertToAwaiting(projectID int64) {
+// the operator's action is retryable). Keyed by the wizard's session uuid so a
+// STALE resume's failure (the operator cancelled and started a new idea while
+// a 15-min resume was in flight) can only touch its own row, never the
+// project's newer wizard. Terminal states are never revived (status guard).
+func (s *Service) RevertToAwaiting(sessionUUID string) {
 	res, err := s.DB.Exec(
 		`UPDATE planning_sessions SET status=?, updated_at=?
-		  WHERE id = (SELECT id FROM planning_sessions WHERE project_id=? ORDER BY id DESC LIMIT 1)
-		    AND status IN (?, ?)`,
-		StatusAwaiting, s.ts(), projectID, StatusGenerating, StatusProceeding)
+		  WHERE session_uuid=? AND status IN (?, ?)`,
+		StatusAwaiting, s.ts(), sessionUUID, StatusGenerating, StatusProceeding)
 	if err != nil {
-		log.Printf("error: planning: revert project=%d: %v", projectID, err)
+		log.Printf("error: planning: revert uuid=%s: %v", sessionUUID, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		s.notify(projectID)
+		var projectID int64
+		if err := s.DB.QueryRow(
+			`SELECT project_id FROM planning_sessions WHERE session_uuid=?`, sessionUUID).Scan(&projectID); err == nil {
+			s.notify(projectID)
+		}
 	}
 }
 
@@ -511,12 +570,12 @@ func (s *Service) WizardSnapshot(projectID int64) (WizardStatus, error) {
 	}
 
 	alive := s.processAlive(projectID, row.uuid)
-	if row.status == StatusGenerating && !alive {
-		if t, perr := time.Parse(time.RFC3339, row.updatedAt); perr == nil && s.clock().Sub(t) > staleGenerating {
+	if (row.status == StatusGenerating || row.status == StatusProceeding) && !alive {
+		if t, perr := time.Parse(time.RFC3339, row.updatedAt); perr == nil && s.clock().Sub(t) > staleWindow {
 			if _, uerr := s.DB.Exec(
 				`UPDATE planning_sessions SET status=?, updated_at=? WHERE id=? AND status=?`,
-				StatusAwaiting, s.ts(), row.id, StatusGenerating); uerr == nil {
-				log.Printf("planning: wizard uuid=%s stale generating — reconciled to awaiting_answer", row.uuid)
+				StatusAwaiting, s.ts(), row.id, row.status); uerr == nil {
+				log.Printf("planning: wizard uuid=%s stale %s — reconciled to awaiting_answer", row.uuid, row.status)
 				row.status = StatusAwaiting
 			}
 		}

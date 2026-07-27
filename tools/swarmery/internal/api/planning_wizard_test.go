@@ -180,6 +180,26 @@ func TestWizardAnswer_400BadBody(t *testing.T) {
 	}
 }
 
+// Raw-fallback mode (current_question NULL) has no options to select — an
+// answer with only selectedOptionIds and blank otherText is a client-shape
+// error: 400, no status flip, no spawn.
+func TestWizardAnswer_400RawFallbackEmptyOtherText(t *testing.T) {
+	srv, db, _ := serverWithPlanning(t, &planStubRunner{})
+	seedWizard(t, db, "uuid-raw-empty", planning.StatusAwaiting, false) // no question
+	resp := postPlanningJSON(t, srv.URL+"/api/projects/1/planning/answer",
+		map[string]any{"questionId": "", "selectedOptionIds": []string{"opt-a"}, "otherText": "   "})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("raw-mode empty otherText = %d, want 400", resp.StatusCode)
+	}
+	if s := wizardStatusInDB(t, db, "uuid-raw-empty"); s != planning.StatusAwaiting {
+		t.Errorf("status = %q, want awaiting_answer (rejected answer must not flip or spawn)", s)
+	}
+	if resumeInFlight("uuid-raw-empty") {
+		t.Error("a resume was spawned for a rejected answer")
+	}
+}
+
 func TestWizardAnswer_409WrongQuestion(t *testing.T) {
 	srv, db, _ := serverWithPlanning(t, &planStubRunner{})
 	seedWizard(t, db, "uuid-wrongq", planning.StatusAwaiting, true)

@@ -237,6 +237,8 @@ func writeWizardErr(w http.ResponseWriter, err error) bool {
 		writeClientErr(w, http.StatusConflict, "planning session is not awaiting an answer")
 	case errors.Is(err, planning.ErrWrongQuestion):
 		writeClientErr(w, http.StatusConflict, "answer does not match the current question")
+	case errors.Is(err, planning.ErrEmptyAnswer):
+		writeClientErr(w, http.StatusBadRequest, "raw-fallback answer requires non-empty otherText")
 	default:
 		writeErr(w, err)
 	}
@@ -248,25 +250,27 @@ func writeWizardErr(w http.ResponseWriter, err error) bool {
 // resume text — resolve the ingested sessions row and hand it to startResume
 // (the SAME single-flight map as the composer, so a wizard reply and a manual
 // message can never interleave one transcript). EVERY failure path rolls the
-// status back to awaiting_answer so the operator's action stays retryable.
-func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service, projectID int64, uuid, text, okStatus string) {
+// status back to awaiting_answer so the operator's action stays retryable —
+// keyed by the wizard's session uuid, so a stale resume's late failure can
+// never roll back a NEWER wizard the operator started meanwhile.
+func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service, uuid, text, okStatus string) {
 	var (
 		sid int64
 		cwd sql.NullString
 	)
 	err := h.DB.QueryRow(`SELECT id, cwd FROM sessions WHERE session_uuid = ?`, uuid).Scan(&sid, &cwd)
 	if errors.Is(err, sql.ErrNoRows) {
-		svc.RevertToAwaiting(projectID)
+		svc.RevertToAwaiting(uuid)
 		writeClientErr(w, http.StatusConflict, "planner session not ingested yet — retry in a moment")
 		return
 	}
 	if err != nil {
-		svc.RevertToAwaiting(projectID)
+		svc.RevertToAwaiting(uuid)
 		writeErr(w, err)
 		return
 	}
 	if strings.TrimSpace(cwd.String) == "" {
-		svc.RevertToAwaiting(projectID)
+		svc.RevertToAwaiting(uuid)
 		writeClientErr(w, http.StatusConflict, "planner session has no known working directory to resume in")
 		return
 	}
@@ -277,16 +281,16 @@ func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service
 		// reaches watchPlanningTurns, which re-parses with the slot free (the
 		// path that also settles a raw-fallback reply ingested mid-run).
 		if runErr != nil {
-			svc.RevertToAwaiting(projectID)
+			svc.RevertToAwaiting(uuid)
 		}
 	})
 	if err != nil {
-		svc.RevertToAwaiting(projectID)
+		svc.RevertToAwaiting(uuid)
 		writeClientErr(w, http.StatusServiceUnavailable, "claude executable not found (set SWARMERY_CLAUDE_BIN)")
 		return
 	}
 	if !started {
-		svc.RevertToAwaiting(projectID)
+		svc.RevertToAwaiting(uuid)
 		writeClientErr(w, http.StatusConflict, "a resume is already running for this session")
 		return
 	}
@@ -335,7 +339,7 @@ func (h *Handler) answerPlanning(w http.ResponseWriter, r *http.Request) {
 	if writeWizardErr(w, err) {
 		return
 	}
-	h.spawnWizardResume(w, svc, id, uuid, text, "generating")
+	h.spawnWizardResume(w, svc, uuid, text, "generating")
 }
 
 // POST /api/projects/{id}/planning/refine {instructions} → 202
@@ -365,7 +369,7 @@ func (h *Handler) refinePlanning(w http.ResponseWriter, r *http.Request) {
 	if writeWizardErr(w, err) {
 		return
 	}
-	h.spawnWizardResume(w, svc, id, uuid, text, "generating")
+	h.spawnWizardResume(w, svc, uuid, text, "generating")
 }
 
 // POST /api/projects/{id}/planning/proceed (no body) → 202
@@ -380,5 +384,5 @@ func (h *Handler) proceedPlanning(w http.ResponseWriter, r *http.Request) {
 	if writeWizardErr(w, err) {
 		return
 	}
-	h.spawnWizardResume(w, svc, id, uuid, text, "proceeding")
+	h.spawnWizardResume(w, svc, uuid, text, "proceeding")
 }
