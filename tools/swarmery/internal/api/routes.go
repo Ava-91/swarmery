@@ -123,6 +123,12 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/projects/{id}/planning", h.getPlanning)
 	mux.HandleFunc("POST /api/projects/{id}/planning", requireLocalOrigin(h.startPlanning))
 	mux.HandleFunc("POST /api/projects/{id}/planning/cancel", requireLocalOrigin(h.cancelPlanning))
+	// interactive planning v2 (phase 2): the wizard verbs — answer the current
+	// question, refine with free-form instructions, or proceed to plan writing.
+	// Each resumes the planner session headlessly (startResume) and answers 202.
+	mux.HandleFunc("POST /api/projects/{id}/planning/answer", requireLocalOrigin(h.answerPlanning))
+	mux.HandleFunc("POST /api/projects/{id}/planning/refine", requireLocalOrigin(h.refinePlanning))
+	mux.HandleFunc("POST /api/projects/{id}/planning/proceed", requireLocalOrigin(h.proceedPlanning))
 
 	// phase 2: approvals (frozen contract — docs/hooks-protocol.md).
 	// All write endpoints reject foreign browser Origins (D4); requests
