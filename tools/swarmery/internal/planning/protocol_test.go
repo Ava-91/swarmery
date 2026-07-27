@@ -86,6 +86,18 @@ func TestParseTurn(t *testing.T) {
 			wantIsOther: true,
 		},
 		{
+			name: "trailing prose inside fence repaired",
+			// Model emits a balanced JSON object followed by trailing prose inside
+			// the ```json fence. repairJSON strategy (1) must truncate after the
+			// last balanced closing brace so json.Unmarshal can succeed.
+			text: "Here is my reasoning.\n```json\n" +
+				`{"type":"question","data":{"id":"q-prose","type":"single_select","question":"Which approach?","options":[{"id":"a","label":"Option A"},{"id":"b","label":"Option B"}]}}` +
+				"\nHope this helps!\n```",
+			wantQID:      "q-prose",
+			wantQType:    "single_select",
+			reasoningHas: "Here is my reasoning.",
+		},
+		{
 			name: "unicode and Ukrainian text intact",
 			text: "Аналіз зроблено.\n```json\n" +
 				`{"type":"question","data":{"id":"uk-q","type":"single_select","question":"Який підхід обрати?","description":"Опис питання","options":[{"id":"opt-a","label":"Варіант А","pros":["Швидко"],"cons":["Складно"]},{"id":"opt-b","label":"Варіант Б"}]}}` +

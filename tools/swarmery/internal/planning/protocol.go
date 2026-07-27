@@ -190,7 +190,11 @@ func parseEnvelope(raw string) (protocolEnvelope, error) {
 func repairJSON(s string) string {
 	s = strings.TrimSpace(s)
 
-	// Step 3 first (strip trailing commas) so the count in step 2 is cleaner.
+	// Step 1: trim trailing garbage after the last balanced top-level closing brace.
+	s = trimTrailingGarbage(s)
+
+	// Step 3 before step 2 (strip trailing commas) so the unmatched-bracket count
+	// in step 2 is cleaner.
 	s = stripTrailingCommas(s)
 
 	// Step 2: close unclosed brackets/braces.
@@ -199,6 +203,49 @@ func repairJSON(s string) string {
 	// Step 3 again after we may have introduced new closing chars.
 	s = stripTrailingCommas(s)
 
+	return s
+}
+
+// trimTrailingGarbage truncates s after the position where the outermost
+// brace/bracket first reaches depth 0, discarding any trailing prose that
+// follows a fully balanced JSON object or array.  If no balanced span is found
+// (truncated JSON) the original string is returned unchanged so that step 2
+// (closeUnclosed) can still repair it.
+func trimTrailingGarbage(s string) string {
+	inString := false
+	escaped := false
+	depth := 0
+	started := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '{' || ch == '[' {
+			depth++
+			started = true
+		} else if ch == '}' || ch == ']' {
+			depth--
+			if started && depth == 0 {
+				// First position where the top-level object/array is fully closed.
+				return s[:i+1]
+			}
+		}
+	}
+	// No balanced span found — return unchanged for step 2 to handle.
 	return s
 }
 
