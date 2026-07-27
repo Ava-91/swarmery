@@ -44,10 +44,25 @@ import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { Card, Empty, ErrorBox, Loading } from '../components/ui';
 import { QuestionForm } from '../components/QuestionForm';
 
-const EXAMPLE_IDEAS = [
-  'Add a dark-mode toggle to the settings page, persisted per user.',
-  'Introduce rate limiting on the public API with a per-key budget.',
-  'Migrate the auth middleware off the deprecated session store.',
+// How a planning run actually works, step by step — rendered under the idea
+// box so the intake screen doubles as the feature's documentation.
+const HOW_IT_WORKS: { title: string; body: string }[] = [
+  {
+    title: 'Describe the idea',
+    body: 'A headless planner session starts in this project’s repo — it sees the code, CLAUDE.md, and the core-pack planning agents.',
+  },
+  {
+    title: 'Answer its questions',
+    body: 'If anything is ambiguous the planner replies with numbered clarifying questions and stops. You answer right here — same session continues.',
+  },
+  {
+    title: 'It writes the plan',
+    body: 'Scope picks the agent: @task-planner (under ~1 week) or @implementation-planner (multi-phase). The plan lands in the private workspace as phase-N docs with acceptance checkboxes — never in the repo.',
+  },
+  {
+    title: 'Activate into tasks',
+    body: 'The plan appears on the Plans page within seconds. Activating a phase mints a board task the dispatcher can pick up in an isolated worktree; when it reaches done, the phase’s checkboxes tick themselves.',
+  },
 ];
 
 // Settle-poll cadence for the "plan ready" workspace task (wsingest rescans on a
@@ -319,18 +334,6 @@ export function PlanningMode(): JSX.Element {
             aria-label="describe what you want to build"
             className="w-full resize-y rounded-xl border border-line bg-field px-3.5 py-3 text-[13.5px] leading-relaxed text-ink transition-colors outline-none placeholder:text-ink-faint focus:border-brand/50"
           />
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {EXAMPLE_IDEAS.map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => setIdea(ex)}
-                className="rounded-full border border-line px-2.5 py-1 font-mono text-[10.5px] text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
-              >
-                {ex.length > 52 ? `${ex.slice(0, 52)}…` : ex}
-              </button>
-            ))}
-          </div>
           <button
             type="button"
             disabled={busy || idea.trim() === ''}
@@ -339,6 +342,23 @@ export function PlanningMode(): JSX.Element {
           >
             {busy ? 'starting…' : 'Start planning'}
           </button>
+
+          <ol className="mt-6 grid gap-3 border-t border-line pt-5 sm:grid-cols-2">
+            {HOW_IT_WORKS.map((step, i) => (
+              <li key={step.title} className="flex gap-2.5">
+                <span
+                  aria-hidden="true"
+                  className="mt-[1px] inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line font-mono text-[10px] text-ink-dim"
+                >
+                  {i + 1}
+                </span>
+                <div className="min-w-0">
+                  <div className="text-[12.5px] font-semibold text-ink">{step.title}</div>
+                  <p className="mt-0.5 text-[12px] leading-relaxed text-ink-dim">{step.body}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 
