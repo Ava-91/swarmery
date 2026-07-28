@@ -1,30 +1,169 @@
-// Minimal hand-rolled markdown renderer (Chat tab + Docs screen) — no
-// dependencies. XSS-safe by construction: it never builds HTML strings (no
+// Minimal hand-rolled markdown renderer (Chat tab + Docs screen). Its only
+// dependency is react-router's <Link>, so that an in-app link navigates
+// through the router rather than reloading the SPA.
+//
+// XSS-safe by construction: it never builds HTML strings (no
 // dangerouslySetInnerHTML); every fragment becomes a React text node, which
-// React escapes. Supported: paragraphs, headings (#–####), fenced code
-// blocks, unordered/ordered lists, pipe tables, **bold**, *italic*,
-// `inline code`.
+// React escapes. A raw `href=` is emitted only for an href that matched
+// `^https?://`; every other shape either becomes a router <Link> to a route
+// this app owns, or plain text — so `javascript:`/`data:` cannot survive.
+//
+// Supported: paragraphs, headings (#–####), fenced code blocks,
+// unordered/ordered lists, pipe tables, **bold**, *italic*, `inline code`,
+// [links](href).
+//
+// Known limitations, both a consequence of the deliberately flat inline regex:
+//   · nested brackets — `[a [b] c](d)` matches nothing (the label class
+//     excludes `]`, so the scan stops at the inner one) and renders literally.
+//   · parenthesised hrefs — `[w](https://ex.com/Foo_(bar))` truncates the href
+//     at the inner `)`, linking `https://ex.com/Foo_(bar` and leaving a stray
+//     `)` in the prose. Percent-encode the parens (`%28`/`%29`) to link them.
 
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
-/* ----- inline: `code` | **bold** | *italic* ----- */
+/* ----- inline: `code` | [link](href) | **bold** | *italic* ----- */
+
+/** Split an href into path and fragment, lowercasing the fragment.
+ *
+ * Heading ids come from slugify(), which lowercases unconditionally, so
+ * `CONCEPTS.md#Handoff` must become `#handoff` or it scrolls nowhere and the
+ * reader is left staring at the top of the right page with no clue why. */
+function splitFrag(href: string): [path: string, frag: string] {
+  const at = href.indexOf('#');
+  return at < 0 ? [href, ''] : [href.slice(0, at), href.slice(at).toLowerCase()];
+}
+
+/** The docs pane's route target for a relative href, or null when this
+ * renderer cannot resolve it.
+ *
+ * The daemon slugs a doc by its lowercased BASENAME minus `.md`
+ * (internal/api/docs.go), so basename is the only mapping that can agree
+ * with what /api/docs actually serves:
+ *   EXTENDING.md                → /docs/extending
+ *   docs/PLUGINS.md#How-A-…     → /docs/plugins#how-a-…
+ *   extending                   → /docs/extending  (extension-less sibling
+ *                                 link, the shape docs/WORKFLOW.md uses)
+ *
+ * An href that walks upward is refused outright: basename-slugging
+ * `../README.md` would silently aim at an unrelated doc.
+ *
+ * An unknown-but-well-formed slug is still safe to link — `/docs/:slug` is a
+ * real route, so it renders the pane's own "doc not found" box. It is the
+ * hrefs that match NO route that must never become links (see MarkdownLink). */
+function docTarget(href: string): string | null {
+  if (href.includes('../')) return null;
+  const [path, frag] = splitFrag(href);
+  const md = /^(?:[^/?]*\/)*([^/?]+)\.md$/i.exec(path);
+  if (md !== null) return `/docs/${(md[1] ?? '').toLowerCase()}${frag}`;
+  const bare = /^[a-z0-9][a-z0-9_-]*$/i.exec(path);
+  if (bare !== null) return `/docs/${path.toLowerCase()}${frag}`;
+  return null;
+}
+
+/** Render a markdown link, or its bare label when the href resolves to no
+ * route this app serves.
+ *
+ * Falling back to inert text is the point. The router registers a fixed set of
+ * paths with no catch-all and no errorElement, so a <Link> to an unmatched
+ * path throws react-router's full-page "Unexpected Application Error" and
+ * takes the app shell down with it. `mailto:`, `tel:`, image paths and
+ * anything else exotic therefore stay text — exactly what they rendered as
+ * before links were supported.
+ *
+ * The one place that trade is knowingly reversed is an absolute in-app path
+ * (`/settings`, `/docs/concepts#handoff`): it is the shape a doc author
+ * reaches for first, and swallowing it silently is the worse failure. A
+ * MISTYPED absolute path can therefore still hit the router's error boundary
+ * — but it is a bug in a committed doc, caught in review, not the systematic
+ * breakage that relative hrefs produced. `/docs/*` cannot fail either way,
+ * since `docs/:slug` matches any slug. */
+function MarkdownLink({
+  href,
+  label,
+  labelKey,
+}: {
+  href: string;
+  label: string;
+  labelKey: string;
+}): JSX.Element {
+  const cls = 'text-brand underline decoration-brand/40 underline-offset-2 hover:decoration-brand';
+  const body = renderInline(label, labelKey);
+
+  // Scheme is case-insensitive per RFC 3986 — `HTTPS://…` is a valid external
+  // link, and without /i it would fall all the way through to inert text.
+  if (/^https?:\/\//i.test(href)) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer noopener" className={cls}>
+        {body}
+      </a>
+    );
+  }
+  // Same-page fragment. A <Link> rather than a bare <a href="#…">: native
+  // fragment navigation fires `hashchange`, which the router does not observe,
+  // so useLocation().hash would go stale and Docs.tsx's scroll effect would
+  // never re-run. Routing it keeps in-doc jumps on the same path as deep links.
+  if (href.startsWith('#')) {
+    return (
+      <Link to={href.toLowerCase()} className={cls}>
+        {body}
+      </Link>
+    );
+  }
+  // Any authority or scheme left at this point is not ours to route. This MUST
+  // precede the absolute-path branch below: `//evil.com/x.md` also starts with
+  // `/`, and routing it would emit a protocol-relative href the browser
+  // resolves cross-host — a link whose label lies about where it goes.
+  if (/^[^#?]*(\/\/|:)/.test(href)) return <>{body}</>;
+
+  const target = href.startsWith('/') ? splitFrag(href).join('') : docTarget(href);
+  if (target !== null) {
+    return (
+      <Link to={target} className={cls}>
+        {body}
+      </Link>
+    );
+  }
+  return <>{body}</>;
+}
 
 function renderInline(text: string, keyBase: string): ReactNode[] {
   // Fresh regex per call: a shared module-level /g regex would have its
   // lastIndex clobbered by the recursive bold/italic calls below.
-  const inline = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\n]+)\*/g;
+  //
+  // The link alternative sits ahead of the emphasis ones for readability, not
+  // for correctness: a link starts at `[` and emphasis at `*`, so the two never
+  // compete for the same index. What actually protects a label containing `*`
+  // is leftmost-match — the `[` is reached first, and the whole link is
+  // consumed before the scan resumes past it.
+  //
+  // The leading `(!?)` captures an image's bang so `![alt](pic.png)` is
+  // consumed whole. Without it the link alternative would eat `[alt](pic.png)`
+  // and strand the `!` in the prose beside a link to an asset the daemon does
+  // not serve.
+  const inline = /`([^`]+)`|(!?)\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|\*([^*\n]+)\*/g;
   const out: ReactNode[] = [];
   let last = 0;
   let i = 0;
   for (let m = inline.exec(text); m !== null; m = inline.exec(text)) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const key = `${keyBase}-${String(i)}`;
-    const [, code, bold, italic] = m;
+    const [, code, bang, linkText, linkHref, bold, italic] = m;
     if (code !== undefined) {
       out.push(
         <code key={key} className="rounded bg-surface2 px-1 py-px font-mono text-[0.88em] text-brand">
           {code}
         </code>,
+      );
+    } else if (linkText !== undefined && linkHref !== undefined) {
+      // Images degrade to their alt text: /api/docs serves markdown only, so
+      // there is no URL an <img> here could actually load.
+      out.push(
+        bang === '!' ? (
+          <Fragment key={key}>{renderInline(linkText, `${key}-a`)}</Fragment>
+        ) : (
+          <MarkdownLink key={key} href={linkHref} label={linkText} labelKey={`${key}-l`} />
+        ),
       );
     } else if (bold !== undefined) {
       out.push(
@@ -50,6 +189,16 @@ const HEADING_SIZES: Record<number, string> = {
   3: 'text-[13.5px]',
   4: 'text-[13px]',
 };
+
+/** Heading id for in-page anchors: lowercase, non-alphanumeric runs collapsed
+ * to a single dash, ends trimmed. Kept in sync with the glossary's doc.anchor
+ * values by internal/docsfs/glossary_drift_test.go. */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
 
 /* ----- pipe tables — `| a | b |` header + `|---|---|` separator ----- */
 
@@ -115,8 +264,16 @@ function flushParagraph(lines: string[], key: string, out: ReactNode[]): void {
   lines.length = 0;
 }
 
-/** Renders markdown source as React elements (block-level walk). */
-export function Markdown({ text }: { text: string }): JSX.Element {
+/** Renders markdown source as React elements (block-level walk).
+ *
+ * `anchors` opts into `id={slugify(heading)}` and is off by default because an
+ * id must be unique in the document. Most surfaces mount SEVERAL independent
+ * <Markdown> blocks on one page — Plans.tsx renders a completion report, a
+ * plan summary and a doc body side by side, Chat.tsx one per message — where
+ * two `## Summary` headings would collide into a duplicate `id="summary"`.
+ * Docs.tsx renders exactly one body per page, so it is the one caller that can
+ * safely own the id namespace, and the only one that needs it (deep links). */
+export function Markdown({ text, anchors = false }: { text: string; anchors?: boolean }): JSX.Element {
   const lines = text.split('\n');
   const out: ReactNode[] = [];
   const para: string[] = [];
@@ -161,18 +318,22 @@ export function Markdown({ text }: { text: string }): JSX.Element {
       continue;
     }
 
-    // Heading.
+    // Heading. Real h2–h5 (the pane owns the h1) with a slug id so /docs
+    // deep links like /docs/concepts#handoff resolve.
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h !== null) {
       flushParagraph(para, `${key}-p`, out);
       const level = (h[1] ?? '#').length;
+      const text = h[2] ?? '';
+      const Tag = (['h2', 'h3', 'h4', 'h5'] as const)[level - 1] ?? 'h5';
       out.push(
-        <div
+        <Tag
           key={key}
+          id={anchors ? slugify(text) : undefined}
           className={`mt-3 mb-1.5 font-semibold text-ink first:mt-0 ${HEADING_SIZES[level] ?? 'text-[13px]'}`}
         >
-          {renderInline(h[2] ?? '', key)}
-        </div>,
+          {renderInline(text, key)}
+        </Tag>,
       );
       i += 1;
       continue;

@@ -50,7 +50,7 @@ function HistoryDrawerInner({
     // Capture trigger on mount; restore on unmount.
     previouslyFocused.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // Move initial focus to the close button (drawer pattern — TaskDrawer:132).
+    // Move initial focus to the close button (the TaskDrawer drawer pattern).
     closeBtnRef.current?.focus();
     return () => {
       previouslyFocused.current?.focus();
@@ -58,7 +58,7 @@ function HistoryDrawerInner({
   }, []);
 
   useEffect(() => {
-    // Escape closes the drawer (TaskDrawer:133-137).
+    // Escape closes the drawer (as TaskDrawer does).
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose();
     };
