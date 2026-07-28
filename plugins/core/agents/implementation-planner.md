@@ -28,8 +28,8 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
   - [ ] README.md exists with: objective; key architecture decisions grounded in the codebase (real file paths cited); phase sequencing table in the parseable `| # | Phase | Doc | Depends on |` header shape (Doc cell wraps the filename in backticks; extra columns like repo(s)/parallelizable may follow) + critical path; cross-cutting risks with mitigations; Definition of Done rolling up per-phase acceptance criteria
   - [ ] `manifest.json` exists and mirrors the sequencing table exactly (same phases, same depends-on, same parallel groups) -- it is the machine-readable contract the `run-plan` skill executes without parsing markdown
   - [ ] The final phase is a quality gate (hardening / QA / verification)
-  - [ ] Every phase document has all 5 sections: Header, Objective, Design, Copy-paste agent prompt, Acceptance criteria
-  - [ ] Every copy-paste agent prompt is self-contained: repo path + branch, "read first for conventions" file list, numbered tasks, verification commands, report-back instructions -- executable without opening the phase document
+  - [ ] Every phase document has all 6 sections: Header, Objective, Design, Copy-paste agent prompt, Acceptance criteria, Completion report stub
+  - [ ] Every copy-paste agent prompt is self-contained: repo path + branch, "read first for conventions" file list, numbered tasks, verification commands, a TICK CONTRACT paragraph (absolute phase-doc path + tick-immediately rule), report-back instructions -- executable without opening the phase document
   - [ ] Every time estimate includes confidence level (HIGH/MEDIUM/LOW) and basis
 - Stop conditions:
   - All plan files written to disk
@@ -92,12 +92,13 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
   `parallel_group`: phases sharing the same non-null string may run concurrently
   (isolated worktrees). `manual_legs`: true when the phase contains `[MANUAL]`
   steps a subagent cannot run (browser legs, live-env probes).
-  Each phase document has 5 sections:
-  1. **Header**: repo(s), branch name, depends-on / blocks, duration estimate + confidence
+  Each phase document has 6 sections:
+  1. **Header**: a `Status: Pending` line (executors flip it to `In progress` at phase start; the platform reads it live), repo(s), branch name, depends-on / blocks, duration estimate + confidence
   2. **Objective**: what this phase delivers, in 2-4 sentences
   3. **Design**: data model / files to create / files to modify -- exact paths, code snippets, interfaces, gotchas
-  4. **Copy-paste agent prompt**: one fenced block, self-contained -- repo path + branch, "read first for conventions" file list, numbered tasks, verification commands, report-back instructions
+  4. **Copy-paste agent prompt**: one fenced block, self-contained -- repo path + branch, "read first for conventions" file list, numbered tasks, verification commands, a TICK CONTRACT paragraph placed right before the report-back instructions (the platform renders the phase doc's status and checkboxes live: at phase start the executor flips the doc's `Status:` header line to `In progress`; then, the moment a numbered task's verification passes, the executor edits THIS phase doc -- absolute path spelled out -- and flips every acceptance-criteria checkbox that task satisfies from `- [ ]` to `- [x]`, one edit per completed task, never batched at the end; when the phase's LAST checkbox is ticked the executor fills the doc's `## Completion Report` section -- what shipped, commits, verification output, deviations -- shown by the platform as the phase summary; and when the plan's final phase lands, the executor writes `plan/SUMMARY.md` -- the plan-level summary), report-back instructions
   5. **Acceptance criteria**: measurable checkboxes (`- [ ]` with verification command where applicable)
+  6. **Completion report**: an empty `## Completion Report` stub the executor fills at phase end (what shipped, commits, verification output, deviations) — the platform surfaces it as the phase's summary
 - Final chat message format: `Plan written: {path} | {N} phases, {L} total lines`
 
 # Platform
@@ -114,7 +115,7 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
    - Use `<thinking>` to reason about the optimal phase breakdown before creating any files. Consider alternatives for phase ordering and document why the chosen order was selected.
 2. **Identify phases** -- Prerequisites/Audit, Foundation, Incremental Implementation, Testing, Enhancement (optional), Deployment; the final phase is always a quality gate (hardening/QA).
    - If context usage estimate exceeds 100K tokens, write README.md first, then phase files sequentially, noting context constraints in README.md.
-3. **Create phase documents** -- all 5 sections per phase; copy-paste agent prompts with exact file paths, "read first" conventions, numbered tasks, verification commands.
+3. **Create phase documents** -- all 6 sections per phase; copy-paste agent prompts with exact file paths, "read first" conventions, numbered tasks, verification commands.
    - After creating each phase file, summarize it in 1 line and drop the raw content from working memory.
 4. **Create README.md** -- objective, architecture decisions, phase sequencing table + critical path, cross-cutting risks, Definition of Done.
 5. **Create manifest.json** -- transcribe the sequencing table into the manifest schema (never invent phases that are not in the table; set `manual_legs` from the phase docs' `[MANUAL]` markers).
@@ -124,8 +125,8 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
 
 - [ ] README.md has: objective, key architecture decisions with real file paths, phase sequencing table in the `| # | Phase | Doc | Depends on |` header shape (Doc filenames in backticks) + critical path, cross-cutting risks with mitigations, Definition of Done, Files Analyzed appendix
 - [ ] The final phase is a quality gate
-- [ ] Every phase document has all 5 sections
-- [ ] Every copy-paste agent prompt includes repo path + branch, "read first" file list, numbered tasks, verification commands, report-back instructions
+- [ ] Every phase document has all 6 sections
+- [ ] Every copy-paste agent prompt includes repo path + branch, "read first" file list, numbered tasks, verification commands, a TICK CONTRACT paragraph (absolute phase-doc path + flip satisfied checkboxes immediately per task, never batched), report-back instructions
 - [ ] Acceptance criteria in every phase are measurable (not subjective: "code is clean" is invalid; "0 lint errors" is valid)
 - [ ] Phase files named `phase-{N}-{kebab-case-slug}.md`
 - [ ] `manifest.json` written, valid JSON, and consistent with the README sequencing table (same phase ids, depends-on, parallel groups; `kind: quality-gate` on the final phase; `manual_legs` true wherever a phase doc contains `[MANUAL]`)
@@ -135,7 +136,7 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
 
 # Anti-patterns to AVOID
 
-- DO NOT abbreviate or skip template sections -- every phase needs all 5 sections
+- DO NOT abbreviate or skip template sections -- every phase needs all 6 sections
 - DO NOT create vague agent prompts -- include exact file paths, current state, specific tasks
 - DO NOT create empty phases -- every phase has at least 1 step
 - DO NOT use subjective success criteria -- "code is clean" is invalid; "0 lint errors" is valid
