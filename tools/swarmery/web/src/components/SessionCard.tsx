@@ -27,10 +27,12 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
   // fat-session's `short` + `actions`, and two tooltips on one element (native
   // and ours, with different wording) is worse than either alone.
   //
-  // ExplainPair, not a bare fragment: the rows that render this are `flex
-  // gap-2` and hold ProcBadge (and, once dev's HandoffChip lands, a third chip)
-  // immediately alongside, so a loose trigger would sit exactly as far from the
-  // chip it explains as from the next one along.
+  // ExplainPair, not a bare fragment: both layouts render this chip into a flex
+  // row that already holds neighbours — the stacked card's header row puts
+  // ProcBadge straight after it, the desktop grid's title row puts the outcome
+  // glyph straight before it, and dev's HandoffChip lands adjacent in both. A
+  // loose trigger would sit exactly as far from the chip it explains as from
+  // the next one along.
   return (
     <ExplainPair id="fat-session">
       <span

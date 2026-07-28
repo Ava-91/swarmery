@@ -20,12 +20,14 @@ export function ProcBadge({ session }: { session: Session }): JSX.Element | null
   const kind = procBadgeKind(session);
   if (!kind) return null;
   // The explainer lives inside the component, not at its call sites: SessionCard
-  // renders ProcBadge from two different layouts (SessionCard.tsx:255-256 mounts
-  // both, CSS shows one), so one edit covers both and they cannot drift — and
-  // only one is ever *visible*, so there is never a duplicate popover on screen.
+  // renders ProcBadge from both of its layouts (the stacked card and the desktop
+  // grid are both mounted, CSS shows one), so one edit covers both and they
+  // cannot drift — and only one is ever *visible*, so there is never a duplicate
+  // popover on screen.
   //
-  // ExplainPair keeps the trigger bound to its badge: the stacked-card row is
-  // `flex gap-2` with ContextBadge and the outcome glyph immediately alongside.
+  // ExplainPair keeps the trigger bound to its badge rather than adrift in the
+  // host row's own gap: the stacked card puts this straight after ContextBadge,
+  // the desktop grid puts it between TaskChip and the Stop/Kill control.
   return (
     <ExplainPair id="proc-badge">
       <span

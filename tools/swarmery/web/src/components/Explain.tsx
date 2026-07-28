@@ -236,7 +236,7 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
 
 /**
  * The standard pairing of a chip (or control) with its explainer: one flex row,
- * one gap, decided once here rather than at nine call sites.
+ * one gap, decided once here rather than at each boxed call site.
  *
  * Why a wrapper at all: dropped as a bare sibling into a row that already has
  * its own gap, the trigger sits exactly as far from what it explains as from
@@ -246,8 +246,8 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
  * Why gap-2 specifically: TRIGGER_CLASS grows the hit target with
  * `before:-inset-1.5` — 6px in every direction on a `position: relative`
  * element, so that halo hit-tests ABOVE non-positioned siblings. At gap-1 (4px)
- * it overlaps its neighbour by 2px and steals clicks from it; gap-2 (8px)
- * clears it exactly.
+ * it overlaps its neighbour by 2px and steals clicks from it; 6px is the exact
+ * clearance point, and gap-2 (8px) clears it with 2px to spare.
  *
  * Explainers that flow inside a sentence (Playbooks.tsx `worktree`) do not use
  * this — they are part of the text and need no box.
