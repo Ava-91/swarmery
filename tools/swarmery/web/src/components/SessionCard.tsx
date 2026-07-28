@@ -2,6 +2,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Session } from '../api/types';
 import { fmtSpan, fmtTime } from '../lib/format';
 import { sessionState, useNowMs, type SessionState } from '../lib/sessionState';
+import { Explain } from './Explain';
 import { KillButton, killSlotKind } from './KillButton';
 import { OUTCOME_GLYPH } from './OutcomePicker';
 import { ProjectName } from './ProjectName';
@@ -22,15 +23,20 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
   if (ctx == null || ctx < CONTEXT_WARN) return null;
   const danger = ctx >= CONTEXT_DANGER;
   const k = Math.round(ctx / 1000);
+  // The native title= is gone: its text now lives in the glossary as
+  // fat-session's `short` + `actions`, and two tooltips on one element (native
+  // and ours, with different wording) is worse than either alone.
   return (
-    <span
-      title={`Context window ~${k}k tokens (last turn). Large contexts are re-read on every continuation — the main cost driver. Consider /compact or splitting the work.`}
-      className={`shrink-0 rounded-full border px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap ${
-        danger ? 'border-red/40 bg-red/10 text-red' : 'border-amber/40 bg-amber/10 text-amber'
-      }`}
-    >
-      {k}k ctx
-    </span>
+    <>
+      <span
+        className={`shrink-0 rounded-full border px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap ${
+          danger ? 'border-red/40 bg-red/10 text-red' : 'border-amber/40 bg-amber/10 text-amber'
+        }`}
+      >
+        {k}k ctx
+      </span>
+      <Explain id="fat-session" />
+    </>
   );
 }
 
