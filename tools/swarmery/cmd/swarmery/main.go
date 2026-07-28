@@ -896,6 +896,9 @@ func cmdServe(args []string) error {
 			plugindrift.RecordUnavailable(db, berr)
 			log.Printf("swarmery plugin-drift scanner DISABLED: %v", berr)
 		} else {
+			// Repair shares the resolved binary — attached only here, so the
+			// endpoint answers 503 rather than shelling out to something absent.
+			api.AttachPluginRepairer(plugindrift.ExecRunner{Bin: bin})
 			go dt.Run(context.Background())
 			log.Printf("swarmery plugin-drift scanner started (interval %s, claude %s)", *driftInterval, bin)
 		}

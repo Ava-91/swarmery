@@ -17,9 +17,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/marketplace"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/projectscan"
 )
 
@@ -53,6 +55,72 @@ type projectPluginDTO struct {
 	// Locked marks plugins this surface refuses to toggle: core's lifecycle is
 	// attach/detach (hooks + statusline + project.json travel with it).
 	Locked bool `json:"locked"`
+	// Status is the drift verdict from the plugin_* findings:
+	// ok | missing | behind | orphaned | unknown ("unknown" = the plugin is
+	// disabled here, so no finding is expected either way).
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// projectPluginDrift is the winning finding for one plugin in one project.
+type projectPluginDrift struct{ status, detail string }
+
+// driftStatus maps active plugin_* findings for one project onto the per-row
+// status. Rule precedence is severity order: a missing plugin outranks a
+// version-behind one, which outranks an orphaned cache dir.
+func driftStatus(db *sql.DB, projectPath string) (map[string]projectPluginDrift, error) {
+	rows, err := db.Query(
+		`SELECT target, rule, message FROM config_lint_findings
+		  WHERE resolved_at IS NULL AND rule LIKE 'plugin\_%' ESCAPE '\'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]projectPluginDrift{}
+	for rows.Next() {
+		var target, rule, message string
+		if err := rows.Scan(&target, &rule, &message); err != nil {
+			return nil, err
+		}
+		id, path, ok := plugindrift.ParseTarget(target)
+		if !ok || path != projectPath {
+			continue
+		}
+		name, _, _ := strings.Cut(id, "@")
+		st, ok := statusForRule(rule)
+		if !ok {
+			continue // plugin_note / plugin_detector_unavailable are not row statuses
+		}
+		if cur, exists := out[name]; exists && rank(cur.status) >= rank(st) {
+			continue
+		}
+		out[name] = projectPluginDrift{status: st, detail: message}
+	}
+	return out, rows.Err()
+}
+
+func statusForRule(rule string) (string, bool) {
+	switch rule {
+	case plugindrift.RuleEnabledNotInstalled:
+		return "missing", true
+	case plugindrift.RuleVersionBehind:
+		return "behind", true
+	case plugindrift.RuleCacheOrphaned:
+		return "orphaned", true
+	}
+	return "", false
+}
+
+func rank(status string) int {
+	switch status {
+	case "missing":
+		return 3
+	case "orphaned":
+		return 2
+	case "behind":
+		return 1
+	}
+	return 0
 }
 
 type projectPluginsResponse struct {
@@ -115,24 +183,137 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	drift, derr := driftStatus(h.DB, path)
+	if derr != nil {
+		writeErr(w, derr)
+		return
+	}
+
 	resp := projectPluginsResponse{MarketplaceVersion: cat.Version, CanWrite: canWrite, Plugins: []projectPluginDTO{}}
 	seen := map[string]bool{}
 	for _, p := range cat.Plugins {
 		seen[p.Name] = true
 		enabled := (p.Name == "core" && enabledCore) || slices.Contains(enabledPacks, p.Name)
+		// A disabled plugin is "unknown", not "ok": no finding is expected for it
+		// either way, so claiming health would be an assertion nothing checked.
+		status, detail := "ok", ""
+		if !enabled {
+			status = "unknown"
+		} else if d, ok := drift[p.Name]; ok {
+			status, detail = d.status, d.detail
+		}
 		resp.Plugins = append(resp.Plugins, projectPluginDTO{
 			Name: p.Name, Description: p.Description,
 			Enabled: enabled, Locked: p.Name == "core",
+			Status: status, Detail: detail,
 		})
 	}
-	// Enabled-but-unknown packs (stale clone) must stay visible.
+	// Enabled-but-unknown packs (stale clone) must stay visible. This used to
+	// smuggle its explanation into Description; it now folds into the same
+	// status model as every other row.
 	for _, name := range enabledPacks {
 		if !seen[name] {
+			detail := "enabled here, but missing from the local marketplace clone — refresh marketplaces"
+			if d, ok := drift[name]; ok {
+				detail = d.detail
+			}
 			resp.Plugins = append(resp.Plugins, projectPluginDTO{
-				Name:        name,
-				Description: "(enabled here, but missing from the local marketplace clone — refresh marketplaces)",
-				Enabled:     true,
+				Name: name, Enabled: true, Status: "missing", Detail: detail,
 			})
+		}
+	}
+	writeJSON(w, resp, nil)
+}
+
+// pluginRepairer runs the claude CLI for repair actions; attached once at
+// startup, stubbed in tests, nil when the binary could not be resolved.
+var pluginRepairer plugindrift.Runner
+
+// AttachPluginRepairer points the repair endpoint at a CLI runner.
+func AttachPluginRepairer(r plugindrift.Runner) { pluginRepairer = r }
+
+type repairPluginResponse struct {
+	ID      string `json:"id"`
+	Action  string `json:"action"` // install | update
+	Output  string `json:"output"`
+	Status  string `json:"status"` // recomputed after the run
+	Restart bool   `json:"restart"`
+}
+
+// repairProjectPlugin handles POST /api/projects/{id}/plugins/{name}/repair.
+// Fenced exactly like the PUT below: requireLocalOrigin at the route, plus the
+// project path resolving under a configured onboard root.
+//
+// The action is derived server-side from the current drift status, so a client
+// cannot ask for an install where an update is what is needed.
+func (h *Handler) repairProjectPlugin(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, `{"error":"invalid project id"}`, http.StatusBadRequest)
+		return
+	}
+	var path string
+	err = h.DB.QueryRow(`SELECT path FROM projects WHERE id = ?`, id).Scan(&path)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if len(onboardCfg.Roots) == 0 {
+		writeJSONStatus(w, http.StatusForbidden, map[string]string{
+			"error": "read-only — daemon started without SWARMERY_ONBOARD_ROOTS",
+		})
+		return
+	}
+	if _, ferr := resolveUnderRoots(path, onboardCfg.Roots); ferr != nil {
+		writeJSONStatus(w, http.StatusForbidden, map[string]string{
+			"error": "project is outside the configured onboard roots",
+		})
+		return
+	}
+	if pluginRepairer == nil {
+		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "repair unavailable — the claude CLI was not resolved at startup",
+		})
+		return
+	}
+
+	pluginID := r.PathValue("name")
+	if !strings.Contains(pluginID, "@") {
+		http.Error(w, `{"error":"plugin must be given as name@marketplace"}`, http.StatusBadRequest)
+		return
+	}
+	name, _, _ := strings.Cut(pluginID, "@")
+
+	drift, derr := driftStatus(h.DB, path)
+	if derr != nil {
+		writeErr(w, derr)
+		return
+	}
+	action := "install"
+	if d, ok := drift[name]; ok && d.status == "behind" {
+		action = "update"
+	}
+
+	out, rerr := pluginRepairer.Run(r.Context(), path, "plugin", action, pluginID, "--scope", "project")
+	resp := repairPluginResponse{ID: pluginID, Action: action, Output: string(out), Restart: true}
+	if rerr != nil {
+		resp.Output = strings.TrimSpace(resp.Output + "\n" + rerr.Error())
+		writeJSONStatus(w, http.StatusBadGateway, resp)
+		return
+	}
+	// The recomputed status reads the findings table, which the ticker refreshes
+	// every 5 minutes — so right after a repair it usually still reports the
+	// pre-repair status. That is honest: the plugin genuinely is not loaded
+	// until Claude Code restarts, which is what Restart tells the UI to say.
+	if again, aerr := driftStatus(h.DB, path); aerr == nil {
+		if d, ok := again[name]; ok {
+			resp.Status = d.status
+		} else {
+			resp.Status = "ok"
 		}
 	}
 	writeJSON(w, resp, nil)

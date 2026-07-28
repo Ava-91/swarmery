@@ -29,6 +29,9 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// a fenced per-pack toggle (PUT added in step 03).
 	mux.HandleFunc("GET /api/projects/{id}/plugins", h.projectPlugins)
 	mux.HandleFunc("PUT /api/projects/{id}/plugins/{name}", requireLocalOrigin(h.putProjectPlugin))
+	// repair: `claude plugin install|update <id> --scope project`; {name} is the
+	// FULL plugin id (core@swarmery) — "@" is a legal path-segment character.
+	mux.HandleFunc("POST /api/projects/{id}/plugins/{name}/repair", requireLocalOrigin(h.repairProjectPlugin))
 	// canvas v2 parity: project editorial aggregate (rightNow + thisWeek + attention).
 	mux.HandleFunc("GET /api/projects/{id}/overview", h.projectOverview)
 	// onboarding: bootstrap a new consumer project from the dashboard. Fenced
