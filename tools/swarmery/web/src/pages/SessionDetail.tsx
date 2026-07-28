@@ -178,7 +178,11 @@ function mockPending(): PendingSend[] {
 }
 
 export function SessionDetailPage(): JSX.Element {
-  const { id } = useParams<{ id: string }>();
+  // `slug` is present only on the project mount (/p/:slug/sessions/:id) — the
+  // back link has to return to the list in the SAME mode, otherwise the header
+  // and sidebar flip out of the project workspace.
+  const { id, slug } = useParams<{ id: string; slug?: string }>();
+  const sessionsHref = slug != null ? `/p/${slug}/sessions` : '/sessions';
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Optimistic echo of messages sent via the composer — shown immediately as
@@ -454,7 +458,7 @@ export function SessionDetailPage(): JSX.Element {
   if (error !== null) {
     return (
       <>
-        <BackLink />
+        <BackLink to={sessionsHref} />
         <ErrorBox message={error} onRetry={load} />
       </>
     );
@@ -462,7 +466,7 @@ export function SessionDetailPage(): JSX.Element {
   if (detail === null || facts === null) {
     return (
       <>
-        <BackLink />
+        <BackLink to={sessionsHref} />
         <Loading label="session…" />
       </>
     );
@@ -475,7 +479,7 @@ export function SessionDetailPage(): JSX.Element {
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-line px-4 pt-4 pb-4 desk:px-10 desk:pt-6">
         <div className="flex items-center gap-2 font-mono text-[11px] text-ink-faint">
-          <Link to="/sessions" className="shrink-0 transition-colors hover:text-ink">
+          <Link to={sessionsHref} className="shrink-0 transition-colors hover:text-ink">
             ← sessions
           </Link>
           <span aria-hidden="true">/</span>
@@ -616,10 +620,10 @@ function HeadStat({
   );
 }
 
-function BackLink(): JSX.Element {
+function BackLink({ to }: { to: string }): JSX.Element {
   return (
     <Link
-      to="/sessions"
+      to={to}
       className="mb-2 block pt-0.5 font-mono text-[11px] text-ink-faint hover:text-ink"
     >
       ← sessions
