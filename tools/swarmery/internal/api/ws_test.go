@@ -38,6 +38,8 @@ var (
 		"why",
 		// session composer: dashboard-initiated resume run flag (in-memory).
 		"resumeInFlight",
+		// fat-session handoff wave: latest daemon-generated brief (nullable).
+		"handoff",
 	}
 	eventKeys = []string{
 		"id", "turnId", "ts", "type", "toolName", "parentEventId",

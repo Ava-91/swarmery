@@ -29,6 +29,7 @@ import type {
   ProjectPluginsResponse,
   Session,
   SessionDetail,
+  SessionHandoffResponse,
   SessionsResponse,
   StatsOverview,
   StatsSeriesPoint,
@@ -180,6 +181,29 @@ export const mockProjects: Project[] = [
   },
 ];
 
+/** A representative handoff brief body for mock mode (session 1). */
+const MOCK_HANDOFF_MARKDOWN = `# Handoff: migrate email templates to the provider v2 API
+
+## State
+- Done and verified: 6 of 9 templates ported to the v2 payload shape; snapshot tests green.
+- In progress: the \`order-confirmation\` template — v2 rejects the legacy \`{{items}}\` loop.
+
+## Files touched
+- \`src/email/templates/*.tsx\` — ported to the v2 block schema.
+- \`src/email/provider.ts\` — swapped the send call to \`sendV2\`.
+
+## Key decisions
+- Keep the legacy \`v1\` sender behind a flag until all templates land — do not delete it yet.
+- v2 requires explicit \`locale\`; default to \`en\` when the order has none.
+
+## Next step
+- Fix \`order-confirmation\`: replace the \`{{items}}\` loop with a v2 \`repeat\` block. Start from \`src/email/templates/order-confirmation.tsx:42\`.
+
+## Verification
+- \`npm run test -- email\`
+- \`npm run typecheck\`
+`;
+
 export const mockSessions: Session[] = [
   {
     id: 1,
@@ -197,10 +221,16 @@ export const mockSessions: Session[] = [
     source: 'jsonl',
     tokens: 412_000,
     costUsd: 0.84,
+    contextTokens: 184_000,
     taskId: 1,
     taskExternalId: '2026-07-10-email-templates-v2',
     taskLinkSource: 'explicit',
     taskConfidence: null,
+    handoff: {
+      path: '/Users/user/.swarmery/handoffs/a3f2b8c1-4d5e-4f60-8a71-b2c3d4e5f601.md',
+      createdAt: iso(4 * MIN),
+      contextTokens: 182_000,
+    },
   },
   {
     id: 2,
@@ -1668,6 +1698,20 @@ export const mockApi = {
       : mockDetails.get(numeric);
     if (!found) throw new Error(`mock: session ${String(id)} not found`);
     return { ...found };
+  },
+
+  async sessionHandoff(id: number | string): Promise<SessionHandoffResponse> {
+    await delay(120);
+    const numeric = typeof id === 'number' ? id : Number.parseInt(id, 10);
+    const found = Number.isNaN(numeric)
+      ? mockSessions.find((s) => s.sessionUuid === id)
+      : mockSessions.find((s) => s.id === numeric);
+    if (!found?.handoff) throw new Error(`mock: no handoff for session ${String(id)}`);
+    return {
+      markdown: MOCK_HANDOFF_MARKDOWN,
+      path: found.handoff.path,
+      createdAt: found.handoff.createdAt,
+    };
   },
 
   async statsToday(): Promise<StatsToday> {

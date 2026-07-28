@@ -213,6 +213,16 @@ export interface Session {
   resumeInFlight?: boolean;
   /** RFC3339 start time of that resume run — drives a live "Working (Ns)" timer. */
   resumeStartedAt?: string | null;
+  /**
+   * Latest daemon-generated handoff brief for this fat session (migration
+   * 0039), or null when none exists. The card shows a "Handoff" chip; the
+   * detail rail fetches the markdown body via GET /api/sessions/{id}/handoff.
+   */
+  handoff?: {
+    path: string;
+    createdAt: string;
+    contextTokens: number;
+  } | null;
 }
 
 /** Go: turnDTO */
@@ -294,6 +304,13 @@ export type SessionsResponse = SessionsPage;
 
 /** GET /api/sessions/{id} — id is the numeric row id or the session UUID. */
 export type SessionDetailResponse = SessionDetail;
+
+/** GET /api/sessions/{id}/handoff — the latest daemon-generated brief's body. */
+export interface SessionHandoffResponse {
+  markdown: string;
+  path: string;
+  createdAt: string;
+}
 
 // --- Future contracts (parallel wave — frozen NOW, implemented later) --------
 

@@ -149,6 +149,20 @@ type sessionDTO struct {
 	// ResumeStartedAt is the RFC3339 start time of that resume run, so the UI
 	// can tick a live "Working… (Ns)" timer. Absent when nothing is in flight.
 	ResumeStartedAt *string `json:"resumeStartedAt,omitempty"`
+	// Handoff is the latest daemon-generated continuation brief for this session
+	// (fat-session wave, migration 0039), or null when none exists. The card
+	// shows a "Handoff" chip and the detail rail fetches the markdown via
+	// GET /api/sessions/{id}/handoff.
+	Handoff *handoffDTO `json:"handoff"`
+}
+
+// handoffDTO is the latest handoffs row projected onto a session, without the
+// (potentially large) markdown body — the body is fetched lazily via
+// GET /api/sessions/{id}/handoff.
+type handoffDTO struct {
+	Path          string `json:"path"`
+	CreatedAt     string `json:"createdAt"`
+	ContextTokens int64  `json:"contextTokens"`
 }
 
 type turnDTO struct {
@@ -391,7 +405,8 @@ const sessionSelect = `
 	       agg.tokens, agg.cost_usd, ctx.context_tokens,
 	       tl.task_id, tl.external_id, tl.link_source, tl.confidence,
 	       s.proc_state, s.pid, s.outcome,
-	       why.text
+	       why.text,
+	       ho.path, ho.created_at, ho.context_tokens
 	FROM sessions s
 	JOIN projects p ON p.id = s.project_id
 	LEFT JOIN (
@@ -432,7 +447,14 @@ const sessionSelect = `
 		       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq) AS rn
 		FROM turns
 		WHERE role = 'user' AND text IS NOT NULL AND TRIM(text) != ''
-	) why ON why.session_id = s.id AND why.rn = 1`
+	) why ON why.session_id = s.id AND why.rn = 1
+	LEFT JOIN (
+		-- fat-session wave (migration 0039): the latest daemon-generated handoff
+		-- brief per session, picked in one window pass — no N+1.
+		SELECT session_id, path, created_at, context_tokens,
+		       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, id DESC) AS rn
+		FROM handoffs
+	) ho ON ho.session_id = s.id AND ho.rn = 1`
 
 // sessionsPageDTO is the GET /api/sessions envelope (ops-hygiene wave):
 // keyset pagination over (started_at DESC, id DESC). nextCursor is null on
@@ -673,17 +695,27 @@ func (h *Handler) getSession(w http.ResponseWriter, r *http.Request) {
 
 func scanSession(scan func(...any) error, s *sessionDTO) error {
 	var whyRaw sql.NullString
+	var hoPath, hoCreatedAt sql.NullString
+	var hoContextTokens sql.NullInt64
 	if err := scan(&s.ID, &s.ProjectID, &s.ProjectSlug, &s.ProjectName, &s.SessionUUID, &s.Model,
 		&s.GitBranch, &s.CWD, &s.Status, &s.StartedAt, &s.EndedAt, &s.Title, &s.Source,
 		&s.Tokens, &s.CostUSD, &s.ContextTokens,
 		&s.TaskID, &s.TaskExternalID, &s.TaskLinkSource, &s.TaskConfidence,
 		&s.ProcState, &s.ProcPID, &s.Outcome,
-		&whyRaw); err != nil {
+		&whyRaw,
+		&hoPath, &hoCreatedAt, &hoContextTokens); err != nil {
 		return err
 	}
 	if whyRaw.Valid {
 		if w := summarizeWhy(whyRaw.String); w != "" {
 			s.Why = &w
+		}
+	}
+	if hoPath.Valid {
+		s.Handoff = &handoffDTO{
+			Path:          hoPath.String,
+			CreatedAt:     hoCreatedAt.String,
+			ContextTokens: hoContextTokens.Int64,
 		}
 	}
 	return nil

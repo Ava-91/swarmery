@@ -35,6 +35,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/evals"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/handoff"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookcfg"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookshim"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
@@ -907,6 +908,54 @@ func cmdServe(args []string) error {
 		}
 	}()
 	log.Printf("swarmery advisor started (interval 24h)")
+
+	// fat-session handoff (migration 0039): when a live session's context crosses
+	// handoff.Threshold, generate ~/.swarmery/handoffs/<uuid>.md from the DB via a
+	// pinned cheap-model headless run so the user can /clear and resume cheaply.
+	// Off switch: SWARMERY_HANDOFF=off. Model pin: SWARMERY_HANDOFF_MODEL (default
+	// claude-sonnet-5, the same house-rule full-ID pin as trajjudge). Best-effort
+	// off the DB — failures are logged, never fatal; each generation publishes
+	// NoteSessionUpdated so open dashboards pick up the new brief.
+	if strings.EqualFold(os.Getenv("SWARMERY_HANDOFF"), "off") {
+		log.Printf("swarmery handoff disabled (SWARMERY_HANDOFF=off)")
+	} else {
+		handoffModel := os.Getenv("SWARMERY_HANDOFF_MODEL")
+		if handoffModel == "" {
+			handoffModel = "claude-sonnet-5"
+		}
+		go func() {
+			runHandoff := func() {
+				cands, dropped, err := handoff.Candidates(db, time.Now())
+				if err != nil {
+					log.Printf("error: handoff.Candidates: %v", err)
+					return
+				}
+				if dropped > 0 {
+					log.Printf("handoff: %d fat session(s) over the per-tick cap of %d, deferred to next tick", dropped, handoff.MaxPerTick)
+				}
+				runner := handoff.ClaudeRunner{Model: handoffModel}
+				for _, c := range cands {
+					path, err := handoff.Generate(db, runner, c.SessionID, time.Now())
+					if err != nil {
+						log.Printf("error: handoff: session %d: %v", c.SessionID, err)
+						continue
+					}
+					log.Printf("handoff: session %d ctx=%dk → %s", c.SessionID, c.ContextTokens/1000, path)
+					bus.Publish(ingest.Notification{Type: ingest.NoteSessionUpdated, SessionID: c.SessionID})
+				}
+			}
+			// Startup delay so the daemon is fully up and ingest has caught up
+			// before the first paid batch; then every 30 min.
+			time.Sleep(2 * time.Minute)
+			runHandoff()
+			ticker := time.NewTicker(30 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runHandoff()
+			}
+		}()
+		log.Printf("swarmery handoff started (interval 30m, model %s)", handoffModel)
+	}
 
 	// phase 2: approvals — long-poll registry + expiry sweeper + heartbeat.
 	svc := approvals.New(db, bus, approvals.Options{

@@ -38,6 +38,7 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /api/projects/onboard", requireLocalOrigin(h.onboardProject))
 	mux.HandleFunc("GET /api/sessions", h.listSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", h.getSession)
+	mux.HandleFunc("GET /api/sessions/{id}/handoff", h.getSessionHandoff)
 
 	// wave A: WS
 	mux.HandleFunc("GET /api/ws", h.ws)

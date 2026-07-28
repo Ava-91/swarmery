@@ -66,6 +66,7 @@ import type {
   RoutineRun,
   SearchResponse,
   SessionDetailResponse,
+  SessionHandoffResponse,
   SessionOutcome,
   SessionsResponse,
   StatsOverview,
@@ -313,6 +314,11 @@ export function fetchSessions(
 export function fetchSession(id: number | string): Promise<SessionDetailResponse> {
   if (MOCK) return mockApi.session(id);
   return get(`/api/sessions/${encodeURIComponent(id)}`);
+}
+
+export function fetchSessionHandoff(id: number | string): Promise<SessionHandoffResponse> {
+  if (MOCK) return mockApi.sessionHandoff(id);
+  return get(`/api/sessions/${encodeURIComponent(id)}/handoff`);
 }
 
 export function fetchStatsToday(): Promise<StatsToday> {
