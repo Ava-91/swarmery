@@ -77,10 +77,22 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
   // The trigger guard below is what stops the CLOSING click from flickering the
   // panel back open: pointerdown on the trigger would close it, and the click
   // that follows would then see open === false and immediately reopen.
+  //
+  // Escape is listened for in the CAPTURE phase, and that phase is load-bearing.
+  // These chips are placed inside drawers that close themselves on Escape —
+  // workspace/TaskDrawer.tsx (document, bubble) and workspace/PlanDocDrawer.tsx
+  // (window, bubble). In the bubble phase a window listener runs *after* every
+  // document one, so a bubble-phase stopPropagation() here would fire too late
+  // and one Escape would close both the popover and its drawer. window is the
+  // first node in the capture path, so capture + stopPropagation() makes the
+  // topmost layer — this popover — the only thing that consumes the key. No
+  // other keydown listener in this tree registers on capture (verified), so
+  // nothing else is being pre-empted.
   useEffect(() => {
     if (!open) return;
     const onKey = (ev: KeyboardEvent): void => {
       if (ev.key !== 'Escape') return;
+      ev.stopPropagation();
       close();
       btnRef.current?.focus({ preventScroll: true });
     };
@@ -92,10 +104,10 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
       if (inTrigger || inPanel) return;
       close();
     };
-    window.addEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
   }, [open, close, layerRef]);
