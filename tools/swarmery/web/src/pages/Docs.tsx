@@ -5,7 +5,7 @@
 // own leading H1 is stripped — the pane title comes from the doc meta.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import type { DocDetail, DocMeta } from '../api/types';
 import { fetchDoc, fetchDocs } from '../api';
 import { Markdown } from '../lib/markdown';
@@ -47,6 +47,16 @@ export function Docs(): JSX.Element {
       .then(setDoc)
       .catch((e: unknown) => setDocError(String(e)));
   }, [activeSlug]);
+
+  const { hash } = useLocation();
+
+  // Deep links from <Explain>'s "Read more →" carry a heading anchor. The doc
+  // body arrives asynchronously, so scroll after `doc` lands, not on mount.
+  useEffect(() => {
+    if (doc === null || hash === '') return;
+    const el = document.getElementById(decodeURIComponent(hash.slice(1)));
+    if (el !== null) el.scrollIntoView({ block: 'start' });
+  }, [doc, hash]);
 
   const rendered = useMemo(() => (doc === null ? null : stripLeadingH1(doc.markdown)), [doc]);
 
