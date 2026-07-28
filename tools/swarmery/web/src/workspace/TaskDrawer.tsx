@@ -136,8 +136,20 @@ export function TaskDrawer({
     setSaveError(null);
   }, [task]);
 
+  // Initial focus is MOUNT-ONLY, deliberately split from the Escape listener
+  // below. The two used to share one effect keyed on [onClose], and Board.tsx
+  // passes an inline arrow for onClose — so every task_updated frame from the
+  // board's WS subscription (useBoard.ts) minted a new identity, re-ran the
+  // effect and yanked focus back to the close button. Mid-swarm that fought
+  // whatever the user was doing: typing in the title or prompt field, or
+  // reading the verify-knob explainer, which closes on focusout. Fixed here
+  // rather than by memoising one call site, so it holds for every caller.
+  // Same split HistoryDrawer.tsx uses — it copied this pattern from here.
   useEffect(() => {
     closeRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose();
     };
