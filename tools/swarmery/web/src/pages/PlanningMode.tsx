@@ -36,6 +36,7 @@ import { fmtAgo } from '../lib/format';
 import { useLiveUpdates } from '../lib/ws';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { Card, Empty, ErrorBox, Loading } from '../components/ui';
+import { Explain } from '../components/Explain';
 import { HowItWorks } from '../components/HowItWorks';
 import { QuestionCard } from './planning/QuestionCard';
 import { RunningPlanPanel } from './planning/RunningPlanPanel';
@@ -351,8 +352,9 @@ export function PlanningMode(): JSX.Element {
 
   return (
     <div className="min-w-0 px-4 pt-6 pb-10 desk:px-8 desk:pt-8 desk:pb-[60px]">
-      <h1 className="font-display text-[26px] font-medium tracking-[-0.01em] desk:text-[30px]">
+      <h1 className="inline-flex items-center gap-1.5 font-display text-[26px] font-medium tracking-[-0.01em] desk:text-[30px]">
         Transform your idea into a plan
+        <Explain id="planning-mode" />
       </h1>
       <p className="mt-1.5 max-w-[70ch] text-[13px] text-ink-dim">
         Describe what you want to build for{' '}
