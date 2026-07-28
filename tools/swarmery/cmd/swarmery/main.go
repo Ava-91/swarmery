@@ -899,6 +899,28 @@ func cmdServe(args []string) error {
 			// Repair shares the resolved binary — attached only here, so the
 			// endpoint answers 503 rather than shelling out to something absent.
 			api.AttachPluginRepairer(plugindrift.ExecRunner{Bin: bin})
+			// SessionStart answers from the last persisted pass (2s hook budget
+			// rules out scanning inline) and kicks a refresh through this.
+			api.AttachDriftRefresher(func() { dt.Once(context.Background()) })
+			// One webhook per NEWLY inserted error finding. The lifecycle does the
+			// deduplication: a standing problem refreshes its row in place, so it
+			// is announced once rather than every five minutes.
+			dt.OnNewError = func(target, rule, message string) {
+				if notifier == nil {
+					return
+				}
+				id, projectPath, ok := plugindrift.ParseTarget(target)
+				if !ok {
+					id, projectPath = target, ""
+				}
+				notifier.Emit(notify.Event{
+					Type:    notify.EventPluginDrift,
+					TS:      time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+					Project: projectPath,
+					Title:   "plugin unavailable: " + id,
+					Body:    message,
+				})
+			}
 			go dt.Run(context.Background())
 			log.Printf("swarmery plugin-drift scanner started (interval %s, claude %s)", *driftInterval, bin)
 		}

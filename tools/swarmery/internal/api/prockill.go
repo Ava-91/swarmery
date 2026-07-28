@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 )
 
@@ -64,11 +66,16 @@ func escalateKill(pid int, procStartedAt, sessionUUID string, delay time.Duratio
 
 // POST /api/hooks/session-start — called by the hookshim when a new Claude
 // Code session starts. Binds the reported PID to the session after verifying
-// the process command is "claude". Fire-and-forget: always returns 204.
+// the process command is "claude", then answers 200 + additionalContext when
+// this project has unloadable plugins, or 204 when it does not.
 func (h *Handler) hookSessionStart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SessionID string `json:"session_id"`
 		PID       int    `json:"pid"`
+		// CWD is the project the session is starting in. Findings are keyed by
+		// project path, and at SessionStart the sessions row may not exist yet,
+		// so this — not a sessions lookup — is how the project is resolved.
+		CWD string `json:"cwd"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PID <= 0 || body.SessionID == "" {
 		w.WriteHeader(http.StatusNoContent) // fire-and-forget — never error back
@@ -88,7 +95,72 @@ func (h *Handler) hookSessionStart(w http.ResponseWriter, r *http.Request) {
 		body.PID, info.StartTime, now, body.SessionID); err != nil {
 		log.Printf("prockill: bind pid for session %s: %v", body.SessionID, err)
 	}
+	if ctx := h.driftContext(body.CWD); ctx != "" {
+		writeJSON(w, map[string]string{"additionalContext": ctx}, nil)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// maxDriftContextLines caps the injection: this text is prepended to every
+// affected session and is paid for in tokens each time.
+const maxDriftContextLines = 5
+
+// driftRefresher asks the drift ticker for an out-of-band pass; attached at
+// startup, nil in tests and when the scanner is disabled.
+var driftRefresher func()
+
+// AttachDriftRefresher wires the out-of-band drift refresh.
+func AttachDriftRefresher(f func()) { driftRefresher = f }
+
+// driftContext renders the active error-severity plugin findings for the
+// project owning cwd, as a short block for injection into the starting session.
+// Returns "" when cwd is unknown or nothing is wrong.
+//
+// Reads only: the shim's 2s SessionStart budget rules out running a detection
+// pass here, so this serves the last persisted pass and asks the ticker for a
+// fresh one.
+func (h *Handler) driftContext(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	path := ingest.CanonicalProjectPath(h.DB, cwd)
+	rows, err := h.DB.Query(
+		`SELECT target, message FROM config_lint_findings
+		  WHERE resolved_at IS NULL AND severity = 'error'
+		    AND rule LIKE 'plugin\_%' ESCAPE '\'
+		  ORDER BY target`)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var target, message string
+		if err := rows.Scan(&target, &message); err != nil {
+			return ""
+		}
+		// plugin:detector has no "|", so ParseTarget rejects it: machine-wide
+		// blindness belongs on the dashboard, not inside every session on the box.
+		id, p, ok := plugindrift.ParseTarget(target)
+		if !ok || p != path {
+			continue
+		}
+		lines = append(lines, "- "+id+": "+message)
+		if len(lines) == maxDriftContextLines {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if driftRefresher != nil {
+		go driftRefresher()
+	}
+	return "Plugin problem detected in this project — the following enabled plugins are NOT loaded in this session, " +
+		"so their agents, skills and commands are unavailable:\n" + strings.Join(lines, "\n") +
+		"\nFix from the swarmery dashboard (project → plugins → repair), or run `claude plugin install <name>@<marketplace>`. " +
+		"A restart is required for a repair to take effect."
 }
 
 // KillSession implements POST /api/sessions/{id}/kill.
