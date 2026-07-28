@@ -48,15 +48,33 @@ export function Docs(): JSX.Element {
       .catch((e: unknown) => setDocError(String(e)));
   }, [activeSlug]);
 
-  const { hash } = useLocation();
+  const { hash, key } = useLocation();
 
   // Deep links from <Explain>'s "Read more →" carry a heading anchor. The doc
   // body arrives asynchronously, so scroll after `doc` lands, not on mount.
+  //
+  // `key` is in the deps, not just `hash`: clicking an in-doc link to the
+  // section you already came from is a same-URL navigation, so `hash` does not
+  // change and a hash-only effect would silently do nothing. The router mints a
+  // fresh key for every navigation, which is the signal that a jump was asked
+  // for — this is what a native fragment anchor gives you for free and what we
+  // give up by routing hash links (so that useLocation stays in sync at all).
   useEffect(() => {
     if (doc === null || hash === '') return;
-    const el = document.getElementById(decodeURIComponent(hash.slice(1)));
+    const raw = hash.slice(1);
+    // A hand-typed or truncated hash can be invalid percent-encoding (`#%`),
+    // and decodeURIComponent throws URIError on it. Thrown from inside an
+    // effect that is a full-page crash, so a malformed anchor falls back to
+    // the literal text — which simply matches no id.
+    let id = raw;
+    try {
+      id = decodeURIComponent(raw);
+    } catch {
+      /* keep raw */
+    }
+    const el = document.getElementById(id);
     if (el !== null) el.scrollIntoView({ block: 'start' });
-  }, [doc, hash]);
+  }, [doc, hash, key]);
 
   const rendered = useMemo(() => (doc === null ? null : stripLeadingH1(doc.markdown)), [doc]);
 
@@ -108,7 +126,9 @@ export function Docs(): JSX.Element {
                 swarmery/docs/{doc.file}
               </div>
               <div className="mt-5 text-[14px] leading-[1.75] text-ink-2">
-                <Markdown text={rendered.body} />
+                {/* The one surface that renders a single body per page, so it
+                    owns the heading-id namespace the deep links resolve against. */}
+                <Markdown text={rendered.body} anchors />
               </div>
             </>
           )}

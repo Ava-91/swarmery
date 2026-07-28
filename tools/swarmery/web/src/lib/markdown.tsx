@@ -1,26 +1,64 @@
-// Minimal hand-rolled markdown renderer (Chat tab + Docs screen) — no
-// dependencies. XSS-safe by construction: it never builds HTML strings (no
+// Minimal hand-rolled markdown renderer (Chat tab + Docs screen). Its only
+// dependency is react-router's <Link>, so that an in-app link navigates
+// through the router rather than reloading the SPA.
+//
+// XSS-safe by construction: it never builds HTML strings (no
 // dangerouslySetInnerHTML); every fragment becomes a React text node, which
-// React escapes. Supported: paragraphs, headings (#–####), fenced code
-// blocks, unordered/ordered lists, pipe tables, **bold**, *italic*,
-// `inline code`, [links](href). A link href never reaches a raw `href=`
-// unless it matched `^https?://`; everything else goes through a router
-// <Link>, which resolves it as a route — so `javascript:` cannot survive.
+// React escapes. A raw `href=` is emitted only for an href that matched
+// `^https?://`; every other shape either becomes a router <Link> to a route
+// this app owns, or plain text — so `javascript:`/`data:` cannot survive.
+//
+// Supported: paragraphs, headings (#–####), fenced code blocks,
+// unordered/ordered lists, pipe tables, **bold**, *italic*, `inline code`,
+// [links](href).
+//
+// Known limitations, both a consequence of the deliberately flat inline regex:
+//   · nested brackets — `[a [b] c](d)` matches nothing (the label class
+//     excludes `]`, so the scan stops at the inner one) and renders literally.
+//   · parenthesised hrefs — `[w](https://ex.com/Foo_(bar))` truncates the href
+//     at the inner `)`, linking `https://ex.com/Foo_(bar` and leaving a stray
+//     `)` in the prose. Percent-encode the parens (`%28`/`%29`) to link them.
 
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 /* ----- inline: `code` | [link](href) | **bold** | *italic* ----- */
 
-/** Resolve a markdown href to something the SPA can navigate.
+/** The docs pane's route target for a relative href, or null when this
+ * renderer cannot resolve it.
  *
- * Three shapes occur in the docs the daemon serves:
- *   http(s)://…      → external, opens in a new tab
- *   #anchor          → same-page heading, handled by the browser + Docs.tsx
- *   OTHER.md#frag    → a sibling doc, which the docs pane addresses as
- *                      /docs/<slug> where slug is the lowercased basename
+ * The daemon slugs a doc by its lowercased BASENAME minus `.md`
+ * (internal/api/docs.go), so basename is the only mapping that can agree
+ * with what /api/docs actually serves:
+ *   EXTENDING.md                → extending
+ *   docs/PLUGINS.md#how-a-…     → plugins, keeping the fragment
+ *   extending                   → extending  (extension-less sibling link,
+ *                                 the shape docs/WORKFLOW.md uses)
  *
- * Anything else is treated as an in-app route. */
+ * An href that walks upward is refused outright: basename-slugging
+ * `../README.md` would silently aim at an unrelated doc.
+ *
+ * An unknown-but-well-formed slug is still safe to link — `/docs/:slug` is a
+ * real route, so it renders the pane's own "doc not found" box. It is the
+ * hrefs that match NO route that must never become links (see MarkdownLink). */
+function docTarget(href: string): { slug: string; frag: string } | null {
+  if (href.includes('../')) return null;
+  const md = /^([^#?]*\/)?([^/#?]+)\.md(#[^?]*)?$/i.exec(href);
+  if (md !== null) return { slug: (md[2] ?? '').toLowerCase(), frag: md[3] ?? '' };
+  const bare = /^([a-z0-9][a-z0-9_-]*)(#.*)?$/i.exec(href);
+  if (bare !== null) return { slug: (bare[1] ?? '').toLowerCase(), frag: bare[2] ?? '' };
+  return null;
+}
+
+/** Render a markdown link, or its bare label when the href resolves to no
+ * route this app serves.
+ *
+ * Falling back to inert text is the whole point. The router registers `docs`
+ * and `docs/:slug` with no catch-all and no errorElement, so a <Link> to an
+ * unmatched path throws react-router's full-page "Unexpected Application
+ * Error" and takes the app shell down with it. `mailto:`, `tel:`, image
+ * paths and anything else exotic therefore stay text — exactly what they
+ * rendered as before links were supported. */
 function MarkdownLink({
   href,
   label,
@@ -40,42 +78,50 @@ function MarkdownLink({
       </a>
     );
   }
+  // Same-page fragment. A <Link> rather than a bare <a href="#…">: native
+  // fragment navigation fires `hashchange`, which the router does not observe,
+  // so useLocation().hash would go stale and Docs.tsx's scroll effect would
+  // never re-run. Routing it keeps in-doc jumps on the same path as deep links.
   if (href.startsWith('#')) {
     return (
-      <a href={href} className={cls}>
-        {body}
-      </a>
-    );
-  }
-  const md = /^([^#]+)\.md(#.*)?$/i.exec(href);
-  if (md !== null) {
-    const slug = (md[1] ?? '').toLowerCase();
-    return (
-      <Link to={`/docs/${slug}${md[2] ?? ''}`} className={cls}>
+      <Link to={href} className={cls}>
         {body}
       </Link>
     );
   }
-  return (
-    <Link to={href} className={cls}>
-      {body}
-    </Link>
-  );
+  const doc = docTarget(href);
+  if (doc !== null) {
+    return (
+      <Link to={`/docs/${doc.slug}${doc.frag}`} className={cls}>
+        {body}
+      </Link>
+    );
+  }
+  return <>{body}</>;
 }
 
 function renderInline(text: string, keyBase: string): ReactNode[] {
   // Fresh regex per call: a shared module-level /g regex would have its
   // lastIndex clobbered by the recursive bold/italic calls below.
-  // The link alternative comes before the emphasis ones so a bracketed label
-  // containing `*` cannot be mis-parsed as emphasis.
-  const inline = /`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|\*([^*\n]+)\*/g;
+  //
+  // The link alternative sits ahead of the emphasis ones for readability, not
+  // for correctness: a link starts at `[` and emphasis at `*`, so the two never
+  // compete for the same index. What actually protects a label containing `*`
+  // is leftmost-match — the `[` is reached first, and the whole link is
+  // consumed before the scan resumes past it.
+  //
+  // The leading `(!?)` captures an image's bang so `![alt](pic.png)` is
+  // consumed whole. Without it the link alternative would eat `[alt](pic.png)`
+  // and strand the `!` in the prose beside a link to an asset the daemon does
+  // not serve.
+  const inline = /`([^`]+)`|(!?)\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|\*([^*\n]+)\*/g;
   const out: ReactNode[] = [];
   let last = 0;
   let i = 0;
   for (let m = inline.exec(text); m !== null; m = inline.exec(text)) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const key = `${keyBase}-${String(i)}`;
-    const [, code, linkText, linkHref, bold, italic] = m;
+    const [, code, bang, linkText, linkHref, bold, italic] = m;
     if (code !== undefined) {
       out.push(
         <code key={key} className="rounded bg-surface2 px-1 py-px font-mono text-[0.88em] text-brand">
@@ -83,7 +129,15 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
         </code>,
       );
     } else if (linkText !== undefined && linkHref !== undefined) {
-      out.push(<MarkdownLink key={key} href={linkHref} label={linkText} labelKey={`${key}-l`} />);
+      // Images degrade to their alt text: /api/docs serves markdown only, so
+      // there is no URL an <img> here could actually load.
+      out.push(
+        bang === '!' ? (
+          <Fragment key={key}>{renderInline(linkText, `${key}-a`)}</Fragment>
+        ) : (
+          <MarkdownLink key={key} href={linkHref} label={linkText} labelKey={`${key}-l`} />
+        ),
+      );
     } else if (bold !== undefined) {
       out.push(
         <strong key={key} className="font-semibold text-ink">
@@ -183,8 +237,16 @@ function flushParagraph(lines: string[], key: string, out: ReactNode[]): void {
   lines.length = 0;
 }
 
-/** Renders markdown source as React elements (block-level walk). */
-export function Markdown({ text }: { text: string }): JSX.Element {
+/** Renders markdown source as React elements (block-level walk).
+ *
+ * `anchors` opts into `id={slugify(heading)}` and is off by default because an
+ * id must be unique in the document. Most surfaces mount SEVERAL independent
+ * <Markdown> blocks on one page — Plans.tsx renders a completion report, a
+ * plan summary and a doc body side by side, Chat.tsx one per message — where
+ * two `## Summary` headings would collide into a duplicate `id="summary"`.
+ * Docs.tsx renders exactly one body per page, so it is the one caller that can
+ * safely own the id namespace, and the only one that needs it (deep links). */
+export function Markdown({ text, anchors = false }: { text: string; anchors?: boolean }): JSX.Element {
   const lines = text.split('\n');
   const out: ReactNode[] = [];
   const para: string[] = [];
@@ -240,7 +302,7 @@ export function Markdown({ text }: { text: string }): JSX.Element {
       out.push(
         <Tag
           key={key}
-          id={slugify(text)}
+          id={anchors ? slugify(text) : undefined}
           className={`mt-3 mb-1.5 font-semibold text-ink first:mt-0 ${HEADING_SIZES[level] ?? 'text-[13px]'}`}
         >
           {renderInline(text, key)}
