@@ -13,6 +13,8 @@ import { fmtDurationMs, fmtTokens } from '../../lib/format';
 import { subagentDescription, subagentName, skillName } from '../../lib/payload';
 import { buildCallTree } from '../../lib/calltree';
 import { CallTreeCard } from './CallTree';
+import { ContextHogsCard } from './ContextHogsCard';
+import { HandoffCard } from './HandoffCard';
 
 interface UsageRow {
   name: string;
@@ -173,11 +175,16 @@ function UsageBlock({
 }
 
 export function DetailRail({
+  sessionId,
+  handoff,
   turns,
   events,
   fileChanges,
   onShowDiffs,
 }: {
+  sessionId: number;
+  /** Latest daemon-generated handoff brief for this session, or null. */
+  handoff: { path: string } | null | undefined;
   turns: Turn[];
   events: Event[];
   fileChanges: FileChange[];
@@ -190,6 +197,7 @@ export function DetailRail({
   const files = useMemo(() => aggregateFileChanges(fileChanges), [fileChanges]);
 
   if (
+    handoff == null &&
     models.length === 0 &&
     agents.length === 0 &&
     skills.length === 0 &&
@@ -201,6 +209,8 @@ export function DetailRail({
 
   return (
     <div className="flex min-w-0 flex-col gap-2.5">
+      {handoff != null && <HandoffCard sessionId={sessionId} handoffPath={handoff.path} />}
+      <ContextHogsCard sessionId={sessionId} />
       {models.length > 0 && (
         <UsageBlock label="models" labelTone="text-purple/70" barTone="bg-purple/60" rows={models} />
       )}

@@ -24,7 +24,7 @@ Downstream Analyzer is a dual-mode executor invoked in Phase 2 (read-only impact
   - [ ] Phase artifact exists on disk (`02-downstream.md` or `06-downstream.md`) with Callers and Tests sections filled
   - [ ] Grep + semantic search both executed for each changed symbol (confidence: HIGH if both agree)
   - [ ] Phase 6 only: zero broken references remain after updates (verified by final Grep pass)
-  - [ ] Confidence metric reported: "N callers found across M files searched. Method: {grep|semantic|both}"
+  - [ ] Confidence metric reported: "N callers found across M files searched. Method: {grep|semantic|symbol|combination}"
 - Stop conditions:
   - All changed symbols have been searched and results recorded
   - Phase 6: all affected files updated and verified
@@ -79,7 +79,7 @@ Downstream Analyzer is a dual-mode executor invoked in Phase 2 (read-only impact
   | {file} | {line} | {what was updated} |
 
   ## Confidence Summary
-  N callers found across M files. Method: grep + semantic. Confidence: HIGH/MEDIUM.
+  N callers found across M files. Method: {grep|semantic|symbol|combination}. Confidence: HIGH/MEDIUM.
   ```
 - Final chat message format: `DOWNSTREAM: Phase {N} complete | {N} callers, {N} tests, {N} imports found across {M} files | Confidence: {HIGH/MEDIUM} | Artifact: {path}`
 
@@ -91,6 +91,28 @@ Downstream Analyzer is a dual-mode executor invoked in Phase 2 (read-only impact
 - Reversibility profile: Phase 2 is read-only; Phase 6 edits are mechanical and revertable via `git checkout -- <file>`
 
 # Process
+
+## Navigation: symbol-first for structural questions
+
+Match the tool to the question:
+- **Single-fact lookup** (where is X defined, what does this flag default to):
+  ripgrep/Grep directly — do NOT pay graph overhead for quick queries.
+- **Structural question** (all callers of X, rename X, what breaks if X changes,
+  cross-file refactor): prefer symbol-level tools over grep-then-read-whole-files —
+  every full-file Read for a one-symbol question is context spent for nothing.
+  1. If Serena MCP tools are available (lsp-pack; load via ToolSearch
+     "select:mcp__plugin_lsp-pack_serena__find_referencing_symbols,..."):
+     `find_symbol` → `find_referencing_symbols` → targeted reads of just the
+     referencing ranges; `rename_symbol` for renames.
+  2. Else if `graphify-out/graph.json` exists and is fresh: `graphify affected
+     "<symbol>" --depth 3` / `graphify explain "<symbol>"` (see /impact).
+  3. Else: grep — but read only the matched ranges (Read with offset/limit), not
+     whole files.
+Never fetch a whole file to answer a question about one symbol in it.
+
+Finding all callers of a changed symbol is exactly this agent's core task: use
+symbol-level search as the third method alongside Grep and semantic search, and
+report `symbol` (or `combination`) in the Method confidence metric.
 
 ### Phase 2 Mode (READ-ONLY)
 In Phase 2, do not use Edit or Write on source files. Only create the artifact using the Write tool.
@@ -115,7 +137,7 @@ In Phase 2, do not use Edit or Write on source files. Only create the artifact u
 - [ ] Artifact exists on disk (verified via `test -s`)
 - [ ] Callers section has >= 1 entry with file:line (or explicit "none found" with search evidence)
 - [ ] Tests section has >= 1 entry with file:line (or explicit "no tests reference this symbol")
-- [ ] Confidence metric present: "N callers across M files, method: {grep|semantic|both}"
+- [ ] Confidence metric present: "N callers across M files, method: {grep|semantic|symbol|combination}"
 - [ ] Phase 2: zero source files modified (verify via `git diff --name-only`)
 - [ ] Phase 6: zero broken references remain (verify via final Grep pass)
 - [ ] Every file cited has been read (no speculation about unopened files)

@@ -106,6 +106,24 @@ Run codebase-retrieval for the error location and `git log --oneline -10 -- <aff
 Collect: exact error message, stack trace, file/line, environment, recent changes, first occurrence, frequency.
 <thinking>Before forming a hypothesis, collect all available evidence. Do not jump to a fix based on the error message alone.</thinking>
 
+#### Navigation: symbol-first for structural questions
+
+Match the tool to the question:
+- **Single-fact lookup** (where is X defined, what does this flag default to):
+  ripgrep/Grep directly — do NOT pay graph overhead for quick queries.
+- **Structural question** (all callers of X, rename X, what breaks if X changes,
+  cross-file refactor): prefer symbol-level tools over grep-then-read-whole-files —
+  every full-file Read for a one-symbol question is context spent for nothing.
+  1. If Serena MCP tools are available (lsp-pack; load via ToolSearch
+     "select:mcp__plugin_lsp-pack_serena__find_referencing_symbols,..."):
+     `find_symbol` → `find_referencing_symbols` → targeted reads of just the
+     referencing ranges; `rename_symbol` for renames.
+  2. Else if `graphify-out/graph.json` exists and is fresh: `graphify affected
+     "<symbol>" --depth 3` / `graphify explain "<symbol>"` (see /impact).
+  3. Else: grep — but read only the matched ranges (Read with offset/limit), not
+     whole files.
+Never fetch a whole file to answer a question about one symbol in it.
+
 ### Phase 2: Reproduction
 
 - **Reproducible**: run the failing test with verbose logging; isolate the minimal repro.

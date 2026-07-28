@@ -27,8 +27,10 @@ import type {
   ProjectDetail,
   ProjectHealth,
   ProjectPluginsResponse,
+  ContextHogsReport,
   Session,
   SessionDetail,
+  SessionHandoffResponse,
   SessionsResponse,
   StatsOverview,
   StatsSeriesPoint,
@@ -180,6 +182,29 @@ export const mockProjects: Project[] = [
   },
 ];
 
+/** A representative handoff brief body for mock mode (session 1). */
+const MOCK_HANDOFF_MARKDOWN = `# Handoff: migrate email templates to the provider v2 API
+
+## State
+- Done and verified: 6 of 9 templates ported to the v2 payload shape; snapshot tests green.
+- In progress: the \`order-confirmation\` template — v2 rejects the legacy \`{{items}}\` loop.
+
+## Files touched
+- \`src/email/templates/*.tsx\` — ported to the v2 block schema.
+- \`src/email/provider.ts\` — swapped the send call to \`sendV2\`.
+
+## Key decisions
+- Keep the legacy \`v1\` sender behind a flag until all templates land — do not delete it yet.
+- v2 requires explicit \`locale\`; default to \`en\` when the order has none.
+
+## Next step
+- Fix \`order-confirmation\`: replace the \`{{items}}\` loop with a v2 \`repeat\` block. Start from \`src/email/templates/order-confirmation.tsx:42\`.
+
+## Verification
+- \`npm run test -- email\`
+- \`npm run typecheck\`
+`;
+
 export const mockSessions: Session[] = [
   {
     id: 1,
@@ -197,10 +222,16 @@ export const mockSessions: Session[] = [
     source: 'jsonl',
     tokens: 412_000,
     costUsd: 0.84,
+    contextTokens: 184_000,
     taskId: 1,
     taskExternalId: '2026-07-10-email-templates-v2',
     taskLinkSource: 'explicit',
     taskConfidence: null,
+    handoff: {
+      path: '/Users/user/.swarmery/handoffs/a3f2b8c1-4d5e-4f60-8a71-b2c3d4e5f601.md',
+      createdAt: iso(4 * MIN),
+      contextTokens: 182_000,
+    },
   },
   {
     id: 2,
@@ -1279,6 +1310,10 @@ const mockEpicPhase = (
 
 // Phase-run states cover all four chips: 1 run-done, 2 running (elapsed ticks),
 // 3 failed (error tooltip + retry Run), 4 idle behind an unmet dep (gated Run).
+// The PART-DONE epic (7010) has no Summary tab in the plan rail; the COMPLETE
+// epic (7011, every phase fully ticked) demos the done-plan surfaces: phase
+// rows swap Run for ✓ summary and the plan rail grows the Summary tab
+// (per-phase executed work incl. Completion Report + ## Execution record).
 const mockEpics: Epic[] = [
   {
     taskId: 7010,
@@ -1290,6 +1325,7 @@ const mockEpics: Epic[] = [
     startedAt: iso(-3 * 86400),
     planDir: '/ws/plan',
     hasSummary: true,
+    planRun: null,
     phases: [
       mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5, {
         runState: 'done',
@@ -1310,6 +1346,38 @@ const mockEpics: Epic[] = [
       mockEpicPhase(4, 4, 'Epics rollup + graph', [2, 3], 0, 6),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
+  },
+  {
+    taskId: 7011,
+    externalId: '2026-07-18-plan-doc-lifecycle',
+    projectId: 3,
+    projectSlug: 'swarmery',
+    title: 'Plan-doc lifecycle (shipped)',
+    status: 'done',
+    startedAt: iso(-9 * 86400),
+    planDir: '/ws/plan-done',
+    hasSummary: true,
+    planRun: {
+      agent: 'tech-lead',
+      mode: 'subagents',
+      runState: 'done',
+      runSessionUuid: 'mock-plan-run-uuid',
+      runStartedAt: '2026-07-24T09:00:00Z',
+      runError: null,
+    },
+    phases: [
+      mockEpicPhase(11, 1, 'Ingest: plan dir scanner', [], 4, 4, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-shipped-a',
+        runStartedAt: iso(-8 * 86400),
+      }),
+      mockEpicPhase(12, 2, 'Plans page lifecycle controls', [1], 6, 6, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-shipped-b',
+        runStartedAt: iso(-7 * 86400),
+      }),
+    ],
+    rollup: { done: 10, total: 10, pct: 100 },
   },
 ];
 
@@ -1629,6 +1697,7 @@ export const mockApi = {
     await delay(120);
     return {
       marketplaceVersion: '1.13.0',
+      marketplaceName: 'swarmery',
       canWrite: true,
       plugins: [
         {
@@ -1636,13 +1705,23 @@ export const mockApi = {
           description: 'Vendor-neutral agent-development core.',
           enabled: true,
           locked: true,
+          // The incident this feature exists for: enabled here, installed elsewhere.
+          status: 'missing',
+          detail: 'enabled here, but installed only for /Volumes/Work/other/project',
         },
-        { name: 'uav-pack', description: 'UAV/drone domain pack.', enabled: false, locked: false },
+        {
+          name: 'uav-pack',
+          description: 'UAV/drone domain pack.',
+          enabled: false,
+          locked: false,
+          status: 'unknown',
+        },
         {
           name: 'lsp-pack',
           description: 'Semantic code-navigation pack: Serena LSP MCP server.',
           enabled: true,
           locked: false,
+          status: 'ok',
         },
       ],
     };
@@ -1668,6 +1747,52 @@ export const mockApi = {
       : mockDetails.get(numeric);
     if (!found) throw new Error(`mock: session ${String(id)} not found`);
     return { ...found };
+  },
+
+  async sessionHandoff(id: number | string): Promise<SessionHandoffResponse> {
+    await delay(120);
+    const numeric = typeof id === 'number' ? id : Number.parseInt(id, 10);
+    const found = Number.isNaN(numeric)
+      ? mockSessions.find((s) => s.sessionUuid === id)
+      : mockSessions.find((s) => s.id === numeric);
+    if (!found?.handoff) throw new Error(`mock: no handoff for session ${String(id)}`);
+    return {
+      markdown: MOCK_HANDOFF_MARKDOWN,
+      path: found.handoff.path,
+      createdAt: found.handoff.createdAt,
+    };
+  },
+
+  async sessionContextHogs(id: number | string): Promise<ContextHogsReport> {
+    await delay(140);
+    const numeric = typeof id === 'number' ? id : Number.parseInt(id, 10);
+    const found = Number.isNaN(numeric)
+      ? mockSessions.find((s) => s.sessionUuid === id)
+      : mockSessions.find((s) => s.id === numeric);
+    if (!found) throw new Error(`mock: no transcript for session ${String(id)}`);
+    return {
+      tools: [
+        { name: 'Read', calls: 66, estTokens: 95400 },
+        { name: 'Bash', calls: 141, estTokens: 78200 },
+        { name: 'Edit', calls: 32, estTokens: 24100 },
+        { name: 'mcp__playwright__browser_snapshot', calls: 6, estTokens: 18800 },
+        { name: 'Write', calls: 9, estTokens: 11400 },
+        { name: 'Grep', calls: 27, estTokens: 6900 },
+        { name: 'Glob', calls: 12, estTokens: 1200 },
+        { name: 'TaskUpdate', calls: 14, estTokens: 600 },
+        { name: 'WebFetch', calls: 2, estTokens: 540 },
+        { name: 'TaskCreate', calls: 5, estTokens: 310 },
+        { name: 'ToolSearch', calls: 3, estTokens: 280 },
+        { name: '(unknown)', calls: 2, estTokens: 150 },
+      ],
+      turns: Array.from({ length: 48 }, (_, i) => ({
+        seq: i + 1,
+        cacheWrite: Math.round(4000 + 12000 * Math.abs(Math.sin(i * 1.7)) + (i % 7) * 900),
+      })),
+      totalEst: 237880,
+      uninspected: 2,
+      malformed: 1,
+    };
   },
 
   async statsToday(): Promise<StatsToday> {
@@ -1917,8 +2042,35 @@ export const mockApi = {
       .map((e) => ({ ...e, phases: e.phases.map((p) => ({ ...p })) }));
   },
 
-  async planDoc(_taskId: number, path: string): Promise<PlanDoc> {
+  async planDoc(taskId: number, path: string): Promise<PlanDoc> {
     await delay(60);
+    // Complete plan (7011): docs exercise the plan rail's Summary tab
+    // derivation — all boxes ticked + a `## Execution record` section.
+    if (taskId === 7011) {
+      if (path === 'README.md') {
+        return {
+          path,
+          content:
+            '# Plan-doc lifecycle\n\nObjective: plan dirs become first-class epics — scanned, tracked, editable from the dashboard.\n\n| # | Phase | Doc | Depends on |\n|---|-------|-----|------------|\n| 1 | Ingest: plan dir scanner | `phase-1.md` | — |\n| 2 | Plans page lifecycle controls | `phase-2.md` | 1 |\n',
+        };
+      }
+      if (path === 'SUMMARY.md') {
+        return {
+          path,
+          content:
+            '## What shipped\n\n- plan-dir scanner indexes every workspace plan into `epic_phases`\n- Plans page lifecycle controls (Pause / Resume / Archive / Restore)\n- checkbox rollups drive plan status end to end\n',
+        };
+      }
+      const boxes = path === 'phase-2.md' ? 6 : 4;
+      const criteria = Array.from(
+        { length: boxes },
+        (_, i) => `- [x] criterion ${String(i + 1)} verified`,
+      ).join('\n');
+      return {
+        path,
+        content: `# ${path}\n\n## Acceptance criteria\n${criteria}\n\n## Execution record\n- \`make test\` green (store 84.2%)\n- \`npm run build\` green (tsc + vite)\n- commit \`feat(swarmery): ${path.replace('.md', '')} shipped\`\n`,
+      };
+    }
     return {
       path,
       content: `# ${path}\n\nMock plan document.\n\n## Acceptance criteria\n- [x] first\n- [ ] second\n`,

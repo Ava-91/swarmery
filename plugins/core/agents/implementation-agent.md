@@ -112,6 +112,24 @@ Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` in
 6. **Fill Completion Report** -- update step file and COMPLETION-SUMMARY.md.
    - If context usage approaches 150K tokens, write a progress checkpoint to Completion Report and summarize what remains before continuing.
 
+## Navigation: symbol-first for structural questions
+
+Match the tool to the question:
+- **Single-fact lookup** (where is X defined, what does this flag default to):
+  ripgrep/Grep directly — do NOT pay graph overhead for quick queries.
+- **Structural question** (all callers of X, rename X, what breaks if X changes,
+  cross-file refactor): prefer symbol-level tools over grep-then-read-whole-files —
+  every full-file Read for a one-symbol question is context spent for nothing.
+  1. If Serena MCP tools are available (lsp-pack; load via ToolSearch
+     "select:mcp__plugin_lsp-pack_serena__find_referencing_symbols,..."):
+     `find_symbol` → `find_referencing_symbols` → targeted reads of just the
+     referencing ranges; `rename_symbol` for renames.
+  2. Else if `graphify-out/graph.json` exists and is fresh: `graphify affected
+     "<symbol>" --depth 3` / `graphify explain "<symbol>"` (see /impact).
+  3. Else: grep — but read only the matched ranges (Read with offset/limit), not
+     whole files.
+Never fetch a whole file to answer a question about one symbol in it.
+
 ## Plan-execution mode (task_dir input)
 
 1. **Load the plan** -- read `plan/README.md` (objective, sequencing table, depends-on) and EVERY `plan/step-NN-*.md` / `plan/phase-N-*.md`. Resolve `{task-id}` as `YYYY-MM-DD-{leaf-dir-name}` from the task dir path (if the leaf dir already starts with a date, it IS the task-id).

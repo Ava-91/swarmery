@@ -29,6 +29,9 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// a fenced per-pack toggle (PUT added in step 03).
 	mux.HandleFunc("GET /api/projects/{id}/plugins", h.projectPlugins)
 	mux.HandleFunc("PUT /api/projects/{id}/plugins/{name}", requireLocalOrigin(h.putProjectPlugin))
+	// repair: `claude plugin install|update <id> --scope project`; {name} is the
+	// FULL plugin id (core@swarmery) — "@" is a legal path-segment character.
+	mux.HandleFunc("POST /api/projects/{id}/plugins/{name}/repair", requireLocalOrigin(h.repairProjectPlugin))
 	// canvas v2 parity: project editorial aggregate (rightNow + thisWeek + attention).
 	mux.HandleFunc("GET /api/projects/{id}/overview", h.projectOverview)
 	// onboarding: bootstrap a new consumer project from the dashboard. Fenced
@@ -38,6 +41,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /api/projects/onboard", requireLocalOrigin(h.onboardProject))
 	mux.HandleFunc("GET /api/sessions", h.listSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", h.getSession)
+	mux.HandleFunc("GET /api/sessions/{id}/handoff", h.getSessionHandoff)
+	// per-tool context attribution: parses the session transcript on demand and
+	// ranks the tools driving context growth (context_hogs.go). 404 when no
+	// transcript is on disk.
+	mux.HandleFunc("GET /api/sessions/{id}/context-hogs", h.getSessionContextHogs)
 
 	// wave A: WS
 	mux.HandleFunc("GET /api/ws", h.ws)
@@ -261,6 +269,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// AttachPhaseRun wires the service.
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run", requireLocalOrigin(h.runPhase))
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run/cancel", requireLocalOrigin(h.cancelPhaseRun))
+	// Plan runs: hand the WHOLE plan to one agent (one headless session driving
+	// core's run-plan skill), state on plan_runs. 503 until AttachPlanRun wires
+	// the service.
+	mux.HandleFunc("POST /api/epics/{taskId}/run", requireLocalOrigin(h.runPlan))
+	mux.HandleFunc("POST /api/epics/{taskId}/run/cancel", requireLocalOrigin(h.cancelPlanRun))
 
 	// fusion phase 13: playbooks — selectable execution recipes. GET lists the
 	// registry (built-ins overlaid by a project's own files); the duplicate POST

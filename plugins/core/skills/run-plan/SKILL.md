@@ -1,6 +1,6 @@
 ---
 name: run-plan
-description: "EXECUTES an existing plan produced by @implementation-planner or @task-planner -- parses the phase DAG, routes sequential phases through a per-phase implementer+review loop and parallel groups through concurrent isolated dispatches, preserving ASK gates and durable progress. NOT for creating plans (use @task-planner / @implementation-planner), NOT for ad-hoc single-file fixes (no plan needed), NOT usable from inside a subagent (subagents cannot spawn subagents -- this playbook runs in the main session only)."
+description: "EXECUTES an existing @implementation-planner/@task-planner plan -- parses the phase DAG, dispatches per-phase implement+review loops, preserving ASK gates. NOT for creating plans; NOT usable from inside a subagent."
 version: "1.1.0"
 owner: "swarmery-core"
 ---

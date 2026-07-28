@@ -35,6 +35,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
 )
 
 // ---- DTOs (mirrored in web/src/api/types.ts, "phase 4+: insights") ---------
@@ -91,6 +93,22 @@ type systemInsightsDTO struct {
 	PromotionCandidates []promotionCandidateDTO `json:"promotionCandidates"`
 	StaleOverrides      []staleOverrideDTO      `json:"staleOverrides"`
 	Dead                []deadComponentDTO      `json:"dead"`
+	// PluginDrift is the ONLY cross-project view of plugin drift. Nothing else
+	// renders it for free: every other consumer of config_lint_findings joins on
+	// a kind-specific target expression ('agent:' || a.id and the like), and a
+	// plugin: target matches none of them.
+	PluginDrift []pluginDriftDTO `json:"pluginDrift"`
+}
+
+// pluginDriftDTO is one active plugin_* finding, resolved to the project it
+// belongs to. Rule rides along so the UI can label the kind of problem.
+type pluginDriftDTO struct {
+	PluginID    string  `json:"pluginId"` // "<name>@<marketplace>"
+	Rule        string  `json:"rule"`
+	Severity    string  `json:"severity"`
+	Message     string  `json:"message"`
+	ProjectSlug *string `json:"projectSlug"` // null when the path matches no project row
+	ProjectPath string  `json:"projectPath"`
 }
 
 // Next-step hints — display-only text the UI offers for copying. Promotion
@@ -151,6 +169,7 @@ func computeInsights(db *sql.DB) (systemInsightsDTO, error) {
 		PromotionCandidates: []promotionCandidateDTO{},
 		StaleOverrides:      []staleOverrideDTO{},
 		Dead:                []deadComponentDTO{},
+		PluginDrift:         []pluginDriftDTO{},
 	}
 	var err error
 	if out.PromotionCandidates, err = promotionCandidates(db); err != nil {
@@ -162,7 +181,77 @@ func computeInsights(db *sql.DB) (systemInsightsDTO, error) {
 	if out.Dead, err = deadComponents(db); err != nil {
 		return out, err
 	}
+	// Best effort, like the fields above: a drift query failure must not take
+	// the whole insights page down.
+	if drift, derr := pluginDriftFindings(db); derr == nil {
+		out.PluginDrift = drift
+	}
 	return out, nil
+}
+
+// pluginDriftFindings lists active plugin_* findings with the project resolved
+// by path. plugin:detector (no "|" in the target) is machine-wide and carries a
+// null slug and an empty path.
+func pluginDriftFindings(db *sql.DB) ([]pluginDriftDTO, error) {
+	rows, err := db.Query(`
+		SELECT f.target, f.rule, f.severity, f.message
+		FROM config_lint_findings f
+		WHERE f.resolved_at IS NULL AND f.rule LIKE 'plugin\_%' ESCAPE '\'
+		ORDER BY f.severity DESC, f.target`)
+	if err != nil {
+		return nil, err
+	}
+	out := []pluginDriftDTO{}
+	for rows.Next() {
+		var target, rule, severity, message string
+		if err := rows.Scan(&target, &rule, &severity, &message); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		d := pluginDriftDTO{Rule: rule, Severity: severity, Message: message}
+		if id, path, ok := plugindrift.ParseTarget(target); ok {
+			d.PluginID, d.ProjectPath = id, path
+		} else {
+			d.PluginID = strings.TrimPrefix(target, "plugin:")
+		}
+		out = append(out, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Slugs are resolved in a SECOND pass, after the cursor above is closed.
+	// The store caps the pool at one connection (store.go:38), so a per-row
+	// lookup inside the loop would wait for a connection this very loop holds —
+	// a permanent deadlock, not a slow path.
+	slugs, err := projectSlugsByPath(db)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if slug, ok := slugs[out[i].ProjectPath]; ok && out[i].ProjectPath != "" {
+			out[i].ProjectSlug = &slug
+		}
+	}
+	return out, nil
+}
+
+// projectSlugsByPath is the path→slug map used to link a finding to its project.
+func projectSlugsByPath(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query(`SELECT path, slug FROM projects`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var path, slug string
+		if err := rows.Scan(&path, &slug); err != nil {
+			return nil, err
+		}
+		out[path] = slug
+	}
+	return out, rows.Err()
 }
 
 // promotionCandidates groups project-local components by name and keeps the

@@ -1,6 +1,6 @@
 ---
 name: api-integration
-description: "Implement REST route handlers, ORM queries, WebSocket telemetry connections, or SSE streaming endpoints in the main web app (project.json -> mainApp), or consume those APIs from client components. Do not use for schema-only changes, deployment/infrastructure config work, or device firmware development."
+description: "Implement REST route handlers, ORM queries, WebSocket telemetry, or SSE endpoints in the main web app, or consume those APIs from clients. NOT for schema-only changes or deployment/infra config."
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Grep, Glob

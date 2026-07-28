@@ -1,6 +1,6 @@
 ---
 name: browser-verification
-description: "Use this skill when an agent needs to verify UI behavior in a live browser via Playwright MCP tools (browser_navigate, browser_snapshot, screenshots, console/network capture) against localdev or the project's staging environment (project.json -> cloud.envAlias). Covers the target-confirmation step, the observe/interact loop, and safety guardrails. NOT for full domain E2E lifecycle flows (use the domain pack's E2E skill if the project ships one) and never against production."
+description: "Verify UI behavior in a live browser via Playwright MCP (navigate, snapshot, screenshots, console/network) against localdev or staging. NOT for full domain E2E flows and never against production."
 version: "1.0.0"
 owner: "swarmery-core"
 color: cyan

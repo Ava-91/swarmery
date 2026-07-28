@@ -119,7 +119,7 @@ func TestComponents(t *testing.T) {
 	write("agents/reviewer.md")
 	write("agents/planner.md")
 	write("agents/notes.txt") // ignored: not .md
-	mkdir("skills/deploy")     // skill = directory
+	mkdir("skills/deploy")    // skill = directory
 	mkdir("skills/lint")
 	mkdir("commands")
 	write("commands/ship.md")
@@ -153,5 +153,41 @@ func TestComponents_MissingDirs(t *testing.T) {
 	}
 	if c.Counts != (ComponentCounts{}) {
 		t.Errorf("counts = %+v, want all zero", c.Counts)
+	}
+}
+
+func TestReadEnabledPlugins_AllMarketplaces(t *testing.T) {
+	dir := t.TempDir()
+	writeSettings(t, dir, `{
+		"enabledPlugins": {
+			"core@swarmery": true,
+			"superpowers@claude-plugins-official": true,
+			"web-pack@swarmery": false,
+			"malformed-key-without-marketplace": true
+		}
+	}`)
+
+	ids, err := ReadEnabledPlugins(dir)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	want := []string{"core@swarmery", "superpowers@claude-plugins-official"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Errorf("ids = %v, want %v", ids, want)
+	}
+}
+
+func TestReadEnabledPlugins_MissingAndMalformed(t *testing.T) {
+	missing := t.TempDir()
+	ids, err := ReadEnabledPlugins(missing)
+	if ids != nil || err != nil {
+		t.Errorf("missing settings: (%v, %v), want (nil, nil)", ids, err)
+	}
+
+	bad := t.TempDir()
+	writeSettings(t, bad, `{not json`)
+	ids, err = ReadEnabledPlugins(bad)
+	if ids != nil || err != nil {
+		t.Errorf("malformed settings: (%v, %v), want (nil, nil)", ids, err)
 	}
 }

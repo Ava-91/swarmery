@@ -210,7 +210,9 @@ func persist(db *sql.DB, sessionID int64, agent, model string, j judgment, now t
 
 // ClaudeRunner runs `claude -p --model <id> --output-format text` with the
 // prompt on stdin. Binary resolution is a plain PATH lookup (same as
-// internal/improve.ClaudeRunner and internal/toolproc). Twin — keep in lockstep.
+// internal/toolproc). One of three twins — internal/improve.ClaudeRunner,
+// internal/trajjudge.ClaudeRunner, and internal/handoff.ClaudeRunner — keep the
+// flag order, stdin, System-cwd chdir, and stderr handling in lockstep.
 type ClaudeRunner struct {
 	Model string
 }

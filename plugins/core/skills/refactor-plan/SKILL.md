@@ -1,6 +1,6 @@
 ---
 name: refactor-plan
-description: "PRODUCES a refactoring plan ONLY -- impact analysis, step ordering, risk assessment, rollback strategy -- with NO code changes made. NOT for executing refactors: pure-function/immutability refactoring is executed by functional-design. NOT for deployment rollback (use release-promotion) or dependency upgrades (use deps-check)."
+description: "PRODUCES a refactoring plan ONLY -- impact analysis, step ordering, risk, rollback -- NO code changes. NOT for executing refactors (use functional-design) or dependency upgrades (use deps-check)."
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob

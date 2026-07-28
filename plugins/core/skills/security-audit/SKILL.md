@@ -2,7 +2,7 @@
 name: security-audit
 version: "1.0.0"
 owner: "swarmery-core"
-description: "Use this skill when a task involves reviewing or scanning application code for security vulnerabilities, evaluating OWASP Top 10 compliance for the project's apps, device/edge repo, or cloud service config, or scanning for hardcoded secrets. Don't use it for CI/CD pipeline hardening or SBOM generation (use supply-chain-security instead)."
+description: "Scan application code for security vulnerabilities, OWASP Top 10 compliance, or hardcoded secrets across the project's repos. NOT for CI/CD hardening or SBOM generation (use supply-chain-security)."
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob, Bash
 color: teal

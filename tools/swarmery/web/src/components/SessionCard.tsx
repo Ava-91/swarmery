@@ -46,6 +46,22 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
   );
 }
 
+/** A chip flagging that the daemon generated a continuation handoff brief for
+ * this fat session (migration 0039). Violet to distinguish it from the amber/red
+ * context warning it sits beside — clicking through to the session opens the
+ * rail's Handoff section with the full brief + a copy-paste resume command. */
+function HandoffChip({ session }: { session: Session }): JSX.Element | null {
+  if (session.handoff == null) return null;
+  return (
+    <span
+      title="A continuation handoff brief is ready — open the session to read it and copy the resume command."
+      className="shrink-0 rounded-full border border-violet-500/40 bg-violet-500/15 px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap text-violet-400"
+    >
+      Handoff
+    </span>
+  );
+}
+
 function meta(session: Session): string {
   const parts: string[] = [];
   if (session.model !== null) parts.push(session.model);
@@ -188,6 +204,7 @@ export function SessionCard({
           />
         )}
         <ContextBadge session={session} />
+        <HandoffChip session={session} />
         <ProcBadge session={session} />
         {session.outcome != null && (
           <span
@@ -298,6 +315,7 @@ export function SessionCard({
               </span>
             )}
             <ContextBadge session={session} />
+            <HandoffChip session={session} />
           </span>
           <span className="mt-0.5 block truncate text-[12px] text-ink-dim">
             {liveNow ? `now: ${now}` : (session.why ?? meta(session))}
