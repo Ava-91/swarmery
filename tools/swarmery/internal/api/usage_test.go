@@ -126,9 +126,15 @@ func TestUsageHTTP(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	now := time.Now()
-	// Two turns inside the last hour (well within any multi-hour window), one far
-	// in the past (outside a 5h window). tokens_in+tokens_out summed.
-	recent := now.Add(-10 * time.Minute).UTC().Format("2006-01-02T15:04:05")
+	// Two turns inside the CURRENT 5h window, one far in the past (outside it).
+	// tokens_in+tokens_out summed. The window is anchored to a 5h grid counted
+	// from the Unix epoch, which does not divide a day evenly — so the window
+	// can have started seconds ago. A fixed "now - 10min" offset therefore lands
+	// outside it for 10 minutes out of every 5 hours (a real flake, seen in CI).
+	// Derive the timestamp from the same helper the endpoint uses instead.
+	elapsed5h, _, _ := usageWindowElapsed(now, 5)
+	inWindow := now.Add(-elapsed5h).Add(time.Minute)
+	recent := inWindow.UTC().Format("2006-01-02T15:04:05")
 	old := now.Add(-240 * time.Hour).UTC().Format("2006-01-02T15:04:05")
 	mustExec := func(q string, args ...any) {
 		t.Helper()
