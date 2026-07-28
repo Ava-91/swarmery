@@ -151,6 +151,13 @@ const RAW = {
         body: 'Built-ins ship inside the daemon and are read-only. “Duplicate to project” copies the markdown into <project>/.claude/playbooks/ where its prompts become editable; a project file with the same name overrides the built-in. Frontmatter takes name, description, verify, and an optional model override.',
       },
     ],
+    // `steps` is not rendered in the popover (see Explain.tsx) — these facts are
+    // what the trigger shows, so they carry the reference load on their own.
+    facts: [
+      { label: 'built-ins', value: 'standard · quick-fix · plan-first · review-heavy' },
+      { label: 'no selection', value: 'standard' },
+      { label: 'make your own', value: '.claude/playbooks/<name>.md' },
+    ],
     doc: { slug: 'concepts', anchor: 'playbooks' },
   },
 
@@ -201,6 +208,14 @@ const RAW = {
         title: 'The plan lands in the workspace',
         body: 'Phase-N docs with acceptance checkboxes are written to the private workspace — never the repo — and appear on the Plans page within seconds.',
       },
+    ],
+    // As with playbook-stages: `steps` stays out of the popover, so these facts
+    // answer the one thing the page subtitle does not — where "the private
+    // workspace" actually is.
+    facts: [
+      { label: 'plans land in', value: '<root>/<project>/workspace/working/' },
+      { label: 'root', value: 'AGENT_WORKSPACE_ROOT · default ~/swarmery-workspace' },
+      { label: 'daemon access', value: 'read-only — it indexes, never writes' },
     ],
     doc: { slug: 'concepts', anchor: 'planning-mode' },
   },
