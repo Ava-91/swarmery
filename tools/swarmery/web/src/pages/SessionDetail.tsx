@@ -11,6 +11,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type { SessionDetail, SessionOutcome, SessionStatus, WSMessage } from '../api/types';
 import { MOCK, fetchSession, patchSessionOutcome, renameSession, sendSessionMessage } from '../api';
 import { fmtAgo, fmtCost, fmtSpan, fmtTokens } from '../lib/format';
+import { sessionState, useNowMs } from '../lib/sessionState';
 import { useLiveUpdates } from '../lib/ws';
 import { OutcomePicker } from '../components/OutcomePicker';
 import { TaskChip } from '../components/TaskChip';
@@ -22,6 +23,36 @@ import { Chat, type PendingSend } from './detail/Chat';
 import { CommandInput } from './detail/CommandInput';
 import { SummaryChips } from './detail/SummaryChips';
 import { DetailRail } from './detail/DetailRail';
+
+/** Header liveness chip — the same tri-state the sessions list speaks (green
+ * pulsing dot = the session produced transcript activity recently; amber =
+ * quiet past the stuck window). Inside the detail page the list's dot was
+ * missing, so an open detail view couldn't tell "working" from "silent". */
+function LiveStateChip({ session }: { session: SessionDetail }): JSX.Element | null {
+  const now = useNowMs(15_000);
+  const state = sessionState(session, now);
+  if (state === 'done') return null;
+  if (state === 'running') {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[10px] text-green"
+        title="transcript activity within the stuck window — the session is working"
+      >
+        <span className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full bg-green" />
+        working · {fmtAgo(session.endedAt ?? session.startedAt)}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[10px] text-amber"
+      title="no transcript activity past the stuck window — the session may have died silently"
+    >
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber" />
+      quiet · {fmtSpan(session.endedAt ?? session.startedAt, null)}
+    </span>
+  );
+}
 
 const STATUS_TONES: Record<SessionStatus, string> = {
   active: 'text-green',
@@ -457,6 +488,7 @@ export function SessionDetailPage(): JSX.Element {
           <div className="min-w-0 flex-1">
             <TitleEditor title={detail.title} onRename={rename} />
             <div className="mt-2 flex flex-wrap gap-x-3.5 gap-y-[5px] font-mono text-[11px] text-ink-dim">
+              <LiveStateChip session={detail} />
               <Kv label="status" value={detail.status} tone={STATUS_TONES[detail.status]} />
               {detail.model !== null && <Kv label="model" value={detail.model} />}
               <Kv
