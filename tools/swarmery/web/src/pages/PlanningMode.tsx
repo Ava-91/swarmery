@@ -36,31 +36,11 @@ import { fmtAgo } from '../lib/format';
 import { useLiveUpdates } from '../lib/ws';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { Card, Empty, ErrorBox, Loading } from '../components/ui';
+import { HowItWorks } from '../components/HowItWorks';
 import { QuestionCard } from './planning/QuestionCard';
 import { RunningPlanPanel } from './planning/RunningPlanPanel';
 import { HistoryDrawer } from './planning/HistoryDrawer';
 import { RefineModal } from './planning/RefineModal';
-
-// How a planning run actually works, step by step — rendered under the idea
-// box so the intake screen doubles as the feature's documentation.
-const HOW_IT_WORKS: { title: string; body: string }[] = [
-  {
-    title: 'Describe the idea',
-    body: 'A headless planner session starts in this project’s repo — it sees the code, CLAUDE.md, and the core-pack planning agents.',
-  },
-  {
-    title: 'Answer structured questions',
-    body: 'The planner interviews you one question at a time — pick an option (or write your own) while the running plan rebuilds beside it after every answer.',
-  },
-  {
-    title: 'Refine or proceed',
-    body: '«Уточнити» steers the plan and the next questions; «Продовжуйте за планом» ends the interview and the planner writes the full plan.',
-  },
-  {
-    title: 'The plan lands in the workspace',
-    body: 'Phase-N docs with acceptance checkboxes are written to the private workspace — never the repo — and appear on the Plans page within seconds.',
-  },
-];
 
 // Settle-poll cadence for the "plan ready" workspace task (wsingest rescans on
 // a 60s cadence, so we poll a little faster once the wizard is done).
@@ -598,22 +578,7 @@ export function PlanningMode(): JSX.Element {
 
       {/* How it works — outside the state branches so the explainer stays visible
           during active runs and after the plan lands, not just on the intake screen. */}
-      <ol className="mt-6 grid max-w-[80ch] gap-3 border-t border-line pt-5 sm:grid-cols-2">
-        {HOW_IT_WORKS.map((step, i) => (
-          <li key={step.title} className="flex gap-2.5">
-            <span
-              aria-hidden="true"
-              className="mt-[1px] inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line font-mono text-[10px] text-ink-dim"
-            >
-              {i + 1}
-            </span>
-            <div className="min-w-0">
-              <div className="text-[12.5px] font-semibold text-ink">{step.title}</div>
-              <p className="mt-0.5 text-[12px] leading-relaxed text-ink-dim">{step.body}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
+      <HowItWorks id="planning-mode" className="mt-6 max-w-[80ch]" />
 
       <HistoryDrawer turns={history} open={historyOpen} onClose={() => setHistoryOpen(false)} />
       <RefineModal
