@@ -108,7 +108,35 @@ func Run(event string, stdin io.Reader, cfg Config) int {
 			logLine(cfg.LogPath, event, "", "ppid-inject-error")
 			return 0
 		}
-		outcome := post(cfg, EventSessionStart, injected, sessionStartTimeout, nil)
+		outcome := post(cfg, EventSessionStart, injected, sessionStartTimeout, func(resp *http.Response) string {
+			// 200 carries additionalContext (plugin drift); 204 — the old and
+			// still-normal answer — carries nothing. Every failure path below
+			// prints nothing, so a daemon that is down, slow or older simply
+			// yields the previous silent behaviour.
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Sprintf("http-%d", resp.StatusCode)
+			}
+			var d struct {
+				AdditionalContext string `json:"additionalContext"`
+			}
+			if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d); err != nil {
+				return "bad-body"
+			}
+			if d.AdditionalContext == "" {
+				return "empty-context"
+			}
+			out, err := json.Marshal(map[string]any{
+				"hookSpecificOutput": map[string]string{
+					"hookEventName":     "SessionStart",
+					"additionalContext": d.AdditionalContext,
+				},
+			})
+			if err != nil {
+				return "marshal-error"
+			}
+			fmt.Fprintln(cfg.Stdout, string(out))
+			return "context-injected"
+		})
 		logLine(cfg.LogPath, event, "", outcome)
 	default:
 		fmt.Fprintf(cfg.Stderr, "swarmery hook: unknown event %q\n", event)

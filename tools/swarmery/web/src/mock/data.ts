@@ -1697,6 +1697,7 @@ export const mockApi = {
     await delay(120);
     return {
       marketplaceVersion: '1.13.0',
+      marketplaceName: 'swarmery',
       canWrite: true,
       plugins: [
         {
@@ -1704,13 +1705,23 @@ export const mockApi = {
           description: 'Vendor-neutral agent-development core.',
           enabled: true,
           locked: true,
+          // The incident this feature exists for: enabled here, installed elsewhere.
+          status: 'missing',
+          detail: 'enabled here, but installed only for /Volumes/Work/other/project',
         },
-        { name: 'uav-pack', description: 'UAV/drone domain pack.', enabled: false, locked: false },
+        {
+          name: 'uav-pack',
+          description: 'UAV/drone domain pack.',
+          enabled: false,
+          locked: false,
+          status: 'unknown',
+        },
         {
           name: 'lsp-pack',
           description: 'Semantic code-navigation pack: Serena LSP MCP server.',
           enabled: true,
           locked: false,
+          status: 'ok',
         },
       ],
     };

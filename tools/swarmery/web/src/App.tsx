@@ -29,6 +29,7 @@ import { ThemeToggle } from './components/ThemeToggle';
 import { UsagePopover } from './components/UsagePopover';
 import { isoDay } from './lib/format';
 import { useHealth, shortVersion } from './lib/health';
+import { PluginDriftBadge } from './components/PluginDriftBadge';
 import { loadPrefs, useBrowserNotifications, type NotifyPrefs } from './lib/notifications';
 import { NotifyPrefsContext } from './lib/notifyPrefsContext';
 import { useScope } from './lib/scope';
@@ -288,6 +289,7 @@ function AppShell(): JSX.Element {
               />
               {daemonOk ? 'daemon healthy' : 'daemon unreachable'}
               {health !== null ? ` · ${shortVersion(health.version)}` : ''}
+              <PluginDriftBadge health={health} />
             </>
           )}
         </span>

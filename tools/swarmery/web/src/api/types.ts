@@ -378,6 +378,12 @@ export interface HealthResponse {
    * hooks backend lands and the first hook checks in.
    */
   hooks_last_seen?: string | null;
+  /**
+   * Unresolved plugin_* finding counts — enabled plugins Claude Code cannot
+   * actually load. Additive optional: absent when talking to a daemon older
+   * than the drift scanner.
+   */
+  pluginDrift?: { error: number; warn: number };
 }
 
 /** GET /api/docs — list item. */
@@ -1518,6 +1524,24 @@ export interface SystemInsights {
   promotionCandidates: SystemPromotionCandidate[];
   staleOverrides: SystemStaleOverride[];
   dead: SystemDeadComponent[];
+  /**
+   * Active plugin_* findings across every project — the only cross-project view
+   * of plugin drift. Additive optional: absent on a daemon older than the
+   * drift scanner.
+   */
+  pluginDrift?: SystemPluginDrift[];
+}
+
+/** One active plugin_* finding, resolved to the project it belongs to. */
+export interface SystemPluginDrift {
+  /** "<name>@<marketplace>", or "detector" for the machine-wide blindness row. */
+  pluginId: string;
+  rule: string;
+  severity: string;
+  message: string;
+  /** null when the finding is machine-wide or the path matches no project row. */
+  projectSlug: string | null;
+  projectPath: string;
 }
 
 /**
@@ -1847,19 +1871,41 @@ export interface ProjectMeta {
 // --- Project plugin toggles ---------------------------------------------------
 
 /** One row of GET /api/projects/{id}/plugins (marketplace catalog × project state). */
+/**
+ * Drift verdict from the daemon's plugin_* findings. 'unknown' means the plugin
+ * is disabled here, so nothing was checked and nothing is claimed — it is not a
+ * synonym for 'ok'.
+ */
+export type PluginDriftStatus = 'ok' | 'missing' | 'behind' | 'orphaned' | 'unknown';
+
 export interface ProjectPluginRow {
   name: string;
   description: string;
   enabled: boolean;
   /** core: toggled via attach/detach, never through the plugins endpoint. */
   locked: boolean;
+  status: PluginDriftStatus;
+  /** Human explanation for a non-ok status; absent when status is ok/unknown. */
+  detail?: string;
 }
 
 export interface ProjectPluginsResponse {
   marketplaceVersion: string;
+  /** The marketplace these rows come from — the repair call needs name@marketplace. */
+  marketplaceName: string;
   /** Mirrors the PUT fence: SWARMERY_ONBOARD_ROOTS set + path inside the allow-list. */
   canWrite: boolean;
   plugins: ProjectPluginRow[];
+}
+
+/** POST /api/projects/{id}/plugins/{name}/repair */
+export interface PluginRepairResponse {
+  id: string;
+  action: 'install' | 'update';
+  output: string;
+  status: PluginDriftStatus;
+  /** Always true: a repaired plugin loads only in the next Claude Code session. */
+  restart: boolean;
 }
 
 /** PUT /api/projects/{id}/plugins/{name} result. */

@@ -54,10 +54,12 @@ func TestProjectPluginsMergesCatalogAndState(t *testing.T) {
 	if resp.MarketplaceVersion != "1.13.0" {
 		t.Errorf("marketplaceVersion = %q, want 1.13.0", resp.MarketplaceVersion)
 	}
+	// Status: enabled rows with no findings are "ok"; a disabled row is
+	// "unknown" — nothing was checked for it, so nothing is claimed.
 	want := []projectPluginDTO{
-		{Name: "core", Description: "the core plugin", Enabled: true, Locked: true},
-		{Name: "uav-pack", Description: "UAV domain pack", Enabled: false, Locked: false},
-		{Name: "lsp-pack", Description: "LSP pack", Enabled: true, Locked: false},
+		{Name: "core", Description: "the core plugin", Enabled: true, Locked: true, Status: "ok"},
+		{Name: "uav-pack", Description: "UAV domain pack", Enabled: false, Locked: false, Status: "unknown"},
+		{Name: "lsp-pack", Description: "LSP pack", Enabled: true, Locked: false, Status: "ok"},
 	}
 	if len(resp.Plugins) != len(want) {
 		t.Fatalf("plugins len = %d, want %d (%+v)", len(resp.Plugins), len(want), resp.Plugins)
@@ -108,8 +110,11 @@ func TestProjectPluginsStaleCloneKeepsEnabledPack(t *testing.T) {
 	if last.Name != "web-pack" || !last.Enabled || last.Locked {
 		t.Errorf("appended row = %+v, want web-pack enabled unlocked", last)
 	}
-	if !strings.Contains(last.Description, "missing from the local marketplace clone") {
-		t.Errorf("description = %q, want a stale-clone note", last.Description)
+	if last.Status != "missing" {
+		t.Errorf("status = %q, want missing", last.Status)
+	}
+	if !strings.Contains(last.Detail, "missing from the local marketplace clone") {
+		t.Errorf("detail = %q, want a stale-clone note", last.Detail)
 	}
 }
 

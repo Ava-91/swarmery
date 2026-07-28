@@ -15,6 +15,7 @@ import { ModeToggle } from '../components/ModeToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { UsagePopover } from '../components/UsagePopover';
 import { useHealth, shortVersion } from '../lib/health';
+import { PluginDriftBadge } from '../components/PluginDriftBadge';
 import { ProjectWorkspaceLayout } from './ProjectWorkspaceLayout';
 
 export function WorkspaceShell(): JSX.Element {
@@ -52,6 +53,7 @@ export function WorkspaceShell(): JSX.Element {
                 />
                 {daemonOk ? 'daemon healthy' : 'daemon unreachable'}
                 {health !== null ? ` · ${shortVersion(health.version)}` : ''}
+                <PluginDriftBadge health={health} />
               </>
             )}
           </span>

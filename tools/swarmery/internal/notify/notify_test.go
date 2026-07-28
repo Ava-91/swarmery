@@ -201,3 +201,27 @@ func TestNotifierNeverBlocks(t *testing.T) {
 		t.Fatal("Emit blocked on a full queue")
 	}
 }
+
+// plugin_drift must be a first-class --notify-events value: a receiver that
+// asks for it has to actually get it.
+func TestPluginDriftIsAConfigurableEvent(t *testing.T) {
+	n, err := New(Config{URL: "http://127.0.0.1:1/hook", Events: []string{EventPluginDrift}})
+	if err != nil {
+		t.Fatalf("plugin_drift must be accepted by --notify-events: %v", err)
+	}
+	if !n.enabled[EventPluginDrift] {
+		t.Error("plugin_drift configured but not enabled")
+	}
+	if n.enabled[EventSessionError] {
+		t.Error("an unrequested event must stay disabled")
+	}
+	found := false
+	for _, e := range KnownEvents {
+		if e == EventPluginDrift {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("plugin_drift missing from KnownEvents")
+	}
+}

@@ -45,6 +45,17 @@ type healthDTO struct {
 	WSClients        int            `json:"wsClients"`
 	IngestLagSec     *int64         `json:"ingestLagSec"` // null when no events ingested yet
 	Dispatch         healthDispatch `json:"dispatch"`
+	// PluginDrift counts unresolved plugin_* findings — enabled plugins Claude
+	// Code cannot actually load. The sidebar health line badges off this.
+	PluginDrift healthPluginDrift `json:"pluginDrift"`
+}
+
+// healthPluginDrift counts unresolved plugin_* findings by severity. Zero
+// values mean "scanned, nothing wrong"; a detector that cannot run reports
+// itself as an error finding, so a blind detector never reads as healthy.
+type healthPluginDrift struct {
+	Error int `json:"error"`
+	Warn  int `json:"warn"`
 }
 
 // healthDispatch is the zero-valued-when-absent dispatcher summary (the spec's
@@ -76,6 +87,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 		WSClients:        wsClientCount(),
 		IngestLagSec:     h.ingestLagSec(),
 		Dispatch:         dispatchHealth(),
+		PluginDrift:      h.pluginDriftCounts(),
 	}
 	if !processStart.IsZero() {
 		dto.UptimeSec = int64(time.Since(processStart).Seconds())
@@ -145,4 +157,33 @@ func dispatchHealth() healthDispatch {
 		return healthDispatch{}
 	}
 	return healthDispatch{Active: st.ActiveRuns, Paused: st.GlobalPaused}
+}
+
+// pluginDriftCounts counts unresolved plugin_* findings by severity. Best
+// effort: health must never 500 over this. info-severity rows (plugin_note)
+// are deliberately counted in neither bucket — they are not a problem.
+func (h *Handler) pluginDriftCounts() healthPluginDrift {
+	var out healthPluginDrift
+	rows, err := h.DB.Query(
+		`SELECT severity, COUNT(*) FROM config_lint_findings
+		  WHERE resolved_at IS NULL AND rule LIKE 'plugin\_%' ESCAPE '\'
+		  GROUP BY severity`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sev string
+		var n int
+		if err := rows.Scan(&sev, &n); err != nil {
+			return out
+		}
+		switch sev {
+		case "error":
+			out.Error = n
+		case "warn":
+			out.Warn = n
+		}
+	}
+	return out
 }
