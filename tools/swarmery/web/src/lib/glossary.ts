@@ -215,7 +215,7 @@ const RAW = {
     facts: [
       { label: 'plans land in', value: '<root>/<project>/workspace/working/' },
       { label: 'root', value: 'AGENT_WORKSPACE_ROOT · default ~/swarmery-workspace' },
-      { label: 'daemon access', value: 'read-only — it indexes, never writes' },
+      { label: 'plan docs', value: 'read-only — swarmery indexes them, never edits' },
     ],
     doc: { slug: 'concepts', anchor: 'planning-mode' },
   },

@@ -124,7 +124,11 @@ export function TaskDrawer({
   const scopeSlug =
     scopeProject !== null ? displaySlug(scopeProject, projects) : task.projectSlug;
 
-  // Re-seed local edit state when a different task is opened into the drawer.
+  // Re-seed local edit state when a DIFFERENT task is opened into the drawer.
+  // Keyed on task.id rather than task: applyBoardTaskMessage (lib/ws.ts)
+  // replaces the matched row wholesale, so every task_updated frame mints a new
+  // object for the same task — and on [task] this effect would overwrite what
+  // the user is typing with the server's copy, mid-keystroke.
   useEffect(() => {
     setTitle(task.title);
     setPrompt(task.prompt);
@@ -134,7 +138,7 @@ export function TaskDrawer({
     setFileScope(task.fileScope);
     setDependencies(task.dependencies);
     setSaveError(null);
-  }, [task]);
+  }, [task.id]);
 
   // Initial focus is MOUNT-ONLY, deliberately split from the Escape listener
   // below. The two used to share one effect keyed on [onClose], and Board.tsx
@@ -144,10 +148,14 @@ export function TaskDrawer({
   // whatever the user was doing: typing in the title or prompt field, or
   // reading the verify-knob explainer, which closes on focusout. Fixed here
   // rather than by memoising one call site, so it holds for every caller.
-  // Same split HistoryDrawer.tsx uses — it copied this pattern from here.
+  // Same split HistoryDrawer.tsx:49-67 uses.
+  //
+  // Keyed on task.id, not []: Board.tsx mounts this conditionally so every open
+  // is a fresh mount today, but if the drawer ever stays mounted across a task
+  // swap, focus should follow the new task rather than stay where it was.
   useEffect(() => {
     closeRef.current?.focus();
-  }, []);
+  }, [task.id]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
