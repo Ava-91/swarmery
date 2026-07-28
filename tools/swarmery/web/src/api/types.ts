@@ -2142,6 +2142,25 @@ export interface Epic {
   hasSummary: boolean;
   phases: EpicPhase[];
   rollup: EpicRollup;
+  /** Whole-plan run state (one agent handed the whole plan, driving core's
+   * run-plan skill). Null until the plan has ever been run. Distinct from the
+   * per-phase EpicPhase.runState — a plan run never stamps individual phases. */
+  planRun: PlanRun | null;
+}
+
+/** How a plan run executes its phases. `auto` leaves the run-plan skill's own
+ * DAG triage authoritative; the other two force the one call it cannot derive
+ * from the manifest. */
+export type PlanRunMode = 'auto' | 'subagents' | 'inline';
+
+/** The plan_runs row for one epic. */
+export interface PlanRun {
+  agent: string | null;
+  mode: PlanRunMode;
+  runState: 'idle' | 'running' | 'done' | 'failed';
+  runSessionUuid: string | null;
+  runStartedAt: string | null;
+  runError: string | null;
 }
 
 /** GET/PUT/PATCH /api/epics/{taskId}/docs response body. */

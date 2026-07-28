@@ -94,6 +94,20 @@ type epicDTO struct {
 	HasSummary bool           `json:"hasSummary"`
 	Phases     []epicPhaseDTO `json:"phases"`
 	Rollup     epicRollupDTO  `json:"rollup"`
+	// Whole-plan run state (migration 0040), null until the plan has ever been
+	// run. Distinct from the per-phase RunState above: this is ONE agent handed
+	// the whole plan, so it never stamps individual phases.
+	PlanRun *planRunDTO `json:"planRun"`
+}
+
+// planRunDTO is the plan_runs row for one epic.
+type planRunDTO struct {
+	Agent          *string `json:"agent"`
+	Mode           string  `json:"mode"`     // auto | subagents | inline
+	RunState       string  `json:"runState"` // idle | running | done | failed
+	RunSessionUUID *string `json:"runSessionUuid"`
+	RunStartedAt   *string `json:"runStartedAt"`
+	RunError       *string `json:"runError"`
 }
 
 // wsPlanPayload is the plan_updated WS payload (frozen once shipped) — a thin
@@ -187,7 +201,16 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One query for every plan's run state, overlaid below — not a per-epic
+	// lookup inside the loop.
+	planRuns, err := h.planRunsByTask()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
 	for i := range out {
+		out[i].PlanRun = planRuns[out[i].TaskID]
 		phases, rollup, err := h.epicPhases(out[i].TaskID, out[i].PlanDir)
 		if err != nil {
 			writeErr(w, err)
@@ -205,6 +228,44 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
 	}
 	writeJSON(w, out, nil)
+}
+
+// planRunsByTask loads every plan_runs row keyed by workspace task id. Plan
+// runs are rare (one row per plan that has ever been run), so the whole table is
+// cheaper to fetch once than to look up per epic.
+func (h *Handler) planRunsByTask() (map[int64]*planRunDTO, error) {
+	rows, err := h.DB.Query(`
+		SELECT workspace_task_id, agent, mode, run_state, run_session_uuid, run_started_at, run_error
+		  FROM plan_runs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]*planRunDTO{}
+	for rows.Next() {
+		var (
+			taskID                            int64
+			dto                               planRunDTO
+			agent, uuid, startedAt, runErrStr sql.NullString
+		)
+		if err := rows.Scan(&taskID, &agent, &dto.Mode, &dto.RunState, &uuid, &startedAt, &runErrStr); err != nil {
+			return nil, err
+		}
+		if agent.Valid {
+			dto.Agent = &agent.String
+		}
+		if uuid.Valid {
+			dto.RunSessionUUID = &uuid.String
+		}
+		if startedAt.Valid {
+			dto.RunStartedAt = &startedAt.String
+		}
+		if runErrStr.Valid {
+			dto.RunError = &runErrStr.String
+		}
+		out[taskID] = &dto
+	}
+	return out, rows.Err()
 }
 
 // epicPhases loads one epic's phases (joined to the board task an activation

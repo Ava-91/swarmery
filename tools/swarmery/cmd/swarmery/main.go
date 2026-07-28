@@ -46,6 +46,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
@@ -1115,6 +1116,15 @@ func cmdServe(args []string) error {
 		log.Printf("warning: phaserun heal on startup: %v", err)
 	}
 	api.AttachPhaseRun(phaserunSvc)
+
+	// Plan runs: hand a WHOLE plan to one agent — one headless session in one
+	// worktree, driving core's run-plan skill (state on plan_runs). Same
+	// worktree.Manager as dispatch/verify/phaserun; same startup heal posture.
+	planrunSvc := planrun.NewService(db, planrun.ClaudeRunner{}, wtMgr)
+	if err := planrunSvc.HealStale(); err != nil {
+		log.Printf("warning: planrun heal on startup: %v", err)
+	}
+	api.AttachPlanRun(planrunSvc)
 
 	buildStart := time.Now()
 	handler, err := api.NewServer(db, !*noIngest)

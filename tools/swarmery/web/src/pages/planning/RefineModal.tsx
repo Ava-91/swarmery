@@ -41,15 +41,15 @@ function RefineModalInner({
   // Remember the element that had focus before this modal opened so we can
   // return focus to it on close (WCAG 2.2 §2.4.3 Focus Order).
   const previouslyFocused = useRef<HTMLElement | null>(null);
-  // Tab focus trap selector — mirrors PlanDocDrawer's FOCUSABLE_SELECTOR approach.
+  // Tab focus trap selector — see FOCUSABLE below.
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Capture trigger on mount; restore on unmount.
     previouslyFocused.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // Auto-focus the textarea so the user can type immediately (modal pattern —
-    // PlanDocDrawer:97 focuses the primary interactive element on open).
+    // Auto-focus the textarea so the user can type immediately (modal pattern:
+    // focus the primary interactive element on open).
     textareaRef.current?.focus();
     return () => {
       previouslyFocused.current?.focus();
@@ -58,7 +58,7 @@ function RefineModalInner({
 
   useEffect(() => {
     // Escape closes the modal; Tab/Shift+Tab stays trapped inside the dialog
-    // (PlanDocDrawer:106-139 — WCAG 2.2 AA).
+    // (WCAG 2.2 AA).
     const FOCUSABLE =
       'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
     const onKey = (e: KeyboardEvent): void => {

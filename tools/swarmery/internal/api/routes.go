@@ -266,6 +266,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// AttachPhaseRun wires the service.
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run", requireLocalOrigin(h.runPhase))
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run/cancel", requireLocalOrigin(h.cancelPhaseRun))
+	// Plan runs: hand the WHOLE plan to one agent (one headless session driving
+	// core's run-plan skill), state on plan_runs. 503 until AttachPlanRun wires
+	// the service.
+	mux.HandleFunc("POST /api/epics/{taskId}/run", requireLocalOrigin(h.runPlan))
+	mux.HandleFunc("POST /api/epics/{taskId}/run/cancel", requireLocalOrigin(h.cancelPlanRun))
 
 	// fusion phase 13: playbooks — selectable execution recipes. GET lists the
 	// registry (built-ins overlaid by a project's own files); the duplicate POST

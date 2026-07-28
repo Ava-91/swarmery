@@ -1325,6 +1325,7 @@ const mockEpics: Epic[] = [
     startedAt: iso(-3 * 86400),
     planDir: '/ws/plan',
     hasSummary: true,
+    planRun: null,
     phases: [
       mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5, {
         runState: 'done',
@@ -1356,6 +1357,14 @@ const mockEpics: Epic[] = [
     startedAt: iso(-9 * 86400),
     planDir: '/ws/plan-done',
     hasSummary: true,
+    planRun: {
+      agent: 'tech-lead',
+      mode: 'subagents',
+      runState: 'done',
+      runSessionUuid: 'mock-plan-run-uuid',
+      runStartedAt: '2026-07-24T09:00:00Z',
+      runError: null,
+    },
     phases: [
       mockEpicPhase(11, 1, 'Ingest: plan dir scanner', [], 4, 4, {
         runState: 'done',
