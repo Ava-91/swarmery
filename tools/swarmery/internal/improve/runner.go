@@ -58,7 +58,10 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	if model == "" {
 		model = defaultModel
 	}
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text")
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected. Keep the flag order identical to the trajjudge twin.
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text", "--setting-sources", "project,local")
 	// System home, not the inherited launchd cwd "/": transcripts then
 	// attribute to the deliberate "System" project (see internal/ingest).
 	// Only when it actually exists — a missing dir would fail the spawn with

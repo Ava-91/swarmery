@@ -70,7 +70,7 @@ func TestClaudeRunnerModelFlag(t *testing.T) {
 		t.Fatalf("read args: %v", err)
 	}
 	got := string(out)
-	for _, want := range []string{"-p", "hello", "--session-id", "u3", "--model", "sonnet"} {
+	for _, want := range []string{"-p", "hello", "--session-id", "u3", "--model", "sonnet", "--setting-sources", "project,local"} {
 		if !contains(got, want) {
 			t.Errorf("args %q missing %q", got, want)
 		}

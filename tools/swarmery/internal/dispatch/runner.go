@@ -52,7 +52,11 @@ const defaultModel = "claude-sonnet-5"
 type ClaudeRunner struct{}
 
 func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
-	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID}
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected.
+	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID,
+		"--setting-sources", "project,local"}
 	if m := strings.TrimSpace(spec.Model); m != "" {
 		args = append(args, "--model", m)
 	}

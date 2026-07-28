@@ -222,7 +222,10 @@ func isDir(path string) bool {
 }
 
 func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", r.Model, "--output-format", "text")
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected. Keep the flag order identical to the improve twin.
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", r.Model, "--output-format", "text", "--setting-sources", "project,local")
 	// System home, not the inherited launchd cwd "/": transcripts then
 	// attribute to the deliberate "System" project (see internal/ingest).
 	// Only when it actually exists — a missing dir would fail the spawn with
