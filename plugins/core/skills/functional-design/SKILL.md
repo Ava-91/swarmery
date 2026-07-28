@@ -1,6 +1,6 @@
 ---
 name: functional-design
-description: "EXECUTES refactors of TypeScript business logic in the main app toward pure functions, immutability, and data-flow pipelines -- edits files directly via Edit. NOT for planning-only refactors with no code changes (use refactor-plan). NOT for cloud service config, I/O-heavy route handlers, or Python/firmware paths in the device/edge repo (project.json → device)."
+description: "EXECUTES refactors of TypeScript business logic toward pure functions, immutability, and pipelines -- edits files via Edit. NOT for planning-only refactors (use refactor-plan) or I/O-heavy handlers / Python paths."
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Edit, Grep

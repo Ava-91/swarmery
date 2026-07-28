@@ -1,6 +1,6 @@
 ---
 name: testing
-description: "WRITE, RUN, or DEBUG tests for the project's code -- pytest (Python), Jest/RTL (TypeScript), Playwright (E2E), and deployment config testing. NOT for finding coverage gaps or untested modules -- that read-only gap analysis belongs to test-coverage. NOT for CI pipeline configuration (use deployment)."
+description: "WRITE, RUN, or DEBUG tests -- pytest, Jest/RTL, Playwright E2E, deployment config. NOT for finding coverage gaps (use test-coverage) or CI pipeline config (use deployment)."
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Bash, Grep, Glob
