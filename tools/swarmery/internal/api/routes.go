@@ -123,6 +123,12 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/projects/{id}/planning", h.getPlanning)
 	mux.HandleFunc("POST /api/projects/{id}/planning", requireLocalOrigin(h.startPlanning))
 	mux.HandleFunc("POST /api/projects/{id}/planning/cancel", requireLocalOrigin(h.cancelPlanning))
+	// interactive planning v2 (phase 2): the wizard verbs — answer the current
+	// question, refine with free-form instructions, or proceed to plan writing.
+	// Each resumes the planner session headlessly (startResume) and answers 202.
+	mux.HandleFunc("POST /api/projects/{id}/planning/answer", requireLocalOrigin(h.answerPlanning))
+	mux.HandleFunc("POST /api/projects/{id}/planning/refine", requireLocalOrigin(h.refinePlanning))
+	mux.HandleFunc("POST /api/projects/{id}/planning/proceed", requireLocalOrigin(h.proceedPlanning))
 
 	// phase 2: approvals (frozen contract — docs/hooks-protocol.md).
 	// All write endpoints reject foreign browser Origins (D4); requests
@@ -237,18 +243,24 @@ func Routes(mux *http.ServeMux, h *Handler) {
 
 	// fusion phase 10: epic rollups + plan-doc editor. A workspace plan IS an
 	// epic; GET lists epics (workspace tasks with parsed plan/ phases) + their
-	// checkbox rollups; activate mints a board task from a phase doc (idempotent,
-	// 409 when already activated); the docs GET/PUT/PATCH read/edit/checkbox-flip
-	// the plan markdown, path-confined to that task's plan/ dir. The writes carry
-	// the same D4 origin hardening as every other mutating endpoint.
+	// checkbox rollups; the docs GET/PUT/PATCH read/edit/checkbox-flip the plan
+	// markdown, path-confined to that task's plan/ dir. The writes carry the same
+	// D4 origin hardening as every other mutating endpoint.
 	// plans-page-lifecycle phase 1: lifecycle actions (pause|resume|archive|
 	// restore) as workspace file operations + a plan_updated WS publish.
+	// NOTE: POST /activate was removed in interactive-planning-v2 phase 4 —
+	// Board is exclusively for tasks created on the board; phase 5 adds a direct
+	// phase-run mechanism. Route is intentionally absent (→ 404).
 	mux.HandleFunc("GET /api/epics", h.listEpics)
 	mux.HandleFunc("POST /api/epics/{taskId}/lifecycle", requireLocalOrigin(h.epicLifecycle))
-	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/activate", requireLocalOrigin(h.activateEpicPhase))
 	mux.HandleFunc("GET /api/epics/{taskId}/docs", h.getPlanDoc)
 	mux.HandleFunc("PUT /api/epics/{taskId}/docs", requireLocalOrigin(h.putPlanDoc))
 	mux.HandleFunc("PATCH /api/epics/{taskId}/docs", requireLocalOrigin(h.patchPlanDoc))
+	// interactive planning v2 phase 5: run ONE plan phase headlessly in an
+	// isolated worktree straight from its phase doc (no board task). 503 until
+	// AttachPhaseRun wires the service.
+	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run", requireLocalOrigin(h.runPhase))
+	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run/cancel", requireLocalOrigin(h.cancelPhaseRun))
 
 	// fusion phase 13: playbooks — selectable execution recipes. GET lists the
 	// registry (built-ins overlaid by a project's own files); the duplicate POST

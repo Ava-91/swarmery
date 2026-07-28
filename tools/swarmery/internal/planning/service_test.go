@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,7 +125,7 @@ func TestStart_HappyPath_InlineRun(t *testing.T) {
 	if spec.SessionUUID != "uuid-planning" {
 		t.Errorf("spec.SessionUUID = %q", spec.SessionUUID)
 	}
-	if !contains(spec.Prompt, "add a widget") {
+	if !strings.Contains(spec.Prompt, "add a widget") {
 		t.Error("spec.Prompt missing the idea")
 	}
 	// Notify fires at both edges (start + finish).

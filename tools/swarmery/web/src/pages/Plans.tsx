@@ -2,25 +2,31 @@
 // plan IS an epic. This tab lists the project's epics (plan dirs the ingester
 // parsed) behind Active/Done/Archived filter tabs, drills into a phase
 // timeline (seq order, depends-on badges, per-phase progress, derived status
-// chips, an Activate button that mints a board task and stays disabled until
-// the phases it depends on are resolved), offers plan lifecycle controls
-// (Pause / Resume / Archive / Restore — file operations on the daemon side),
-// and opens any plan doc in a preview/edit drawer — the workspace folder
-// becomes invisible infrastructure (read, edit, activate, track from the
-// platform; files stay the storage).
+// chips), offers plan lifecycle controls (Pause / Resume / Archive / Restore —
+// file operations on the daemon side), and opens any plan doc in a
+// preview/edit drawer — the workspace folder becomes invisible infrastructure
+// (read, edit, track from the platform; files stay the storage).
+//
+// Legacy chip: phases that were activated into a board task before the
+// plan↔board decoupling (interactive-planning-v2 phase 4) still show the
+// "activated · <column>" chip from the DTO's boardTaskExternalId/boardColumn
+// fields. No new activations can be created; the Board page is exclusively for
+// tasks created on the board. Phase runs are handled by the phase-run mechanism
+// (phase 5).
 //
 // Liveness: the epic list refetches on the board's `task_updated` WS signal
-// (activation, column moves) AND on `plan_updated` (checkbox flips, lifecycle
-// transitions, plan rescans) so progress ticks without a reload.
+// (column moves on legacy-linked board tasks) AND on `plan_updated` (checkbox
+// flips, lifecycle transitions, plan rescans) so progress ticks without a reload.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { BoardColumn, Epic, EpicPhase, WSMessage } from '../api/types';
 import {
-  activateEpicPhase,
+  cancelEpicPhaseRun,
   epicLifecycle,
   fetchEpics,
   fetchPlanDoc,
-  PhaseAlreadyActivatedError,
+  runEpicPhase,
   type EpicLifecycleAction,
 } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
@@ -54,7 +60,8 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   return 'pending';
 }
 
-/** Re-renders on an interval so elapsed-time labels stay fresh. */
+/** Re-renders on an interval so elapsed labels (doc activity, running phases)
+ * stay fresh. */
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -106,6 +113,15 @@ function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.E
   );
 }
 
+/** Elapsed since a phase run started — the chip on a running phase. */
+function fmtElapsed(fromIso: string, now: number): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
+  if (s < 60) return `${String(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${String(m)}m ${String(s % 60)}s`;
+  return `${String(Math.floor(m / 60))}h ${String(m % 60)}m`;
+}
+
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
   done: { label: 'done', cls: 'border-green/40 text-green' },
   in_progress: { label: 'in progress', cls: 'border-brand/40 text-brand' },
@@ -151,7 +167,6 @@ export function Plans(): JSX.Element {
   const [selected, setSelected] = useState<number | null>(null); // taskId
   const [filter, setFilter] = useState<EpicFilter>('active');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [busyPhase, setBusyPhase] = useState<number | null>(null);
   const [busyLifecycle, setBusyLifecycle] = useState(false);
   const [editDoc, setEditDoc] = useState<{
     taskId: number;
@@ -190,6 +205,20 @@ export function Plans(): JSX.Element {
   );
   useLiveUpdates(onMessage, reload);
 
+  // Reconcile net while any visible phase run is live: plan_updated covers the
+  // run edges, this 5s poll covers a missed frame mid-run. Cleared when none run.
+  const anyRunning = useMemo(
+    () => (epics ?? []).some((e) => e.phases.some((p) => p.runState === 'running')),
+    [epics],
+  );
+  useEffect(() => {
+    if (!anyRunning) return;
+    const id = setInterval(reload, 5000);
+    return () => {
+      clearInterval(id);
+    };
+  }, [anyRunning, reload]);
+
   const filtered = useMemo(
     () => (epics ?? []).filter((e) => epicFilterOf(e.status) === filter),
     [epics, filter],
@@ -213,22 +242,6 @@ export function Plans(): JSX.Element {
     () => (selected !== null ? (filtered.find((e) => e.taskId === selected) ?? null) : null),
     [filtered, selected],
   );
-
-  const activate = (epic: Epic, phase: EpicPhase): void => {
-    setBusyPhase(phase.id);
-    setActionError(null);
-    activateEpicPhase(epic.taskId, phase.id)
-      .then(() => reload())
-      .catch((e: unknown) => {
-        if (e instanceof PhaseAlreadyActivatedError) {
-          // Someone already activated it — just refresh to show the board link.
-          reload();
-          return;
-        }
-        setActionError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setBusyPhase(null));
-  };
 
   const lifecycle = (epic: Epic, action: EpicLifecycleAction): void => {
     if (
@@ -353,13 +366,12 @@ export function Plans(): JSX.Element {
           ) : (
             <EpicDetail
               epic={activeEpic}
-              busyPhase={busyPhase}
               busyLifecycle={busyLifecycle}
-              onActivate={activate}
               onLifecycle={lifecycle}
               onOpenDoc={(path, title, mode) =>
                 setEditDoc({ taskId: activeEpic.taskId, path, title, mode })
               }
+              onChanged={reload}
             />
           )}
         </div>
@@ -381,26 +393,28 @@ export function Plans(): JSX.Element {
 
 function EpicDetail({
   epic,
-  busyPhase,
   busyLifecycle,
-  onActivate,
   onLifecycle,
   onOpenDoc,
+  onChanged,
 }: {
   epic: Epic;
-  busyPhase: number | null;
   busyLifecycle: boolean;
-  onActivate: (epic: Epic, phase: EpicPhase) => void;
   onLifecycle: (epic: Epic, action: EpicLifecycleAction) => void;
   onOpenDoc: (path: string, title: string, mode: DrawerMode) => void;
+  onChanged: () => void;
 }): JSX.Element {
   // Which seq numbers are "resolved" — their board task is done/archived OR
   // every checkbox in their doc is ticked (file-driven completion without
-  // board activation). Used to gate the Activate button of dependent phases.
+  // board activation). Used to render depends-on badges.
   const resolvedSeqs = useMemo(() => {
     const s = new Set<number>();
     for (const p of epic.phases) {
-      if (isResolvedColumn(p.boardColumn) || (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal))
+      if (
+        isResolvedColumn(p.boardColumn) ||
+        (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
+        p.runState === 'done'
+      )
         s.add(p.seq);
     }
     return s;
@@ -409,6 +423,30 @@ function EpicDetail({
   // Details modal (tabbed summary / checks / doc): one phase, or — when
   // `phase` is undefined — the plan itself (SUMMARY.md / per-phase checks / README).
   const [modal, setModal] = useState<{ phase?: EpicPhase } | null>(null);
+
+  // Phase-run controls (interactive-planning-v2 phase 6). The server re-checks
+  // every gate; the client-side disable is a courtesy, and a 409 body (unmet
+  // deps, already running) surfaces in the inline error strip below.
+  const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
+  const [runMsg, setRunMsg] = useState<string | null>(null);
+  const now = useNow(1000);
+
+  const startRun = (phaseId: number): void => {
+    setRunBusy(phaseId);
+    setRunMsg(null);
+    runEpicPhase(epic.taskId, phaseId)
+      .then(() => onChanged())
+      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunBusy(null));
+  };
+  const cancelRun = (phaseId: number): void => {
+    setRunBusy(phaseId);
+    setRunMsg(null);
+    cancelEpicPhaseRun(epic.taskId, phaseId)
+      .then(() => onChanged())
+      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunBusy(null));
+  };
 
   return (
     <div className="pr-1">
@@ -456,17 +494,25 @@ function EpicDetail({
         )}
       </div>
 
+      {runMsg !== null && (
+        <div className="mb-2 rounded-md border border-red/40 bg-red/10 px-2.5 py-1.5 font-mono text-[10.5px] text-red">
+          {runMsg}
+        </div>
+      )}
+
       <ol className="space-y-2">
         {epic.phases.map((p) => {
-          const unmetDeps = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
           const activated = p.activatedAt !== null;
           const status = phaseStatus(p, resolvedSeqs);
-          const showActivate = !activated && status !== 'done' && epic.status === 'active';
-          const canActivate = showActivate && unmetDeps.length === 0;
-          const disabledReason =
-            unmetDeps.length > 0
-              ? `waiting on Phase ${unmetDeps.join(', ')} (not done yet)`
-              : undefined;
+          const depsUnmet = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
+          const runDisabled =
+            runBusy !== null || epic.status !== 'active' || depsUnmet.length > 0;
+          const runTitle =
+            epic.status !== 'active'
+              ? 'plan is not active'
+              : depsUnmet.length > 0
+                ? `waiting on phase ${depsUnmet.join(', ')}`
+                : 'run this phase headlessly in an isolated worktree';
           const openDoc = (): void => {
             onOpenDoc(p.docRelPath, `Phase ${String(p.seq)} — ${p.name}`, 'preview');
           };
@@ -522,28 +568,84 @@ function EpicDetail({
                 </div>
 
                 <div className="flex shrink-0 flex-col items-end gap-1.5">
-                  {activated ? (
+                  {/* Legacy chip: phases activated into a board task before the plan↔board
+                      decoupling still show their board column for historical context. */}
+                  {activated && (
                     <span
                       className="rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
                       title={p.boardTaskExternalId ?? undefined}
                     >
                       activated{p.boardColumn !== null ? ` · ${p.boardColumn}` : ''}
                     </span>
-                  ) : (
-                    showActivate && (
+                  )}
+
+                  {/* Direct phase run (no board task): idle/failed offer Run,
+                      running shows elapsed + Cancel + session link, done a chip. */}
+                  {p.runState === 'running' ? (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      <span
+                        className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
+                        title="headless run in progress"
+                      >
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
+                        Running
+                        {p.runStartedAt !== null ? ` · ${fmtElapsed(p.runStartedAt, now)}` : ''}
+                      </span>
+                      {p.runSessionUuid !== null && (
+                        <Link
+                          to={`/sessions/${p.runSessionUuid}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="font-mono text-[9.5px] text-ink-dim underline-offset-2 transition-colors hover:text-brand hover:underline"
+                        >
+                          session
+                        </Link>
+                      )}
                       <button
                         type="button"
-                        disabled={!canActivate || busyPhase === p.id}
+                        disabled={runBusy !== null}
                         onClick={(e) => {
                           e.stopPropagation();
-                          onActivate(epic, p);
+                          cancelRun(p.id);
                         }}
-                        title={disabledReason}
-                        className="rounded-md border border-line-strong bg-surface2 px-2 py-1 font-mono text-[10.5px] text-brand transition-colors hover:bg-surface2/70 disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint"
+                        className="rounded-md border border-red/40 px-1.5 py-px font-mono text-[9.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {busyPhase === p.id ? 'activating…' : 'Activate'}
+                        Cancel
                       </button>
-                    )
+                    </span>
+                  ) : p.runState === 'done' ? (
+                    <span
+                      className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+                      title="headless run finished"
+                    >
+                      Run done
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      {p.runState === 'failed' && (
+                        <span
+                          className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
+                          title={p.runError ?? 'run failed'}
+                        >
+                          Failed
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={runDisabled}
+                        title={runTitle}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRun(p.id);
+                        }}
+                        className={`rounded-md border px-1.5 py-px font-mono text-[9.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
+                          p.runState === 'failed'
+                            ? 'border-red/40 text-red hover:bg-red/10'
+                            : 'border-brand/40 text-brand hover:bg-brand/10'
+                        }`}
+                      >
+                        {runBusy === p.id ? '…' : p.runState === 'failed' ? 'Retry run' : 'Run phase'}
+                      </button>
+                    </span>
                   )}
                   {status === 'done' && p.completionReport !== null && (
                     <button
@@ -570,9 +672,6 @@ function EpicDetail({
                   </button>
                 </div>
               </div>
-              {showActivate && disabledReason !== undefined && (
-                <div className="mt-1.5 font-mono text-[9.5px] text-ink-faint">{disabledReason}</div>
-              )}
             </li>
           );
         })}
