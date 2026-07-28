@@ -2,7 +2,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Session } from '../api/types';
 import { fmtSpan, fmtTime } from '../lib/format';
 import { sessionState, useNowMs, type SessionState } from '../lib/sessionState';
-import { Explain } from './Explain';
+import { ExplainPair } from './Explain';
 import { KillButton, killSlotKind } from './KillButton';
 import { OUTCOME_GLYPH } from './OutcomePicker';
 import { ProjectName } from './ProjectName';
@@ -26,8 +26,13 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
   // The native title= is gone: its text now lives in the glossary as
   // fat-session's `short` + `actions`, and two tooltips on one element (native
   // and ours, with different wording) is worse than either alone.
+  //
+  // ExplainPair, not a bare fragment: the rows that render this are `flex
+  // gap-2` and hold ProcBadge (and, once dev's HandoffChip lands, a third chip)
+  // immediately alongside, so a loose trigger would sit exactly as far from the
+  // chip it explains as from the next one along.
   return (
-    <>
+    <ExplainPair id="fat-session">
       <span
         className={`shrink-0 rounded-full border px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap ${
           danger ? 'border-red/40 bg-red/10 text-red' : 'border-amber/40 bg-amber/10 text-amber'
@@ -35,8 +40,7 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
       >
         {k}k ctx
       </span>
-      <Explain id="fat-session" />
-    </>
+    </ExplainPair>
   );
 }
 

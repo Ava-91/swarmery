@@ -7,7 +7,7 @@ import { useState } from 'react';
 import type { Project } from '../api/types';
 import { archiveProject, patchProject, restoreProject } from '../api';
 import { ConfirmDialog } from './ui';
-import { Explain } from './Explain';
+import { ExplainPair } from './Explain';
 import { DetachModal } from './DetachModal';
 import { AttachModal } from './AttachModal';
 
@@ -179,10 +179,10 @@ export function ProjectActions({
             tags
           </button>
           {/* Attach and detach are one concept and one slot — exactly one of the
-              two buttons renders — so the explainer is grouped with the pair at
-              gap-1 rather than dropped into the gap-2 row, where it would sit
-              equidistant from `archive` and read as belonging to it. */}
-          <span className="flex items-center gap-1">
+              two buttons renders — so the explainer is grouped with the pair
+              rather than dropped into the row, where it would sit equidistant
+              from `archive` and read as belonging to it. */}
+          <ExplainPair id="attach-detach">
             {canAttach(project) ? (
               <button
                 type="button"
@@ -203,8 +203,7 @@ export function ProjectActions({
                 detach
               </button>
             )}
-            <Explain id="attach-detach" />
-          </span>
+          </ExplainPair>
           <button
             type="button"
             onClick={() => setConfirm('archive')}

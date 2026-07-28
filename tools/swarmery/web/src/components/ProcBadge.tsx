@@ -1,5 +1,5 @@
 import type { Session } from '../api/types';
-import { Explain } from './Explain';
+import { ExplainPair } from './Explain';
 
 type BadgeKind = 'orphaned' | 'dead';
 
@@ -19,17 +19,20 @@ const BADGE_STYLES: Record<BadgeKind, string> = {
 export function ProcBadge({ session }: { session: Session }): JSX.Element | null {
   const kind = procBadgeKind(session);
   if (!kind) return null;
-  // The explainer lives inside the component, not at its call sites:
-  // SessionCard renders ProcBadge from two different layouts and only one is
-  // mounted at a time, so one edit covers both and they cannot drift.
+  // The explainer lives inside the component, not at its call sites: SessionCard
+  // renders ProcBadge from two different layouts (SessionCard.tsx:255-256 mounts
+  // both, CSS shows one), so one edit covers both and they cannot drift — and
+  // only one is ever *visible*, so there is never a duplicate popover on screen.
+  //
+  // ExplainPair keeps the trigger bound to its badge: the stacked-card row is
+  // `flex gap-2` with ContextBadge and the outcome glyph immediately alongside.
   return (
-    <>
+    <ExplainPair id="proc-badge">
       <span
         className={`inline-flex items-center rounded border px-1.5 py-px font-mono text-[10px] font-medium ${BADGE_STYLES[kind]}`}
       >
         {kind}
       </span>
-      <Explain id="proc-badge" />
-    </>
+    </ExplainPair>
   );
 }

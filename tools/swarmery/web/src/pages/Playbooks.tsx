@@ -13,7 +13,7 @@ import { duplicatePlaybook, fetchPlaybooks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { VerifyChip } from '../workspace/PlaybookPicker';
 import { Empty, ErrorBox, Loading } from '../components/ui';
-import { Explain } from '../components/Explain';
+import { Explain, ExplainPair } from '../components/Explain';
 import { HowItWorks } from '../components/HowItWorks';
 
 export function Playbooks(): JSX.Element {
@@ -58,9 +58,8 @@ export function Playbooks(): JSX.Element {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-4 py-5 desk:px-6">
       <header className="mb-4">
-        <h1 className="inline-flex items-center gap-1.5 text-[15px] font-semibold text-ink">
-          Playbooks
-          <Explain id="playbook-stages" />
+        <h1 className="text-[15px] font-semibold text-ink">
+          <ExplainPair id="playbook-stages">Playbooks</ExplainPair>
         </h1>
         <p className="mt-0.5 text-[12px] text-ink-dim">
           Selectable execution recipes. A task picks one on the board; the dispatcher runs its stages

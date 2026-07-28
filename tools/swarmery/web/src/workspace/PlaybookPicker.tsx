@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import type { Playbook } from '../api/types';
 import { fetchPlaybooks } from '../api';
-import { Explain } from '../components/Explain';
+import { ExplainPair } from '../components/Explain';
 
 /** The recipe used when no playbook is selected — its selection maps to "". */
 export const DEFAULT_PLAYBOOK = 'standard';
@@ -107,9 +107,13 @@ export function PlaybookHint({
   const pb = playbooks.find((p) => p.name === name);
   if (pb === undefined) return null;
   return (
+    // The row stays items-start so the description keeps its top alignment
+    // against a multi-line wrap; the pair re-centres the 15px trigger on the
+    // py-px chip it explains rather than top-aligning the two.
     <div className="mt-1 flex items-start gap-1.5">
-      <VerifyChip verify={pb.verify} />
-      <Explain id="verify-knob" />
+      <ExplainPair id="verify-knob">
+        <VerifyChip verify={pb.verify} />
+      </ExplainPair>
       <span className="font-mono text-[10px] leading-snug text-ink-faint">{pb.description}</span>
     </div>
   );

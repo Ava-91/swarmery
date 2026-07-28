@@ -352,15 +352,20 @@ export function PlanningMode(): JSX.Element {
 
   return (
     <div className="min-w-0 px-4 pt-6 pb-10 desk:px-8 desk:pt-8 desk:pb-[60px]">
-      <h1 className="inline-flex items-center gap-1.5 font-display text-[26px] font-medium tracking-[-0.01em] desk:text-[30px]">
+      {/* The explainer rides the subtitle, not the h1 — the idiom Playbooks.tsx
+          uses for `worktree`. This heading is long enough to wrap at phone
+          width, and an inline-flex h1 shrink-wraps: the text would wrap inside
+          the anonymous flex item and items-center would park the trigger in the
+          vertical middle of the right margin, touching neither line. Flowing in
+          the sentence, it wraps with the prose instead. */}
+      <h1 className="font-display text-[26px] font-medium tracking-[-0.01em] desk:text-[30px]">
         Transform your idea into a plan
-        <Explain id="planning-mode" />
       </h1>
       <p className="mt-1.5 max-w-[70ch] text-[13px] text-ink-dim">
         Describe what you want to build for{' '}
         <span className="font-mono text-ink">{projectLabel}</span>. A planner session interviews you
         with structured questions, keeps a running plan, and writes the full plan when you tell it to
-        proceed.
+        proceed. <Explain id="planning-mode" />
       </p>
 
       {error !== null && (

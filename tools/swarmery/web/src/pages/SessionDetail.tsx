@@ -12,7 +12,7 @@ import type { SessionDetail, SessionOutcome, SessionStatus, WSMessage } from '..
 import { MOCK, fetchSession, patchSessionOutcome, renameSession, sendSessionMessage } from '../api';
 import { fmtAgo, fmtCost, fmtSpan, fmtTokens } from '../lib/format';
 import { useLiveUpdates } from '../lib/ws';
-import { Explain } from '../components/Explain';
+import { ExplainPair } from '../components/Explain';
 import { OutcomePicker } from '../components/OutcomePicker';
 import { TaskChip } from '../components/TaskChip';
 import { ProjectName } from '../components/ProjectName';
@@ -475,10 +475,9 @@ export function SessionDetailPage(): JSX.Element {
                   confidence={detail.taskConfidence}
                 />
               )}
-              <span className="inline-flex items-center gap-1">
+              <ExplainPair id="session-outcome">
                 <OutcomePicker value={detail.outcome ?? null} onChange={setOutcome} />
-                <Explain id="session-outcome" />
-              </span>
+              </ExplainPair>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-[22px]">
