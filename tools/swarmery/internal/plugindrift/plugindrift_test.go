@@ -420,3 +420,61 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("truncate = %q", got)
 	}
 }
+
+// The shape `claude plugin list --json` actually prints (verified against the
+// CLI on 2026-07-28) is a BARE ARRAY, not the {"installed": [...]} envelope the
+// design assumed. Decoding only the envelope made every real machine report
+// plugin_detector_unavailable — loud, but blind to the drift it exists to find.
+func TestDecodeListAcceptsBothShapes(t *testing.T) {
+	realOutput := []byte(`[
+	  {"id":"architecture-pack@swarmery","version":"1.0.0","scope":"user","enabled":true,
+	   "installPath":"/Users/x/.claude/plugins/cache/swarmery/architecture-pack/1.0.0",
+	   "installedAt":"2026-07-24T04:53:52.485Z","lastUpdated":"2026-07-24T04:53:52.485Z"},
+	  {"id":"core@swarmery","version":"1.2.0","scope":"project","enabled":false,
+	   "installPath":"/Users/x/.claude/plugins/cache/swarmery/core/1.2.0",
+	   "projectPath":"/Volumes/Work/Skygor/scripts"}
+	]`)
+	got, err := decodeList(realOutput)
+	if err != nil {
+		t.Fatalf("bare array must decode: %v", err)
+	}
+	if len(got) != 2 || got[1].ID != "core@swarmery" || got[1].ProjectPath != "/Volumes/Work/Skygor/scripts" {
+		t.Fatalf("bare array decoded wrong: %+v", got)
+	}
+
+	wrapped := []byte(`{"installed":[{"id":"core@swarmery","scope":"user"}],"available":[]}`)
+	got, err = decodeList(wrapped)
+	if err != nil {
+		t.Fatalf("envelope must still decode: %v", err)
+	}
+	if len(got) != 1 || got[0].Scope != "user" {
+		t.Fatalf("envelope decoded wrong: %+v", got)
+	}
+
+	if _, err := decodeList([]byte("not json")); err == nil {
+		t.Error("garbage must be a decode error, so the caller can report blindness")
+	}
+}
+
+// End-to-end on the real payload shape: the incident must be detected when the
+// CLI speaks its actual dialect, not only the fixture dialect.
+func TestScan_IncidentThroughRealArrayShape(t *testing.T) {
+	projectPath := t.TempDir()
+	d := &Detector{ClaudeDir: t.TempDir(), Runner: stubRunner{out: []byte(`[
+	  {"id":"core@swarmery","version":"1.2.0","scope":"project","enabled":false,
+	   "projectPath":"/Volumes/Work/Skygor/scripts"}
+	]`)}}
+
+	res := d.Scan(context.Background(), []Project{{Path: projectPath, Enabled: []string{"core@swarmery"}}})
+
+	items := res[RuleEnabledNotInstalled]
+	if len(items) != 1 {
+		t.Fatalf("want the incident detected, got %+v", res)
+	}
+	if !strings.Contains(items[0].Message, "/Volumes/Work/Skygor/scripts") {
+		t.Errorf("message must name the foreign project path, got %q", items[0].Message)
+	}
+	if len(res[RuleDetectorUnavailable]) != 0 {
+		t.Errorf("a decodable payload must not report blindness: %+v", res[RuleDetectorUnavailable])
+	}
+}

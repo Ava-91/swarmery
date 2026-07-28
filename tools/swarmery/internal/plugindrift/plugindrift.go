@@ -12,6 +12,7 @@
 package plugindrift
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,6 +71,29 @@ type listOutput struct {
 	Installed []Installed `json:"installed"`
 }
 
+// decodeList accepts both shapes `claude plugin list --json` has been observed
+// to emit: a bare array of installed entries (what the CLI actually prints as
+// of 2026-07), and an {"installed": [...]} envelope. Tolerating both is the
+// §8.2 mitigation made concrete — the alternative is a decoder that reports
+// plugin_detector_unavailable forever the day the shape moves, which is loud
+// but still useless. Anything that is neither shape IS a decode failure and
+// must surface as blindness, never as "no drift".
+func decodeList(raw []byte) ([]Installed, error) {
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var flat []Installed
+		if err := json.Unmarshal(raw, &flat); err != nil {
+			return nil, err
+		}
+		return flat, nil
+	}
+	var wrapped listOutput
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, err
+	}
+	return wrapped.Installed, nil
+}
+
 // Project is one scan subject: a registered project and the plugin ids its
 // settings.json enables.
 type Project struct {
@@ -95,8 +119,8 @@ func (d *Detector) Scan(ctx context.Context, projects []Project) map[string][]fi
 	if err != nil {
 		return unavailable(fmt.Sprintf("cannot run the claude CLI: %v — plugin drift is NOT being detected", err))
 	}
-	var parsed listOutput
-	if err := json.Unmarshal(out, &parsed); err != nil {
+	installed, err := decodeList(out)
+	if err != nil {
 		return unavailable(fmt.Sprintf("cannot parse `claude plugin list --json`: %v — plugin drift is NOT being detected", err))
 	}
 
@@ -108,13 +132,13 @@ func (d *Detector) Scan(ctx context.Context, projects []Project) map[string][]fi
 	for _, p := range projects {
 		for _, id := range p.Enabled {
 			name, mkt := splitID(id)
-			inst, ok := resolveFor(parsed.Installed, id, p.Path)
+			inst, ok := resolveFor(installed, id, p.Path)
 			target := Target(id, p.Path)
 			if !ok {
 				res[RuleEnabledNotInstalled] = append(res[RuleEnabledNotInstalled], findings.Item{
 					Target:   target,
 					Severity: "error",
-					Message:  enabledNotInstalledMessage(id, parsed.Installed),
+					Message:  enabledNotInstalledMessage(id, installed),
 				})
 				continue
 			}
