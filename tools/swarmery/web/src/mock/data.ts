@@ -17,8 +17,11 @@ import type {
   PermissionRequest,
   PlanDoc,
   Playbook,
+  PlanningQuestion,
   PlanningStart,
   PlanningStatus,
+  PlanningSummary,
+  PlanningTurn,
   Project,
   ProjectComponents,
   ProjectDetail,
@@ -104,6 +107,7 @@ export const mockProjects: Project[] = [
     lastActivity: iso(2 * MIN),
     archived: false,
     pinned: true,
+    isSystem: false,
     tags: ['backend', 'billing'],
     sessions: 41,
     tokens: 4_820_000,
@@ -119,6 +123,7 @@ export const mockProjects: Project[] = [
     lastActivity: iso(6 * MIN),
     archived: false,
     pinned: false,
+    isSystem: false,
     tags: ['frontend'],
     sessions: 27,
     tokens: 2_310_000,
@@ -134,6 +139,7 @@ export const mockProjects: Project[] = [
     lastActivity: iso(4 * MIN),
     archived: false,
     pinned: false,
+    isSystem: false,
     tags: [],
     sessions: 18,
     tokens: 1_540_000,
@@ -149,10 +155,27 @@ export const mockProjects: Project[] = [
     lastActivity: iso(26 * 60 * MIN),
     archived: false,
     pinned: false,
+    isSystem: false,
     tags: ['frontend'],
     sessions: 6,
     tokens: null,
     costUsd: null,
+    plugin: null,
+  },
+  {
+    id: 5,
+    path: '/Users/user/.swarmery',
+    slug: 'system',
+    name: 'System',
+    firstSeen: iso(14 * 24 * 60 * MIN),
+    lastActivity: iso(3 * MIN),
+    archived: false,
+    pinned: false,
+    isSystem: true,
+    tags: [],
+    sessions: 172,
+    tokens: 939_000,
+    costUsd: 8.43,
     plugin: null,
   },
 ];
@@ -1225,6 +1248,7 @@ const mockEpicPhase = (
   dependsOn: number[],
   done: number,
   total: number,
+  run?: Partial<Pick<EpicPhase, 'runState' | 'runSessionUuid' | 'runStartedAt' | 'runError'>>,
 ): EpicPhase => ({
   id,
   seq,
@@ -1234,12 +1258,27 @@ const mockEpicPhase = (
   dependsOn,
   checkboxesDone: done,
   checkboxesTotal: total,
+  // Half-started phase (some ticks, not all) demos the doc-status marker path.
+  docStatus: done > 0 && done < total ? 'in_progress' : null,
+  docUpdatedAt: done > 0 && done < total ? new Date(Date.now() - 3 * 60_000).toISOString() : null,
+  // Fully-ticked phases carry a completion report — demos the summary modal.
+  completionReport:
+    total > 0 && done === total
+      ? `Shipped **${name}** end to end.\n\n- All ${String(total)} acceptance criteria verified\n- \`make test\` green, no regressions\n- Commits: \`feat: ${name.toLowerCase()}\``
+      : null,
   activatedAt: null,
   boardTaskExternalId: null,
   boardTaskId: null,
   boardColumn: null,
+  runState: 'idle',
+  runSessionUuid: null,
+  runStartedAt: null,
+  runError: null,
+  ...run,
 });
 
+// Phase-run states cover all four chips: 1 run-done, 2 running (elapsed ticks),
+// 3 failed (error tooltip + retry Run), 4 idle behind an unmet dep (gated Run).
 const mockEpics: Epic[] = [
   {
     taskId: 7010,
@@ -1250,10 +1289,24 @@ const mockEpics: Epic[] = [
     status: 'active',
     startedAt: iso(-3 * 86400),
     planDir: '/ws/plan',
+    hasSummary: true,
     phases: [
-      mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5),
-      mockEpicPhase(2, 2, 'Dispatcher', [1], 3, 6),
-      mockEpicPhase(3, 3, 'Board UI', [1], 2, 8),
+      mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-done-uuid',
+        runStartedAt: iso(-2 * 86400),
+      }),
+      mockEpicPhase(2, 2, 'Dispatcher', [1], 3, 6, {
+        runState: 'running',
+        runSessionUuid: 'mock-run-live-uuid',
+        runStartedAt: iso(-380),
+      }),
+      mockEpicPhase(3, 3, 'Board UI', [1], 2, 8, {
+        runState: 'failed',
+        runSessionUuid: 'mock-run-failed-uuid',
+        runStartedAt: iso(-3600),
+        runError: 'exit 1: npm run build failed — TS2339 in Board.tsx',
+      }),
       mockEpicPhase(4, 4, 'Epics rollup + graph', [2, 3], 0, 6),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
@@ -1297,9 +1350,121 @@ const mockPlaybooks: Playbook[] = [
   },
 ];
 
-// fusion phase 8: planner state per project id — startPlanning flips a project
-// to active so the demo shows the running-planner panel.
+// fusion phase 8 (reworked by interactive planning v2): planner wizard state
+// per project id — startPlanning flips a project to an awaiting_answer wizard
+// so the demo shows the two-pane question/plan UI; answer advances to a
+// follow-up question, refine restyles the plan, proceed finishes with a plan
+// dir. History mirrors the Go shape: the newest turn is the CURRENT question
+// with answer:null.
 const mockPlanning: Record<number, PlanningStatus> = {};
+
+/** The extended-DTO idle shape (Go sends status:"" when no wizard row exists). */
+const mockPlanningIdle: PlanningStatus = {
+  active: false,
+  sessionUuid: '',
+  sessionId: null,
+  startedAt: null,
+  status: '',
+  currentQuestion: null,
+  runningPlan: null,
+  rawReply: null,
+  history: [],
+  planDir: null,
+};
+
+/** Running plan v1 — shown beside the first interview question. */
+const mockPlanSummary: PlanningSummary = {
+  title: 'Bulk CSV export for the reports page',
+  description:
+    'Add a streaming CSV export to the reports list: a server route that pages through the filtered result set and a toolbar button that downloads it without blocking the UI.',
+  proposedChanges: [
+    'GET /api/reports/export — streamed CSV with the current filter set',
+    'Export button in the reports toolbar with a progress toast',
+    'Shared column-serializer reused by the table and the exporter',
+  ],
+  acceptanceCriteria: [
+    'A 100k-row export streams without a server timeout',
+    'The downloaded CSV matches the on-screen filters and column order',
+  ],
+  suggestedSize: 'M',
+};
+
+/** The 3-option demo question: one option with pros/cons, one isOther. */
+const mockPlanQuestion: PlanningQuestion = {
+  id: 'q3-export-transport',
+  type: 'single_select',
+  question: 'How should the export endpoint deliver the CSV?',
+  description:
+    'The reports table already paginates via keyset cursors, so the exporter can reuse that path. The delivery mechanism decides memory profile and retry semantics.',
+  options: [
+    {
+      id: 'stream',
+      label: 'Stream the response (chunked transfer)',
+      description: 'Page through the result set and flush rows as they serialize.',
+      pros: ['Constant memory on the server', 'First bytes arrive immediately'],
+      cons: ['Harder to resume a broken download', 'No Content-Length progress bar'],
+    },
+    {
+      id: 'job',
+      label: 'Background job + signed download link',
+      description: 'Queue an export job, notify when the file is ready in object storage.',
+    },
+    {
+      id: 'other',
+      label: 'Other',
+      description: 'Describe your own delivery approach.',
+      isOther: true,
+    },
+  ],
+  runningPlan: mockPlanSummary,
+};
+
+/** Follow-up question served after the first answer. */
+const mockPlanQuestion2: PlanningQuestion = {
+  id: 'q4-export-limits',
+  type: 'multi_select',
+  question: 'Which guardrails should the export ship with?',
+  options: [
+    { id: 'cap', label: 'Hard row cap (500k) with a clear error' },
+    { id: 'rate', label: 'Per-user rate limit (1 concurrent export)' },
+    { id: 'audit', label: 'Audit-log every export with the filter set' },
+  ],
+  runningPlan: mockPlanSummary,
+};
+
+/** Two answered turns of history + the current one is appended per state. */
+const mockPlanHistory: PlanningTurn[] = [
+  {
+    seq: 1,
+    question: {
+      id: 'q1-scope',
+      type: 'single_select',
+      question: 'Is the export scoped to the current filter set or the full table?',
+      options: [
+        { id: 'filters', label: 'Respect the active filters' },
+        { id: 'all', label: 'Always export everything' },
+      ],
+    },
+    answer: { kind: 'answer', selectedOptionIds: ['filters'] },
+    reasoning:
+      'The reports page keeps its filter state in the URL, so the exporter can reuse the exact query the table renders. Exporting everything would surprise users who filtered down to a segment.',
+  },
+  {
+    seq: 2,
+    question: {
+      id: 'q2-columns',
+      type: 'single_select',
+      question: 'Should the CSV columns follow the visible table columns?',
+      options: [
+        { id: 'visible', label: 'Visible columns only' },
+        { id: 'all-cols', label: 'All columns, hidden ones included' },
+      ],
+    },
+    answer: { kind: 'refine', instructions: 'Include the audit columns even when hidden.' },
+    reasoning:
+      'Column visibility is a per-user preference; compliance exports usually need the audit columns regardless. The refine instruction pins that down.',
+  },
+];
 
 // fusion phase 12: project memory fixtures — one file per kind, backed by a
 // mutable store so an edit→save→reread round-trips in VITE_MOCK.
@@ -1451,6 +1616,7 @@ export const mockApi = {
         name: p.name,
         pinned: p.pinned,
         tags: p.tags,
+        isSystem: p.isSystem,
         costWeekUsd: p.costUsd !== null ? Number((p.costUsd / 4).toFixed(2)) : null,
         costPrevWeekUsd: p.costUsd !== null ? Number((p.costUsd / 5).toFixed(2)) : null,
         errorRate: i % 2 === 0 ? 0.042 : null,
@@ -1751,31 +1917,6 @@ export const mockApi = {
       .map((e) => ({ ...e, phases: e.phases.map((p) => ({ ...p })) }));
   },
 
-  async activateEpicPhase(taskId: number, phaseId: number): Promise<BoardTask> {
-    await delay(120);
-    const epic = mockEpics.find((e) => e.taskId === taskId);
-    const phase = epic?.phases.find((p) => p.id === phaseId);
-    if (!epic || !phase) throw new Error('mock: phase not found');
-    mockBoardSeq += 1;
-    const ext = `T-${mockBoardSeq.toString(36)}`;
-    const created = boardTask({
-      id: mockBoardSeq,
-      externalId: ext,
-      projectId: epic.projectId,
-      title: phase.name,
-      prompt: `# ${phase.name}\n\n(mock activation)`,
-      boardColumn: 'todo',
-      columnMovedAt: iso(0),
-      createdAt: iso(0),
-    });
-    mockBoard = [created, ...mockBoard];
-    phase.activatedAt = iso(0);
-    phase.boardTaskId = created.id;
-    phase.boardTaskExternalId = ext;
-    phase.boardColumn = 'todo';
-    return { ...created };
-  },
-
   async planDoc(_taskId: number, path: string): Promise<PlanDoc> {
     await delay(60);
     return {
@@ -1912,19 +2053,106 @@ export const mockApi = {
 
   async planning(projectId: number): Promise<PlanningStatus> {
     await delay(60);
-    return mockPlanning[projectId] ?? { active: false, sessionUuid: '', sessionId: null, startedAt: null };
+    return mockPlanning[projectId] ?? mockPlanningIdle;
   },
 
   async startPlanning(projectId: number, _idea: string): Promise<PlanningStart> {
     await delay(120);
     const uuid = `mock-plan-${String(projectId)}-${String(Date.now())}`;
+    // Jump straight to the awaiting_answer wizard: 2 answered history turns +
+    // the current 3-option question (pros/cons on one, an isOther) + the
+    // running plan — the full §5 demo state.
     mockPlanning[projectId] = {
+      ...mockPlanningIdle,
       active: true,
       sessionUuid: uuid,
-      sessionId: 9001, // a canned session so the demo shows the active panel
+      sessionId: 9001, // a canned session so the demo shows the session link
       startedAt: new Date().toISOString(),
+      status: 'awaiting_answer',
+      currentQuestion: mockPlanQuestion,
+      runningPlan: mockPlanSummary,
+      history: [
+        ...mockPlanHistory,
+        { seq: 3, question: mockPlanQuestion, answer: null, reasoning: '' },
+      ],
     };
     return { sessionUuid: uuid };
+  },
+
+  async answerPlanning(
+    projectId: number,
+    body: { questionId: string; selectedOptionIds: string[]; otherText?: string },
+  ): Promise<{ status: string }> {
+    await delay(120);
+    const cur = mockPlanning[projectId];
+    if (cur !== undefined) {
+      // Stamp the answer on the newest turn, then serve the follow-up question
+      // (the page's optimistic 'generating' resolves on its next refetch).
+      const answered = cur.history.map((t, i) =>
+        i === cur.history.length - 1
+          ? {
+              ...t,
+              answer: {
+                kind: 'answer' as const,
+                selectedOptionIds: body.selectedOptionIds,
+                ...(body.otherText !== undefined ? { otherText: body.otherText } : {}),
+              },
+            }
+          : t,
+      );
+      mockPlanning[projectId] = {
+        ...cur,
+        status: 'awaiting_answer',
+        currentQuestion: mockPlanQuestion2,
+        rawReply: null,
+        history: [
+          ...answered,
+          { seq: answered.length + 1, question: mockPlanQuestion2, answer: null, reasoning: '' },
+        ],
+      };
+    }
+    return { status: 'generating' };
+  },
+
+  async refinePlanning(projectId: number, instructions: string): Promise<{ status: string }> {
+    await delay(120);
+    const cur = mockPlanning[projectId];
+    if (cur !== undefined) {
+      // A refine keeps the current question but folds the instructions into the
+      // running plan description, mirroring the real course-correct loop.
+      const plan = cur.runningPlan ?? mockPlanSummary;
+      mockPlanning[projectId] = {
+        ...cur,
+        status: 'awaiting_answer',
+        runningPlan: { ...plan, description: `${plan.description}\n\nRefined: ${instructions}` },
+        history: [
+          ...cur.history,
+          {
+            seq: cur.history.length + 1,
+            question: cur.currentQuestion,
+            answer: { kind: 'refine', instructions },
+            reasoning: '',
+          },
+        ],
+      };
+    }
+    return { status: 'generating' };
+  },
+
+  async proceedPlanning(projectId: number): Promise<{ status: string }> {
+    await delay(120);
+    const cur = mockPlanning[projectId];
+    if (cur !== undefined) {
+      mockPlanning[projectId] = {
+        ...cur,
+        active: false,
+        status: 'done',
+        currentQuestion: null,
+        planDir:
+          '/Volumes/Work/swarmery-workspace/demo/workspace/working/2026/07/27/bulk-csv-export/plan',
+      };
+    }
+    return { status: 'proceeding' };
   },
 
   // --- phase 2 — approvals (mutable store in ./approvals.ts) ---

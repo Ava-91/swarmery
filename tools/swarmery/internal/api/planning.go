@@ -17,6 +17,8 @@ package api
 // run is already active for the project.
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,12 +26,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 )
 
 // planningSvc is attached once at daemon startup (nil ⇒ planning endpoints 503
 // and the notify adapter is never wired).
 var planningSvc *planning.Service
+
+// planningBusStop tears down the wizard's ingest-bus subscription (set by
+// AttachPlanning when both the service and the bus are attached).
+var planningBusStop func()
 
 // AttachPlanning wires the planning service into the api layer and gives it the
 // api-owned session_updated emitter, keyed by project: on a planner-run edge the
@@ -41,6 +48,10 @@ var planningSvc *planning.Service
 // constructed. Left nil in unit tests so board/session writes never trigger a
 // real headless spawn.
 func AttachPlanning(s *planning.Service) {
+	if planningBusStop != nil {
+		planningBusStop()
+		planningBusStop = nil
+	}
 	if s != nil {
 		s.Notify = func(projectID int64) {
 			// The planner session's numeric row is minted by ingest AFTER spawn,
@@ -51,13 +62,80 @@ func AttachPlanning(s *planning.Service) {
 				publishSessionUpdated(*st.SessionID)
 			}
 		}
+		// The wizard's "process alive" seam: the raw-fallback parse and the
+		// stale-generating reconcile must not fire while a `claude -r` resume
+		// is mid-flight for the planner session (resume.go's map).
+		s.ResumeInFlight = resumeInFlight
+		if wsBus != nil {
+			planningBusStop = watchPlanningTurns(s, wsBus)
+		}
 	}
 	planningSvc = s
 }
 
-// GET /api/projects/{id}/planning — the planner status snapshot for a project
-// (active, sessionUuid, sessionId once resolvable, startedAt). 503 when the
-// planning service is not attached (serve --no-ingest, or a test handler).
+// watchPlanningTurns subscribes the planning service to the ingest bus so new
+// transcript turns advance the wizard (phase-2 ingest hook).
+//
+// Deliberately NOT the ws.go fan-out the phase doc sketched: buildWSMessage
+// runs once per CONNECTED WebSocket client, so with zero dashboards open the
+// wizard would never advance and with N dashboards every turn would be parsed
+// N times. A dedicated subscription is the one consumer that runs exactly once
+// regardless of clients. Only session_started/session_updated are consumed —
+// every ingest batch that appends turns publishes exactly one such frame
+// (ingest.Pipeline.tailOne), so the per-event event_appended frames carry no
+// extra signal for the wizard and are skipped wholesale.
+func watchPlanningTurns(s *planning.Service, bus *ingest.Bus) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ctx.Err() == nil {
+			ch, unsub := bus.Subscribe(wsSubscriberBuffer)
+			consumePlanningNotes(ctx, s, ch)
+			unsub()
+			// Channel closed as a laggard (buffer overflow) → resubscribe.
+			// Missed frames self-heal: OnSessionTurns recomputes from the
+			// LATEST turn only, and the snapshot's stale-generating reconcile
+			// covers a lost exit edge.
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+// consumePlanningNotes drains one bus subscription until ctx cancels or the
+// bus closes the channel (overflow). The id→uuid resolve is a PK point query
+// and the service's own uuid lookup (UNIQUE index) rejects non-planner
+// sessions — two microsecond SELECTs per session_updated frame. OnSessionTurns
+// runs inline in this goroutine so per-session ordering is preserved.
+func consumePlanningNotes(ctx context.Context, s *planning.Service, ch <-chan ingest.Notification) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case n, ok := <-ch:
+			if !ok {
+				return
+			}
+			if n.Type != ingest.NoteSessionStarted && n.Type != ingest.NoteSessionUpdated {
+				continue
+			}
+			var uuid string
+			if err := s.DB.QueryRow(
+				`SELECT session_uuid FROM sessions WHERE id = ?`, n.SessionID).Scan(&uuid); err != nil {
+				continue // row vanished or not yet minted — nothing to parse
+			}
+			s.OnSessionTurns(uuid)
+		}
+	}
+}
+
+// GET /api/projects/{id}/planning — the extended wizard DTO for a project
+// (phase 2): the legacy active/sessionUuid/sessionId/startedAt fields plus
+// status, currentQuestion, runningPlan, rawReply, history, planDir. Field
+// names are FROZEN (planning.WizardStatus — phase 3 mirrors them in TS).
+// A project with no planning_sessions row gets the legacy idle shape
+// (active:false, empty extended fields). 503 when the planning service is not
+// attached (serve --no-ingest, or a test handler).
 func (h *Handler) getPlanning(w http.ResponseWriter, r *http.Request) {
 	if planningSvc == nil {
 		writeClientErr(w, http.StatusServiceUnavailable, "planning not attached")
@@ -68,7 +146,8 @@ func (h *Handler) getPlanning(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusBadRequest, "invalid project id")
 		return
 	}
-	writeJSON(w, planningSvc.Snapshot(id), nil)
+	st, err := planningSvc.WizardSnapshot(id)
+	writeJSON(w, st, err)
 }
 
 // POST /api/projects/{id}/planning {idea} → 202 {sessionUuid}. requireLocalOrigin.
@@ -142,3 +221,168 @@ func (h *Handler) cancelPlanning(w http.ResponseWriter, r *http.Request) {
 
 // maxPlanningIdeaLen bounds the idea payload (a paragraph or three, not a file).
 const maxPlanningIdeaLen = 8000
+
+// maxRefineLen bounds refinement instructions (free-form prose, not a spec).
+const maxRefineLen = 4000
+
+// writeWizardErr maps the planning sentinels onto HTTP statuses. Returns true
+// when it wrote a response (the handler must return).
+func writeWizardErr(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, planning.ErrNoSession):
+		writeClientErr(w, http.StatusNotFound, "no planning session for this project")
+	case errors.Is(err, planning.ErrNotAwaiting):
+		writeClientErr(w, http.StatusConflict, "planning session is not awaiting an answer")
+	case errors.Is(err, planning.ErrWrongQuestion):
+		writeClientErr(w, http.StatusConflict, "answer does not match the current question")
+	case errors.Is(err, planning.ErrEmptyAnswer):
+		writeClientErr(w, http.StatusBadRequest, "raw-fallback answer requires non-empty otherText")
+	default:
+		writeErr(w, err)
+	}
+	return true
+}
+
+// spawnWizardResume is the shared back half of answer/refine/proceed: the
+// service already moved the wizard to generating/proceeding and produced the
+// resume text — resolve the ingested sessions row and hand it to startResume
+// (the SAME single-flight map as the composer, so a wizard reply and a manual
+// message can never interleave one transcript). EVERY failure path rolls the
+// status back to awaiting_answer so the operator's action stays retryable —
+// keyed by the wizard's session uuid, so a stale resume's late failure can
+// never roll back a NEWER wizard the operator started meanwhile.
+func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service, uuid, text, okStatus string) {
+	var (
+		sid int64
+		cwd sql.NullString
+	)
+	err := h.DB.QueryRow(`SELECT id, cwd FROM sessions WHERE session_uuid = ?`, uuid).Scan(&sid, &cwd)
+	if errors.Is(err, sql.ErrNoRows) {
+		svc.RevertToAwaiting(uuid)
+		writeClientErr(w, http.StatusConflict, "planner session not ingested yet — retry in a moment")
+		return
+	}
+	if err != nil {
+		svc.RevertToAwaiting(uuid)
+		writeErr(w, err)
+		return
+	}
+	if strings.TrimSpace(cwd.String) == "" {
+		svc.RevertToAwaiting(uuid)
+		writeClientErr(w, http.StatusConflict, "planner session has no known working directory to resume in")
+		return
+	}
+	started, err := startResume(sid, uuid, cwd.String, text, func(runErr error) {
+		// Runs after process exit, BEFORE the resume slot release. A failed or
+		// timed-out resume rolls back so the wizard is answerable again. On
+		// success nothing to do here: the post-release session_updated frame
+		// reaches watchPlanningTurns, which re-parses with the slot free (the
+		// path that also settles a raw-fallback reply ingested mid-run).
+		if runErr != nil {
+			svc.RevertToAwaiting(uuid)
+		}
+	})
+	if err != nil {
+		svc.RevertToAwaiting(uuid)
+		writeClientErr(w, http.StatusServiceUnavailable, "claude executable not found (set SWARMERY_CLAUDE_BIN)")
+		return
+	}
+	if !started {
+		svc.RevertToAwaiting(uuid)
+		writeClientErr(w, http.StatusConflict, "a resume is already running for this session")
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": okStatus})
+}
+
+// wizardProject parses the {id} path value shared by the wizard POSTs.
+func wizardProject(w http.ResponseWriter, r *http.Request) (int64, *planning.Service, bool) {
+	svc := planningSvc
+	if svc == nil {
+		writeClientErr(w, http.StatusServiceUnavailable, "planning not attached")
+		return 0, nil, false
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeClientErr(w, http.StatusBadRequest, "invalid project id")
+		return 0, nil, false
+	}
+	return id, svc, true
+}
+
+// POST /api/projects/{id}/planning/answer {questionId, selectedOptionIds,
+// otherText?} → 202 {status:"generating"}. requireLocalOrigin. 400 bad body /
+// nothing selected; 404 no wizard; 409 not awaiting, wrong question, session
+// not yet ingested, or a resume already in flight.
+func (h *Handler) answerPlanning(w http.ResponseWriter, r *http.Request) {
+	id, svc, ok := wizardProject(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		QuestionID        string   `json:"questionId"`
+		SelectedOptionIDs []string `json:"selectedOptionIds"`
+		OtherText         string   `json:"otherText"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeClientErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	body.OtherText = strings.TrimSpace(body.OtherText)
+	if len(body.SelectedOptionIDs) == 0 && body.OtherText == "" {
+		writeClientErr(w, http.StatusBadRequest, "select at least one option or provide otherText")
+		return
+	}
+	text, uuid, err := svc.Answer(id, body.QuestionID, body.SelectedOptionIDs, body.OtherText)
+	if writeWizardErr(w, err) {
+		return
+	}
+	h.spawnWizardResume(w, svc, uuid, text, "generating")
+}
+
+// POST /api/projects/{id}/planning/refine {instructions} → 202
+// {status:"generating"}. requireLocalOrigin. Same error matrix as answer.
+func (h *Handler) refinePlanning(w http.ResponseWriter, r *http.Request) {
+	id, svc, ok := wizardProject(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeClientErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	body.Instructions = strings.TrimSpace(body.Instructions)
+	if body.Instructions == "" {
+		writeClientErr(w, http.StatusBadRequest, "instructions are required")
+		return
+	}
+	if len(body.Instructions) > maxRefineLen {
+		writeClientErr(w, http.StatusBadRequest, "instructions too long (max 4000 chars)")
+		return
+	}
+	text, uuid, err := svc.Refine(id, body.Instructions)
+	if writeWizardErr(w, err) {
+		return
+	}
+	h.spawnWizardResume(w, svc, uuid, text, "generating")
+}
+
+// POST /api/projects/{id}/planning/proceed (no body) → 202
+// {status:"proceeding"}: end the interview, trigger PHASE B plan writing.
+// requireLocalOrigin. 404/409 as answer.
+func (h *Handler) proceedPlanning(w http.ResponseWriter, r *http.Request) {
+	id, svc, ok := wizardProject(w, r)
+	if !ok {
+		return
+	}
+	text, uuid, err := svc.Proceed(id)
+	if writeWizardErr(w, err) {
+		return
+	}
+	h.spawnWizardResume(w, svc, uuid, text, "proceeding")
+}

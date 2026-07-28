@@ -159,6 +159,33 @@ func TestPutPluginProvisionKillSwitch(t *testing.T) {
 	}
 }
 
+func TestArchitectureRebuildEnqueuesForcedRun(t *testing.T) {
+	srv, db, runner := provisionTestServer(t)
+	// The explicit rebuild button must work even with auto-provision off — it is
+	// a user action, not automation.
+	t.Setenv("SWARMERY_AUTOPROVISION", "0")
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/architecture/rebuild", nil, 202)
+	if out["started"] != true {
+		t.Fatalf("rebuild body = %v, want started=true", out)
+	}
+	status, ok := latestProvisionJob(t, db, 1, "architecture-pack")
+	if !ok {
+		t.Fatal("no provision_jobs row after rebuild, want one")
+	}
+	if status != "done" {
+		t.Errorf("rebuild status = %q, want terminal 'done'", status)
+	}
+	if runner.calls == 0 {
+		t.Error("stub Runner never invoked — the rebuild pipeline did not run")
+	}
+}
+
+func TestArchitectureRebuildUnknownProject(t *testing.T) {
+	srv, _, _ := provisionTestServer(t)
+	doJSON(t, "POST", srv.URL+"/api/projects/999/architecture/rebuild", nil, 404)
+}
+
 func provisionJobCount(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	var n int

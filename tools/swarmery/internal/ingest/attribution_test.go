@@ -90,14 +90,74 @@ func TestUpsertProjectUnknownPathsStillMint(t *testing.T) {
 	if !created || id == 0 {
 		t.Errorf("standalone path: created=%v id=%d, want fresh row", created, id)
 	}
-	// Root "/" is never swallowed by an ancestor and never canonicalized.
-	if _, created, err = UpsertProject(db, "/", "2026-07-26T00:00:00.000Z", ""); err != nil || !created {
-		t.Errorf("root path: created=%v err=%v, want fresh row", created, err)
-	}
-	// An existing exact row keeps resolving to itself even though "/" exists.
+	// An existing exact row keeps resolving to itself.
 	again, created, err := UpsertProject(db, "/Volumes/Work/Fusion", "2026-07-27T00:00:00.000Z", "")
 	if err != nil || created || again != id {
 		t.Errorf("re-upsert: id=%d created=%v err=%v, want id=%d created=false", again, created, err, id)
+	}
+}
+
+func TestUpsertProjectRootAttributesToSystem(t *testing.T) {
+	db := testDB(t)
+	old := systemBaseOverride
+	systemBaseOverride = "/home/dev/.swarmery"
+	t.Cleanup(func() { systemBaseOverride = old })
+
+	// cwd "/" (daemon-spawned headless runs under launchd) mints the System
+	// project on first sight…
+	id, created, err := UpsertProject(db, "/", "2026-07-26T00:00:00.000Z", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Error("first root upsert should mint the System project")
+	}
+	var path, name string
+	if err := db.QueryRow(`SELECT path, name FROM projects WHERE id = ?`, id).Scan(&path, &name); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/home/dev/.swarmery" || name != "System" {
+		t.Errorf("system row = (%q, %q), want (/home/dev/.swarmery, System)", path, name)
+	}
+	// …and both "/" and the system dir itself resolve to it afterwards.
+	if id2, created, err := UpsertProject(db, "/", "2026-07-27T00:00:00.000Z", ""); err != nil || created || id2 != id {
+		t.Errorf("second root upsert: id=%d created=%v err=%v, want id=%d created=false", id2, created, err, id)
+	}
+	if id3, created, err := UpsertProject(db, "/home/dev/.swarmery", "2026-07-27T00:00:00.000Z", ""); err != nil || created || id3 != id {
+		t.Errorf("system-dir upsert: id=%d created=%v err=%v, want id=%d created=false", id3, created, err, id)
+	}
+}
+
+func TestHealProjectAttributionMergesRootIntoSystem(t *testing.T) {
+	db := testDB(t)
+	old := systemBaseOverride
+	systemBaseOverride = "/home/dev/.swarmery"
+	t.Cleanup(func() { systemBaseOverride = old })
+
+	// Legacy "/" row with sessions, minted before the system rule existed.
+	mustExecT(t, db, `INSERT INTO projects (path, slug, name, first_seen) VALUES ('/', '-', '/', '2026-07-01T00:00:00.000Z')`)
+	var rootID int64
+	if err := db.QueryRow(`SELECT id FROM projects WHERE path = '/'`).Scan(&rootID); err != nil {
+		t.Fatal(err)
+	}
+	mustExecT(t, db, `INSERT INTO sessions (project_id, session_uuid, started_at) VALUES (?, 'u-root', '2026-07-20T00:00:00.000Z')`, rootID)
+
+	moved, err := HealProjectAttribution(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 1 {
+		t.Errorf("moved = %d, want 1", moved)
+	}
+	var sysID int64
+	if err := db.QueryRow(`SELECT id FROM projects WHERE path = '/home/dev/.swarmery'`).Scan(&sysID); err != nil {
+		t.Fatalf("system project not minted by heal: %v", err)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, sysID); n != 1 {
+		t.Errorf("system sessions = %d, want 1 (re-pointed from /)", n)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM projects WHERE path = '/'`); n != 0 {
+		t.Errorf("legacy / row still present")
 	}
 }
 

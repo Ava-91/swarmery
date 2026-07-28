@@ -84,6 +84,16 @@ func (s *Service) set(id int64, status, lastLine, errMsg string, done bool) {
 // runs it in a goroutine. All failures are captured on the row (status='failed')
 // and also returned for logging.
 func (s *Service) Run(ctx context.Context, jobID int64, projectPath, pack string) error {
+	return s.run(ctx, jobID, projectPath, pack, false)
+}
+
+// RunForce is Run with the freshness guard bypassed — an explicit user-requested
+// rebuild regenerates the artifact even when HEAD == analyzedAtCommit.
+func (s *Service) RunForce(ctx context.Context, jobID int64, projectPath, pack string) error {
+	return s.run(ctx, jobID, projectPath, pack, true)
+}
+
+func (s *Service) run(ctx context.Context, jobID int64, projectPath, pack string, force bool) error {
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
 
@@ -102,7 +112,7 @@ func (s *Service) Run(ctx context.Context, jobID int64, projectPath, pack string
 		s.set(jobID, "installed", "installed", "", true)
 		return nil
 	}
-	if act.Fresh != nil && act.Fresh(projectPath) {
+	if !force && act.Fresh != nil && act.Fresh(projectPath) {
 		s.set(jobID, "skipped", "artifact already current", "", true)
 		return nil
 	}

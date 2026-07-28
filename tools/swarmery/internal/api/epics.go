@@ -1,7 +1,6 @@
-// Epic rollup + activation API (fusion phase 10 — DESIGN.md §2 items 9–10):
+// Epic rollup + doc-editor API (fusion phase 10 — DESIGN.md §2 items 9–10):
 //
 //	GET   /api/epics?projectId=                                  → epics + phases + rollup
-//	POST  /api/epics/{taskId}/phases/{phaseId}/activate          → phase → board task (idempotent)
 //	GET   /api/epics/{taskId}/docs?path=                         → read a plan doc
 //	PUT   /api/epics/{taskId}/docs?path=                         → write a plan doc (backup)
 //	PATCH /api/epics/{taskId}/docs?path=  {line, done}           → flip one checkbox by line index
@@ -9,11 +8,15 @@
 // An "epic" is a workspace task (source='workspace') whose plan/ dir the
 // wsingest scanner parsed into epic_phases. Reads are self-wiring over h.DB
 // (like presets.go / project_meta.go). The doc endpoints turn the workspace
-// folder into invisible infrastructure — plans are read, edited and activated
-// from the platform; the confinement fence keeps every path strictly under that
-// task's plan/ dir (EvalSymlinks + prefix check), and writes take a timestamped
-// backup first (mirroring the System write surface). All writes carry the same
+// folder into invisible infrastructure — plans are read and edited from the
+// platform; the confinement fence keeps every path strictly under that task's
+// plan/ dir (EvalSymlinks + prefix check), and writes take a timestamped backup
+// first (mirroring the System write surface). All writes carry the same
 // requireLocalOrigin D4 hardening as every other mutating endpoint.
+// NOTE: the POST /activate route was removed in interactive-planning-v2 phase 4
+// (Board is exclusively for tasks created on the board; plan phases run directly
+// via phase 5's run mechanism). Historical activated_board_task_id links are
+// preserved in the DB and still served read-only in the epic list DTO.
 
 package api
 
@@ -21,7 +24,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -36,19 +38,37 @@ import (
 
 // epicPhaseDTO is one phase row (camelCase, mirrored in web/src/api/types.ts).
 type epicPhaseDTO struct {
-	ID              int64   `json:"id"`
-	Seq             int     `json:"seq"`
-	Name            string  `json:"name"`
-	DocPath         string  `json:"docPath"`
-	DocRelPath      string  `json:"docRelPath"` // path relative to plan/ — the ?path= value
-	DependsOn       []int   `json:"dependsOn"`
-	CheckboxesDone  int     `json:"checkboxesDone"`
-	CheckboxesTotal int     `json:"checkboxesTotal"`
-	ActivatedAt     *string `json:"activatedAt"`
+	ID              int64  `json:"id"`
+	Seq             int    `json:"seq"`
+	Name            string `json:"name"`
+	DocPath         string `json:"docPath"`
+	DocRelPath      string `json:"docRelPath"` // path relative to plan/ — the ?path= value
+	DependsOn       []int  `json:"dependsOn"`
+	CheckboxesDone  int    `json:"checkboxesDone"`
+	CheckboxesTotal int    `json:"checkboxesTotal"`
+	// Normalized `Status:` header marker from the phase doc itself
+	// (pending|in_progress|done); null when the doc carries none. Lets an
+	// executor flag "working on this now" before the first checkbox tick.
+	DocStatus *string `json:"docStatus"`
+	// RFC3339 mtime of the phase doc at scan time — a liveness signal (every
+	// executor edit changes the doc and re-triggers the scan).
+	DocUpdatedAt *string `json:"docUpdatedAt"`
+	// The doc's `## Completion Report` section (markdown, verbatim) — what the
+	// executor shipped. Null until the section is written; the UI offers a
+	// summary modal on done phases when present.
+	CompletionReport *string `json:"completionReport"`
+	ActivatedAt      *string `json:"activatedAt"`
 	// The external_id of the board task an activation minted (null until activated).
 	BoardTaskExternalID *string `json:"boardTaskExternalId"`
 	BoardTaskID         *int64  `json:"boardTaskId"`
 	BoardColumn         *string `json:"boardColumn"`
+	// Phase-run state (interactive planning v2 phase 5, migration 0034):
+	// idle | running | done | failed, plus the run's session uuid / start /
+	// error. Consumed by the Plans page's Run/Cancel UI (phase 6).
+	RunState       string  `json:"runState"`
+	RunSessionUUID *string `json:"runSessionUuid"`
+	RunStartedAt   *string `json:"runStartedAt"`
+	RunError       *string `json:"runError"`
 }
 
 // epicRollupDTO is a checkbox rollup across all of an epic's phases.
@@ -60,16 +80,20 @@ type epicRollupDTO struct {
 
 // epicDTO is one epic (workspace task) with its phases and rollup.
 type epicDTO struct {
-	TaskID      int64          `json:"taskId"`
-	ExternalID  string         `json:"externalId"`
-	ProjectID   int64          `json:"projectId"`
-	ProjectSlug string         `json:"projectSlug"`
-	Title       string         `json:"title"`
-	Status      string         `json:"status"` // active | paused | done | archived (planStatus)
-	StartedAt   *string        `json:"startedAt"`
-	PlanDir     string         `json:"planDir"`
-	Phases      []epicPhaseDTO `json:"phases"`
-	Rollup      epicRollupDTO  `json:"rollup"`
+	TaskID      int64   `json:"taskId"`
+	ExternalID  string  `json:"externalId"`
+	ProjectID   int64   `json:"projectId"`
+	ProjectSlug string  `json:"projectSlug"`
+	Title       string  `json:"title"`
+	Status      string  `json:"status"` // active | paused | done | archived (planStatus)
+	StartedAt   *string `json:"startedAt"`
+	PlanDir     string  `json:"planDir"`
+	// True when plan/SUMMARY.md exists — the plan-level completion summary the
+	// executor writes when the whole plan lands. The UI opens it (via the docs
+	// endpoint, path=SUMMARY.md) in a summary modal on done plans.
+	HasSummary bool           `json:"hasSummary"`
+	Phases     []epicPhaseDTO `json:"phases"`
+	Rollup     epicRollupDTO  `json:"rollup"`
 }
 
 // wsPlanPayload is the plan_updated WS payload (frozen once shipped) — a thin
@@ -171,6 +195,11 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		}
 		out[i].Phases = phases
 		out[i].Rollup = rollup
+		if out[i].PlanDir != "" {
+			if fi, err := os.Stat(filepath.Join(out[i].PlanDir, "SUMMARY.md")); err == nil && !fi.IsDir() {
+				out[i].HasSummary = true
+			}
+		}
 		// Normalize the raw tasks.status (running|paused|done) into the plan
 		// lifecycle contract: active | paused | done | archived.
 		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
@@ -184,8 +213,10 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epicRollupDTO, error) {
 	rows, err := h.DB.Query(`
 		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on,
-		       e.checkboxes_total, e.checkboxes_done, e.activated_at,
-		       e.activated_board_task_id, bt.external_id, bt.board_column
+		       e.checkboxes_total, e.checkboxes_done, e.doc_status, e.doc_updated_at,
+		       e.completion_report, e.activated_at, e.activated_board_task_id,
+		       bt.external_id, bt.board_column,
+		       e.run_state, e.run_session_uuid, e.run_started_at, e.run_error
 		FROM epic_phases e
 		LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
 		WHERE e.workspace_task_id = ?
@@ -199,19 +230,35 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 	var rollup epicRollupDTO
 	for rows.Next() {
 		var (
-			p           epicPhaseDTO
-			depsJSON    string
-			boardTaskID sql.NullInt64
-			boardExtID  sql.NullString
-			boardCol    sql.NullString
+			p            epicPhaseDTO
+			depsJSON     string
+			docStatus    sql.NullString
+			docUpdatedAt sql.NullString
+			completion   sql.NullString
+			boardTaskID  sql.NullInt64
+			boardExtID   sql.NullString
+			boardCol     sql.NullString
+			runUUID      sql.NullString
+			runStartedAt sql.NullString
+			runError     sql.NullString
 		)
 		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.DocPath, &depsJSON,
-			&p.CheckboxesTotal, &p.CheckboxesDone, &p.ActivatedAt,
-			&boardTaskID, &boardExtID, &boardCol); err != nil {
+			&p.CheckboxesTotal, &p.CheckboxesDone, &docStatus, &docUpdatedAt,
+			&completion, &p.ActivatedAt, &boardTaskID, &boardExtID, &boardCol,
+			&p.RunState, &runUUID, &runStartedAt, &runError); err != nil {
 			return nil, epicRollupDTO{}, err
 		}
 		p.DependsOn = decodeIntList(depsJSON)
 		p.DocRelPath = relToPlan(planDir, p.DocPath)
+		if docStatus.Valid {
+			p.DocStatus = &docStatus.String
+		}
+		if docUpdatedAt.Valid {
+			p.DocUpdatedAt = &docUpdatedAt.String
+		}
+		if completion.Valid {
+			p.CompletionReport = &completion.String
+		}
 		if boardTaskID.Valid {
 			p.BoardTaskID = &boardTaskID.Int64
 		}
@@ -220,6 +267,15 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		}
 		if boardCol.Valid {
 			p.BoardColumn = &boardCol.String
+		}
+		if runUUID.Valid {
+			p.RunSessionUUID = &runUUID.String
+		}
+		if runStartedAt.Valid {
+			p.RunStartedAt = &runStartedAt.String
+		}
+		if runError.Valid {
+			p.RunError = &runError.String
 		}
 		rollup.Done += p.CheckboxesDone
 		rollup.Total += p.CheckboxesTotal
@@ -253,228 +309,6 @@ func relToPlan(planDir, doc string) string {
 		return rel
 	}
 	return filepath.Base(doc)
-}
-
-// ── POST /api/epics/{taskId}/phases/{phaseId}/activate ──────────────────────
-
-var (
-	// First markdown H1 → board task title.
-	apiH1Re = regexp.MustCompile(`(?m)^#\s+(.+?)\s*$`)
-	// A `**Files:**` / `**Files**:` / `**File scope:**` label line — the colon
-	// may sit inside or outside the bold markers; the paths follow as a list or
-	// inline comma-sep on the same line.
-	filesLabelRe = regexp.MustCompile(`(?i)^\s*\*\*(?:files?|file scope)\s*:?\s*\*\*\s*:?\s*(.*)$`)
-)
-
-// activateEpicPhase reads the phase doc and mints one board task: title = first
-// H1 (fallback phase name), prompt = full doc, file_scope = parsed from a
-// **Files:** section (else []), dependencies = external_ids of the
-// already-activated phases this one depends on. Idempotent: a second call
-// returns 409 with the existing board task. requireLocalOrigin.
-func (h *Handler) activateEpicPhase(w http.ResponseWriter, r *http.Request) {
-	taskID, err := strconv.ParseInt(r.PathValue("taskId"), 10, 64)
-	if err != nil {
-		writeClientErr(w, http.StatusBadRequest, "invalid task id")
-		return
-	}
-	phaseID, err := strconv.ParseInt(r.PathValue("phaseId"), 10, 64)
-	if err != nil {
-		writeClientErr(w, http.StatusBadRequest, "invalid phase id")
-		return
-	}
-
-	// Load the phase (scoped to the task) + the epic's project.
-	var (
-		seq                     int
-		name, docPath, depsJSON string
-		projectID               int64
-		activatedBoardID        sql.NullInt64
-	)
-	err = h.DB.QueryRow(`
-		SELECT e.seq, e.name, e.doc_path, e.depends_on, t.project_id, e.activated_board_task_id
-		FROM epic_phases e JOIN tasks t ON t.id = e.workspace_task_id
-		WHERE e.id = ? AND e.workspace_task_id = ?`, phaseID, taskID).
-		Scan(&seq, &name, &docPath, &depsJSON, &projectID, &activatedBoardID)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeClientErr(w, http.StatusNotFound, "phase not found for this task")
-		return
-	}
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-
-	// Idempotency: already activated → 409 with the existing board task.
-	if activatedBoardID.Valid {
-		existing, err := h.boardTaskByID(activatedBoardID.Int64)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSONStatus(w, http.StatusConflict, map[string]any{
-			"error": "phase already activated",
-			"task":  existing,
-		})
-		return
-	}
-
-	// Read the doc — its full text is the board task prompt.
-	body, err := os.ReadFile(docPath)
-	if err != nil {
-		writeClientErr(w, http.StatusUnprocessableEntity, "phase doc unreadable: "+err.Error())
-		return
-	}
-	prompt := string(body)
-	title := name
-	if m := apiH1Re.FindStringSubmatch(prompt); m != nil {
-		title = strings.TrimSpace(m[1])
-	}
-	if title == "" {
-		title = fmt.Sprintf("Phase %d", seq)
-	}
-	fileScope := parseFileScope(prompt)
-
-	// Dependencies: external_ids of the already-activated phases whose seq this
-	// phase depends on. A dep phase that is NOT yet activated contributes no
-	// board id (the Activate button is disabled client-side until prior phases'
-	// board tasks are done; the dispatcher's dangling-dep guard is conservative
-	// regardless).
-	deps, err := h.activatedDepExternalIDs(taskID, decodeIntList(depsJSON))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-
-	scopeJSON, err := marshalStringList(fileScope)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	depsOut, err := marshalStringList(deps)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	extID, err := newBoardExternalID()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	now := time.Now().UTC().Format(boardTSFormat)
-
-	// Insert the board task (source='queue', lands in todo so it is immediately
-	// dispatchable once its deps clear) and stamp the phase in ONE tx.
-	tx, err := h.DB.Begin()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	res, err := tx.Exec(`
-		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
-		                   source, external_id, board_column, file_scope, dependencies,
-		                   column_moved_at)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, 'todo', ?, ?, ?)`,
-		projectID, title, prompt, priorityLabels["normal"], now,
-		extID, scopeJSON, depsOut, now)
-	if err != nil {
-		tx.Rollback()
-		writeErr(w, err)
-		return
-	}
-	boardID, _ := res.LastInsertId()
-	if _, err := tx.Exec(`
-		UPDATE epic_phases SET activated_at = ?, activated_board_task_id = ?
-		WHERE id = ?`, now, boardID, phaseID); err != nil {
-		tx.Rollback()
-		writeErr(w, err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeErr(w, err)
-		return
-	}
-
-	d, err := h.boardTaskByID(boardID)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	publishTaskUpdated(boardID)
-	pokeDispatch() // a todo task may be immediately dispatchable
-	writeJSONStatus(w, http.StatusCreated, d)
-}
-
-// activatedDepExternalIDs maps the seq numbers a phase depends on to the
-// external_ids of the board tasks those phases were activated into. Unactivated
-// deps are skipped (no board task exists yet).
-func (h *Handler) activatedDepExternalIDs(taskID int64, depSeqs []int) ([]string, error) {
-	out := []string{}
-	for _, seq := range depSeqs {
-		var ext sql.NullString
-		err := h.DB.QueryRow(`
-			SELECT bt.external_id
-			FROM epic_phases e JOIN tasks bt ON bt.id = e.activated_board_task_id
-			WHERE e.workspace_task_id = ? AND e.seq = ?`, taskID, seq).Scan(&ext)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue // dep not activated yet
-		}
-		if err != nil {
-			return nil, err
-		}
-		if ext.Valid && ext.String != "" {
-			out = append(out, ext.String)
-		}
-	}
-	return out, nil
-}
-
-// parseFileScope extracts declared file paths from a **Files:** / **File
-// scope:** label — either inline on the label line (comma-sep) or as the list
-// items immediately following it. Returns [] when none are declared. Pure.
-func parseFileScope(doc string) []string {
-	lines := strings.Split(doc, "\n")
-	out := []string{}
-	for i, line := range lines {
-		m := filesLabelRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		// Inline paths on the label line (comma or space separated).
-		if inline := strings.TrimSpace(m[1]); inline != "" {
-			out = append(out, splitScope(inline)...)
-		}
-		// Following list items (`- path` / `* path`) until a blank line or a
-		// non-list line.
-		for j := i + 1; j < len(lines); j++ {
-			t := strings.TrimSpace(lines[j])
-			if t == "" {
-				break
-			}
-			item, ok := strings.CutPrefix(t, "- ")
-			if !ok {
-				item, ok = strings.CutPrefix(t, "* ")
-			}
-			if !ok {
-				break
-			}
-			out = append(out, splitScope(item)...)
-		}
-		break // first Files section wins
-	}
-	return out
-}
-
-// splitScope splits a scope fragment on commas, trims backticks/space, drops
-// empties.
-func splitScope(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		part = strings.Trim(strings.TrimSpace(part), "`")
-		if part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }
 
 // ── plan-doc editor: GET/PUT/PATCH /api/epics/{taskId}/docs?path= ───────────

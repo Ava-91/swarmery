@@ -81,6 +81,8 @@ export interface Project {
   pinned: boolean;
   /** Decoded projects.tags JSON array — [] when untagged, never null. */
   tags: string[];
+  /** The deliberate System project (~/.swarmery, daemon telemetry runs) — demoted out of the main list. */
+  isSystem: boolean;
   /** Null for telemetry-only projects (no readable .claude/settings.json). */
   plugin: PluginState | null;
 }
@@ -178,6 +180,13 @@ export interface Session {
   tokens?: number | null;
   /** Aggregate SUM(turns.cost_usd) — parity wave; optional until backend lands. */
   costUsd?: number | null;
+  /**
+   * Context occupancy: the last assistant turn's input footprint
+   * (tokens_in + cache_read + cache_write) ≈ how full the model's context
+   * window is. A large value on a long-lived session is the fat-session cost
+   * driver. Additive optional; null until the session has a priced turn.
+   */
+  contextTokens?: number | null;
   /** phase 3.5 workspaces (additive): best task link — explicit beats heuristic. */
   taskId?: number | null;
   /** Card task id (yyyy-mm-dd-slug) of the best-linked workspace task. */
@@ -1155,19 +1164,94 @@ export interface DispatchStatus {
 
 // --- fusion phase 8: planning mode -------------------------------------------
 
+/** Go `planning.PlanningOption` (internal/planning/protocol.go) — one
+ * selectable answer of a wizard question. */
+export interface PlanningOption {
+  id: string;
+  label: string;
+  description?: string;
+  pros?: string[];
+  cons?: string[];
+  isOther?: boolean;
+}
+
 /**
- * Go `planning.Status` (internal/planning/service.go) — GET
- * /api/projects/{id}/planning. `sessionUuid` is the pre-generated planner
- * session id (present while active, so the page links to /sessions/{uuid} and
- * matches the transcript before the numeric row is minted); `sessionId` is that
- * numeric row once ingest/the hook mints it (null until then — the page filters
- * approvals + reads turns by it); `startedAt` is the RFC3339 run start.
+ * Go `planning.PlanningSummary` — the running plan rebuilt after every answer.
+ * `suggestedSize` is a free string on the wire (the protocol asks for S|M|L but
+ * the Go side does not enforce the set — mirror, don't narrow).
+ */
+export interface PlanningSummary {
+  title: string;
+  description: string;
+  proposedChanges?: string[];
+  acceptanceCriteria?: string[];
+  suggestedSize?: string;
+}
+
+/** Go `planning.PlanningQuestion` — one structured interview question. */
+export interface PlanningQuestion {
+  id: string;
+  type: 'single_select' | 'multi_select';
+  question: string;
+  description?: string;
+  options: PlanningOption[];
+  runningPlan?: PlanningSummary;
+}
+
+/** Go `planning.wizardAnswer` — the JSON stamped onto a history turn. */
+export interface PlanningAnswer {
+  kind: 'answer' | 'refine';
+  selectedOptionIds?: string[];
+  otherText?: string;
+  instructions?: string;
+}
+
+/**
+ * Go `planning.WizardTurn` — one history entry. `question` is null when the
+ * stored JSON failed to re-parse (Go sends the pointer); `answer` is null until
+ * the operator answered (a PROCEED dismisses a question without an answer).
+ */
+export interface PlanningTurn {
+  seq: number;
+  question: PlanningQuestion | null;
+  answer: PlanningAnswer | null;
+  reasoning: string;
+}
+
+/** The closed wizard status set persisted in planning_sessions.status. */
+export type PlanningWizardStatus =
+  | 'generating'
+  | 'awaiting_answer'
+  | 'proceeding'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+
+/**
+ * Go `planning.WizardStatus` (internal/planning/state.go) — GET
+ * /api/projects/{id}/planning. Field names are FROZEN (mirrored verbatim from
+ * the Go json tags; see TestWizardGET_DTOFieldNames). `sessionUuid` is the
+ * pre-generated planner session id (present while active, so the page links to
+ * /sessions/{uuid} and matches the transcript before the numeric row is
+ * minted); `sessionId` is that numeric row once ingest/the hook mints it (null
+ * until then); `startedAt` is the RFC3339 run start.
+ *
+ * `status` is the wire shape as Go sends it: the EMPTY STRING when the project
+ * has no wizard row yet (legacy idle) — NOT null. Kept as `'' |
+ * PlanningWizardStatus` rather than the plan sketch's `| null` so the TS type
+ * matches the bytes on the wire.
  */
 export interface PlanningStatus {
   active: boolean;
   sessionUuid: string;
   sessionId: number | null;
   startedAt: string | null;
+  status: PlanningWizardStatus | '';
+  currentQuestion: PlanningQuestion | null;
+  runningPlan: PlanningSummary | null;
+  rawReply: string | null;
+  history: PlanningTurn[];
+  planDir: string | null;
 }
 
 /** POST /api/projects/{id}/planning → 202 body. */
@@ -1683,6 +1767,8 @@ export interface ProjectHealth {
   name: string | null;
   pinned: boolean;
   tags: string[];
+  /** Mirrors Project.isSystem — the health table drops the System row. */
+  isSystem: boolean;
   /** Σ turn cost over the rolling last 7 days; null when no priced turn. */
   costWeekUsd: number | null;
   /** Σ turn cost over days 8–14 back; null when no priced turn. */
@@ -1944,6 +2030,9 @@ export interface RoutineInput {
 
 // --- fusion phase 10: epic rollups + plan-doc editor --------------------------
 
+/** Direct phase-run lifecycle (interactive planning v2 phase 5). */
+export type PhaseRunState = 'idle' | 'running' | 'done' | 'failed';
+
 /** One epic phase — mirrors epicPhaseDTO in internal/api/epics.go. */
 export interface EpicPhase {
   id: number;
@@ -1956,12 +2045,28 @@ export interface EpicPhase {
   dependsOn: number[];
   checkboxesDone: number;
   checkboxesTotal: number;
+  /** The phase doc's own `Status:` header marker (normalized); null when the
+   * doc carries none. Lets an executor flag "working on this now" before the
+   * first checkbox tick. */
+  docStatus: 'pending' | 'in_progress' | 'done' | null;
+  /** RFC3339 mtime of the phase doc at scan time — liveness signal (executor
+   * edits change the doc and re-trigger the scan). */
+  docUpdatedAt: string | null;
+  /** The doc's `## Completion Report` section (markdown) — what the executor
+   * shipped. Null until written; shown in a summary modal on done phases. */
+  completionReport: string | null;
   activatedAt: string | null;
   /** external_id of the board task this phase was activated into (null until). */
   boardTaskExternalId: string | null;
   boardTaskId: number | null;
   /** The current board column of that board task (null until activated). */
   boardColumn: BoardColumn | null;
+  /** Direct phase-run state (no board task involved). */
+  runState: PhaseRunState;
+  runSessionUuid: string | null;
+  runStartedAt: string | null;
+  /** Failure detail (stderr tail / timeout / cancelled) when runState==='failed'. */
+  runError: string | null;
 }
 
 /** Checkbox rollup across an epic's phases. */
@@ -1983,6 +2088,9 @@ export interface Epic {
   status: 'active' | 'paused' | 'done' | 'archived';
   startedAt: string | null;
   planDir: string;
+  /** True when plan/SUMMARY.md exists — openable via the docs endpoint
+   * (path=SUMMARY.md) in the plan-level summary modal. */
+  hasSummary: boolean;
   phases: EpicPhase[];
   rollup: EpicRollup;
 }

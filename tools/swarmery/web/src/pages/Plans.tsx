@@ -2,28 +2,36 @@
 // plan IS an epic. This tab lists the project's epics (plan dirs the ingester
 // parsed) behind Active/Done/Archived filter tabs, drills into a phase
 // timeline (seq order, depends-on badges, per-phase progress, derived status
-// chips, an Activate button that mints a board task and stays disabled until
-// the phases it depends on are resolved), offers plan lifecycle controls
-// (Pause / Resume / Archive / Restore — file operations on the daemon side),
-// and opens any plan doc in a preview/edit drawer — the workspace folder
-// becomes invisible infrastructure (read, edit, activate, track from the
-// platform; files stay the storage).
+// chips), offers plan lifecycle controls (Pause / Resume / Archive / Restore —
+// file operations on the daemon side), and opens any plan doc in a
+// preview/edit drawer — the workspace folder becomes invisible infrastructure
+// (read, edit, track from the platform; files stay the storage).
+//
+// Legacy chip: phases that were activated into a board task before the
+// plan↔board decoupling (interactive-planning-v2 phase 4) still show the
+// "activated · <column>" chip from the DTO's boardTaskExternalId/boardColumn
+// fields. No new activations can be created; the Board page is exclusively for
+// tasks created on the board. Phase runs are handled by the phase-run mechanism
+// (phase 5).
 //
 // Liveness: the epic list refetches on the board's `task_updated` WS signal
-// (activation, column moves) AND on `plan_updated` (checkbox flips, lifecycle
-// transitions, plan rescans) so progress ticks without a reload.
+// (column moves on legacy-linked board tasks) AND on `plan_updated` (checkbox
+// flips, lifecycle transitions, plan rescans) so progress ticks without a reload.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { BoardColumn, Epic, EpicPhase, WSMessage } from '../api/types';
 import {
-  activateEpicPhase,
+  cancelEpicPhaseRun,
   epicLifecycle,
   fetchEpics,
-  PhaseAlreadyActivatedError,
+  fetchPlanDoc,
+  runEpicPhase,
   type EpicLifecycleAction,
 } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useLiveUpdates } from '../lib/ws';
+import { Markdown } from '../lib/markdown';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { PlanDocDrawer } from '../workspace/PlanDocDrawer';
 
@@ -42,10 +50,76 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   // checkbox progress — the board is the source of truth once dispatched.
   if (isResolvedColumn(p.boardColumn)) return 'done';
   if (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) return 'done';
+  // The doc's own `Status: In progress` marker wins over the dependency gate —
+  // an executor writing it is literally working on the phase right now.
+  // (`done` must be earned by ticking every checkbox; a `done` marker alone is ignored.)
+  if (p.docStatus === 'in_progress') return 'in_progress';
   if (p.dependsOn.some((seq) => !resolvedSeqs.has(seq))) return 'blocked';
   if (p.checkboxesDone > 0 || p.boardColumn === 'in_progress' || p.boardColumn === 'in_review')
     return 'in_progress';
   return 'pending';
+}
+
+/** Re-renders on an interval so elapsed labels (doc activity, running phases)
+ * stay fresh. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNow(Date.now());
+    }, intervalMs);
+    return () => {
+      clearInterval(id);
+    };
+  }, [intervalMs]);
+  return now;
+}
+
+function formatAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${String(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${String(m)}m`;
+  const h = Math.floor(m / 60);
+  return `${String(h)}h ${String(m % 60)}m`;
+}
+
+/** Past this silence window an in-progress phase is flagged as possibly stuck. */
+const STALL_AFTER_MS = 15 * 60_000;
+
+/** Liveness pulse for an in-progress phase. Every executor edit (checkbox
+ * tick, Status flip) touches the phase doc, so "time since last doc edit"
+ * answers the question the chip alone can't: is the session actually working
+ * right now, or has it silently died? */
+function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.Element | null {
+  const now = useNow(30_000);
+  if (docUpdatedAt === null) return null;
+  const elapsed = now - Date.parse(docUpdatedAt);
+  const stalled = elapsed > STALL_AFTER_MS;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1 font-mono text-[9.5px] ${
+        stalled ? 'text-amber' : 'text-brand'
+      }`}
+      title={
+        stalled
+          ? 'no phase-doc edits for a while — the executor may be stuck'
+          : 'the executor is actively editing this phase doc'
+      }
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${stalled ? 'bg-amber' : 'animate-pulse bg-brand'}`} />
+      {stalled ? `no activity · ${formatAgo(elapsed)}` : `active · ${formatAgo(elapsed)} ago`}
+    </span>
+  );
+}
+
+/** Elapsed since a phase run started — the chip on a running phase. */
+function fmtElapsed(fromIso: string, now: number): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
+  if (s < 60) return `${String(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${String(m)}m ${String(s % 60)}s`;
+  return `${String(Math.floor(m / 60))}h ${String(m % 60)}m`;
 }
 
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
@@ -93,7 +167,6 @@ export function Plans(): JSX.Element {
   const [selected, setSelected] = useState<number | null>(null); // taskId
   const [filter, setFilter] = useState<EpicFilter>('active');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [busyPhase, setBusyPhase] = useState<number | null>(null);
   const [busyLifecycle, setBusyLifecycle] = useState(false);
   const [editDoc, setEditDoc] = useState<{
     taskId: number;
@@ -132,6 +205,20 @@ export function Plans(): JSX.Element {
   );
   useLiveUpdates(onMessage, reload);
 
+  // Reconcile net while any visible phase run is live: plan_updated covers the
+  // run edges, this 5s poll covers a missed frame mid-run. Cleared when none run.
+  const anyRunning = useMemo(
+    () => (epics ?? []).some((e) => e.phases.some((p) => p.runState === 'running')),
+    [epics],
+  );
+  useEffect(() => {
+    if (!anyRunning) return;
+    const id = setInterval(reload, 5000);
+    return () => {
+      clearInterval(id);
+    };
+  }, [anyRunning, reload]);
+
   const filtered = useMemo(
     () => (epics ?? []).filter((e) => epicFilterOf(e.status) === filter),
     [epics, filter],
@@ -155,22 +242,6 @@ export function Plans(): JSX.Element {
     () => (selected !== null ? (filtered.find((e) => e.taskId === selected) ?? null) : null),
     [filtered, selected],
   );
-
-  const activate = (epic: Epic, phase: EpicPhase): void => {
-    setBusyPhase(phase.id);
-    setActionError(null);
-    activateEpicPhase(epic.taskId, phase.id)
-      .then(() => reload())
-      .catch((e: unknown) => {
-        if (e instanceof PhaseAlreadyActivatedError) {
-          // Someone already activated it — just refresh to show the board link.
-          reload();
-          return;
-        }
-        setActionError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setBusyPhase(null));
-  };
 
   const lifecycle = (epic: Epic, action: EpicLifecycleAction): void => {
     if (
@@ -282,19 +353,25 @@ export function Plans(): JSX.Element {
         </div>
 
         {/* Epic detail: phase timeline. */}
-        <div className="min-w-0 flex-1 overflow-y-auto">
+        <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {activeEpic === null ? (
-            <Empty>select an epic</Empty>
+            <>
+              {/* Invisible spacer — same height as the tablist above the list column so the
+                  empty states in both columns share the same vertical baseline. */}
+              <div className="mb-2 flex items-center gap-1 opacity-0 pointer-events-none" aria-hidden="true">
+                <span className="rounded-md border px-2 py-1 font-mono text-[10.5px]">&nbsp;</span>
+              </div>
+              <Empty>select an epic</Empty>
+            </>
           ) : (
             <EpicDetail
               epic={activeEpic}
-              busyPhase={busyPhase}
               busyLifecycle={busyLifecycle}
-              onActivate={activate}
               onLifecycle={lifecycle}
               onOpenDoc={(path, title, mode) =>
                 setEditDoc({ taskId: activeEpic.taskId, path, title, mode })
               }
+              onChanged={reload}
             />
           )}
         </div>
@@ -316,30 +393,60 @@ export function Plans(): JSX.Element {
 
 function EpicDetail({
   epic,
-  busyPhase,
   busyLifecycle,
-  onActivate,
   onLifecycle,
   onOpenDoc,
+  onChanged,
 }: {
   epic: Epic;
-  busyPhase: number | null;
   busyLifecycle: boolean;
-  onActivate: (epic: Epic, phase: EpicPhase) => void;
   onLifecycle: (epic: Epic, action: EpicLifecycleAction) => void;
   onOpenDoc: (path: string, title: string, mode: DrawerMode) => void;
+  onChanged: () => void;
 }): JSX.Element {
   // Which seq numbers are "resolved" — their board task is done/archived OR
   // every checkbox in their doc is ticked (file-driven completion without
-  // board activation). Used to gate the Activate button of dependent phases.
+  // board activation). Used to render depends-on badges.
   const resolvedSeqs = useMemo(() => {
     const s = new Set<number>();
     for (const p of epic.phases) {
-      if (isResolvedColumn(p.boardColumn) || (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal))
+      if (
+        isResolvedColumn(p.boardColumn) ||
+        (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
+        p.runState === 'done'
+      )
         s.add(p.seq);
     }
     return s;
   }, [epic.phases]);
+
+  // Details modal (tabbed summary / checks / doc): one phase, or — when
+  // `phase` is undefined — the plan itself (SUMMARY.md / per-phase checks / README).
+  const [modal, setModal] = useState<{ phase?: EpicPhase } | null>(null);
+
+  // Phase-run controls (interactive-planning-v2 phase 6). The server re-checks
+  // every gate; the client-side disable is a courtesy, and a 409 body (unmet
+  // deps, already running) surfaces in the inline error strip below.
+  const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
+  const [runMsg, setRunMsg] = useState<string | null>(null);
+  const now = useNow(1000);
+
+  const startRun = (phaseId: number): void => {
+    setRunBusy(phaseId);
+    setRunMsg(null);
+    runEpicPhase(epic.taskId, phaseId)
+      .then(() => onChanged())
+      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunBusy(null));
+  };
+  const cancelRun = (phaseId: number): void => {
+    setRunBusy(phaseId);
+    setRunMsg(null);
+    cancelEpicPhaseRun(epic.taskId, phaseId)
+      .then(() => onChanged())
+      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunBusy(null));
+  };
 
   return (
     <div className="pr-1">
@@ -375,19 +482,37 @@ function EpicDetail({
             {busyLifecycle ? '…' : label}
           </button>
         ))}
+        {epic.hasSummary && (
+          <button
+            type="button"
+            onClick={() => setModal({})}
+            title="what was shipped — plan/SUMMARY.md, per-phase checks, README"
+            className="rounded-md border border-green/40 px-2 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/10"
+          >
+            ✓ summary
+          </button>
+        )}
       </div>
+
+      {runMsg !== null && (
+        <div className="mb-2 rounded-md border border-red/40 bg-red/10 px-2.5 py-1.5 font-mono text-[10.5px] text-red">
+          {runMsg}
+        </div>
+      )}
 
       <ol className="space-y-2">
         {epic.phases.map((p) => {
-          const unmetDeps = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
           const activated = p.activatedAt !== null;
           const status = phaseStatus(p, resolvedSeqs);
-          const showActivate = !activated && status !== 'done' && epic.status === 'active';
-          const canActivate = showActivate && unmetDeps.length === 0;
-          const disabledReason =
-            unmetDeps.length > 0
-              ? `waiting on Phase ${unmetDeps.join(', ')} (not done yet)`
-              : undefined;
+          const depsUnmet = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
+          const runDisabled =
+            runBusy !== null || epic.status !== 'active' || depsUnmet.length > 0;
+          const runTitle =
+            epic.status !== 'active'
+              ? 'plan is not active'
+              : depsUnmet.length > 0
+                ? `waiting on phase ${depsUnmet.join(', ')}`
+                : 'run this phase headlessly in an isolated worktree';
           const openDoc = (): void => {
             onOpenDoc(p.docRelPath, `Phase ${String(p.seq)} — ${p.name}`, 'preview');
           };
@@ -419,6 +544,7 @@ function EpicDetail({
                     >
                       {PHASE_CHIP[status].label}
                     </span>
+                    {status === 'in_progress' && <PhaseActivity docUpdatedAt={p.docUpdatedAt} />}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5">
                     {p.dependsOn.map((seq) => (
@@ -442,28 +568,97 @@ function EpicDetail({
                 </div>
 
                 <div className="flex shrink-0 flex-col items-end gap-1.5">
-                  {activated ? (
+                  {/* Legacy chip: phases activated into a board task before the plan↔board
+                      decoupling still show their board column for historical context. */}
+                  {activated && (
                     <span
                       className="rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
                       title={p.boardTaskExternalId ?? undefined}
                     >
                       activated{p.boardColumn !== null ? ` · ${p.boardColumn}` : ''}
                     </span>
-                  ) : (
-                    showActivate && (
+                  )}
+
+                  {/* Direct phase run (no board task): idle/failed offer Run,
+                      running shows elapsed + Cancel + session link, done a chip. */}
+                  {p.runState === 'running' ? (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      <span
+                        className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
+                        title="headless run in progress"
+                      >
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
+                        Running
+                        {p.runStartedAt !== null ? ` · ${fmtElapsed(p.runStartedAt, now)}` : ''}
+                      </span>
+                      {p.runSessionUuid !== null && (
+                        <Link
+                          to={`/sessions/${p.runSessionUuid}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="font-mono text-[9.5px] text-ink-dim underline-offset-2 transition-colors hover:text-brand hover:underline"
+                        >
+                          session
+                        </Link>
+                      )}
                       <button
                         type="button"
-                        disabled={!canActivate || busyPhase === p.id}
+                        disabled={runBusy !== null}
                         onClick={(e) => {
                           e.stopPropagation();
-                          onActivate(epic, p);
+                          cancelRun(p.id);
                         }}
-                        title={disabledReason}
-                        className="rounded-md border border-line-strong bg-surface2 px-2 py-1 font-mono text-[10.5px] text-brand transition-colors hover:bg-surface2/70 disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint"
+                        className="rounded-md border border-red/40 px-1.5 py-px font-mono text-[9.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {busyPhase === p.id ? 'activating…' : 'Activate'}
+                        Cancel
                       </button>
-                    )
+                    </span>
+                  ) : p.runState === 'done' ? (
+                    <span
+                      className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+                      title="headless run finished"
+                    >
+                      Run done
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      {p.runState === 'failed' && (
+                        <span
+                          className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
+                          title={p.runError ?? 'run failed'}
+                        >
+                          Failed
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={runDisabled}
+                        title={runTitle}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRun(p.id);
+                        }}
+                        className={`rounded-md border px-1.5 py-px font-mono text-[9.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
+                          p.runState === 'failed'
+                            ? 'border-red/40 text-red hover:bg-red/10'
+                            : 'border-brand/40 text-brand hover:bg-brand/10'
+                        }`}
+                      >
+                        {runBusy === p.id ? '…' : p.runState === 'failed' ? 'Retry run' : 'Run phase'}
+                      </button>
+                    </span>
+                  )}
+                  {status === 'done' && p.completionReport !== null && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setModal({ phase: p });
+                      }}
+                      title="what was shipped — Completion Report, checks, full doc"
+                      className="font-mono text-[9.5px] text-green underline-offset-2 transition-colors hover:underline"
+                    >
+                      ✓ summary
+                    </button>
                   )}
                   <button
                     type="button"
@@ -477,13 +672,212 @@ function EpicDetail({
                   </button>
                 </div>
               </div>
-              {showActivate && disabledReason !== undefined && (
-                <div className="mt-1.5 font-mono text-[9.5px] text-ink-faint">{disabledReason}</div>
-              )}
             </li>
           );
         })}
       </ol>
+
+      {modal !== null && (
+        <DetailsModal
+          epic={epic}
+          phase={modal.phase}
+          resolvedSeqs={resolvedSeqs}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+type DetailTab = 'summary' | 'checks' | 'doc';
+
+/** Acceptance-criteria checkbox lines of a markdown doc, in order. */
+function extractChecks(md: string): { text: string; done: boolean }[] {
+  const out: { text: string; done: boolean }[] = [];
+  for (const line of md.split('\n')) {
+    const m = /^\s*[-*]\s+\[( |x)\]\s+(.*)$/i.exec(line);
+    if (m !== null) out.push({ done: (m[1] ?? '').toLowerCase() === 'x', text: m[2] ?? '' });
+  }
+  return out;
+}
+
+/**
+ * Tabbed details modal. For a phase: summary (the doc's Completion Report) /
+ * checks (its acceptance-criteria states) / doc (full markdown). For the plan
+ * (phase undefined): summary (plan/SUMMARY.md) / checks (per-phase rollup) /
+ * readme. Esc / backdrop close; doc content fetched lazily per tab.
+ */
+function DetailsModal({
+  epic,
+  phase,
+  resolvedSeqs,
+  onClose,
+}: {
+  epic: Epic;
+  phase: EpicPhase | undefined;
+  resolvedSeqs: Set<number>;
+  onClose: () => void;
+}): JSX.Element {
+  const [tab, setTab] = useState<DetailTab>('summary');
+  const [docText, setDocText] = useState<string | null>(null); // doc/readme + phase checks
+  const [planSummary, setPlanSummary] = useState<string | null>(null);
+  const docPath = phase !== undefined ? phase.docRelPath : 'README.md';
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    const needDoc = tab === 'doc' || (tab === 'checks' && phase !== undefined);
+    if (needDoc && docText === null) {
+      fetchPlanDoc(epic.taskId, docPath)
+        .then((d) => setDocText(d.content))
+        .catch((e: unknown) =>
+          setDocText(`failed to load ${docPath}: ${e instanceof Error ? e.message : String(e)}`),
+        );
+    }
+    if (tab === 'summary' && phase === undefined && planSummary === null) {
+      fetchPlanDoc(epic.taskId, 'SUMMARY.md')
+        .then((d) => setPlanSummary(d.content))
+        .catch((e: unknown) =>
+          setPlanSummary(
+            `failed to load SUMMARY.md: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+    }
+  }, [tab, phase, docText, planSummary, epic.taskId, docPath]);
+
+  const title =
+    phase !== undefined ? `Phase ${String(phase.seq)} — ${phase.name}` : epic.title;
+  const tabs: { id: DetailTab; label: string }[] = [
+    { id: 'summary', label: 'summary' },
+    { id: 'checks', label: 'checks' },
+    { id: 'doc', label: phase !== undefined ? 'doc' : 'readme' },
+  ];
+
+  const phaseChecks = phase !== undefined && docText !== null ? extractChecks(docText) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border border-line bg-surface"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div className="min-w-0 truncate font-display text-[14px] font-bold text-ink">
+            {title}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="flex items-center gap-1" role="tablist" aria-label="details tabs">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`rounded-md border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                    tab === t.id
+                      ? 'border-brand/40 bg-brand/10 text-brand'
+                      : 'border-line text-ink-dim hover:border-line-strong hover:text-ink'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="close details"
+              className="rounded px-1.5 font-mono text-[13px] text-ink-dim transition-colors hover:text-ink"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-y-auto px-4 py-3 text-[13px] leading-relaxed">
+          {tab === 'summary' &&
+            (phase !== undefined ? (
+              phase.completionReport !== null ? (
+                <Markdown text={phase.completionReport} />
+              ) : (
+                <div className="font-mono text-[11.5px] text-ink-faint">
+                  no completion report yet — the executor fills «## Completion Report» when the
+                  phase lands
+                </div>
+              )
+            ) : planSummary === null ? (
+              <Loading label="summary…" />
+            ) : (
+              <Markdown text={planSummary} />
+            ))}
+
+          {tab === 'checks' &&
+            (phase !== undefined ? (
+              phaseChecks === null ? (
+                <Loading label="checks…" />
+              ) : phaseChecks.length === 0 ? (
+                <div className="font-mono text-[11.5px] text-ink-faint">
+                  no checkboxes in this doc
+                </div>
+              ) : (
+                <ul className="space-y-1.5">
+                  {phaseChecks.map((c, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span
+                        className={`mt-px shrink-0 font-mono text-[12px] ${
+                          c.done ? 'text-green' : 'text-ink-faint'
+                        }`}
+                      >
+                        {c.done ? '✓' : '○'}
+                      </span>
+                      <span className={c.done ? 'text-ink-dim' : 'text-ink'}>{c.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : (
+              <ul className="space-y-2">
+                {epic.phases.map((p) => {
+                  const st = phaseStatus(p, resolvedSeqs);
+                  return (
+                    <li key={p.id} className="flex items-center gap-2">
+                      <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+                        Phase {p.seq}
+                      </span>
+                      <span className="min-w-0 truncate text-ink">{p.name}</span>
+                      <span
+                        className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9px] ${PHASE_CHIP[st].cls}`}
+                      >
+                        {PHASE_CHIP[st].label}
+                      </span>
+                      <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
+                        {p.checkboxesDone}/{p.checkboxesTotal || 0}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ))}
+
+          {tab === 'doc' &&
+            (docText === null ? <Loading label="doc…" /> : <Markdown text={docText} />)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -501,7 +895,10 @@ function ProgressBar({
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
     <div
-      className={`h-1.5 overflow-hidden rounded-full bg-surface2 ${className}`}
+      // Track must contrast with every card fill it sits on — the selected plan
+      // card is itself bg-surface2, which made a bg-surface2 track invisible and
+      // a partial fill read as a complete bar.
+      className={`h-1.5 overflow-hidden rounded-full bg-line-strong/50 ${className}`}
       role="progressbar"
       aria-valuenow={pct}
       aria-valuemin={0}

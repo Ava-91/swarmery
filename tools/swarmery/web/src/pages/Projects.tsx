@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import type { Project, ProjectHealth } from '../api/types';
 import { fetchProjects, fetchProjectsHealth, patchProject } from '../api';
 import { fmtAgo, fmtCost, fmtTokens } from '../lib/format';
+import { displaySlug } from '../lib/projectSlug';
 import { usePageSearch } from '../lib/pageSearch';
 import { ProjectName } from '../components/ProjectName';
 import { PluginBadge, ProjectActions } from '../components/ProjectActions';
@@ -56,13 +57,22 @@ function PinToggle({ project, onChanged }: { project: Project; onChanged: () => 
 
 /* ----- one project row ----- */
 
-function ProjectRow({ project, onChanged }: { project: Project; onChanged: () => void }): JSX.Element {
+function ProjectRow({
+  project,
+  projects,
+  onChanged,
+}: {
+  project: Project;
+  /** Full visible list — displaySlug needs it for name-collision fallback. */
+  projects: Project[];
+  onChanged: () => void;
+}): JSX.Element {
   const packs = project.plugin?.packs ?? [];
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <PinToggle project={project} onChanged={onChanged} />
-        <Link to={`/p/${project.slug}`} className="group flex items-center gap-2">
+        <Link to={`/p/${displaySlug(project, projects)}`} className="group flex items-center gap-2">
           <ProjectName
             name={project.name}
             slug={project.slug}
@@ -109,6 +119,52 @@ function ProjectRow({ project, onChanged }: { project: Project; onChanged: () =>
         {project.path}
       </div>
     </Card>
+  );
+}
+
+/* ----- System section (collapsed by default) ----- */
+
+// The System project (~/.swarmery) aggregates daemon-spawned telemetry runs —
+// trajectory judging, agent improve. It is real spend but not user work, so it
+// lives in a collapsed disclosure below the main list instead of a peer row.
+function SystemSection({
+  projects,
+  all,
+  onChanged,
+}: {
+  projects: Project[];
+  /** Full visible list — displaySlug collision fallback needs it. */
+  all: Project[];
+  onChanged: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const sessions = projects.reduce((n, p) => n + p.sessions, 0);
+  const cost = projects.reduce((n, p) => n + (p.costUsd ?? 0), 0);
+  return (
+    <div className="mt-4 border-t border-line-soft pt-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 font-mono text-[11px] text-ink-faint transition-colors hover:text-ink"
+      >
+        <span aria-hidden>{open ? '▾' : '▸'}</span>
+        <span>System</span>
+        <span className="rounded-full border border-line px-2 py-0.5 text-[10px] whitespace-nowrap">
+          daemon telemetry
+        </span>
+        <span className="text-ink-faint">
+          {String(sessions)} sessions · {fmtCost(cost)}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-3">
+          {projects.map((p) => (
+            <ProjectRow key={p.id} project={p} projects={all} onChanged={onChanged} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -165,7 +221,7 @@ function HealthTable({ rows }: { rows: ProjectHealth[] }): JSX.Element {
           {rows.map((r) => (
             <tr key={r.id}>
               <td className="px-3 py-2">
-                <Link to={`/p/${r.slug}`} className="hover:underline">
+                <Link to={`/p/${displaySlug(r, rows)}`} className="hover:underline">
                   <ProjectName name={r.name} slug={r.slug} />
                 </Link>
                 {r.pinned && (
@@ -265,8 +321,12 @@ export function Projects(): JSX.Element {
   const visible = (projects ?? []).filter(
     (p) => (tag === null || p.tags.includes(tag)) && matchesName(p.name, p.slug),
   );
+  // The System project (daemon telemetry runs, ~/.swarmery) is demoted out of
+  // the main list into a collapsed section below it; same split in health.
+  const regular = visible.filter((p) => !p.isSystem);
+  const system = visible.filter((p) => p.isSystem);
   const visibleHealth = (health ?? []).filter(
-    (h) => (tag === null || h.tags.includes(tag)) && matchesName(h.name, h.slug),
+    (h) => !h.isSystem && (tag === null || h.tags.includes(tag)) && matchesName(h.name, h.slug),
   );
 
   return (
@@ -287,7 +347,7 @@ export function Projects(): JSX.Element {
       </div>
       <div className="mt-1.5 font-mono text-[11px] text-ink-dim">
         {projects !== null
-          ? `${String(visible.length)} project${visible.length === 1 ? '' : 's'} · ${String(managed)} managed`
+          ? `${String(regular.length)} project${regular.length === 1 ? '' : 's'} · ${String(managed)} managed`
           : ' '}
       </div>
 
@@ -298,7 +358,7 @@ export function Projects(): JSX.Element {
 
       {error !== null && <ErrorBox message={error} onRetry={load} />}
       {projects === null && error === null && <Loading label="projects…" />}
-      {projects !== null && visible.length === 0 && (
+      {projects !== null && regular.length === 0 && (
         <Empty>
           {query !== '' ? (
             <>no projects match the current filter — try a different search or clear it</>
@@ -317,10 +377,12 @@ export function Projects(): JSX.Element {
       )}
 
       <div className="mt-5">
-        {visible.map((p) => (
-          <ProjectRow key={p.id} project={p} onChanged={load} />
+        {regular.map((p) => (
+          <ProjectRow key={p.id} project={p} projects={visible} onChanged={load} />
         ))}
       </div>
+
+      {system.length > 0 && <SystemSection projects={system} all={visible} onChanged={load} />}
 
       {health !== null && (
         <section className="mt-8">

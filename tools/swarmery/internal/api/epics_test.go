@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
@@ -122,10 +121,30 @@ func TestListEpics(t *testing.T) {
 	}
 }
 
-func TestActivateEpicPhaseCreatesBoardTask(t *testing.T) {
-	srv, db, taskID, _ := epicFixture(t)
+// epicRoutesServer builds a routes-only httptest.Server for the epics fixture
+// DB — no SPA fallback. This is the preferred harness for negative-routing
+// assertions: an unregistered API path returns a genuine 404 from the mux
+// (methodNotAllowed or 404), rather than the SPA index.html 200 that
+// NewServer's "mux.Handle("/")" catch-all produces.
+func epicRoutesServer(t *testing.T, db *sql.DB) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	Routes(mux, &Handler{DB: db})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
 
-	// Activate phase seq=1 (its DB id).
+// TestActivateRouteGone asserts that the activate route no longer exists — the
+// route was removed in interactive-planning-v2 phase 4 (Board is exclusively
+// for tasks created on the board; plan phases run via the phase-run mechanism
+// instead). We use a routes-only mux (no SPA fallback) so an unregistered path
+// returns a genuine 404 from the mux rather than the index.html 200 that the
+// full NewServer catch-all would produce.
+func TestActivateRouteGone(t *testing.T) {
+	_, db, taskID, _ := epicFixture(t)
+	srv := epicRoutesServer(t, db)
+
 	var phase1ID int64
 	if err := db.QueryRow(`SELECT id FROM epic_phases WHERE workspace_task_id=? AND seq=1`, taskID).
 		Scan(&phase1ID); err != nil {
@@ -136,157 +155,9 @@ func TestActivateEpicPhaseCreatesBoardTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("activate status = %d, want 201", resp.StatusCode)
-	}
-	var task boardTaskDTO
-	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
-		t.Fatal(err)
-	}
-	// Title = the doc H1; prompt = full doc; lands in todo.
-	if task.Title != "Phase 1 — Schema" {
-		t.Errorf("title = %q, want the doc H1", task.Title)
-	}
-	if task.BoardColumn != "todo" {
-		t.Errorf("boardColumn = %q, want todo", task.BoardColumn)
-	}
-	// file_scope parsed from **Files:**.
-	if !reflect.DeepEqual(task.FileScope, []string{"internal/store/x.sql", "internal/api/x.go"}) {
-		t.Errorf("fileScope = %v", task.FileScope)
-	}
-	// The phase row is now stamped.
-	var at sql.NullString
-	var boardID sql.NullInt64
-	if err := db.QueryRow(`SELECT activated_at, activated_board_task_id FROM epic_phases WHERE id=?`, phase1ID).
-		Scan(&at, &boardID); err != nil {
-		t.Fatal(err)
-	}
-	if !at.Valid || !boardID.Valid || boardID.Int64 != task.ID {
-		t.Errorf("phase not stamped: at=%v board=%v", at, boardID)
-	}
-}
-
-func TestActivateEpicPhaseIdempotent409(t *testing.T) {
-	srv, db, taskID, _ := epicFixture(t)
-	var phase1ID int64
-	if err := db.QueryRow(`SELECT id FROM epic_phases WHERE workspace_task_id=? AND seq=1`, taskID).
-		Scan(&phase1ID); err != nil {
-		t.Fatal(err)
-	}
-	url := srv.URL + "/api/epics/" + itoa(taskID) + "/phases/" + itoa(phase1ID) + "/activate"
-
-	// First activation → 201.
-	resp1, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp1.Body.Close()
-	if resp1.StatusCode != http.StatusCreated {
-		t.Fatalf("first activate = %d, want 201", resp1.StatusCode)
-	}
-	// Second → 409 carrying the existing task.
-	resp2, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusConflict {
-		t.Fatalf("second activate = %d, want 409", resp2.StatusCode)
-	}
-	var body struct {
-		Error string       `json:"error"`
-		Task  boardTaskDTO `json:"task"`
-	}
-	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Task.Title != "Phase 1 — Schema" {
-		t.Errorf("409 task = %+v", body.Task)
-	}
-	// Exactly ONE board task was created despite two calls.
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE source='queue'`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Errorf("board tasks = %d, want 1 (idempotent)", n)
-	}
-}
-
-func TestActivateDependentPhaseWiresDependency(t *testing.T) {
-	srv, db, taskID, _ := epicFixture(t)
-	id := func(seq int) int64 {
-		var v int64
-		if err := db.QueryRow(`SELECT id FROM epic_phases WHERE workspace_task_id=? AND seq=?`, taskID, seq).Scan(&v); err != nil {
-			t.Fatal(err)
-		}
-		return v
-	}
-	// Activate phase 1, then phase 2 (which depends on 1).
-	post := func(phaseID int64) boardTaskDTO {
-		resp, err := http.Post(srv.URL+"/api/epics/"+itoa(taskID)+"/phases/"+itoa(phaseID)+"/activate", "application/json", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("activate = %d, want 201", resp.StatusCode)
-		}
-		var d boardTaskDTO
-		if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-			t.Fatal(err)
-		}
-		return d
-	}
-	task1 := post(id(1))
-	task2 := post(id(2))
-	// Phase 2's board task depends on phase 1's board task external_id.
-	if !reflect.DeepEqual(task2.Dependencies, []string{task1.ExternalID}) {
-		t.Errorf("task2.dependencies = %v, want [%s]", task2.Dependencies, task1.ExternalID)
-	}
-}
-
-func TestBoardDoneTicksPhaseChecklist(t *testing.T) {
-	srv, db, taskID, planDir := epicFixture(t)
-	var phase1ID int64
-	if err := db.QueryRow(`SELECT id FROM epic_phases WHERE workspace_task_id=? AND seq=1`, taskID).
-		Scan(&phase1ID); err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.Post(
-		srv.URL+"/api/epics/"+itoa(taskID)+"/phases/"+itoa(phase1ID)+"/activate", "application/json", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("activate = %d, want 201", resp.StatusCode)
-	}
-	var task boardTaskDTO
-	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
-		t.Fatal(err)
-	}
-
-	// Moving the minted board task to done ticks the phase doc's remaining box.
-	if got := doReq(t, http.MethodPatch, srv.URL+"/api/board/tasks/"+itoa(task.ID),
-		`{"boardColumn":"done"}`); got != http.StatusOK {
-		t.Fatalf("patch to done = %d, want 200", got)
-	}
-	body, err := os.ReadFile(filepath.Join(planDir, "phase-1-schema.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(body), "[ ]") {
-		t.Errorf("phase doc still has unchecked boxes after done:\n%s", body)
-	}
-	// The other phase's doc is untouched.
-	other, err := os.ReadFile(filepath.Join(planDir, "phase-2-ui.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(other), "[ ]") {
-		t.Errorf("phase-2 doc was ticked but its task is not done:\n%s", other)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("activate route = %d, want 404 (route removed; routes-only mux, no SPA fallback)", resp.StatusCode)
 	}
 }
 
@@ -498,19 +369,6 @@ func TestPlanDocEndpointErrorBranches(t *testing.T) {
 				t.Errorf("%s = %d, want %d", c.name, got, c.want)
 			}
 		})
-	}
-}
-
-func TestActivateEpicPhaseNotFound(t *testing.T) {
-	srv, _, taskID, _ := epicFixture(t)
-	// A phase id that doesn't belong to this task → 404.
-	got := doReq(t, http.MethodPost, srv.URL+"/api/epics/"+itoa(taskID)+"/phases/999999/activate", "")
-	if got != http.StatusNotFound {
-		t.Errorf("activate unknown phase = %d, want 404", got)
-	}
-	// Bad ids → 400.
-	if got := doReq(t, http.MethodPost, srv.URL+"/api/epics/abc/phases/1/activate", ""); got != http.StatusBadRequest {
-		t.Errorf("activate bad task id = %d, want 400", got)
 	}
 }
 

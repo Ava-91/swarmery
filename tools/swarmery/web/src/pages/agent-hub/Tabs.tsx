@@ -14,6 +14,8 @@ import type {
   RetroLesson,
 } from '../../api/types';
 import { fmtAgo, fmtDurationMs, fmtDayShort } from '../../lib/format';
+import { displaySlug, findProject } from '../../lib/projectSlug';
+import { useScope } from '../../lib/scope';
 import { Empty } from '../../components/ui';
 
 /* ----- Overview ----- */
@@ -57,6 +59,7 @@ function statusTone(status: string): string {
 }
 
 export function RunsTab({ runs }: { runs: AgentRun[] }): JSX.Element {
+  const { projects } = useScope();
   if (runs.length === 0) return <Empty>no runs in the last 30 days</Empty>;
   return (
     <div className="overflow-hidden rounded-xl border border-line">
@@ -74,7 +77,9 @@ export function RunsTab({ runs }: { runs: AgentRun[] }): JSX.Element {
               {r.description !== '' ? r.description : r.sessionTitle || r.sessionUuid}
             </div>
             <div className="font-mono text-[10px] text-ink-faint">
-              {r.projectSlug !== '' ? `${r.projectSlug} · ` : ''}
+              {r.projectSlug !== ''
+                ? `${findProject(projects, r.projectSlug)?.name ?? r.projectSlug} · `
+                : ''}
               {fmtAgo(r.ts)}
             </div>
           </div>
@@ -124,7 +129,12 @@ function verdictTone(verdict: string | null): string {
 }
 
 export function TasksTab({ tasks, projectSlug }: { tasks: AgentTask[]; projectSlug?: string | null }): JSX.Element {
+  const { projects } = useScope();
   if (tasks.length === 0) return <Empty>no tasks this agent executed</Empty>;
+  // The prop may carry the DB path slug — link with the pretty slug when the
+  // project resolves.
+  const boardProject = findProject(projects, projectSlug ?? null);
+  const boardSlug = boardProject !== null ? displaySlug(boardProject, projects) : projectSlug;
   return (
     <div className="overflow-hidden rounded-xl border border-line">
       {tasks.map((t, i) => {
@@ -151,10 +161,10 @@ export function TasksTab({ tasks, projectSlug }: { tasks: AgentTask[]; projectSl
         const cls =
           'flex items-center gap-3 border-b border-line-soft px-3.5 py-2.5 last:border-b-0';
         // Link to the project board when we know the project; else a plain row.
-        return projectSlug !== undefined && projectSlug !== null ? (
+        return boardSlug !== undefined && boardSlug !== null ? (
           <Link
             key={`${t.externalId}-${String(i)}`}
-            to={`/p/${encodeURIComponent(projectSlug)}/board`}
+            to={`/p/${encodeURIComponent(boardSlug)}/board`}
             className={`${cls} transition-colors hover:bg-surface`}
           >
             {inner}

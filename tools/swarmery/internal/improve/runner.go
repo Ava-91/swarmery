@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,6 +40,12 @@ type ClaudeRunner struct {
 	Model string
 }
 
+// isDir reports whether path exists and is a directory.
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
 func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	timeout := r.Timeout
 	if timeout <= 0 {
@@ -50,7 +58,20 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	if model == "" {
 		model = defaultModel
 	}
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text")
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected. Keep the flag order identical to the trajjudge twin.
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text", "--setting-sources", "project,local")
+	// System home, not the inherited launchd cwd "/": transcripts then
+	// attribute to the deliberate "System" project (see internal/ingest).
+	// Only when it actually exists — a missing dir would fail the spawn with
+	// chdir ENOENT, and losing attribution beats not running at all (the
+	// daemon owns ~/.swarmery, so in production it is always there).
+	if home, err := os.UserHomeDir(); err == nil {
+		if dir := filepath.Join(home, ".swarmery"); isDir(dir) {
+			cmd.Dir = dir
+		}
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

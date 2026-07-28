@@ -113,7 +113,7 @@ function groupByDay(sorted: Session[]): DayGroup[] {
 export function Sessions(): JSX.Element {
   // Project filtering comes from the global header scope switcher; the title
   // filter comes from the contextual header search input.
-  const { scope } = useScope();
+  const { scope, scopeProject } = useScope();
   const query = usePageSearch();
   const [status, setStatus] = useState<SessionStatus | null>(null);
   const [sessions, setSessions] = useState<Session[] | null>(null);
@@ -197,9 +197,11 @@ export function Sessions(): JSX.Element {
     return () => io.disconnect();
   }, [nextCursor, loadMore]);
 
+  // Rows carry the DB path slug, while scope may be the pretty name slug —
+  // compare against the resolved project's slug (raw scope as fallback).
   const matchesProject = useCallback(
-    (s: Session): boolean => scope === null || s.projectSlug === scope,
-    [scope],
+    (s: Session): boolean => scope === null || s.projectSlug === (scopeProject?.slug ?? scope),
+    [scope, scopeProject],
   );
 
   const onMessage = useCallback(

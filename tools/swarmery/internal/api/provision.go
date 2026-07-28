@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 )
@@ -64,4 +65,35 @@ func (h *Handler) enqueueProvision(projectID int64, projectPath, pack string) {
 			log.Printf("error: provision run (project %d, %s): %v", projectID, pack, err)
 		}
 	})
+}
+
+// architectureRebuild handles POST /api/projects/{id}/architecture/rebuild —
+// an explicit user-requested regeneration of the architecture map. Reuses the
+// provision pipeline (install→generate) with the freshness guard bypassed, so
+// it also builds the very first map for a project that never had one. Unlike
+// the post-enable hook it ignores the SWARMERY_AUTOPROVISION gate: the user
+// pressed the button, this is not automation. Single-flight via Enqueue —
+// pressing rebuild while a job is in flight returns that job.
+func (h *Handler) architectureRebuild(w http.ResponseWriter, r *http.Request) {
+	if h.Provision == nil {
+		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"error": "provisioning not attached"})
+		return
+	}
+	id, path, ok := h.projectPathByID(w, r)
+	if !ok {
+		return
+	}
+	jobID, started, err := h.Provision.Enqueue(id, architecturePack)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if started {
+		h.spawnProvision(fmt.Sprintf("rebuild project %d", id), func() {
+			if err := h.Provision.RunForce(context.Background(), jobID, path, architecturePack); err != nil {
+				log.Printf("error: architecture rebuild (project %d): %v", id, err)
+			}
+		})
+	}
+	writeJSONStatus(w, http.StatusAccepted, map[string]any{"jobId": jobID, "started": started})
 }

@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Project } from '../api/types';
 import { projectLabel } from '../lib/format';
+import { displaySlug, findProject } from '../lib/projectSlug';
 import { useProjectColor } from '../lib/projectColors';
 
 export function ProjectSwitcher({
@@ -30,7 +31,7 @@ export function ProjectSwitcher({
   const inputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const current = projects.find((p) => p.slug === currentSlug) ?? null;
+  const current = findProject(projects, currentSlug);
   const label = current !== null ? projectLabel(current.name, current.slug) : currentSlug;
 
   const filtered = useMemo(() => {
@@ -98,7 +99,7 @@ export function ProjectSwitcher({
         <span
           aria-hidden="true"
           className="h-[8px] w-[8px] shrink-0 rounded-full"
-          style={{ backgroundColor: colorFor(currentSlug) }}
+          style={{ backgroundColor: colorFor(current?.slug ?? currentSlug) }}
         />
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{label}</span>
         <span aria-hidden="true" className="text-[9px] text-ink-faint">
@@ -146,10 +147,10 @@ export function ProjectSwitcher({
                   key={p.id}
                   type="button"
                   role="option"
-                  aria-selected={p.slug === currentSlug}
-                  onClick={() => go(p.slug)}
+                  aria-selected={p.id === current?.id}
+                  onClick={() => go(displaySlug(p, projects))}
                   className={`flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[11px] transition-colors hover:bg-surface2 ${
-                    p.slug === currentSlug ? 'bg-surface2 text-ink' : 'text-ink-3'
+                    p.id === current?.id ? 'bg-surface2 text-ink' : 'text-ink-3'
                   }`}
                 >
                   <span
@@ -158,7 +159,7 @@ export function ProjectSwitcher({
                     style={{ backgroundColor: colorFor(p.slug) }}
                   />
                   <span className="min-w-0 flex-1 truncate">{projectLabel(p.name, p.slug)}</span>
-                  {p.slug === currentSlug && <span aria-hidden="true">✓</span>}
+                  {p.id === current?.id && <span aria-hidden="true">✓</span>}
                 </button>
               ))
             )}

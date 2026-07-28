@@ -51,7 +51,11 @@ func (r ClaudeRunner) Run(ctx context.Context, cwd, prompt, model string) (strin
 		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
 		defer cancel()
 	}
-	args := []string{"-p", "--output-format", "text"}
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected.
+	args := []string{"-p", "--output-format", "text",
+		"--setting-sources", "project,local"}
 	if m := strings.TrimSpace(model); m != "" {
 		args = append(args, "--model", m)
 	}

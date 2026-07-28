@@ -29,7 +29,7 @@ Vocabulary: the top-level plan unit is a **Phase** (`phase-N-<slug>.md`); inside
   - Every phase doc has: Goal, Files to Create/Modify, Implementation Details, Copy-paste Agent Prompt, Dependencies, Acceptance Criteria (the phase's Steps), Completion Report
   - Every time estimate states basis (measured / analogous task / expert guess) and confidence (HIGH/MEDIUM/LOW)
   - Implementation Details include code snippets and interfaces sufficient for an executor to act without additional research
-  - Every Copy-paste Agent Prompt is self-contained: repo path + branch, "read first" file list, numbered tasks, verification commands, report-back instructions
+  - Every Copy-paste Agent Prompt is self-contained: repo path + branch, "read first" file list, numbered tasks, verification commands, a TICK CONTRACT paragraph (absolute path of the phase doc + flip satisfied `- [ ]` checkboxes immediately after each task's verification passes, never batched), report-back instructions
   - Acceptance Criteria are measurable ("npm run typecheck passes" not "code is correct")
   - Every file reference uses exact paths (not "the service file")
 - Stop conditions: All plan files written. If maxTurns exhausted, write README.md first, then phase files, and flag partial. If plan rejected by tech-lead (Phase 3.6), incorporate feedback and re-emit (max 2 iterations).
@@ -80,7 +80,19 @@ Vocabulary: the top-level plan unit is a **Phase** (`phase-N-<slug>.md`); inside
   ## Implementation Details
   ## Copy-paste Agent Prompt
   (one fenced block, self-contained: repo path + branch, "read first" file list,
-   numbered tasks, verification commands, report-back instructions)
+   numbered tasks, verification commands, a TICK CONTRACT paragraph, report-back
+   instructions. The TICK CONTRACT paragraph — placed right before the report-back
+   instructions — tells the executor: the platform renders this doc's status and
+   checkboxes live; at phase start (before task 1) flip the doc's `Status:` header
+   line to `In progress`; then, the moment a numbered task's verification passes,
+   edit THIS phase doc (spell out its absolute path) and flip every Acceptance
+   Criteria checkbox that task satisfies from `- [ ]` to `- [x]` — one edit per
+   completed task, immediately, never batched at the end. When the phase's LAST
+   checkbox is ticked, fill the doc's `## Completion Report` section — what
+   shipped, commits, verification output, deviations — the platform shows it as
+   the phase's summary; and when the plan's final phase lands, also write
+   `plan/SUMMARY.md` (objective, what shipped per phase, verification results,
+   follow-ups) — the platform's plan-level summary.)
   ## Dependencies
   ## Acceptance Criteria
   - [ ] {measurable criterion with verification command}   <!-- these checkboxes are the phase's Steps -->
@@ -139,6 +151,7 @@ Context compaction: if context exceeds 60% window during planning, write README.
 - [ ] Phase count matches complexity (3-5 Medium, 6-10 Complex)
 - [ ] Every phase has Goal, Files, Implementation Details, Dependencies, Acceptance Criteria (its Steps), Completion Report
 - [ ] Acceptance Criteria are measurable ("npm run typecheck passes" not "code is correct")
+- [ ] Every Copy-paste Agent Prompt carries a TICK CONTRACT paragraph naming the phase doc's absolute path (executors flip satisfied checkboxes immediately per task, never batched)
 - [ ] Every file reference uses exact paths (not "the service file")
 - [ ] Every time estimate has basis and confidence level
 - [ ] Implementation Details have enough code snippets for executor to act without research

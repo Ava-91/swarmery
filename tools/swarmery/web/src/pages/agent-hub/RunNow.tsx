@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { displaySlug } from '../../lib/projectSlug';
 import { useScope } from '../../lib/scope';
 
 /** Build the board deep-link that prefills QuickEntry with `@<agent>: `. */
@@ -57,7 +58,7 @@ export function RunNowButton({
     }
     // Fleet, unscoped: a single project short-circuits the picker.
     if (projects.length === 1 && projects[0] !== undefined) {
-      go(projects[0].slug);
+      go(displaySlug(projects[0], projects));
       return;
     }
     setPicking((v) => !v);
@@ -85,7 +86,7 @@ export function RunNowButton({
             <button
               key={p.slug}
               type="button"
-              onClick={() => go(p.slug)}
+              onClick={() => go(displaySlug(p, projects))}
               className="block w-full px-3 py-1.5 text-left text-[12.5px] text-ink-dim transition-colors hover:bg-surface2 hover:text-ink"
             >
               {p.name ?? p.slug}

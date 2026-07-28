@@ -25,6 +25,8 @@ var (
 		"cwd", "status", "startedAt", "endedAt", "title", "source",
 		// parity wave: additive per-session aggregates (nullable).
 		"tokens", "costUsd",
+		// fat-session wave: last-assistant-turn context occupancy (nullable).
+		"contextTokens",
 		// phase 3.5: workspaces — additive best-task-link fields (nullable).
 		"taskId", "taskExternalId", "taskLinkSource", "taskConfidence",
 		// phase 4 step-07+: process liveness (nullable).

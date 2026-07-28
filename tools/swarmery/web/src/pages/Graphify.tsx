@@ -12,6 +12,7 @@ import type { ToolsResponse } from '../api/types';
 import { fetchTools } from '../api';
 import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { fmtAgo } from '../lib/format';
+import { findProject } from '../lib/projectSlug';
 
 export function Graphify({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Element {
   const [data, setData] = useState<ToolsResponse | null>(null);
@@ -50,7 +51,7 @@ export function Graphify({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elem
   const projects = data?.graphify.projects ?? [];
   const scoped = scopedSlug !== undefined;
   const project = scoped
-    ? projects.find((p) => p.slug === scopedSlug)
+    ? (findProject(projects, scopedSlug ?? null) ?? undefined)
     : (projects.find((p) => p.id === selectedId) ?? projects.find((p) => p.hasViz) ?? projects[0]);
 
   return (

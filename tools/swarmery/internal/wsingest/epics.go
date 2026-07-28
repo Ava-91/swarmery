@@ -44,12 +44,75 @@ var (
 
 // epicPhase is one parsed phase (a README table row joined to its doc file).
 type epicPhase struct {
-	seq             int
-	name            string
-	docPath         string // absolute path to the phase/step doc ("" when unresolved)
-	dependsOn       []int  // seq numbers this phase depends on
-	checkboxesDone  int
-	checkboxesTotal int
+	seq              int
+	name             string
+	docPath          string // absolute path to the phase/step doc ("" when unresolved)
+	dependsOn        []int  // seq numbers this phase depends on
+	checkboxesDone   int
+	checkboxesTotal  int
+	docStatus        string // normalized `Status:` header marker; "" when absent
+	docUpdatedAt     string // RFC3339 mtime of the doc file; "" when unresolved
+	completionReport string // `## Completion Report` section body; "" when absent
+}
+
+var (
+	completionHeadingRe = regexp.MustCompile(`(?mi)^##\s+Completion Report\s*$`)
+	nextSectionRe       = regexp.MustCompile(`(?m)^##\s`)
+)
+
+// parseCompletionReport extracts the body of the doc's `## Completion Report`
+// section (from the heading to the next `## ` heading or EOF), trimmed.
+// "" when the section is absent or empty — e.g. a template stub with nothing
+// filled in yet. Pure; unit-tested.
+func parseCompletionReport(text string) string {
+	loc := completionHeadingRe.FindStringIndex(text)
+	if loc == nil {
+		return ""
+	}
+	body := text[loc[1]:]
+	if next := nextSectionRe.FindStringIndex(body); next != nil {
+		body = body[:next[0]]
+	}
+	return strings.TrimSpace(body)
+}
+
+// docStatusHeaderLines bounds the `Status:` scan to the doc's header block so a
+// `Status: Pending` inside an embedded template/code fence further down can't
+// masquerade as the phase's own marker.
+const docStatusHeaderLines = 15
+
+var docStatusRe = regexp.MustCompile(`(?i)^Status:\s*(.+?)\s*$`)
+
+// parseDocStatus extracts the phase doc's own `Status:` marker from its header
+// block (first docStatusHeaderLines lines, stopping at the first `##` section)
+// and normalizes it to pending|in_progress|done. "" when absent or
+// unrecognized. Pure; unit-tested.
+func parseDocStatus(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > docStatusHeaderLines {
+		lines = lines[:docStatusHeaderLines]
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			break // header block over — sections may quote status templates
+		}
+		m := docStatusRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		v := strings.ToLower(strings.TrimSpace(m[1]))
+		v = strings.NewReplacer("-", " ", "_", " ").Replace(v)
+		switch v {
+		case "in progress", "wip", "active", "running", "started":
+			return "in_progress"
+		case "done", "complete", "completed":
+			return "done"
+		case "pending", "todo", "not started":
+			return "pending"
+		}
+		return "" // an explicit but unrecognized marker — ignore
+	}
+	return ""
 }
 
 // countCheckboxes counts acceptance-criteria checkboxes in a doc, returning
@@ -252,6 +315,11 @@ func parsePlan(planDir string) []epicPhase {
 			}
 		}
 		phases[i].checkboxesDone, phases[i].checkboxesTotal = countCheckboxes(string(body))
+		phases[i].docStatus = parseDocStatus(string(body))
+		phases[i].completionReport = parseCompletionReport(string(body))
+		if fi, err := os.Stat(abs); err == nil {
+			phases[i].docUpdatedAt = fi.ModTime().UTC().Format(time.RFC3339)
+		}
 	}
 	return phases
 }
@@ -402,13 +470,27 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
 				activatedTask = a.task.Int64
 			}
 		}
+		var docStatus any
+		if p.docStatus != "" {
+			docStatus = p.docStatus
+		}
+		var docUpdatedAt any
+		if p.docUpdatedAt != "" {
+			docUpdatedAt = p.docUpdatedAt
+		}
+		var completionReport any
+		if p.completionReport != "" {
+			completionReport = p.completionReport
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO epic_phases
 				(workspace_task_id, seq, name, doc_path, depends_on,
-				 checkboxes_total, checkboxes_done, activated_at, activated_board_task_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 checkboxes_total, checkboxes_done, doc_status, doc_updated_at,
+				 completion_report, activated_at, activated_board_task_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			taskID, p.seq, p.name, p.docPath, string(depJSON),
-			p.checkboxesTotal, p.checkboxesDone, activatedAt, activatedTask); err != nil {
+			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
+			completionReport, activatedAt, activatedTask); err != nil {
 			return err
 		}
 	}

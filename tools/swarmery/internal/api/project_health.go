@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 )
 
 type projectHealthDTO struct {
@@ -28,6 +30,9 @@ type projectHealthDTO struct {
 	Name   *string  `json:"name"`
 	Pinned bool     `json:"pinned"`
 	Tags   []string `json:"tags"`
+	// IsSystem mirrors projectDTO.IsSystem (path = ~/.swarmery) so the health
+	// table can drop the telemetry-only System row.
+	IsSystem bool `json:"isSystem"`
 	// Σ turns.cost_usd per rolling week; null when the window has no priced
 	// turn (honesty rule — never a lying zero).
 	CostWeekUSD     *float64 `json:"costWeekUsd"`
@@ -53,25 +58,28 @@ func (h *Handler) projectsHealth(w http.ResponseWriter, r *http.Request) {
 
 	// Base rows: every non-archived project, pinned first (list parity).
 	rows, err := h.DB.Query(`
-		SELECT id, slug, name, pinned, tags, last_activity
+		SELECT id, path, slug, name, pinned, tags, last_activity
 		FROM projects WHERE archived = 0
 		ORDER BY pinned DESC, last_activity DESC`)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	sysDir := ingest.SystemDir()
 	out := []projectHealthDTO{}
 	index := map[int64]int{}
 	for rows.Next() {
 		var p projectHealthDTO
+		var path string
 		var pinned int
 		var tagsRaw string
-		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &pinned, &tagsRaw, &p.LastActivity); err != nil {
+		if err := rows.Scan(&p.ID, &path, &p.Slug, &p.Name, &pinned, &tagsRaw, &p.LastActivity); err != nil {
 			rows.Close()
 			writeErr(w, err)
 			return
 		}
 		p.Pinned = pinned != 0
+		p.IsSystem = sysDir != "" && path == sysDir
 		p.Tags = []string{}
 		if err := json.Unmarshal([]byte(tagsRaw), &p.Tags); err != nil || p.Tags == nil {
 			p.Tags = []string{}

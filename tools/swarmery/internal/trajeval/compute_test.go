@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
@@ -92,6 +93,62 @@ func TestComputePersistsScoreAndFindings(t *testing.T) {
 	}
 	if findingsAfter != 2 {
 		t.Errorf("findings after recompute = %d, want 2", findingsAfter)
+	}
+}
+
+// TestComputeSkipsAndPrunesSystemSessions locks the feedback-loop guard:
+// sessions attributed to the System project (cwd = ingest.SystemDir(), plus
+// legacy cwd "/") are daemon-spawned headless runs — trajjudge's own judge
+// sessions among them. Scoring them turns every judge run into a fresh judge
+// candidate and the pool never drains. Compute must never score them and must
+// prune any score rows accumulated before this guard existed.
+func TestComputeSkipsAndPrunesSystemSessions(t *testing.T) {
+	db := openMigratedDB(t)
+	sysDir := ingest.SystemDir()
+	if sysDir == "" {
+		t.Skip("home dir unresolvable")
+	}
+
+	mustExec(t, db, `INSERT INTO projects(id, name, path, slug, first_seen) VALUES (1,'System',?, 'system','2026-07-27T00:00:00Z')`, sysDir)
+	mustExec(t, db, `INSERT INTO projects(id, name, path, slug, first_seen) VALUES (2,'p','/p','p','2026-07-27T00:00:00Z')`)
+	// Session 1: System dir cwd. Session 2: legacy "/" cwd. Session 3: normal.
+	mustExec(t, db, `INSERT INTO sessions(id, project_id, session_uuid, cwd, started_at) VALUES (1, 1, 'sys1', ?, '2026-07-27T00:00:00Z')`, sysDir)
+	mustExec(t, db, `INSERT INTO sessions(id, project_id, session_uuid, cwd, started_at) VALUES (2, 1, 'sys2', '/', '2026-07-27T00:00:00Z')`)
+	mustExec(t, db, `INSERT INTO sessions(id, project_id, session_uuid, cwd, started_at) VALUES (3, 2, 'u1', '/p', '2026-07-27T00:00:00Z')`)
+	for sid := 1; sid <= 3; sid++ {
+		mustExec(t, db, `INSERT INTO turns(id, session_id, seq, role, started_at, agent_name)
+		                 VALUES (?, ?, 1, 'assistant', '2026-07-27T00:00:00Z', 'main')`, sid, sid)
+		mustExec(t, db, `INSERT INTO events(id, session_id, turn_id, ts, type, tool_name)
+		                 VALUES (?, ?, ?, '2026-07-27T00:00:00Z', 'file_change', '')`, sid, sid, sid)
+	}
+	// Pre-guard pollution: session 1 was already scored and flagged.
+	mustExec(t, db, `INSERT INTO trajectory_scores(id, session_id, agent, first_pass, computed_at) VALUES (99, 1, 'main', 1, '2026-07-27T00:00:00Z')`)
+	mustExec(t, db, `INSERT INTO trajectory_findings(score_id, kind, severity, evidence_turn_ids) VALUES (99, 'verify-skip', 'warn', '[1]')`)
+
+	if err := Compute(db, time.Now()); err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+
+	var sysScores int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM trajectory_scores WHERE session_id IN (1,2)`).Scan(&sysScores); err != nil {
+		t.Fatal(err)
+	}
+	if sysScores != 0 {
+		t.Errorf("system-session scores = %d, want 0 (skipped and pruned)", sysScores)
+	}
+	var orphanFindings int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM trajectory_findings WHERE score_id = 99`).Scan(&orphanFindings); err != nil {
+		t.Fatal(err)
+	}
+	if orphanFindings != 0 {
+		t.Errorf("pruned score's findings = %d, want 0 (cascade)", orphanFindings)
+	}
+	var normal int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM trajectory_scores WHERE session_id = 3`).Scan(&normal); err != nil {
+		t.Fatal(err)
+	}
+	if normal != 1 {
+		t.Errorf("normal-session scores = %d, want 1", normal)
 	}
 }
 

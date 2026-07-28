@@ -34,6 +34,49 @@ func TestCountCheckboxes(t *testing.T) {
 	}
 }
 
+func TestParseDocStatus(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"in progress", "# Phase 2 — API\nStatus: In progress\n## Goal\n", "in_progress"},
+		{"wip alias", "# P\nStatus: WIP\n", "in_progress"},
+		{"kebab", "# P\nStatus: in-progress\n", "in_progress"},
+		{"pending", "# P\nStatus: Pending\n", "pending"},
+		{"done", "# P\nStatus: Completed\n", "done"},
+		{"absent", "# P\n\n## Goal\nno marker\n", ""},
+		{"unrecognized", "# P\nStatus: on fire\n", ""},
+		{"below a section is ignored", "# P\n\n## Template\nStatus: Pending\n", ""},
+		{"beyond header window ignored", "# P\n" + strings.Repeat("filler\n", docStatusHeaderLines) + "Status: In progress\n", ""},
+		{"not a status line", "# P\nRepo: /x · Status quo\n", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseDocStatus(c.in); got != c.want {
+				t.Errorf("parseDocStatus = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseCompletionReport(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"basic", "# P\n## Goal\nx\n## Completion Report\nShipped X.\n- commit abc\n", "Shipped X.\n- commit abc"},
+		{"stops at next section", "# P\n## Completion Report\ndone stuff\n## Notes\nnope\n", "done stuff"},
+		{"absent", "# P\n## Goal\nx\n", ""},
+		{"empty stub", "# P\n## Completion Report\n\n## Notes\nx\n", ""},
+		{"case-insensitive heading", "# P\n## completion report\nfilled\n", "filled"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseCompletionReport(c.in); got != c.want {
+				t.Errorf("parseCompletionReport = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseLeadingInts(t *testing.T) {
 	cases := []struct {
 		in   string

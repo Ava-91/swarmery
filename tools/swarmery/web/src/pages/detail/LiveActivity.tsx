@@ -4,11 +4,12 @@
 //   • our own headless resume in flight (resumeInFlight) → we KNOW it is
 //     working and since when → an animated spinner + rotating gerund +
 //     ticking elapsed timer ("Working · Ionizing… · 1m 08s").
-//   • a live terminal process (proc_state running/orphaned, status active) →
-//     we can only see transcript writes, so a softer pulse with the time since
-//     the last output ("live · last output 9 s ago"). A silent extended-reason
-//     turn writes nothing, so this is best-effort, not a mid-turn guarantee.
-// Renders nothing when the session is neither.
+//   • a live OS process (proc_state running/orphaned — regardless of the
+//     time-based status, which idles out during long silent tool calls) →
+//     working spinner while output is fresh, and a "live · working quietly"
+//     pulse through silent stretches (builds, test suites, long thinks).
+// Renders nothing when the session has no live process — that absence IS the
+// "session is not doing anything" signal the operator reads.
 
 import { useEffect, useState } from 'react';
 import type { SessionDetail } from '../../api/types';
@@ -34,11 +35,13 @@ function elapsedLabel(ms: number): string {
   return `${String(m)}m ${String(s % 60).padStart(2, '0')}s`;
 }
 
+// Process aliveness alone drives the indicator — NOT the time-based status.
+// A long silent tool call (a full test suite, a build) writes nothing to the
+// transcript for minutes, which flips status active→idle; the OS process is
+// still there and procwatch refreshes proc_state every 30s. The contract the
+// operator relies on: indicator visible ⇔ the session's process is alive.
 function hasLiveProcess(detail: SessionDetail): boolean {
-  return (
-    (detail.procState === 'running' || detail.procState === 'orphaned') &&
-    detail.status === 'active'
-  );
+  return detail.procState === 'running' || detail.procState === 'orphaned';
 }
 
 export function LiveActivity({ detail }: { detail: SessionDetail }): JSX.Element | null {
@@ -77,14 +80,42 @@ export function LiveActivity({ detail }: { detail: SessionDetail }): JSX.Element
   if (live) {
     const lastEvent =
       detail.events.length > 0 ? detail.events[detail.events.length - 1] : undefined;
+    const lastMs = lastEvent !== undefined ? new Date(lastEvent.ts).getTime() : NaN;
+    const sinceOutput = Number.isNaN(lastMs) ? Infinity : now - lastMs;
+
+    // Fresh output (< 2 min) → the agent is visibly producing: full working
+    // spinner. Quiet stretch → the process is alive but inside a silent tool
+    // call (build, test suite, long think): keep the indicator up, say so.
+    if (sinceOutput < 2 * 60_000) {
+      const gerund = GERUNDS[Math.floor(now / 4000) % GERUNDS.length];
+      return (
+        <div className="my-2 flex items-center gap-2.5 font-mono text-[11.5px] text-brand">
+          <span
+            className="h-3 w-3 shrink-0 animate-spin rounded-full border-[1.5px] border-brand/30 border-t-brand"
+            aria-hidden="true"
+          />
+          <span>
+            {gerund}
+            <span className="animate-pulse">…</span>
+            {lastEvent !== undefined && (
+              <span className="text-ink-faint"> · last output {fmtAgo(lastEvent.ts)}</span>
+            )}
+          </span>
+        </div>
+      );
+    }
     return (
-      <div className="my-2 flex items-center gap-2 font-mono text-[11px] text-ink-faint">
+      <div
+        className="my-2 flex items-center gap-2 font-mono text-[11px] text-ink-faint"
+        title="the OS process is alive (procwatch, 30s resolution); nothing written to the transcript during this stretch — typical for long builds/tests"
+      >
         <span
           className="h-[7px] w-[7px] shrink-0 animate-blink-dot rounded-full bg-green"
           aria-hidden="true"
         />
         <span>
-          live{lastEvent !== undefined ? ` · last output ${fmtAgo(lastEvent.ts)}` : ''}
+          live · working quietly
+          {lastEvent !== undefined ? ` · no output for ${fmtAgo(lastEvent.ts)}` : ''}
         </span>
       </div>
     );

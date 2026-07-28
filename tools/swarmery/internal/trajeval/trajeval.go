@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 )
 
 // normAgent folds "core:tech-lead" and "tech-lead" to the same lowercase key.
@@ -107,8 +109,31 @@ func firstPass(evs []event) bool {
 // Compute scores every session that has events, persisting one row per
 // (session, agent_name) idempotently. Best-effort per session: a failure on
 // one session is skipped, never aborts the batch.
+//
+// System-project sessions (cwd = ingest.SystemDir(), legacy cwd "/") are
+// daemon-spawned headless runs — trajjudge's own judge sessions among them.
+// Scoring them would make every judge run a fresh judge candidate, so the
+// pool never drains and each daemon restart burns a full batch. They are
+// never scored, and score rows accumulated before this guard are pruned
+// (findings cascade).
 func Compute(db *sql.DB, now time.Time) error {
-	rows, err := db.Query(`SELECT DISTINCT session_id FROM events ORDER BY session_id`)
+	sysDir := ingest.SystemDir()
+	if sysDir == "" {
+		// Home unresolvable: an empty string would match NULL-cwd sessions
+		// via COALESCE below; use a path no cwd can equal instead.
+		sysDir = "\x00unresolvable"
+	}
+	if _, err := db.Exec(`
+		DELETE FROM trajectory_scores WHERE session_id IN
+		  (SELECT id FROM sessions WHERE cwd IN (?, '/'))`, sysDir); err != nil {
+		return err
+	}
+	rows, err := db.Query(`
+		SELECT DISTINCT e.session_id
+		FROM events e
+		JOIN sessions s ON s.id = e.session_id
+		WHERE COALESCE(s.cwd, '') NOT IN (?, '/')
+		ORDER BY e.session_id`, sysDir)
 	if err != nil {
 		return err
 	}

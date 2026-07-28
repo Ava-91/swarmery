@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
 // boardTaskKeys is the frozen JSON key set of BoardTask in web/src/api/types.ts.
@@ -259,6 +263,84 @@ func TestBoardTaskCrossOrigin(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("cross-origin POST = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestBoardDoneTicksPhaseChecklist: moving a board task to done via PATCH must
+// flip every remaining unchecked acceptance-criteria checkbox in the linked
+// phase doc. The activate endpoint no longer exists (removed in
+// interactive-planning-v2 phase 4), so we seed activated_board_task_id
+// directly in the DB — the tick path in patchBoardTask only reads that column,
+// not the removed endpoint.
+func TestBoardDoneTicksPhaseChecklist(t *testing.T) {
+	// Build a DB with the store schema so all migrations including epic_phases run.
+	db, err := store.Open(filepath.Join(t.TempDir(), "tick.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Seed a project, a workspace epic task, a board task, and a phase doc with
+	// one checked and two unchecked acceptance-criteria boxes.
+	if _, err := db.Exec(
+		`INSERT INTO projects(id, path, slug, first_seen) VALUES(1,'/repo/q','q','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	// Workspace task (the epic).
+	if _, err := db.Exec(`INSERT INTO tasks(id, project_id, title, prompt, status, created_at, source, external_id)
+		VALUES(10, 1, 'My Epic', 'goal', 'running', '2026-07-24T00:00:00Z', 'workspace', '2026-07-24-my-epic')`); err != nil {
+		t.Fatal(err)
+	}
+	// Board task minted for phase 1 — starts in todo so we can move it to done.
+	if _, err := db.Exec(`INSERT INTO tasks(id, project_id, title, prompt, status, created_at, source, external_id, board_column)
+		VALUES(64, 1, 'Phase 1 board task', 'implement schema', 'queued', '2026-07-26T00:00:00Z', 'queue', 'T-aaaaaa', 'todo')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase doc on disk: one checked box, two unchecked — the tick must flip the
+	// two unchecked ones and leave the already-checked one alone.
+	doc := filepath.Join(t.TempDir(), "phase-1-schema.md")
+	docBody := "# Phase 1 — Schema\n\n## Acceptance criteria\n- [x] a\n- [ ] b\n- [ ] c\n"
+	if err := os.WriteFile(doc, []byte(docBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the epic_phases row with activated_board_task_id set directly — no
+	// activate endpoint needed (it was removed in phase 4).
+	if _, err := db.Exec(`INSERT INTO epic_phases
+		(workspace_task_id, seq, name, doc_path, depends_on, checkboxes_total, checkboxes_done,
+		 activated_at, activated_board_task_id)
+		VALUES(10, 1, 'Phase 1 — Schema', ?, '[]', 3, 1, '2026-07-26T00:00:00Z', 64)`, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// PATCH board task 64 to done — this is the trigger for TickPhaseChecklist.
+	resp := patchBoard(t, srv.URL, 64, `{"boardColumn":"done"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH to done = %d, want 200", resp.StatusCode)
+	}
+
+	// Assert wsingest.TickPhaseChecklist ran: both unchecked boxes must now be
+	// checked in the doc file. The already-checked box must be untouched.
+	got, err := os.ReadFile(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "- [ ]") {
+		t.Errorf("doc still has unchecked boxes after board move to done:\n%s", got)
+	}
+	if !strings.Contains(string(got), "- [x] a") ||
+		!strings.Contains(string(got), "- [x] b") ||
+		!strings.Contains(string(got), "- [x] c") {
+		t.Errorf("expected all three boxes checked; doc:\n%s", got)
 	}
 }
 

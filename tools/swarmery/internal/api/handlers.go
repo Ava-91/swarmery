@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/improve"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/projectscan"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/provision"
 )
@@ -57,7 +58,11 @@ type projectDTO struct {
 	// [] when untagged, never null.
 	Pinned   bool     `json:"pinned"`
 	Tags     []string `json:"tags"`
-	Sessions int64    `json:"sessions"`
+	// IsSystem marks the deliberate System project (path = ~/.swarmery) that
+	// aggregates daemon-spawned telemetry runs; the dashboard demotes it out
+	// of the main project list.
+	IsSystem bool  `json:"isSystem"`
+	Sessions int64 `json:"sessions"`
 	// Lifetime token/cost totals across all the project's sessions (deduped
 	// turns). Null while the project has no priced turns.
 	Tokens  *int64   `json:"tokens"`
@@ -117,6 +122,12 @@ type sessionDTO struct {
 	// turns; costUsd = SUM(cost_usd), null while no turn is priced.
 	Tokens  *int64   `json:"tokens"`
 	CostUSD *float64 `json:"costUsd"`
+	// ContextTokens is the LAST assistant turn's input footprint
+	// (tokens_in + cache_read + cache_write) — a proxy for how full the model's
+	// context window is right now. A large value on a long-lived session is the
+	// fat-session cost driver: every continuation re-reads that whole context.
+	// Null until the session has a priced assistant turn.
+	ContextTokens *int64 `json:"contextTokens"`
 	// phase 3.5: workspaces — best task link (explicit beats heuristic,
 	// then highest confidence); all null while the session is unlinked.
 	TaskID         *int64   `json:"taskId"`
@@ -233,6 +244,9 @@ func scanProject(rows *sql.Rows, roots []string) (projectDTO, error) {
 	}
 	if cost.Valid {
 		p.CostUSD = &cost.Float64
+	}
+	if sys := ingest.SystemDir(); sys != "" && p.Path == sys {
+		p.IsSystem = true
 	}
 	// A single project's unreadable settings must not fail the list — PluginState
 	// already collapses those cases to (nil, nil).
@@ -374,7 +388,7 @@ func (h *Handler) recentSessions(projectID int64) ([]projectRecentSessionDTO, er
 const sessionSelect = `
 	SELECT s.id, s.project_id, p.slug, p.name, s.session_uuid, s.model, s.git_branch, s.cwd,
 	       s.status, s.started_at, s.ended_at, COALESCE(s.custom_title, s.title), s.source,
-	       agg.tokens, agg.cost_usd,
+	       agg.tokens, agg.cost_usd, ctx.context_tokens,
 	       tl.task_id, tl.external_id, tl.link_source, tl.confidence,
 	       s.proc_state, s.pid, s.outcome,
 	       why.text
@@ -390,6 +404,17 @@ const sessionSelect = `
 		       SUM(cost_usd) AS cost_usd
 		FROM turns GROUP BY session_id
 	) agg ON agg.session_id = s.id
+	LEFT JOIN (
+		-- Context occupancy: the LAST assistant turn's input footprint. Usage
+		-- lives on assistant turns; the newest one's input tokens ≈ how full the
+		-- context window is. A single window pass, no N+1.
+		SELECT session_id,
+		       COALESCE(tokens_in, 0) + COALESCE(tokens_cache_read, 0) + COALESCE(tokens_cache_write, 0) AS context_tokens,
+		       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq DESC) AS rn
+		FROM turns
+		WHERE role = 'assistant'
+		  AND (tokens_in IS NOT NULL OR tokens_cache_read IS NOT NULL OR tokens_cache_write IS NOT NULL)
+	) ctx ON ctx.session_id = s.id AND ctx.rn = 1
 	LEFT JOIN (
 		-- phase 3.5: one best task link per session, picked in a single
 		-- window pass (explicit first, then highest confidence) — no N+1.
@@ -475,7 +500,7 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 	args := []any{}
 	if project := r.URL.Query().Get("project"); project != "" {
 		query += projectScopePredicate
-		args = append(args, project, project)
+		args = append(args, scopeArgs(project)...)
 	}
 	if status := r.URL.Query().Get("status"); status != "" {
 		query += ` AND s.status = ?`
@@ -650,7 +675,7 @@ func scanSession(scan func(...any) error, s *sessionDTO) error {
 	var whyRaw sql.NullString
 	if err := scan(&s.ID, &s.ProjectID, &s.ProjectSlug, &s.ProjectName, &s.SessionUUID, &s.Model,
 		&s.GitBranch, &s.CWD, &s.Status, &s.StartedAt, &s.EndedAt, &s.Title, &s.Source,
-		&s.Tokens, &s.CostUSD,
+		&s.Tokens, &s.CostUSD, &s.ContextTokens,
 		&s.TaskID, &s.TaskExternalID, &s.TaskLinkSource, &s.TaskConfidence,
 		&s.ProcState, &s.ProcPID, &s.Outcome,
 		&whyRaw); err != nil {

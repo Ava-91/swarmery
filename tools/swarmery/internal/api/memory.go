@@ -132,8 +132,8 @@ type memoryConflictDTO struct {
 func (h *Handler) projectMemoryRoots(w http.ResponseWriter, id string) ([]memoryRoot, bool) {
 	var projectPath string
 	err := h.DB.QueryRow(
-		`SELECT path FROM projects WHERE slug = ? OR CAST(id AS TEXT) = ?`,
-		id, id).Scan(&projectPath)
+		`SELECT path FROM projects WHERE `+projectMatchExpr(""),
+		scopeArgs(id)...).Scan(&projectPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeClientErr(w, http.StatusNotFound, "project not found")
 		return nil, false

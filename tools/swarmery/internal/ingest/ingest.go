@@ -1175,6 +1175,29 @@ func worktreeBase() string {
 	return filepath.Join(home, ".swarmery", "worktrees")
 }
 
+// systemBaseOverride pins the System project dir in tests; empty means
+// <home>/.swarmery. Daemon-spawned headless claude runs set this as their
+// cwd, and legacy cwd "/" (runs that inherited the launchd cwd before that)
+// canonicalizes here too, so system telemetry lives on one deliberate
+// "System" project row instead of a mystery "/" project.
+var systemBaseOverride string
+
+func systemBase() string {
+	if systemBaseOverride != "" {
+		return systemBaseOverride
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".swarmery")
+}
+
+// SystemDir exposes the System project dir to other packages (the API layer
+// flags that projects row isSystem so the dashboard can demote it). Empty
+// only when the home dir is unresolvable.
+func SystemDir() string { return systemBase() }
+
 // CanonicalProjectPath maps a raw session cwd to the path of the registered
 // project it belongs to, so satellite cwds never mint phantom project rows:
 //   - a dispatcher worktree <root>/<parentSlug>/<task> resolves to the
@@ -1182,8 +1205,15 @@ func worktreeBase() string {
 //   - a subdirectory of a registered project resolves to that project
 //     (deepest registered ancestor wins).
 //
-// Unknown paths return unchanged — attribution never invents projects.
+// Unknown paths return unchanged — attribution never invents projects
+// (except cwd "/", which maps to the System dir; UpsertProject mints that
+// row on first sight).
 func CanonicalProjectPath(q dbtx, path string) string {
+	if path == "/" {
+		if s := systemBase(); s != "" {
+			return s
+		}
+	}
 	if root := worktreeBase(); root != "" {
 		if rel, ok := strings.CutPrefix(path, root+"/"); ok {
 			seg, _, _ := strings.Cut(rel, "/")
@@ -1212,16 +1242,23 @@ func UpsertProject(q dbtx, path, firstSeen, lastActivity string) (id int64, crea
 	switch {
 	case err == sql.ErrNoRows:
 		// Not registered under this exact path — attribute satellite cwds
-		// (dispatcher worktrees, in-repo subdirectories) to their parent
-		// project instead of minting a phantom row.
+		// (dispatcher worktrees, in-repo subdirectories, cwd "/") to their
+		// canonical project instead of minting a phantom row.
 		if canon := CanonicalProjectPath(q, path); canon != path {
 			if err := q.QueryRow(`SELECT id FROM projects WHERE path = ?`, canon).Scan(&id); err == nil {
 				return id, false, nil
 			}
+			// Only the System dir can canonicalize to an unregistered path
+			// (worktree/subdir rules select from projects) — mint it.
+			path = canon
+		}
+		name := projectNameFor(path)
+		if path == systemBase() {
+			name = "System"
 		}
 		res, ierr := q.Exec(
 			`INSERT INTO projects (path, slug, name, first_seen, last_activity) VALUES (?, ?, ?, ?, ?)`,
-			path, SlugForPath(path), projectNameFor(path), firstSeen, lastActivity)
+			path, SlugForPath(path), name, firstSeen, lastActivity)
 		if ierr != nil {
 			return 0, false, fmt.Errorf("insert project: %w", ierr)
 		}
@@ -1312,14 +1349,27 @@ func HealProjectAttribution(db *sql.DB) (int, error) {
 		return 0, err
 	}
 
+	// Upgrade the System row's derived default name (a pre-existing row
+	// minted from the raw path reads ".swarmery"); a user-set name is never
+	// touched — only the exact derived default is replaced.
+	if s := systemBase(); s != "" {
+		if _, err := db.Exec(
+			`UPDATE projects SET name = 'System' WHERE path = ? AND name = ?`,
+			s, projectNameFor(s)); err != nil {
+			return 0, err
+		}
+	}
+
 	moved := 0
 	for _, p := range projs {
 		canon := CanonicalProjectPath(db, p.path)
 		if canon == p.path {
 			continue
 		}
-		var target int64
-		if err := db.QueryRow(`SELECT id FROM projects WHERE path = ?`, canon).Scan(&target); err != nil || target == p.id {
+		// Resolve-or-mint the canonical target (mint only happens for the
+		// System dir — see UpsertProject).
+		target, _, err := UpsertProject(db, canon, "", "")
+		if err != nil || target == p.id {
 			continue
 		}
 		var linked int

@@ -59,6 +59,11 @@ type Service struct {
 	// so this is keyed by PROJECT id; the api adapter republishes the project's
 	// sessions. nil ⇒ no live nudge (guarded).
 	Notify func(projectID int64)
+	// ResumeInFlight reports whether the api layer is running a `claude -r`
+	// resume for a session uuid — the second half of processAlive (the wizard's
+	// raw-fallback parse and stale reconcile must not fire mid-resume). Wired by
+	// api.AttachPlanning; nil ⇒ no resume tracking (bare unit tests).
+	ResumeInFlight func(sessionUUID string) bool
 
 	mu     sync.Mutex
 	active map[int64]run // projectID → in-flight planner
@@ -151,6 +156,22 @@ func (s *Service) Start(projectID int64, idea string) (sessionUUID string, err e
 	s.active[projectID] = run{cancel: cancel, startedAt: s.clock(), uuid: uuid}
 	s.mu.Unlock()
 
+	// Durable wizard row (phase 2). Supersede any still-open previous wizard
+	// first — the newest row IS the project's wizard (newestWizard), so leaving
+	// an old awaiting_answer row open would resurrect it once this run ends.
+	now := s.ts()
+	if s.markCancelled(projectID) {
+		log.Printf("planning: project=%d superseded an open wizard", projectID)
+	}
+	if _, err := s.DB.Exec(
+		`INSERT INTO planning_sessions(project_id, session_uuid, status, idea, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?)`,
+		projectID, uuid, StatusGenerating, idea, now, now); err != nil {
+		// Non-fatal: the run still executes; the wizard just has no durable row
+		// (OnSessionTurns will no-op on the uuid miss).
+		log.Printf("error: planning: insert wizard row project=%d uuid=%s: %v", projectID, uuid, err)
+	}
+
 	log.Printf("planning: start project=%d uuid=%s cwd=%q (%d chars idea)", projectID, uuid, path.String, len(idea))
 	s.notify(projectID) // active=true → page shows the run
 
@@ -170,34 +191,50 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, p
 		delete(s.active, projectID)
 		s.mu.Unlock()
 		s.notify(projectID) // active=false → page re-enables Start
+		// Settle pass (phase 2): ingest may have tailed the final transcript
+		// lines BEFORE the process exited, in which case the raw-fallback path
+		// was still gated on processAlive and no further bus notification will
+		// arrive — re-run the parse now that the slot is released. Idempotent
+		// (question turns / terminal states no-op).
+		s.OnSessionTurns(spec.SessionUUID)
 	}()
 
 	run, err := s.Run.Start(ctx, spec)
 	if err != nil {
 		log.Printf("error: planning: run project=%d uuid=%s could not start: %v", projectID, spec.SessionUUID, err)
+		s.markFailed(spec.SessionUUID)
 		return
 	}
 	switch {
 	case run.TimedOut:
 		log.Printf("warning: planning: run project=%d uuid=%s timed out", projectID, spec.SessionUUID)
+		s.markFailed(spec.SessionUUID) // guarded on 'generating' — never clobbers cancelled
 	case run.ExitCode != 0:
 		log.Printf("warning: planning: run project=%d uuid=%s exited %d: %s", projectID, spec.SessionUUID, run.ExitCode, run.Stderr)
+		s.markFailed(spec.SessionUUID)
 	default:
 		log.Printf("planning: run project=%d uuid=%s completed in %s", projectID, spec.SessionUUID, run.Duration)
 	}
 }
 
-// Cancel aborts an in-flight planner run for a project (kills the child claude).
-// Returns whether one was active. The run's own defer removes the map entry and
-// re-emits session_updated.
+// Cancel aborts the project's wizard: stamps every open planning_sessions row
+// cancelled AND kills an in-flight child claude if one is running. Returns
+// whether anything was cancelled (a process or an open row — an awaiting
+// wizard with no live process is still dismissible). The stamp happens BEFORE
+// the kill so runAndHandle's markFailed (guarded on status='generating')
+// cannot race the cancellation into 'failed'.
 func (s *Service) Cancel(projectID int64) bool {
+	stamped := s.markCancelled(projectID)
 	s.mu.Lock()
 	r, ok := s.active[projectID]
 	s.mu.Unlock()
 	if ok {
 		r.cancel()
 	}
-	return ok
+	if stamped {
+		s.notify(projectID)
+	}
+	return ok || stamped
 }
 
 // Snapshot builds the status for a project: active flag, the pre-generated uuid,

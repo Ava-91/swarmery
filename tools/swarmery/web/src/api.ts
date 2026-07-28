@@ -132,6 +132,18 @@ export async function restoreProject(id: number): Promise<void> {
   }
 }
 
+/** POST /api/projects/{id}/architecture/rebuild — force-regenerate the
+ * architecture map via the provision pipeline (single-flight; 202 returns the
+ * in-flight job when one is already running). */
+export async function rebuildArchitectureMap(id: number): Promise<void> {
+  if (MOCK) return; // no-op in mock mode
+  const res = await fetch(`/api/projects/${String(id)}/architecture/rebuild`, { method: 'POST' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `rebuild failed: ${String(res.status)}`);
+  }
+}
+
 /** GET /api/projects/health — per-project week-over-week health rows. */
 export function fetchProjectsHealth(): Promise<ProjectsHealthResponse> {
   if (MOCK) return mockApi.projectsHealth();
@@ -810,6 +822,69 @@ export async function cancelPlanning(projectId: number): Promise<void> {
   }
 }
 
+/**
+ * POST /api/projects/{id}/planning/answer — consume the current wizard
+ * question. Structured mode sends the question id + selected option ids
+ * (otherText fills the "Other" option); raw-fallback mode sends questionId ""
+ * with empty selectedOptionIds and the whole free-text reply as otherText.
+ * Non-2xx (400 empty selection, 404 no wizard, 409 not awaiting / wrong
+ * question / resume in flight) throws the server's {error} text.
+ */
+export async function answerPlanning(
+  projectId: number,
+  body: { questionId: string; selectedOptionIds: string[]; otherText?: string },
+): Promise<{ status: string }> {
+  if (MOCK) return mockApi.answerPlanning(projectId, body);
+  const res = await fetch(`/api/projects/${String(projectId)}/planning/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `answer planning failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+/**
+ * POST /api/projects/{id}/planning/refine {instructions} — free-form
+ * course-correction: the plan updates and the next questions follow the
+ * operator's direction. Same error matrix as answer.
+ */
+export async function refinePlanning(
+  projectId: number,
+  instructions: string,
+): Promise<{ status: string }> {
+  if (MOCK) return mockApi.refinePlanning(projectId, instructions);
+  const res = await fetch(`/api/projects/${String(projectId)}/planning/refine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instructions }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `refine planning failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+/**
+ * POST /api/projects/{id}/planning/proceed — end the interview and trigger
+ * plan writing (PHASE B). 404/409 as answer.
+ */
+export async function proceedPlanning(projectId: number): Promise<{ status: string }> {
+  if (MOCK) return mockApi.proceedPlanning(projectId);
+  const res = await fetch(`/api/projects/${String(projectId)}/planning/proceed`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `proceed planning failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as { status: string };
+}
+
 /** POST /api/dispatch/pause — global or per-project pause toggle. */
 export async function pauseDispatch(
   scope: 'global' | 'project',
@@ -1238,37 +1313,6 @@ export function fetchEpics(projectId?: number): Promise<Epic[]> {
   return get(`/api/epics${qs}`);
 }
 
-/**
- * POST /api/epics/{taskId}/phases/{phaseId}/activate → 201 BoardTask. A second
- * call for an already-activated phase throws {@link PhaseAlreadyActivatedError}
- * (409) carrying the existing board task.
- */
-export async function activateEpicPhase(taskId: number, phaseId: number): Promise<BoardTask> {
-  if (MOCK) return mockApi.activateEpicPhase(taskId, phaseId);
-  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/activate`, {
-    method: 'POST',
-  });
-  if (res.status === 409) {
-    const payload = (await res.json().catch(() => ({}))) as { error?: string; task?: BoardTask };
-    throw new PhaseAlreadyActivatedError(payload.error ?? 'phase already activated', payload.task);
-  }
-  if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(data.error ?? `activate failed: ${String(res.status)}`);
-  }
-  return (await res.json()) as BoardTask;
-}
-
-/** Thrown on a 409 from activateEpicPhase — carries the existing board task. */
-export class PhaseAlreadyActivatedError extends Error {
-  readonly task: BoardTask | undefined;
-  constructor(message: string, task: BoardTask | undefined) {
-    super(message);
-    this.name = 'PhaseAlreadyActivatedError';
-    this.task = task;
-  }
-}
-
 export type EpicLifecycleAction = 'pause' | 'resume' | 'archive' | 'restore';
 
 /**
@@ -1299,6 +1343,43 @@ export async function epicLifecycle(
     throw new Error(body.error ?? `lifecycle ${action} failed (${String(res.status)})`);
   }
   return (await res.json()) as { status: Epic['status'] };
+}
+
+/**
+ * POST /api/epics/{taskId}/phases/{phaseId}/run — execute one plan phase
+ * headlessly in an isolated worktree (no board task). 202 {status, sessionUuid};
+ * 409 carries the gate reason (already running / unmet deps / no doc) in the
+ * error body — surfaced verbatim for the toast.
+ */
+export async function runEpicPhase(
+  taskId: number,
+  phaseId: number,
+): Promise<{ status: string; sessionUuid: string }> {
+  if (MOCK) return { status: 'running', sessionUuid: 'mock-run-uuid' };
+  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/run`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `phase run failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: string; sessionUuid: string };
+}
+
+/** POST /api/epics/{taskId}/phases/{phaseId}/run/cancel — 202 / 409 when idle. */
+export async function cancelEpicPhaseRun(
+  taskId: number,
+  phaseId: number,
+): Promise<{ status: string }> {
+  if (MOCK) return { status: 'cancelling' };
+  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/run/cancel`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `phase run cancel failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: string };
 }
 
 /** GET /api/epics/{taskId}/docs?path= — read a plan doc (path-confined). */

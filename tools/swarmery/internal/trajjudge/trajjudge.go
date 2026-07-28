@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -111,6 +113,26 @@ func Score(db *sql.DB, runner Runner, model string, now time.Time, capN int) err
 	return nil
 }
 
+// JudgedWithin reports whether any judgment for this model was persisted
+// within window before now. main.go gates the startup Score batch on it so a
+// dev day full of daemon restarts (`make install`) doesn't fire a full capN
+// batch per restart. Fail-open by contract: an empty table or a query/parse
+// error returns false, so a fresh install still gets its first batch. The
+// manual "Analyze now" endpoint bypasses this gate on purpose.
+func JudgedWithin(db *sql.DB, model string, now time.Time, window time.Duration) bool {
+	var last sql.NullString
+	err := db.QueryRow(
+		`SELECT MAX(judged_at) FROM trajectory_judgments WHERE model = ?`, model).Scan(&last)
+	if err != nil || !last.Valid {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, last.String)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) < window
+}
+
 type candidate struct {
 	sessionID int64
 	agent     string
@@ -193,8 +215,26 @@ type ClaudeRunner struct {
 	Model string
 }
 
+// isDir reports whether path exists and is a directory.
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
 func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", r.Model, "--output-format", "text")
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected. Keep the flag order identical to the improve twin.
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", r.Model, "--output-format", "text", "--setting-sources", "project,local")
+	// System home, not the inherited launchd cwd "/": transcripts then
+	// attribute to the deliberate "System" project (see internal/ingest).
+	// Only when it actually exists — a missing dir would fail the spawn with
+	// chdir ENOENT (twin of internal/improve.ClaudeRunner).
+	if home, err := os.UserHomeDir(); err == nil {
+		if dir := filepath.Join(home, ".swarmery"); isDir(dir) {
+			cmd.Dir = dir
+		}
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

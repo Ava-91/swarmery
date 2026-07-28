@@ -128,6 +128,11 @@ func (h *Handler) jailedProjectStatic(w http.ResponseWriter, r *http.Request, su
 		http.NotFound(w, r)
 		return
 	}
+	// The artifacts are regenerated in place (same URL, new content). Without a
+	// Cache-Control the browser heuristic-caches off Last-Modified and embeds
+	// keep showing a stale copy; no-cache forces an If-Modified-Since
+	// revalidation (cheap 304 while unchanged, fresh body right after a rebuild).
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, full)
 }
 

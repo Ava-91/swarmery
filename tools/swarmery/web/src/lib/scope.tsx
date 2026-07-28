@@ -18,11 +18,14 @@ import {
 import { useSearchParams } from 'react-router-dom';
 import type { Project } from '../api/types';
 import { fetchProjects } from '../api';
+import { findProject } from './projectSlug';
 
 const STORAGE_KEY = 'swarmery.scope';
 
 interface ScopeValue {
-  /** Selected project slug, or null = all projects. */
+  /** Selected project slug (pretty name slug or legacy path slug), or null =
+   * all projects. Pass it verbatim to ?project= APIs — the server matches
+   * slug, id, and kebab name alike. */
   scope: string | null;
   setScope: (slug: string | null) => void;
   /** Non-archived projects, fetched once here and shared by every consumer
@@ -30,6 +33,10 @@ interface ScopeValue {
   projects: Project[];
   /** Clean display name for the current scope (never the raw path slug). */
   scopeName: string | null;
+  /** Resolved project row for the scope, or null when unscoped / unknown.
+   * Client-side row filters must compare against scopeProject.slug (the DB
+   * path slug rows carry), never against the raw scope value. */
+  scopeProject: Project | null;
 }
 
 const ScopeContext = createContext<ScopeValue>({
@@ -37,6 +44,7 @@ const ScopeContext = createContext<ScopeValue>({
   setScope: () => undefined,
   projects: [],
   scopeName: null,
+  scopeProject: null,
 });
 
 function storedScope(): string | null {
@@ -91,9 +99,9 @@ export function ScopeProvider({ children }: { children: ReactNode }): JSX.Elemen
   }, []);
 
   const value = useMemo(() => {
-    const selected = scope !== null ? (projects.find((p) => p.slug === scope) ?? null) : null;
+    const selected = findProject(projects, scope);
     const scopeName = scope === null ? null : (selected?.name ?? scope);
-    return { scope, setScope, projects, scopeName };
+    return { scope, setScope, projects, scopeName, scopeProject: selected };
   }, [scope, setScope, projects]);
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 }

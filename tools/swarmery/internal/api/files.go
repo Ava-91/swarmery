@@ -45,8 +45,8 @@ func (h *Handler) fileSessions(w http.ResponseWriter, r *http.Request) {
 		WHERE fc.file_path LIKE ? ESCAPE '\' AND s.hidden = 0 AND p.archived = 0`
 	args := []any{likePattern(path)}
 	if project != "" {
-		query += projectScopePredicate // slug OR id — the shared global-scope match (scope.go)
-		args = append(args, project, project)
+		query += projectScopePredicate // slug OR id OR name — the shared global-scope match (scope.go)
+		args = append(args, scopeArgs(project)...)
 	}
 	query += `
 		GROUP BY s.id

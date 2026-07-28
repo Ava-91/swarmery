@@ -17,8 +17,8 @@ html[data-theme="light"]{
   --line:#d9dde8; --ink:#171b26; --ink-dim:#555d70; --ink-faint:#8a91a3;
   --accent:#b8860b; --accent-ink:#fff; --edge:#c3c9d8; --flow:#b8860b; --chip:#eceef5;
 }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px}
-header{display:flex;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--line)}
+*{box-sizing:border-box} body{margin:0;height:100vh;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px}
+header{flex:none;display:flex;justify-content:space-between;gap:16px;padding:20px 24px;border-bottom:1px solid var(--line)}
 h1{margin:0 0 4px;font-size:20px} #desc{margin:0 0 8px;color:var(--ink-dim);max-width:70ch}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
 .chip{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:2px 10px;font:11px var(--mono)}
@@ -26,7 +26,12 @@ h1{margin:0 0 4px;font-size:20px} #desc{margin:0 0 8px;color:var(--ink-dim);max-
 .head-right{display:flex;gap:8px;align-items:flex-start}
 #search{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:7px 10px;font:12px var(--mono);width:220px;outline:none}
 #theme{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:6px 10px;cursor:pointer}
-#layout{display:flex;height:calc(100vh - 118px)}
+#tabs{flex:none;display:flex;flex-wrap:wrap;gap:6px;padding:10px 24px;border-bottom:1px solid var(--line)}
+.tab{background:none;border:1px solid var(--line);border-radius:20px;color:var(--ink-dim);padding:4px 14px;font:600 11px var(--mono);letter-spacing:.06em;cursor:pointer;transition:color .15s,border-color .15s,background .15s}
+.tab:hover{color:var(--ink)}
+.tab.on{background:var(--chip);border-color:var(--flow);color:var(--ink)}
+#layout{display:none;flex:1;min-height:0}
+#layout.on{display:flex}
 #boardwrap{flex:1;overflow:auto;padding:20px}
 #board{position:relative;display:flex;gap:28px;align-items:flex-start;min-width:max-content;padding-bottom:40px}
 #edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
@@ -61,13 +66,16 @@ h1{margin:0 0 4px;font-size:20px} #desc{margin:0 0 8px;color:var(--ink-dim);max-
 #inspector ul{margin:0;padding-left:16px;font:11px var(--mono)}
 #inspector p{margin:8px 0 0;font-size:12px;color:var(--ink-dim)}
 #inspector button{position:absolute;top:8px;right:10px;background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:14px}
-#ref{padding:8px 24px 40px;border-top:1px solid var(--line)}
-#ref details{margin-top:10px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--panel)}
-#ref summary{cursor:pointer;font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim)}
-#ref table{border-collapse:collapse;margin-top:8px;font:11.5px var(--mono)}
+#ref{display:none;flex:1;min-height:0;overflow:auto;padding:16px 24px 40px}
+#ref.on{display:block}
+.refsec{display:none}
+.refsec.on{display:block}
+.refsec h2{margin:0 0 12px;font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim)}
+#ref table{border-collapse:collapse;font:11.5px var(--mono)}
 #ref td,#ref th{border:1px solid var(--line);padding:4px 10px;text-align:left}
 #ref th{color:var(--ink-faint);font-weight:600}
-#ref ul{margin:8px 0 0;padding-left:18px;font-size:12px;color:var(--ink-dim)}
+#ref ul{margin:0;padding-left:18px;font-size:12px;color:var(--ink-dim)}
+#ref li{margin-bottom:4px}
 </style>
 </head>
 <body>
@@ -83,7 +91,8 @@ h1{margin:0 0 4px;font-size:20px} #desc{margin:0 0 8px;color:var(--ink-dim);max-
     <button id="theme" title="toggle theme">☾</button>
   </div>
 </header>
-<div id="layout">
+<nav id="tabs" aria-label="map sections"></nav>
+<div id="layout" class="on">
   <main id="boardwrap">
     <div id="board"><svg id="edges" aria-hidden="true"></svg></div>
   </main>
@@ -251,34 +260,63 @@ $('theme').addEventListener('click', () => {
 });
 function syncThemeGlyph() { $('theme').textContent = document.documentElement.dataset.theme === 'dark' ? '☀' : '☾'; }
 
-// ---- reference (APIs / database / external services / notes) ----
+// ---- reference tabs (diagram / APIs / database / external services / notes) ----
+// Each reference section is a full-height tab panel instead of an accordion
+// below the board — no long page scroll; only tabs with content are rendered.
 (function renderRef() {
-  const parts = [];
+  const sections = [];
   if ((MAP.apis || []).length) {
-    parts.push(`<details open><summary>API endpoints (${MAP.apis.length})</summary><table><tr><th>Method</th><th>Path</th><th>Handler</th><th>Description</th></tr>` +
-      MAP.apis.map((a) => `<tr><td>${esc(a.method)}</td><td>${esc(a.path)}</td><td>${esc(a.handlerFile || '')}</td><td>${esc(a.description || '')}</td></tr>`).join('') + '</table></details>');
+    sections.push({ id: 'apis', label: `API endpoints (${MAP.apis.length})`,
+      html: `<table><tr><th>Method</th><th>Path</th><th>Handler</th><th>Description</th></tr>` +
+        MAP.apis.map((a) => `<tr><td>${esc(a.method)}</td><td>${esc(a.path)}</td><td>${esc(a.handlerFile || '')}</td><td>${esc(a.description || '')}</td></tr>`).join('') + '</table>' });
   }
   const db = MAP.database;
   if (db && (db.engine || (db.tables || []).length)) {
-    parts.push(`<details><summary>Database — ${esc(db.engine || 'unknown')}${db.migrationsPath ? ' · ' + esc(db.migrationsPath) : ''}</summary><table><tr><th>Table</th><th>Purpose</th></tr>` +
-      (db.tables || []).map((t) => `<tr><td>${esc(t.name)}</td><td>${esc(t.purpose || '')}</td></tr>`).join('') + '</table></details>');
+    sections.push({ id: 'db', label: 'Database',
+      html: `<h2>${esc(db.engine || 'unknown')}${db.migrationsPath ? ' · ' + esc(db.migrationsPath) : ''}</h2>` +
+        `<table><tr><th>Table</th><th>Purpose</th></tr>` +
+        (db.tables || []).map((t) => `<tr><td>${esc(t.name)}</td><td>${esc(t.purpose || '')}</td></tr>`).join('') + '</table>' });
   }
   if ((MAP.externalServices || []).length) {
-    parts.push(`<details><summary>External services (${MAP.externalServices.length})</summary><table><tr><th>Service</th><th>Purpose</th><th>Used by</th></tr>` +
-      MAP.externalServices.map((s) => `<tr><td>${esc(s.name)}</td><td>${esc(s.purpose)}</td><td>${esc((s.usedBy || []).map(name).join(', '))}</td></tr>`).join('') + '</table></details>');
+    sections.push({ id: 'ext', label: `External services (${MAP.externalServices.length})`,
+      html: `<table><tr><th>Service</th><th>Purpose</th><th>Used by</th></tr>` +
+        MAP.externalServices.map((s) => `<tr><td>${esc(s.name)}</td><td>${esc(s.purpose)}</td><td>${esc((s.usedBy || []).map(name).join(', '))}</td></tr>`).join('') + '</table>' });
   }
   const conv = MAP.conventions;
   if (conv && (conv.naming || conv.folderStructure || (conv.patternsUsed || []).length)) {
-    parts.push(`<details><summary>Conventions</summary><ul>` +
-      (conv.naming ? `<li>Naming: ${esc(conv.naming)}</li>` : '') +
-      (conv.folderStructure ? `<li>Folders: ${esc(conv.folderStructure)}</li>` : '') +
-      (conv.patternsUsed || []).map((x) => `<li>${esc(x)}</li>`).join('') + '</ul></details>');
+    sections.push({ id: 'conv', label: 'Conventions',
+      html: '<ul>' +
+        (conv.naming ? `<li>Naming: ${esc(conv.naming)}</li>` : '') +
+        (conv.folderStructure ? `<li>Folders: ${esc(conv.folderStructure)}</li>` : '') +
+        (conv.patternsUsed || []).map((x) => `<li>${esc(x)}</li>`).join('') + '</ul>' });
   }
   if ((MAP.importantNotes || []).length) {
-    parts.push(`<details open><summary>Important notes</summary><ul>` +
-      MAP.importantNotes.map((x) => `<li>${esc(x)}</li>`).join('') + '</ul></details>');
+    sections.push({ id: 'notes', label: 'Important notes',
+      html: '<ul>' + MAP.importantNotes.map((x) => `<li>${esc(x)}</li>`).join('') + '</ul>' });
   }
-  document.getElementById('ref').innerHTML = parts.join('');
+
+  const ref = $('ref');
+  ref.innerHTML = sections.map((s) => `<section class="refsec" data-tab="${s.id}">${s.html}</section>`).join('');
+
+  const tabs = [{ id: 'board', label: 'Diagram' }, ...sections];
+  const bar = $('tabs');
+  bar.innerHTML = tabs.map((t) => `<button class="tab${t.id === 'board' ? ' on' : ''}" data-tab="${t.id}">${esc(t.label)}</button>`).join('');
+  bar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab');
+    if (btn) selectTab(btn.dataset.tab);
+  });
+
+  function selectTab(id) {
+    bar.querySelectorAll('.tab').forEach((el) => el.classList.toggle('on', el.dataset.tab === id));
+    const onBoard = id === 'board';
+    $('layout').classList.toggle('on', onBoard);
+    ref.classList.toggle('on', !onBoard);
+    ref.querySelectorAll('.refsec').forEach((el) => el.classList.toggle('on', el.dataset.tab === id));
+    $('inspector').hidden = true;
+    // Edges are sized from getBoundingClientRect — zero while the board is
+    // display:none, so redraw after it is visible again.
+    if (onBoard) requestAnimationFrame(draw);
+  }
 })();
 
 function name(id) { const m = modById.get(id); return m ? m.name : id; }

@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/githead"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 )
 
 // Rule thresholds. Windows are days; shares are 0..1 fractions.
@@ -909,6 +911,103 @@ func r8TrajectoryAntiPatterns(db *sql.DB, win window) ([]finding, error) {
 	}
 	sortFindings(out)
 	return out, rows.Err()
+}
+
+// ── R9: fat sessions (context / cost) ─────────────────────────────────────────
+
+const (
+	// R9ContextTokens: flag a session whose newest assistant turn carries at
+	// least this input footprint — the context window is near-full and every
+	// continuation re-reads it (the fat-session cost driver).
+	R9ContextTokens = 300_000
+	// R9CostUSD: flag a session that cost at least this much regardless of
+	// context size (many turns / a long-lived monitor loop).
+	R9CostUSD = 20.0
+	// R9MaxFindings caps how many fat-session recommendations one run surfaces —
+	// the worst offenders by cost. Without it a busy fortnight floods the Retro
+	// page. Dropped sessions are logged, never silently hidden.
+	R9MaxFindings = 8
+)
+
+// r9FatSessions flags in-window sessions whose context occupancy or cumulative
+// cost crosses a threshold, recommending the work be split or moved to a
+// routine with a fresh, small context. System sessions (daemon-spawned
+// headless runs) are excluded — they are not user work to restructure.
+// Notification only.
+func r9FatSessions(db *sql.DB, win window) ([]finding, error) {
+	sysDir := ingest.SystemDir()
+	if sysDir == "" {
+		sysDir = "\x00unresolvable"
+	}
+	rows, err := db.Query(`
+		SELECT s.session_uuid, COALESCE(s.custom_title, s.title, ''),
+		       COALESCE(ctx.context_tokens, 0), COALESCE(agg.cost, 0)
+		FROM sessions s
+		JOIN projects p ON p.id = s.project_id
+		LEFT JOIN (
+			SELECT session_id,
+			       COALESCE(tokens_in,0)+COALESCE(tokens_cache_read,0)+COALESCE(tokens_cache_write,0) AS context_tokens,
+			       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq DESC) AS rn
+			FROM turns
+			WHERE role = 'assistant'
+			  AND (tokens_in IS NOT NULL OR tokens_cache_read IS NOT NULL OR tokens_cache_write IS NOT NULL)
+		) ctx ON ctx.session_id = s.id AND ctx.rn = 1
+		LEFT JOIN (
+			SELECT session_id, SUM(cost_usd) AS cost FROM turns GROUP BY session_id
+		) agg ON agg.session_id = s.id
+		WHERE s.started_at >= ? AND s.started_at < ?
+		  AND p.archived = 0
+		  AND COALESCE(s.cwd, '') NOT IN (?, '/')
+		  AND (COALESCE(ctx.context_tokens,0) >= ? OR COALESCE(agg.cost,0) >= ?)
+		ORDER BY COALESCE(agg.cost,0) DESC, COALESCE(ctx.context_tokens,0) DESC, s.session_uuid`,
+		win.From, win.To, sysDir, R9ContextTokens, R9CostUSD)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []finding
+	total := 0
+	for rows.Next() {
+		var uuid, title string
+		var ctxTokens int64
+		var cost float64
+		if err := rows.Scan(&uuid, &title, &ctxTokens, &cost); err != nil {
+			return nil, err
+		}
+		total++
+		if len(out) >= R9MaxFindings {
+			continue // keep counting for the drop log, but stop emitting
+		}
+		label := title
+		if label == "" {
+			label = uuid[:min(8, len(uuid))]
+		}
+		out = append(out, finding{
+			rule:       "R9",
+			targetKind: "session",
+			target:     uuid,
+			title:      "Fat session: " + label,
+			detail: fmt.Sprintf(
+				"Session %q reached ~%dk tokens of context and cost $%.2f. Every continuation re-reads that whole context — the dominant cost driver. Split the work into shorter sessions, /compact when the window fills, or move recurring monitoring to a routine that reads state with a fresh small context.",
+				label, ctxTokens/1000, cost),
+			evidence: map[string]any{
+				"window":        win,
+				"counts":        map[string]int{"context_tokens": int(ctxTokens)},
+				"cost_usd":      cost,
+				"context_limit": R9ContextTokens,
+				"cost_limit":    R9CostUSD,
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if total > len(out) {
+		log.Printf("advisor R9: %d fat sessions in-window, surfacing the %d most expensive (%d not shown)",
+			total, len(out), total-len(out))
+	}
+	sortFindings(out)
+	return out, nil
 }
 
 // sortFindings orders findings by target for deterministic upsert order.
