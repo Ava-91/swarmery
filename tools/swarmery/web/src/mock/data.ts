@@ -1310,6 +1310,10 @@ const mockEpicPhase = (
 
 // Phase-run states cover all four chips: 1 run-done, 2 running (elapsed ticks),
 // 3 failed (error tooltip + retry Run), 4 idle behind an unmet dep (gated Run).
+// The PART-DONE epic (7010) has no Summary tab in the plan rail; the COMPLETE
+// epic (7011, every phase fully ticked) demos the done-plan surfaces: phase
+// rows swap Run for ✓ summary and the plan rail grows the Summary tab
+// (per-phase executed work incl. Completion Report + ## Execution record).
 const mockEpics: Epic[] = [
   {
     taskId: 7010,
@@ -1341,6 +1345,30 @@ const mockEpics: Epic[] = [
       mockEpicPhase(4, 4, 'Epics rollup + graph', [2, 3], 0, 6),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
+  },
+  {
+    taskId: 7011,
+    externalId: '2026-07-18-plan-doc-lifecycle',
+    projectId: 3,
+    projectSlug: 'swarmery',
+    title: 'Plan-doc lifecycle (shipped)',
+    status: 'done',
+    startedAt: iso(-9 * 86400),
+    planDir: '/ws/plan-done',
+    hasSummary: true,
+    phases: [
+      mockEpicPhase(11, 1, 'Ingest: plan dir scanner', [], 4, 4, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-shipped-a',
+        runStartedAt: iso(-8 * 86400),
+      }),
+      mockEpicPhase(12, 2, 'Plans page lifecycle controls', [1], 6, 6, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-shipped-b',
+        runStartedAt: iso(-7 * 86400),
+      }),
+    ],
+    rollup: { done: 10, total: 10, pct: 100 },
   },
 ];
 
@@ -1994,8 +2022,35 @@ export const mockApi = {
       .map((e) => ({ ...e, phases: e.phases.map((p) => ({ ...p })) }));
   },
 
-  async planDoc(_taskId: number, path: string): Promise<PlanDoc> {
+  async planDoc(taskId: number, path: string): Promise<PlanDoc> {
     await delay(60);
+    // Complete plan (7011): docs exercise the plan rail's Summary tab
+    // derivation — all boxes ticked + a `## Execution record` section.
+    if (taskId === 7011) {
+      if (path === 'README.md') {
+        return {
+          path,
+          content:
+            '# Plan-doc lifecycle\n\nObjective: plan dirs become first-class epics — scanned, tracked, editable from the dashboard.\n\n| # | Phase | Doc | Depends on |\n|---|-------|-----|------------|\n| 1 | Ingest: plan dir scanner | `phase-1.md` | — |\n| 2 | Plans page lifecycle controls | `phase-2.md` | 1 |\n',
+        };
+      }
+      if (path === 'SUMMARY.md') {
+        return {
+          path,
+          content:
+            '## What shipped\n\n- plan-dir scanner indexes every workspace plan into `epic_phases`\n- Plans page lifecycle controls (Pause / Resume / Archive / Restore)\n- checkbox rollups drive plan status end to end\n',
+        };
+      }
+      const boxes = path === 'phase-2.md' ? 6 : 4;
+      const criteria = Array.from(
+        { length: boxes },
+        (_, i) => `- [x] criterion ${String(i + 1)} verified`,
+      ).join('\n');
+      return {
+        path,
+        content: `# ${path}\n\n## Acceptance criteria\n${criteria}\n\n## Execution record\n- \`make test\` green (store 84.2%)\n- \`npm run build\` green (tsc + vite)\n- commit \`feat(swarmery): ${path.replace('.md', '')} shipped\`\n`,
+      };
+    }
     return {
       path,
       content: `# ${path}\n\nMock plan document.\n\n## Acceptance criteria\n- [x] first\n- [ ] second\n`,

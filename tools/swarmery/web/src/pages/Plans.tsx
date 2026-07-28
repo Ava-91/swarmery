@@ -3,9 +3,17 @@
 // parsed) behind Active/Done/Archived filter tabs, drills into a phase
 // timeline (seq order, depends-on badges, per-phase progress, derived status
 // chips), offers plan lifecycle controls (Pause / Resume / Archive / Restore —
-// file operations on the daemon side), and opens any plan doc in a
-// preview/edit drawer — the workspace folder becomes invisible infrastructure
+// file operations on the daemon side), and opens any plan doc for EDITING in
+// the existing drawer — the workspace folder becomes invisible infrastructure
 // (read, edit, track from the platform; files stay the storage).
+//
+// Details live in a RIGHT RAIL (the Agent Hub / HubShell detail-pane idiom:
+// rounded bordered panel, identity header, tab bar, scrollable body) instead of
+// the old centered modals. Clicking a phase row opens the phase rail (status +
+// run state, acceptance criteria with tick state, Completion Report, full doc);
+// clicking the plan header or "open plan README" opens the plan rail with a
+// Plan tab (README markdown) and — only when every phase is done — a Summary
+// tab (per-phase executed work, derived client-side from the docs endpoint).
 //
 // Legacy chip: phases that were activated into a board task before the
 // plan↔board decoupling (interactive-planning-v2 phase 4) still show the
@@ -18,7 +26,7 @@
 // (column moves on legacy-linked board tasks) AND on `plan_updated` (checkbox
 // flips, lifecycle transitions, plan rescans) so progress ticks without a reload.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import type { BoardColumn, Epic, EpicPhase, WSMessage } from '../api/types';
 import {
@@ -58,6 +66,32 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   if (p.checkboxesDone > 0 || p.boardColumn === 'in_progress' || p.boardColumn === 'in_review')
     return 'in_progress';
   return 'pending';
+}
+
+/** Which seq numbers are "resolved" — their board task is done/archived OR
+ * every checkbox in their doc is ticked (file-driven completion without
+ * board activation) OR a headless run finished. Renders depends-on badges
+ * and feeds the phase-status derivation. */
+function computeResolvedSeqs(phases: EpicPhase[]): Set<number> {
+  const s = new Set<number>();
+  for (const p of phases) {
+    if (
+      isResolvedColumn(p.boardColumn) ||
+      (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
+      p.runState === 'done'
+    )
+      s.add(p.seq);
+  }
+  return s;
+}
+
+/** A plan is complete when every phase reads done — the gate for the plan
+ * rail's Summary tab. */
+function planComplete(epic: Epic, resolvedSeqs: Set<number>): boolean {
+  return (
+    epic.phases.length > 0 &&
+    epic.phases.every((p) => phaseStatus(p, resolvedSeqs) === 'done')
+  );
 }
 
 /** Re-renders on an interval so elapsed labels (doc activity, running phases)
@@ -160,6 +194,12 @@ function epicFilterOf(status: Epic['status']): EpicFilter {
   return status === 'active' || status === 'paused' ? 'active' : status;
 }
 
+/** Plan-rail tab ids. Summary exists only on complete plans. */
+type PlanRailTab = 'plan' | 'summary';
+
+/** What the right rail shows: one phase's details, or the plan's (tabbed). */
+type RailSel = { kind: 'phase'; phaseId: number } | { kind: 'plan'; tab: PlanRailTab };
+
 export function Plans(): JSX.Element {
   const { project, projectId, loading: projLoading } = useProjectWorkspace();
   const [epics, setEpics] = useState<Epic[] | null>(null);
@@ -168,6 +208,7 @@ export function Plans(): JSX.Element {
   const [filter, setFilter] = useState<EpicFilter>('active');
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyLifecycle, setBusyLifecycle] = useState(false);
+  const [rail, setRail] = useState<RailSel | null>(null);
   const [editDoc, setEditDoc] = useState<{
     taskId: number;
     path: string;
@@ -238,6 +279,11 @@ export function Plans(): JSX.Element {
     });
   }, [filtered]);
 
+  // The rail describes ONE epic's phase/plan — switching plans closes it.
+  useEffect(() => {
+    setRail(null);
+  }, [selected]);
+
   const activeEpic = useMemo(
     () => (selected !== null ? (filtered.find((e) => e.taskId === selected) ?? null) : null),
     [filtered, selected],
@@ -260,6 +306,36 @@ export function Plans(): JSX.Element {
       })
       .finally(() => setBusyLifecycle(false));
   };
+
+  // Phase-run controls (interactive-planning-v2 phase 6), lifted here so the
+  // phase rail can offer Retry on a failed run. The server re-checks every
+  // gate; the client-side disable is a courtesy, and a 409 body (unmet deps,
+  // already running) surfaces in the inline error strip in EpicDetail.
+  const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
+  const [runMsg, setRunMsg] = useState<string | null>(null);
+
+  const startRun = useCallback(
+    (taskId: number, phaseId: number): void => {
+      setRunBusy(phaseId);
+      setRunMsg(null);
+      runEpicPhase(taskId, phaseId)
+        .then(() => reload())
+        .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+        .finally(() => setRunBusy(null));
+    },
+    [reload],
+  );
+  const cancelRun = useCallback(
+    (taskId: number, phaseId: number): void => {
+      setRunBusy(phaseId);
+      setRunMsg(null);
+      cancelEpicPhaseRun(taskId, phaseId)
+        .then(() => reload())
+        .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+        .finally(() => setRunBusy(null));
+    },
+    [reload],
+  );
 
   if (projLoading) return <Loading label="workspace…" />;
   if (project === null) {
@@ -287,6 +363,13 @@ export function Plans(): JSX.Element {
       </div>
     );
   }
+
+  // Resolve the rail selection against the CURRENT epic — a refetch can drop
+  // the referenced phase (plan rescan), in which case the rail closes itself.
+  const railPhase =
+    activeEpic !== null && rail !== null && rail.kind === 'phase'
+      ? (activeEpic.phases.find((p) => p.id === rail.phaseId) ?? null)
+      : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-3 py-4 desk:px-6">
@@ -371,10 +454,35 @@ export function Plans(): JSX.Element {
               onOpenDoc={(path, title, mode) =>
                 setEditDoc({ taskId: activeEpic.taskId, path, title, mode })
               }
-              onChanged={reload}
+              onOpenPhase={(phaseId) => setRail({ kind: 'phase', phaseId })}
+              onOpenPlan={(tab) => setRail({ kind: 'plan', tab })}
+              railPhaseId={railPhase?.id ?? null}
+              runBusy={runBusy}
+              runMsg={runMsg}
+              onRun={(phaseId) => startRun(activeEpic.taskId, phaseId)}
+              onCancelRun={(phaseId) => cancelRun(activeEpic.taskId, phaseId)}
             />
           )}
         </div>
+
+        {/* Right detail rail — phase or plan details (HubShell detail-pane idiom). */}
+        {activeEpic !== null && railPhase !== null && (
+          <PhaseRail
+            epic={activeEpic}
+            phase={railPhase}
+            runBusy={runBusy}
+            onRetry={() => startRun(activeEpic.taskId, railPhase.id)}
+            onClose={() => setRail(null)}
+          />
+        )}
+        {activeEpic !== null && rail !== null && rail.kind === 'plan' && (
+          <PlanRail
+            epic={activeEpic}
+            tab={rail.tab}
+            onTab={(tab) => setRail({ kind: 'plan', tab })}
+            onClose={() => setRail(null)}
+          />
+        )}
       </div>
 
       {editDoc !== null && (
@@ -396,63 +504,44 @@ function EpicDetail({
   busyLifecycle,
   onLifecycle,
   onOpenDoc,
-  onChanged,
+  onOpenPhase,
+  onOpenPlan,
+  railPhaseId,
+  runBusy,
+  runMsg,
+  onRun,
+  onCancelRun,
 }: {
   epic: Epic;
   busyLifecycle: boolean;
   onLifecycle: (epic: Epic, action: EpicLifecycleAction) => void;
   onOpenDoc: (path: string, title: string, mode: DrawerMode) => void;
-  onChanged: () => void;
+  onOpenPhase: (phaseId: number) => void;
+  onOpenPlan: (tab: PlanRailTab) => void;
+  railPhaseId: number | null;
+  runBusy: number | null;
+  runMsg: string | null;
+  onRun: (phaseId: number) => void;
+  onCancelRun: (phaseId: number) => void;
 }): JSX.Element {
-  // Which seq numbers are "resolved" — their board task is done/archived OR
-  // every checkbox in their doc is ticked (file-driven completion without
-  // board activation). Used to render depends-on badges.
-  const resolvedSeqs = useMemo(() => {
-    const s = new Set<number>();
-    for (const p of epic.phases) {
-      if (
-        isResolvedColumn(p.boardColumn) ||
-        (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
-        p.runState === 'done'
-      )
-        s.add(p.seq);
-    }
-    return s;
-  }, [epic.phases]);
-
-  // Details modal (tabbed summary / checks / doc): one phase, or — when
-  // `phase` is undefined — the plan itself (SUMMARY.md / per-phase checks / README).
-  const [modal, setModal] = useState<{ phase?: EpicPhase } | null>(null);
-
-  // Phase-run controls (interactive-planning-v2 phase 6). The server re-checks
-  // every gate; the client-side disable is a courtesy, and a 409 body (unmet
-  // deps, already running) surfaces in the inline error strip below.
-  const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
-  const [runMsg, setRunMsg] = useState<string | null>(null);
+  const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
+  const complete = planComplete(epic, resolvedSeqs);
   const now = useNow(1000);
-
-  const startRun = (phaseId: number): void => {
-    setRunBusy(phaseId);
-    setRunMsg(null);
-    runEpicPhase(epic.taskId, phaseId)
-      .then(() => onChanged())
-      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
-      .finally(() => setRunBusy(null));
-  };
-  const cancelRun = (phaseId: number): void => {
-    setRunBusy(phaseId);
-    setRunMsg(null);
-    cancelEpicPhaseRun(epic.taskId, phaseId)
-      .then(() => onChanged())
-      .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
-      .finally(() => setRunBusy(null));
-  };
 
   return (
     <div className="pr-1">
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <div className="flex min-w-0 items-baseline gap-2">
-          <h2 className="truncate text-[15px] font-semibold text-ink">{epic.title}</h2>
+          {/* The plan title opens the plan rail — same click-to-detail idiom
+              as the phase rows below. */}
+          <button
+            type="button"
+            onClick={() => onOpenPlan('plan')}
+            title="open plan details"
+            className="min-w-0 truncate text-left text-[15px] font-semibold text-ink transition-colors hover:text-brand"
+          >
+            {epic.title}
+          </button>
           <span
             className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9.5px] ${STATUS_BADGE[epic.status]}`}
           >
@@ -466,7 +555,7 @@ function EpicDetail({
       <div className="mb-4 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
-          onClick={() => onOpenDoc('README.md', `${epic.title} — README`, 'preview')}
+          onClick={() => onOpenPlan('plan')}
           className="rounded-md border border-line px-2 py-1 font-mono text-[10.5px] text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
         >
           ❐ open plan README
@@ -482,11 +571,11 @@ function EpicDetail({
             {busyLifecycle ? '…' : label}
           </button>
         ))}
-        {epic.hasSummary && (
+        {complete && (
           <button
             type="button"
-            onClick={() => setModal({})}
-            title="what was shipped — plan/SUMMARY.md, per-phase checks, README"
+            onClick={() => onOpenPlan('summary')}
+            title="what was shipped — per-phase executed work"
             className="rounded-md border border-green/40 px-2 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/10"
           >
             ✓ summary
@@ -513,24 +602,27 @@ function EpicDetail({
               : depsUnmet.length > 0
                 ? `waiting on phase ${depsUnmet.join(', ')}`
                 : 'run this phase headlessly in an isolated worktree';
-          const openDoc = (): void => {
-            onOpenDoc(p.docRelPath, `Phase ${String(p.seq)} — ${p.name}`, 'preview');
+          const openPhase = (): void => {
+            onOpenPhase(p.id);
           };
           return (
             <li
               key={p.id}
               role="button"
               tabIndex={0}
-              aria-label={`open Phase ${String(p.seq)} — ${p.name}`}
-              onClick={openDoc}
+              aria-label={`open Phase ${String(p.seq)} — ${p.name} details`}
+              aria-current={railPhaseId === p.id}
+              onClick={openPhase}
               onKeyDown={(e) => {
                 if (e.target !== e.currentTarget) return; // inner buttons handle their own keys
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  openDoc();
+                  openPhase();
                 }
               }}
-              className="cursor-pointer rounded-lg border border-line bg-surface/40 px-3 py-2.5 transition-colors hover:border-line-strong focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand"
+              className={`cursor-pointer rounded-lg border px-3 py-2.5 transition-colors hover:border-line-strong focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand ${
+                railPhaseId === p.id ? 'border-line-strong bg-surface2' : 'border-line bg-surface/40'
+              }`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -579,8 +671,10 @@ function EpicDetail({
                     </span>
                   )}
 
-                  {/* Direct phase run (no board task): idle/failed offer Run,
-                      running shows elapsed + Cancel + session link, done a chip. */}
+                  {/* Direct phase run (no board task): running shows elapsed +
+                      Cancel + session link; a DONE phase retires the Run button
+                      and offers ✓ summary (opens the details rail); idle/failed
+                      offer Run/Retry. */}
                   {p.runState === 'running' ? (
                     <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                       <span
@@ -605,11 +699,38 @@ function EpicDetail({
                         disabled={runBusy !== null}
                         onClick={(e) => {
                           e.stopPropagation();
-                          cancelRun(p.id);
+                          onCancelRun(p.id);
                         }}
                         className="rounded-md border border-red/40 px-1.5 py-px font-mono text-[9.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Cancel
+                      </button>
+                    </span>
+                  ) : status === 'done' ? (
+                    <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      {p.runState === 'done' && (
+                        <span
+                          className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+                          title="headless run finished"
+                        >
+                          Run done
+                        </span>
+                      )}
+                      {p.runState === 'failed' && (
+                        <span
+                          className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
+                          title={p.runError ?? 'run failed'}
+                        >
+                          Failed
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={openPhase}
+                        title="what was shipped — completed criteria, Completion Report, full doc"
+                        className="font-mono text-[9.5px] text-green underline-offset-2 transition-colors hover:underline"
+                      >
+                        ✓ summary
                       </button>
                     </span>
                   ) : p.runState === 'done' ? (
@@ -635,7 +756,7 @@ function EpicDetail({
                         title={runTitle}
                         onClick={(e) => {
                           e.stopPropagation();
-                          startRun(p.id);
+                          onRun(p.id);
                         }}
                         className={`rounded-md border px-1.5 py-px font-mono text-[9.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
                           p.runState === 'failed'
@@ -646,19 +767,6 @@ function EpicDetail({
                         {runBusy === p.id ? '…' : p.runState === 'failed' ? 'Retry run' : 'Run phase'}
                       </button>
                     </span>
-                  )}
-                  {status === 'done' && p.completionReport !== null && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setModal({ phase: p });
-                      }}
-                      title="what was shipped — Completion Report, checks, full doc"
-                      className="font-mono text-[9.5px] text-green underline-offset-2 transition-colors hover:underline"
-                    >
-                      ✓ summary
-                    </button>
                   )}
                   <button
                     type="button"
@@ -676,20 +784,9 @@ function EpicDetail({
           );
         })}
       </ol>
-
-      {modal !== null && (
-        <DetailsModal
-          epic={epic}
-          phase={modal.phase}
-          resolvedSeqs={resolvedSeqs}
-          onClose={() => setModal(null)}
-        />
-      )}
     </div>
   );
 }
-
-type DetailTab = 'summary' | 'checks' | 'doc';
 
 /** Acceptance-criteria checkbox lines of a markdown doc, in order. */
 function extractChecks(md: string): { text: string; done: boolean }[] {
@@ -701,183 +798,425 @@ function extractChecks(md: string): { text: string; done: boolean }[] {
   return out;
 }
 
-/**
- * Tabbed details modal. For a phase: summary (the doc's Completion Report) /
- * checks (its acceptance-criteria states) / doc (full markdown). For the plan
- * (phase undefined): summary (plan/SUMMARY.md) / checks (per-phase rollup) /
- * readme. Esc / backdrop close; doc content fetched lazily per tab.
- */
-function DetailsModal({
+/** The body of one `## <heading>` markdown section (up to the next `## `
+ * heading), or null when the doc has no such section / it is empty. */
+function extractSection(md: string, heading: string): string | null {
+  const lines = md.split('\n');
+  const want = `## ${heading}`.toLowerCase();
+  const start = lines.findIndex((l) => l.trim().toLowerCase() === want);
+  if (start === -1) return null;
+  const body: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^##\s/.test(line)) break;
+    body.push(line);
+  }
+  const text = body.join('\n').trim();
+  return text === '' ? null : text;
+}
+
+/** Lazily fetches one plan doc; errors fold into the returned text (same
+ * behaviour the old details modal had). `version` re-triggers the fetch when
+ * the doc changes server-side (docUpdatedAt from a plan_updated refetch). */
+function usePlanDoc(taskId: number, path: string, version: string | null): string | null {
+  const [text, setText] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setText(null);
+    fetchPlanDoc(taskId, path)
+      .then((d) => {
+        if (alive) setText(d.content);
+      })
+      .catch((e: unknown) => {
+        if (alive)
+          setText(`failed to load ${path}: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [taskId, path, version]);
+  return text;
+}
+
+/** Shell of the right detail rail — the HubShell detail-pane idiom (rounded
+ * bordered panel: identity header, optional tab bar, scrollable body) shared
+ * by the phase rail and the plan rail. */
+function RailShell({
+  ariaLabel,
+  header,
+  tabBar,
+  children,
+}: {
+  ariaLabel: string;
+  header: ReactNode;
+  tabBar?: ReactNode;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <div
+      role="complementary"
+      aria-label={ariaLabel}
+      className="flex w-[360px] shrink-0 min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-surface wide:w-[440px]"
+    >
+      <div className="shrink-0 border-b border-line px-4 pt-3.5 pb-3">{header}</div>
+      {tabBar}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[13px] leading-relaxed">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** One labeled section inside a rail body. */
+function RailSection({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <section className="mb-4 last:mb-0">
+      <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-ink-faint">
+        {label}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Acceptance-criteria list with tick state (✓ done / ○ open). */
+function ChecksList({ checks }: { checks: { text: string; done: boolean }[] }): JSX.Element {
+  return (
+    <ul className="space-y-1.5">
+      {checks.map((c, i) => (
+        <li key={i} className="flex items-start gap-2">
+          <span
+            className={`mt-px shrink-0 font-mono text-[12px] ${
+              c.done ? 'text-green' : 'text-ink-faint'
+            }`}
+          >
+            {c.done ? '✓' : '○'}
+          </span>
+          <span className={c.done ? 'text-ink-dim' : 'text-ink'}>{c.text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Run-state chip for the phase rail header (running / done / failed). */
+function RunStateChip({ phase }: { phase: EpicPhase }): JSX.Element | null {
+  switch (phase.runState) {
+    case 'running':
+      return (
+        <span
+          className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
+          title="headless run in progress"
+        >
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
+          Running
+        </span>
+      );
+    case 'done':
+      return (
+        <span
+          className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+          title="headless run finished"
+        >
+          Run done
+        </span>
+      );
+    case 'failed':
+      return (
+        <span
+          className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
+          title={phase.runError ?? 'run failed'}
+        >
+          Run failed
+        </span>
+      );
+    default:
+      return null;
+  }
+}
+
+/** Phase details rail: status + run state (incl. failure detail + Retry),
+ * acceptance criteria with tick state, Completion Report when written, and the
+ * full phase doc markdown. Replaces the old phase details modal. */
+function PhaseRail({
   epic,
   phase,
-  resolvedSeqs,
+  runBusy,
+  onRetry,
   onClose,
 }: {
   epic: Epic;
-  phase: EpicPhase | undefined;
-  resolvedSeqs: Set<number>;
+  phase: EpicPhase;
+  runBusy: number | null;
+  onRetry: () => void;
   onClose: () => void;
 }): JSX.Element {
-  const [tab, setTab] = useState<DetailTab>('summary');
-  const [docText, setDocText] = useState<string | null>(null); // doc/readme + phase checks
-  const [planSummary, setPlanSummary] = useState<string | null>(null);
-  const docPath = phase !== undefined ? phase.docRelPath : 'README.md';
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [onClose]);
-
-  useEffect(() => {
-    const needDoc = tab === 'doc' || (tab === 'checks' && phase !== undefined);
-    if (needDoc && docText === null) {
-      fetchPlanDoc(epic.taskId, docPath)
-        .then((d) => setDocText(d.content))
-        .catch((e: unknown) =>
-          setDocText(`failed to load ${docPath}: ${e instanceof Error ? e.message : String(e)}`),
-        );
-    }
-    if (tab === 'summary' && phase === undefined && planSummary === null) {
-      fetchPlanDoc(epic.taskId, 'SUMMARY.md')
-        .then((d) => setPlanSummary(d.content))
-        .catch((e: unknown) =>
-          setPlanSummary(
-            `failed to load SUMMARY.md: ${e instanceof Error ? e.message : String(e)}`,
-          ),
-        );
-    }
-  }, [tab, phase, docText, planSummary, epic.taskId, docPath]);
-
-  const title =
-    phase !== undefined ? `Phase ${String(phase.seq)} — ${phase.name}` : epic.title;
-  const tabs: { id: DetailTab; label: string }[] = [
-    { id: 'summary', label: 'summary' },
-    { id: 'checks', label: 'checks' },
-    { id: 'doc', label: phase !== undefined ? 'doc' : 'readme' },
-  ];
-
-  const phaseChecks = phase !== undefined && docText !== null ? extractChecks(docText) : null;
+  const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
+  const status = phaseStatus(phase, resolvedSeqs);
+  const doc = usePlanDoc(epic.taskId, phase.docRelPath, phase.docUpdatedAt);
+  const checks = useMemo(() => (doc !== null ? extractChecks(doc) : null), [doc]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border border-line bg-surface"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <div className="min-w-0 truncate font-display text-[14px] font-bold text-ink">
-            {title}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <div className="flex items-center gap-1" role="tablist" aria-label="details tabs">
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === t.id}
-                  onClick={() => setTab(t.id)}
-                  className={`rounded-md border px-2 py-0.5 font-mono text-[10px] transition-colors ${
-                    tab === t.id
-                      ? 'border-brand/40 bg-brand/10 text-brand'
-                      : 'border-line text-ink-dim hover:border-line-strong hover:text-ink'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
+    <RailShell
+      ariaLabel={`Phase ${String(phase.seq)} — ${phase.name} details`}
+      header={
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="font-mono text-[10px] text-ink-faint">Phase {phase.seq}</div>
+              <div className="truncate text-[14px] font-semibold text-ink">{phase.name}</div>
             </div>
             <button
               type="button"
               onClick={onClose}
-              aria-label="close details"
+              aria-label="close phase details"
               className="rounded px-1.5 font-mono text-[13px] text-ink-dim transition-colors hover:text-ink"
             >
               ✕
             </button>
           </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span
+              className={`rounded border px-1.5 py-px font-mono text-[9px] ${PHASE_CHIP[status].cls}`}
+            >
+              {PHASE_CHIP[status].label}
+            </span>
+            <RunStateChip phase={phase} />
+            <span className="font-mono text-[10px] text-ink-faint">
+              {phase.checkboxesDone}/{phase.checkboxesTotal || 0}
+            </span>
+          </div>
+        </>
+      }
+    >
+      {phase.runState === 'failed' && (
+        <div className="mb-4 rounded-md border border-red/40 bg-red/10 px-2.5 py-2">
+          <div className="font-mono text-[10.5px] break-words text-red">
+            {phase.runError ?? 'run failed'}
+          </div>
+          <button
+            type="button"
+            disabled={runBusy !== null}
+            onClick={onRetry}
+            title="run this phase headlessly again"
+            className="mt-1.5 rounded-md border border-red/40 px-1.5 py-px font-mono text-[9.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {runBusy !== null ? '…' : 'Retry run'}
+          </button>
         </div>
+      )}
 
-        <div className="min-h-0 overflow-y-auto px-4 py-3 text-[13px] leading-relaxed">
-          {tab === 'summary' &&
-            (phase !== undefined ? (
-              phase.completionReport !== null ? (
-                <Markdown text={phase.completionReport} />
-              ) : (
-                <div className="font-mono text-[11.5px] text-ink-faint">
-                  no completion report yet — the executor fills «## Completion Report» when the
-                  phase lands
-                </div>
-              )
-            ) : planSummary === null ? (
-              <Loading label="summary…" />
-            ) : (
-              <Markdown text={planSummary} />
-            ))}
+      {phase.completionReport !== null && (
+        <RailSection label="completion report">
+          <Markdown text={phase.completionReport} />
+        </RailSection>
+      )}
 
-          {tab === 'checks' &&
-            (phase !== undefined ? (
-              phaseChecks === null ? (
-                <Loading label="checks…" />
-              ) : phaseChecks.length === 0 ? (
-                <div className="font-mono text-[11.5px] text-ink-faint">
-                  no checkboxes in this doc
-                </div>
-              ) : (
-                <ul className="space-y-1.5">
-                  {phaseChecks.map((c, i) => (
-                    <li key={i} className="flex items-start gap-2">
-                      <span
-                        className={`mt-px shrink-0 font-mono text-[12px] ${
-                          c.done ? 'text-green' : 'text-ink-faint'
-                        }`}
-                      >
-                        {c.done ? '✓' : '○'}
-                      </span>
-                      <span className={c.done ? 'text-ink-dim' : 'text-ink'}>{c.text}</span>
-                    </li>
-                  ))}
-                </ul>
-              )
-            ) : (
-              <ul className="space-y-2">
-                {epic.phases.map((p) => {
-                  const st = phaseStatus(p, resolvedSeqs);
-                  return (
-                    <li key={p.id} className="flex items-center gap-2">
-                      <span className="shrink-0 font-mono text-[10px] text-ink-faint">
-                        Phase {p.seq}
-                      </span>
-                      <span className="min-w-0 truncate text-ink">{p.name}</span>
-                      <span
-                        className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9px] ${PHASE_CHIP[st].cls}`}
-                      >
-                        {PHASE_CHIP[st].label}
-                      </span>
-                      <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
-                        {p.checkboxesDone}/{p.checkboxesTotal || 0}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            ))}
+      <RailSection label="acceptance criteria">
+        {checks === null ? (
+          <Loading label="criteria…" />
+        ) : checks.length === 0 ? (
+          <div className="font-mono text-[11.5px] text-ink-faint">no checkboxes in this doc</div>
+        ) : (
+          <ChecksList checks={checks} />
+        )}
+      </RailSection>
 
-          {tab === 'doc' &&
-            (docText === null ? <Loading label="doc…" /> : <Markdown text={docText} />)}
+      <RailSection label="doc">
+        {doc === null ? <Loading label="doc…" /> : <Markdown text={doc} />}
+      </RailSection>
+    </RailShell>
+  );
+}
+
+/** Plan details rail: a Plan tab (the plan README markdown) plus — only when
+ * every phase is done — a Summary tab with the per-phase executed work.
+ * Replaces the old plan README + plan summary modals. */
+function PlanRail({
+  epic,
+  tab,
+  onTab,
+  onClose,
+}: {
+  epic: Epic;
+  tab: PlanRailTab;
+  onTab: (tab: PlanRailTab) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
+  const complete = planComplete(epic, resolvedSeqs);
+  // The Summary tab exists only on complete plans — a stale selection (e.g. a
+  // rescan un-ticked a box) degrades to the Plan tab instead of a dead panel.
+  const activeTab: PlanRailTab = tab === 'summary' && !complete ? 'plan' : tab;
+  const tabs: { id: PlanRailTab; label: string }[] = [
+    { id: 'plan', label: 'Plan' },
+    ...(complete ? [{ id: 'summary' as const, label: 'Summary' }] : []),
+  ];
+
+  return (
+    <RailShell
+      ariaLabel={`${epic.title} — plan details`}
+      header={
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="truncate text-[14px] font-semibold text-ink">{epic.title}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              <span
+                className={`rounded border px-1.5 py-px font-mono text-[9.5px] ${STATUS_BADGE[epic.status]}`}
+              >
+                {epic.status}
+              </span>
+              <span className="font-mono text-[10px] text-ink-faint">
+                {epic.rollup.done}/{epic.rollup.total} ({Math.round(epic.rollup.pct)}%)
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="close plan details"
+            className="rounded px-1.5 font-mono text-[13px] text-ink-dim transition-colors hover:text-ink"
+          >
+            ✕
+          </button>
         </div>
-      </div>
+      }
+      tabBar={
+        <div
+          className="flex shrink-0 gap-1 overflow-x-auto border-b border-line px-4"
+          role="tablist"
+          aria-label="plan details tabs"
+        >
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === t.id}
+              onClick={() => onTab(t.id)}
+              className={`-mb-px shrink-0 border-b-2 px-3 py-[8px] text-[12.5px] font-medium whitespace-nowrap transition-colors ${
+                activeTab === t.id
+                  ? 'border-brand text-brand'
+                  : 'border-transparent text-ink-dim hover:text-ink'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      }
+    >
+      {activeTab === 'plan' ? (
+        <PlanReadme epic={epic} />
+      ) : (
+        <PlanSummary epic={epic} resolvedSeqs={resolvedSeqs} />
+      )}
+    </RailShell>
+  );
+}
+
+/** Plan tab body — the plan README markdown. */
+function PlanReadme({ epic }: { epic: Epic }): JSX.Element {
+  const readme = usePlanDoc(epic.taskId, 'README.md', null);
+  if (readme === null) return <Loading label="readme…" />;
+  return <Markdown text={readme} />;
+}
+
+/** Summary tab body (complete plans only): per-phase executed work — phase
+ * title + N/N, its TICKED acceptance criteria, and, when present, the phase's
+ * Completion Report and/or `## Execution record` doc section. Derived
+ * client-side from the existing docs endpoint (one fetch per phase doc, plus
+ * plan/SUMMARY.md when the executor wrote one) — no API extension needed. */
+function PlanSummary({
+  epic,
+  resolvedSeqs,
+}: {
+  epic: Epic;
+  resolvedSeqs: Set<number>;
+}): JSX.Element {
+  const [docs, setDocs] = useState<Record<string, string> | null>(null);
+  const [summaryMd, setSummaryMd] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setDocs(null);
+    setSummaryMd(null);
+    void Promise.all(
+      epic.phases.map(async (p) => {
+        try {
+          const d = await fetchPlanDoc(epic.taskId, p.docRelPath);
+          return [p.docRelPath, d.content] as const;
+        } catch {
+          return [p.docRelPath, ''] as const; // a missing doc degrades to DTO-only data
+        }
+      }),
+    ).then((entries) => {
+      if (alive) setDocs(Object.fromEntries(entries));
+    });
+    if (epic.hasSummary) {
+      fetchPlanDoc(epic.taskId, 'SUMMARY.md')
+        .then((d) => {
+          if (alive) setSummaryMd(d.content);
+        })
+        .catch(() => undefined); // optional artifact — skip silently
+    }
+    return () => {
+      alive = false;
+    };
+  }, [epic.taskId, epic.hasSummary, epic.phases]);
+
+  if (docs === null) return <Loading label="summary…" />;
+
+  return (
+    <div className="space-y-4">
+      {summaryMd !== null && (
+        <RailSection label="plan summary">
+          <Markdown text={summaryMd} />
+        </RailSection>
+      )}
+      {epic.phases.map((p) => {
+        const doc = docs[p.docRelPath] ?? '';
+        const ticked = extractChecks(doc).filter((c) => c.done);
+        const execRecord = extractSection(doc, 'Execution record');
+        const status = phaseStatus(p, resolvedSeqs);
+        return (
+          <section key={p.id} className="rounded-lg border border-line bg-surface/40 px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="shrink-0 font-mono text-[10px] text-ink-faint">Phase {p.seq}</span>
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+                {p.name}
+              </span>
+              <span
+                className={`shrink-0 font-mono text-[10px] ${
+                  status === 'done' ? 'text-green' : 'text-ink-faint'
+                }`}
+              >
+                {p.checkboxesDone}/{p.checkboxesTotal || 0}
+              </span>
+            </div>
+            {ticked.length > 0 && (
+              <div className="mt-2">
+                <ChecksList checks={ticked} />
+              </div>
+            )}
+            {p.completionReport !== null && (
+              <div className="mt-2 border-t border-line pt-2">
+                <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-faint">
+                  completion report
+                </div>
+                <Markdown text={p.completionReport} />
+              </div>
+            )}
+            {execRecord !== null && (
+              <div className="mt-2 border-t border-line pt-2">
+                <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-faint">
+                  execution record
+                </div>
+                <Markdown text={execRecord} />
+              </div>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }
