@@ -47,18 +47,24 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
 }
 
 /** A chip flagging that the daemon generated a continuation handoff brief for
- * this fat session (migration 0039). Violet to distinguish it from the amber/red
+ * this fat session (migration 0039). Purple to distinguish it from the amber/red
  * context warning it sits beside — clicking through to the session opens the
- * rail's Handoff section with the full brief + a copy-paste resume command. */
+ * rail's Handoff section with the full brief + a copy-paste resume command.
+ *
+ * `purple`, not Tailwind's `violet-*`: the palette defaults do not flip with
+ * :root[data-mode='light'], where violet-400 lands at 2.73:1 on the light
+ * surface. --color-purple is re-tuned per palette to clear AA (index.css).
+ *
+ * The native title= is gone — the explainer carries the same wording plus the
+ * thresholds and the resume steps. */
 function HandoffChip({ session }: { session: Session }): JSX.Element | null {
   if (session.handoff == null) return null;
   return (
-    <span
-      title="A continuation handoff brief is ready — open the session to read it and copy the resume command."
-      className="shrink-0 rounded-full border border-violet-500/40 bg-violet-500/15 px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap text-violet-400"
-    >
-      Handoff
-    </span>
+    <ExplainPair id="handoff">
+      <span className="shrink-0 rounded-full border border-purple/40 bg-purple/15 px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap text-purple">
+        Handoff
+      </span>
+    </ExplainPair>
   );
 }
 
