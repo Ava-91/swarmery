@@ -7,6 +7,7 @@ import { useState } from 'react';
 import type { Project } from '../api/types';
 import { archiveProject, patchProject, restoreProject } from '../api';
 import { ConfirmDialog } from './ui';
+import { Explain } from './Explain';
 import { DetachModal } from './DetachModal';
 import { AttachModal } from './AttachModal';
 
@@ -177,26 +178,33 @@ export function ProjectActions({
           >
             tags
           </button>
-          {canAttach(project) ? (
-            <button
-              type="button"
-              onClick={() => setShowAttach(true)}
-              title="re-enable swarmery in .claude/settings.json"
-              className="rounded-lg border border-green/40 bg-green/10 px-2.5 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/20"
-            >
-              attach
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setShowDetach(true)}
-              disabled={blocked !== null}
-              title={blocked ?? 'remove swarmery from .claude/settings.json'}
-              className="rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[10.5px] text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              detach
-            </button>
-          )}
+          {/* Attach and detach are one concept and one slot — exactly one of the
+              two buttons renders — so the explainer is grouped with the pair at
+              gap-1 rather than dropped into the gap-2 row, where it would sit
+              equidistant from `archive` and read as belonging to it. */}
+          <span className="flex items-center gap-1">
+            {canAttach(project) ? (
+              <button
+                type="button"
+                onClick={() => setShowAttach(true)}
+                title="re-enable swarmery in .claude/settings.json"
+                className="rounded-lg border border-green/40 bg-green/10 px-2.5 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/20"
+              >
+                attach
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowDetach(true)}
+                disabled={blocked !== null}
+                title={blocked ?? 'remove swarmery from .claude/settings.json'}
+                className="rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[10.5px] text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                detach
+              </button>
+            )}
+            <Explain id="attach-detach" />
+          </span>
           <button
             type="button"
             onClick={() => setConfirm('archive')}
