@@ -1,4 +1,5 @@
 import type { Session } from '../api/types';
+import { Explain } from './Explain';
 
 type BadgeKind = 'orphaned' | 'dead';
 
@@ -18,11 +19,17 @@ const BADGE_STYLES: Record<BadgeKind, string> = {
 export function ProcBadge({ session }: { session: Session }): JSX.Element | null {
   const kind = procBadgeKind(session);
   if (!kind) return null;
+  // The explainer lives inside the component, not at its call sites:
+  // SessionCard renders ProcBadge from two different layouts and only one is
+  // mounted at a time, so one edit covers both and they cannot drift.
   return (
-    <span
-      className={`inline-flex items-center rounded border px-1.5 py-px font-mono text-[10px] font-medium ${BADGE_STYLES[kind]}`}
-    >
-      {kind}
-    </span>
+    <>
+      <span
+        className={`inline-flex items-center rounded border px-1.5 py-px font-mono text-[10px] font-medium ${BADGE_STYLES[kind]}`}
+      >
+        {kind}
+      </span>
+      <Explain id="proc-badge" />
+    </>
   );
 }
