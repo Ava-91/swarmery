@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +55,13 @@ var (
 type BranchDirtyError struct {
 	Branch       string
 	CommitsAhead int
+	// Base is the branch CommitsAhead was measured against — the repo's current
+	// checkout, because worktree.ReclaimEmptyBranch counts against the same start
+	// point Acquire pins to. The same branch is "3 commits ahead" of dev and "0
+	// ahead" of a feature branch that already contains them, so a 409 that does not
+	// name its base cannot be told apart from base skew. Empty when the base could
+	// not be named (no Git seam wired, detached HEAD, git failure) — never guessed.
+	Base string
 }
 
 func (e *BranchDirtyError) Error() string {
@@ -86,9 +94,13 @@ type run struct {
 // plan_updated publisher) is keyed by the WORKSPACE task id so the Plans page
 // refetches on run edges.
 type Service struct {
-	DB   *sql.DB
-	Wt   dispatch.WorktreeManager // shared worktree mechanics (dispatch's seam)
-	Run  Runner
+	DB  *sql.DB
+	Wt  dispatch.WorktreeManager // shared worktree mechanics (dispatch's seam)
+	Run Runner
+	// Git is an OPTIONAL read-only seam, used for one thing: naming the branch a
+	// commits-ahead count was measured against (BranchDirtyError.Base). nil ⇒ the
+	// base is reported as unknown; no run behaviour depends on it.
+	Git  worktree.Git
 	UUID func() string    // session-uuid generator (test seam; default newUUID)
 	now  func() time.Time // clock (test seam; default time.Now)
 	Go   func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors planning.Go
@@ -218,7 +230,7 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	}
 	if ahead > 0 {
 		release()
-		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead}
+		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead, Base: s.baseBranch(info.ProjectPath)}
 	}
 
 	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, taskName)
@@ -324,10 +336,33 @@ func (s *Service) stamp(phaseID int64, state, runError string) {
 		return
 	}
 	// Zero rows means the phase row vanished mid-run — historically a rescan
-	// deleting and re-inserting it. Silent data loss; log it loudly.
-	if n, _ := res.RowsAffected(); n == 0 {
+	// deleting and re-inserting it. Silent data loss; log it loudly. The driver
+	// error is handled rather than discarded: this branch exists precisely to catch
+	// a lost write, and swallowing the one error that says "I cannot tell you
+	// whether the write landed" defeats it.
+	n, err := res.RowsAffected()
+	switch {
+	case err != nil:
+		log.Printf("error: phaserun: stamp phase=%d state=%s: rows affected unavailable: %v", phaseID, state, err)
+	case n == 0:
 		log.Printf("error: phaserun: stamp phase=%d state=%s: row vanished mid-run", phaseID, state)
 	}
+}
+
+// baseBranch names the repo's current checkout — the branch
+// worktree.ReclaimEmptyBranch's commit count is relative to (it resolves its start
+// point from the same symbolic HEAD Acquire does). Purely descriptive: any failure,
+// a detached HEAD, or no Git seam yields "" and the consumer omits the base rather
+// than naming one that was not measured.
+func (s *Service) baseBranch(repoRoot string) string {
+	if s.Git == nil || repoRoot == "" {
+		return ""
+	}
+	out, err := s.Git.Run(repoRoot, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // removeWorktree best-effort removes the run's worktree, KEEPING the branch
@@ -389,15 +424,30 @@ func (s *Service) DeleteRunBranch(phaseID int64) (string, error) {
 // time, not the moment the run actually died — the daemon has no record of that.
 // A run orphaned for three days therefore reports a three-day duration. Callers
 // building a duration DTO must suppress or flag it when run_error='daemon restart'.
+//
+// run_checkboxes_after is stamped alongside run_ended_at for the same reason
+// stamp() does it: admission opens the interval by resetting the right edge to
+// NULL, and a terminal transition that leaves it open leaves the run measured
+// against the LIVE count (phasediag.OutcomeFromRow's fallback), which every later
+// wsingest rescan and checklist tick moves. Healing is terminal, so it closes the
+// interval — the count as of the restart is the last honest right edge available.
 func (s *Service) HealStale() error {
 	res, err := s.DB.Exec(`
 		UPDATE epic_phases
-		   SET run_state='failed', run_error='daemon restart', run_ended_at=?
+		   SET run_state='failed', run_error='daemon restart', run_ended_at=?,
+		       run_checkboxes_after=checkboxes_done
 		 WHERE run_state='running'`, s.ts())
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Not fatal — the heal itself succeeded — but the count is the only signal
+		// that orphans existed at all, so its loss must not be silent.
+		log.Printf("error: swarmery phaserun: heal rows affected unavailable: %v", err)
+		return nil
+	}
+	if n > 0 {
 		log.Printf("swarmery phaserun: healed %d orphaned running phase(s) to failed", n)
 	}
 	return nil

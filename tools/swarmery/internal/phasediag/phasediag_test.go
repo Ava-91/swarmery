@@ -420,8 +420,16 @@ func TestDiagnoseDepUnmerged(t *testing.T) {
 			t.Fatalf("summary %q must contain %q", b.Summary, want)
 		}
 	}
-	if !strings.Contains(b.Detail, depBranch) || !strings.Contains(b.Detail, "2 commits ahead of dev") {
-		t.Fatalf("detail %q must name the branch, count and base", b.Detail)
+	// The base is stated as what it actually is — the repo's CURRENT checkout —
+	// because that is what baseBranch measures against (matching worktree.Acquire).
+	// On a feature branch a dependency merged into dev but not into that branch
+	// fires this blocker; without the qualifier the user cannot tell that skew from
+	// a genuinely unmerged dependency.
+	if !strings.Contains(b.Detail, depBranch) || !strings.Contains(b.Detail, "2 commits") {
+		t.Fatalf("detail %q must name the branch and count", b.Detail)
+	}
+	if !strings.Contains(b.Detail, "measured against the currently checked-out branch dev") {
+		t.Fatalf("detail %q must name what it compared against", b.Detail)
 	}
 }
 
@@ -482,8 +490,9 @@ func TestDiagnoseOwnBranchStatesAreMutuallyExclusive(t *testing.T) {
 	if !strings.Contains(b.Summary, branch) {
 		t.Fatalf("summary %q must name the branch", b.Summary)
 	}
-	if !strings.Contains(b.Detail, "0 commits ahead of dev") {
-		t.Fatalf("detail %q must state 0 commits ahead of dev", b.Detail)
+	if !strings.Contains(b.Detail, "0 commits") ||
+		!strings.Contains(b.Detail, "measured against the currently checked-out branch dev") {
+		t.Fatalf("detail %q must state 0 commits and the base it compared against", b.Detail)
 	}
 
 	// Same branch, three commits on it.
@@ -505,8 +514,14 @@ func TestDiagnoseOwnBranchStatesAreMutuallyExclusive(t *testing.T) {
 			t.Fatalf("detail %q must contain subject %q", b.Detail, s)
 		}
 	}
-	if lines := strings.Split(strings.TrimSpace(b.Detail), "\n"); lines[0] != subjects[0] {
+	lines := strings.Split(strings.TrimSpace(b.Detail), "\n")
+	if lines[0] != subjects[0] {
 		t.Fatalf("detail must list newest commit first, got %q", lines[0])
+	}
+	// The comparison base is appended AFTER the subjects, so the newest-commit-first
+	// reading order survives while the count still says what it is relative to.
+	if last := lines[len(lines)-1]; last != "measured against the currently checked-out branch dev" {
+		t.Fatalf("detail must end by naming the base it compared against, got %q", last)
 	}
 }
 

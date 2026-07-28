@@ -200,7 +200,7 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 					Kind: KindDepUnmerged,
 					Summary: fmt.Sprintf("Phase %d is ticked, but its code is on %s — %s not merged into %s",
 						dep.Seq, branch, plural(ahead, "commit"), base),
-					Detail: fmt.Sprintf("%s → %s ahead of %s", branch, plural(ahead, "commit"), base),
+					Detail: fmt.Sprintf("%s → %s ahead, %s", branch, plural(ahead, "commit"), againstBase(base)),
 				})
 			}
 		}
@@ -217,14 +217,16 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 			d.Blockers = append(d.Blockers, Blocker{
 				Kind:    KindBranchBlocksRetry,
 				Summary: fmt.Sprintf("Leftover branch %s will be cleaned up automatically on retry", branch),
-				Detail:  fmt.Sprintf("%s → 0 commits ahead of %s", branch, base),
+				Detail:  fmt.Sprintf("%s → 0 commits ahead, %s", branch, againstBase(base)),
 			})
 		case exists:
 			d.Blockers = append(d.Blockers, Blocker{
 				Kind: KindBranchDirty,
 				Summary: fmt.Sprintf("Branch %s holds %s — merge or delete it before retrying",
 					branch, plural(ahead, "commit")),
-				Detail: strings.Join(subjects, "\n"),
+				// The base note goes LAST: the subjects are the answer to "what is on
+				// this branch", newest first, and the qualifier belongs after them.
+				Detail: strings.Join(append(subjects, againstBase(base)), "\n"),
 			})
 		}
 	}
@@ -286,6 +288,17 @@ func baseBranch(git worktree.Git, repoRoot string) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// againstBase spells out what a commit count was compared with. baseBranch is
+// deliberately the repo's CURRENT checkout (so a diagnosis can never disagree with
+// worktree.Acquire about "base"), which means a user sitting on a feature branch
+// sees a dependency merged into dev but not into that branch as dep-unmerged, and
+// branch-blocks-retry / branch-dirty flip under the same skew. The base choice
+// stays; every blocker derived from it says which branch it measured against, so
+// base skew is recognisable instead of looking like a real problem.
+func againstBase(base string) string {
+	return "measured against the currently checked-out branch " + base
 }
 
 // branchAhead reports whether refs/heads/<branch> exists and how many commits it

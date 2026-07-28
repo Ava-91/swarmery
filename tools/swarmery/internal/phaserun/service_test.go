@@ -875,6 +875,54 @@ func TestStart_ReclaimsEmptyLeftoverBranch(t *testing.T) {
 	}
 }
 
+// stubGit answers `symbolic-ref --short HEAD` so the service can NAME the branch a
+// commits-ahead count was measured against.
+type stubGit struct {
+	head string
+	err  error
+	mu   sync.Mutex
+	args []string
+}
+
+func (g *stubGit) Run(dir string, args ...string) (string, error) {
+	g.mu.Lock()
+	g.args = append(g.args, strings.Join(args, " "))
+	g.mu.Unlock()
+	if g.err != nil {
+		return "", g.err
+	}
+	return g.head + "\n", nil
+}
+
+// TestStart_BranchDirty_NamesTheBase: worktree.ReclaimEmptyBranch counts commits
+// against the repo's CURRENT checkout (matching Acquire's start point), so the same
+// branch is "3 commits ahead" of dev and "0 ahead" of a feature branch that already
+// contains them. The 409 has to say which one it measured, or the user cannot tell a
+// real conflict from base skew.
+func TestStart_BranchDirty_NamesTheBase(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	git := &stubGit{head: "dev"}
+	s := newTestService(db, &stubRunner{}, &stubWt{reclaimAhead: 3})
+	s.Git = git
+
+	var bde *BranchDirtyError
+	if _, err := s.Start(p1); !errors.As(err, &bde) {
+		t.Fatalf("err = %v, want a *BranchDirtyError", err)
+	}
+	if bde.Base != "dev" {
+		t.Errorf("Base = %q, want the checked-out branch dev", bde.Base)
+	}
+	// A detached HEAD (or any git failure) names nothing rather than guessing.
+	s2 := newTestService(db, &stubRunner{}, &stubWt{reclaimAhead: 3})
+	s2.Git = &stubGit{err: errors.New("detached HEAD")}
+	if _, err := s2.Start(p1); !errors.As(err, &bde) {
+		t.Fatalf("err = %v, want a *BranchDirtyError", err)
+	}
+	if bde.Base != "" {
+		t.Errorf("Base = %q, want empty when git cannot name a branch", bde.Base)
+	}
+}
+
 // TestStart_BranchDirty_RefusesAndReleasesSlot: a leftover branch holding commits is
 // never destroyed to make room. Start refuses with a typed error naming the branch and
 // the commit count (the api's 409 body / the UI's delete-or-merge prompt), and the
@@ -897,6 +945,11 @@ func TestStart_BranchDirty_RefusesAndReleasesSlot(t *testing.T) {
 	}
 	if bde.CommitsAhead != 3 {
 		t.Errorf("CommitsAhead = %d, want 3", bde.CommitsAhead)
+	}
+	// No Git seam wired ⇒ the base cannot be named; the field is empty rather than
+	// guessed, so the api never qualifies a 409 with a base it did not measure.
+	if bde.Base != "" {
+		t.Errorf("Base = %q, want empty without a Git seam", bde.Base)
 	}
 	// The dirty branch is untouched and no worktree was taken.
 	if len(wt.deleted) != 0 {
@@ -1063,6 +1116,40 @@ func TestHealStale(t *testing.T) {
 	}
 	if _, endedAt := phaseOutcome(t, db, p2); endedAt.Valid {
 		t.Errorf("done row run_ended_at = %q, want untouched by heal", endedAt.String)
+	}
+}
+
+// TestHealStale_ClosesCheckboxInterval: admission resets run_checkboxes_after to
+// NULL, so a crash-healed run would otherwise end with before=X, after=NULL for
+// ever — a half-open interval. phasediag.OutcomeFromRow falls back to the LIVE
+// count for a NULL right edge, which keeps drifting with every later writer of
+// checkboxes_done, so the healed run's outcome would change under it. HealStale is
+// a terminal transition like stamp(), and closes the interval exactly the same way.
+func TestHealStale_ClosesCheckboxInterval(t *testing.T) {
+	db, _, p1, p2 := fixture(t)
+	mustExec(t, db, `UPDATE epic_phases
+		   SET run_state='running', checkboxes_total=8, checkboxes_done=5,
+		       run_checkboxes_before=2, run_checkboxes_after=NULL WHERE id=?`, p1)
+	// An idle row with an open interval must not be touched — heal only owns rows
+	// left 'running'.
+	mustExec(t, db, `UPDATE epic_phases
+		   SET run_state='idle', checkboxes_done=4, run_checkboxes_after=NULL WHERE id=?`, p2)
+	s := newTestService(db, &stubRunner{}, &stubWt{})
+
+	if err := s.HealStale(); err != nil {
+		t.Fatalf("HealStale: %v", err)
+	}
+	after := phaseAfter(t, db, p1)
+	if !after.Valid || after.Int64 != 5 {
+		t.Fatalf("run_checkboxes_after = %v, want 5 — the count as of the heal", after)
+	}
+	// Pinned, not tracking: a later tick must not move the healed run's right edge.
+	mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=8 WHERE id=?`, p1)
+	if got := phaseAfter(t, db, p1); !got.Valid || got.Int64 != 5 {
+		t.Errorf("run_checkboxes_after = %v after a later tick, want a frozen 5", got)
+	}
+	if got := phaseAfter(t, db, p2); got.Valid {
+		t.Errorf("non-running row run_checkboxes_after = %v, want untouched NULL", got)
 	}
 }
 

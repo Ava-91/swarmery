@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,161 @@ func TestAcquireIntegration(t *testing.T) {
 	// The branch is gone.
 	if _, err := git.Run(repo, "rev-parse", "--verify", "swarm/"+taskID); err == nil {
 		t.Error("swarm branch survived Remove(keepBranch=false)")
+	}
+}
+
+// TestCrashLeftoverRetryIntegration reproduces the daemon-crash path against a
+// REAL git repo: runAndHandle's defer never fires, so the worktree stays
+// REGISTERED at the run's own deterministic path, checked out on swarm/<taskID>,
+// with `git worktree prune` unable to clear it (the directory still exists). The
+// retry — phaserun.Start's ReclaimEmptyBranch followed by Acquire — must recover
+// it. The guard added in d7dcb64 returned ErrBranchCheckedOut here and killed
+// every retry after a restart.
+func TestCrashLeftoverRetryIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs a real git binary; skipped in -short")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repo := t.TempDir()
+	git := ExecGit{}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(repo, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	mustWrite(t, filepath.Join(repo, "README.md"), "hello\n")
+	run("add", "README.md")
+	run("commit", "-q", "-m", "init")
+
+	m := &Manager{Git: git, Root: filepath.Join(t.TempDir(), "wts")}
+	taskID := "phase-714"
+	branch := "swarm/" + taskID
+
+	first, err := m.Acquire(repo, "proj", taskID)
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	// …the daemon dies here. No Remove, no prune-able registration.
+	if _, err := git.Run(repo, "worktree", "prune"); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	ahead, err := m.ReclaimEmptyBranch(repo, branch)
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch on a crash leftover = %v, want nil", err)
+	}
+	if ahead != 0 {
+		t.Fatalf("ahead = %d, want 0 — a self-owned checkout is not a dirty branch", ahead)
+	}
+	retry, err := m.Acquire(repo, "proj", taskID)
+	if err != nil {
+		t.Fatalf("retry Acquire = %v, want warm reuse of the leftover worktree", err)
+	}
+	if !samePath(retry.Path, first.Path) || retry.Branch != branch {
+		t.Fatalf("retry = {%s,%s}, want {%s,%s}", retry.Path, retry.Branch, first.Path, branch)
+	}
+
+	// Same recovery when the crashed run had already COMMITTED: warm reuse
+	// continues on top of the work, and reclaim must not report it as dirty (which
+	// would make Start refuse with a BranchDirtyError the user cannot resolve).
+	wtGit := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(retry.Path, args...)
+		if err != nil {
+			t.Fatalf("git -C worktree %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	mustWrite(t, filepath.Join(retry.Path, "work.txt"), "partial\n")
+	wtGit("add", "work.txt")
+	wtGit("commit", "-q", "-m", "partial work")
+
+	ahead, err = m.ReclaimEmptyBranch(repo, branch)
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch (leftover with commits) = %v, want nil", err)
+	}
+	if ahead != 0 {
+		t.Fatalf("ahead = %d, want 0 — our own live checkout is never reclaimed or counted", ahead)
+	}
+	if _, err := m.Acquire(repo, "proj", taskID); err != nil {
+		t.Fatalf("Acquire after a committing crash-leftover = %v, want warm reuse", err)
+	}
+	// The commit is still there — nothing was destroyed.
+	if out, err := git.Run(repo, "rev-list", "--count", "main..refs/heads/"+branch); err != nil {
+		t.Fatalf("rev-list: %v\n%s", err, out)
+	} else if strings.TrimSpace(out) != "1" {
+		t.Fatalf("commits on %s = %s, want the 1 commit preserved", branch, strings.TrimSpace(out))
+	}
+
+	// DeleteBranch, by contrast, must NOT pretend it succeeded while the branch is
+	// checked out — git itself would refuse the `branch -D`.
+	if err := m.DeleteBranch(repo, branch); !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("DeleteBranch on a live checkout = %v, want ErrBranchCheckedOut", err)
+	}
+}
+
+// TestBranchProbeDistinguishesMissingFromBrokenIntegration pins the I6 contract to
+// real git behaviour: `rev-parse --verify --quiet` on an absent ref exits non-zero
+// with NO output, while a repo git cannot read prints a fatal: diagnostic. The
+// heuristic that separates "missing" from "git is unhappy" is only sound if that
+// holds for the git binary actually installed.
+func TestBranchProbeDistinguishesMissingFromBrokenIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs a real git binary; skipped in -short")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repo := t.TempDir()
+	git := ExecGit{}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		if out, err := git.Run(repo, args...); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	mustWrite(t, filepath.Join(repo, "README.md"), "hello\n")
+	if out, err := git.Run(repo, "add", "README.md"); err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	if out, err := git.Run(repo, "commit", "-q", "-m", "init"); err != nil {
+		t.Fatalf("commit: %v\n%s", err, out)
+	}
+
+	m := &Manager{Git: git, Root: filepath.Join(t.TempDir(), "wts")}
+
+	// Absent ref → (false, nil): nothing to do, not an error.
+	exists, err := m.branchExists(repo, "swarm/phase-nope")
+	if err != nil || exists {
+		t.Fatalf("branchExists(absent) = (%v, %v), want (false, nil)", exists, err)
+	}
+	// Present ref → (true, nil).
+	if out, err := git.Run(repo, "branch", "swarm/phase-1"); err != nil {
+		t.Fatalf("branch: %v\n%s", err, out)
+	}
+	if exists, err := m.branchExists(repo, "swarm/phase-1"); err != nil || !exists {
+		t.Fatalf("branchExists(present) = (%v, %v), want (true, nil)", exists, err)
+	}
+	// Not a repo at all → an ERROR, never a confident "missing".
+	if _, err := m.branchExists(t.TempDir(), "swarm/phase-1"); err == nil {
+		t.Fatal("branchExists in a non-repo = nil error, want the git failure surfaced")
+	}
+	// …so DeleteBranch there refuses instead of reporting a delete that never ran.
+	if err := m.DeleteBranch(t.TempDir(), "swarm/phase-1"); err == nil {
+		t.Fatal("DeleteBranch in a non-repo = nil, want an error")
 	}
 }
 
