@@ -94,7 +94,23 @@ Project agents in `.claude/agents/` override plugin agents by name (native base 
 `<workspace-root>/<project>/workspace/…` automatically. Add the project dir under the workspace repo if new.
 
 ## The payoff test (prove porting is dead)
-1. Bump `plugins/core` minor version; push.
+1. Bump the `version` in `plugins/core/.claude-plugin/plugin.json`; push.
 2. In each consumer: `/plugin update`.
 3. Confirm the change lands in every project with **zero per-project file copying**.
+
 This is the whole reason swarmery exists — verify it explicitly once ≥2 consumers are live.
+
+Two things make this test fail, and both fail quietly:
+
+- **No version bump.** Consumers adopt a pack by version, and `marketplace.json` carries no version
+  per plugin — the only number that matters is `version` in
+  `plugins/<pack>/.claude-plugin/plugin.json`. Push without bumping it and `/plugin update` has
+  nothing to fetch: every consumer keeps the copy it already has, and nothing reports an error.
+- **Testing against a local checkout.** A session loads a pack from `~/.claude/plugins/cache`, never
+  from `plugins/**` in a clone — so editing this repo and re-running a session proves nothing about
+  what consumers will get. To exercise work that is not yet committed and released, start the
+  session with `claude --plugin-dir plugins/core` (repeatable, one flag per pack).
+
+The full path from this repo to a running session — the cache, `--plugin-dir`, and what to do when
+`enabledPlugins` and the cache disagree — is in [PLUGINS.md](PLUGINS.md#how-a-plugin-reaches-your-session),
+under "How a plugin reaches your session".
