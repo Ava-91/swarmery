@@ -295,3 +295,76 @@ func TestRepairPluginUnknownProject(t *testing.T) {
 
 	doJSON(t, "POST", srv.URL+"/api/projects/9999/plugins/core@swarmery/repair", nil, 404)
 }
+
+// The React repair button builds "<name>@<marketplace>" from this field rather
+// than hard-coding the marketplace name.
+func TestProjectPluginsReportsMarketplaceName(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+
+	if got := getPluginsResponse(t, srv.URL, "1").MarketplaceName; got != "swarmery" {
+		t.Errorf("marketplaceName = %q, want swarmery", got)
+	}
+}
+
+// ── GET /api/system/insights — pluginDrift ───────────────────────────────────
+
+func TestSystemInsightsPluginDriftResolvesProjects(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	p1 := projectPath(t, srv.URL, "1")
+	execSQL(t, db, `INSERT INTO projects (id, path, slug, name, first_seen, archived)
+		VALUES (77, '/Volumes/Work/other', 'other', 'Other', '2026-07-10T00:00:00Z', 0)`)
+
+	seedFinding(t, db, pluginTarget("core@swarmery", p1), "plugin_enabled_not_installed",
+		"error", "missing here", "")
+	seedFinding(t, db, pluginTarget("web-pack@swarmery", "/Volumes/Work/other"),
+		"plugin_version_behind", "warn", "behind", "")
+	seedFinding(t, db, "plugin:detector", "plugin_detector_unavailable",
+		"error", "claude binary not found", "")
+	seedFinding(t, db, pluginTarget("uav-pack@swarmery", p1), "plugin_cache_orphaned",
+		"warn", "gone", "2026-07-28T10:00:00Z") // resolved — must not appear
+
+	var resp systemInsightsDTO
+	getJSON(t, srv.URL+"/api/system/insights", &resp)
+
+	byID := map[string]pluginDriftDTO{}
+	for _, d := range resp.PluginDrift {
+		byID[d.PluginID] = d
+	}
+	if len(byID) != 3 {
+		t.Fatalf("pluginDrift has %d rows, want 3: %+v", len(resp.PluginDrift), resp.PluginDrift)
+	}
+
+	core := byID["core@swarmery"]
+	if core.ProjectSlug == nil || *core.ProjectSlug == "" {
+		t.Errorf("core row must resolve a project slug, got %+v", core)
+	}
+	if core.ProjectPath != p1 {
+		t.Errorf("core projectPath = %q, want %q", core.ProjectPath, p1)
+	}
+
+	if web := byID["web-pack@swarmery"]; web.ProjectSlug == nil || *web.ProjectSlug != "other" {
+		t.Errorf("web-pack must resolve to the 'other' project, got %+v", web)
+	}
+
+	// Machine-wide blindness has no project — it must render, unlinked.
+	det := byID["detector"]
+	if det.Rule != "plugin_detector_unavailable" {
+		t.Fatalf("no plugin:detector row: %+v", resp.PluginDrift)
+	}
+	if det.ProjectSlug != nil {
+		t.Errorf("plugin:detector must carry a null projectSlug, got %v", *det.ProjectSlug)
+	}
+	if det.ProjectPath != "" {
+		t.Errorf("plugin:detector projectPath = %q, want empty", det.ProjectPath)
+	}
+}
+
+func TestSystemInsightsPluginDriftEmptyWhenClean(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	var resp systemInsightsDTO
+	getJSON(t, srv.URL+"/api/system/insights", &resp)
+	if len(resp.PluginDrift) != 0 {
+		t.Errorf("pluginDrift = %+v, want empty", resp.PluginDrift)
+	}
+}

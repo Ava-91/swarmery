@@ -7,9 +7,11 @@
 // hint. Display-only by design — promotion itself stays a manual flow.
 
 import { createContext, useContext, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type {
   SystemDeadComponent,
   SystemInsights,
+  SystemPluginDrift,
   SystemPromotionCandidate,
   SystemStaleOverride,
 } from '../../api/types';
@@ -241,6 +243,46 @@ function DeadRow({ d }: { d: SystemDeadComponent }): JSX.Element {
   );
 }
 
+// Plugin drift rows are flat — there is nothing to expand into, the message IS
+// the finding. Errors mean the plugin is not loaded at all; warns mean it loads
+// but is stale or came from a reclaimed cache dir.
+function PluginDriftRow({ d }: { d: SystemPluginDrift }): JSX.Element {
+  return (
+    <div className="flex flex-col gap-1 border-b border-line-soft py-2 last:border-b-0">
+      <div className="flex items-center gap-2">
+        <span
+          className={`shrink-0 rounded-full border px-2 py-px font-mono text-[10px] whitespace-nowrap ${
+            d.severity === 'error'
+              ? 'border-red/40 bg-red/10 text-red'
+              : 'border-amber/40 bg-amber/10 text-amber'
+          }`}
+        >
+          {d.rule.replace('plugin_', '')}
+        </span>
+        <span className="min-w-0 truncate font-mono text-[12px] font-semibold text-ink">
+          {d.pluginId}
+        </span>
+        <span className="ml-auto shrink-0">
+          {d.projectSlug !== null ? (
+            <Link
+              to={`/p/${d.projectSlug}`}
+              className="rounded-full border border-blue/40 px-2 py-px font-mono text-[10px] whitespace-nowrap text-blue hover:underline"
+              title={d.projectPath}
+            >
+              {d.projectSlug}
+            </Link>
+          ) : (
+            <span className="font-mono text-[10px] whitespace-nowrap text-ink-faint">
+              machine-wide
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="font-mono text-[11px] text-ink-dim">{d.message}</div>
+    </div>
+  );
+}
+
 /* ----- the tab ----- */
 
 export function InsightsTab({
@@ -312,6 +354,20 @@ export function InsightsTab({
           <Empty>every agent has recent telemetry mentions</Empty>
         ) : (
           insights.dead.map((d) => <DeadRow key={d.id} d={d} />)
+        )}
+      </InsightSection>
+
+      <InsightSection
+        title="Plugin drift"
+        count={insights.pluginDrift?.length ?? 0}
+        subtitle="enabled in a project's settings, but not actually loadable there"
+      >
+        {insights.pluginDrift === undefined || insights.pluginDrift.length === 0 ? (
+          <Empty>every enabled plugin resolves for its project</Empty>
+        ) : (
+          insights.pluginDrift.map((d) => (
+            <PluginDriftRow key={`${d.rule}:${d.pluginId}:${d.projectPath}`} d={d} />
+          ))
         )}
       </InsightSection>
     </div>

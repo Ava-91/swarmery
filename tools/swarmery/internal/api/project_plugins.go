@@ -124,9 +124,12 @@ func rank(status string) int {
 }
 
 type projectPluginsResponse struct {
-	MarketplaceVersion string             `json:"marketplaceVersion"`
-	CanWrite           bool               `json:"canWrite"`
-	Plugins            []projectPluginDTO `json:"plugins"`
+	MarketplaceVersion string `json:"marketplaceVersion"`
+	// MarketplaceName lets the client build the "<name>@<marketplace>" id the
+	// repair endpoint takes, instead of hard-coding the marketplace in React.
+	MarketplaceName string             `json:"marketplaceName"`
+	CanWrite        bool               `json:"canWrite"`
+	Plugins         []projectPluginDTO `json:"plugins"`
 }
 
 // projectPlugins handles GET /api/projects/{id}/plugins.
@@ -189,7 +192,12 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := projectPluginsResponse{MarketplaceVersion: cat.Version, CanWrite: canWrite, Plugins: []projectPluginDTO{}}
+	resp := projectPluginsResponse{
+		MarketplaceVersion: cat.Version,
+		MarketplaceName:    pluginMarketplace,
+		CanWrite:           canWrite,
+		Plugins:            []projectPluginDTO{},
+	}
 	seen := map[string]bool{}
 	for _, p := range cat.Plugins {
 		seen[p.Name] = true

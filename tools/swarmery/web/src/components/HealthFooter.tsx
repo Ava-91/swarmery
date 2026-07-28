@@ -50,6 +50,19 @@ export function HealthFooter(): JSX.Element | null {
       {unreachable
         ? 'daemon unreachable'
         : `daemon healthy${health !== null ? ` · ${shortVersion(health.version)}` : ''}`}
+      {/* Plugin drift: enabled plugins the daemon found are not actually
+          loadable. Silent at zero — this line is otherwise pure noise. */}
+      {health?.pluginDrift !== undefined && health.pluginDrift.error + health.pluginDrift.warn > 0 ? (
+        <span
+          title={`${String(health.pluginDrift.error)} error / ${String(health.pluginDrift.warn)} warn plugin findings`}
+          className={health.pluginDrift.error > 0 ? 'text-red' : 'text-amber'}
+        >
+          ·{' '}
+          {health.pluginDrift.error > 0
+            ? `plugins ⚠ ${String(health.pluginDrift.error)}`
+            : `plugins ${String(health.pluginDrift.warn)}`}
+        </span>
+      ) : null}
     </div>
   );
 }
