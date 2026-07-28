@@ -36,15 +36,26 @@ import (
 
 // epicPhaseDTO is one phase row (camelCase, mirrored in web/src/api/types.ts).
 type epicPhaseDTO struct {
-	ID              int64   `json:"id"`
-	Seq             int     `json:"seq"`
-	Name            string  `json:"name"`
-	DocPath         string  `json:"docPath"`
-	DocRelPath      string  `json:"docRelPath"` // path relative to plan/ — the ?path= value
-	DependsOn       []int   `json:"dependsOn"`
-	CheckboxesDone  int     `json:"checkboxesDone"`
-	CheckboxesTotal int     `json:"checkboxesTotal"`
-	ActivatedAt     *string `json:"activatedAt"`
+	ID              int64  `json:"id"`
+	Seq             int    `json:"seq"`
+	Name            string `json:"name"`
+	DocPath         string `json:"docPath"`
+	DocRelPath      string `json:"docRelPath"` // path relative to plan/ — the ?path= value
+	DependsOn       []int  `json:"dependsOn"`
+	CheckboxesDone  int    `json:"checkboxesDone"`
+	CheckboxesTotal int    `json:"checkboxesTotal"`
+	// Normalized `Status:` header marker from the phase doc itself
+	// (pending|in_progress|done); null when the doc carries none. Lets an
+	// executor flag "working on this now" before the first checkbox tick.
+	DocStatus *string `json:"docStatus"`
+	// RFC3339 mtime of the phase doc at scan time — a liveness signal (every
+	// executor edit changes the doc and re-triggers the scan).
+	DocUpdatedAt *string `json:"docUpdatedAt"`
+	// The doc's `## Completion Report` section (markdown, verbatim) — what the
+	// executor shipped. Null until the section is written; the UI offers a
+	// summary modal on done phases when present.
+	CompletionReport *string `json:"completionReport"`
+	ActivatedAt      *string `json:"activatedAt"`
 	// The external_id of the board task an activation minted (null until activated).
 	BoardTaskExternalID *string `json:"boardTaskExternalId"`
 	BoardTaskID         *int64  `json:"boardTaskId"`
@@ -60,16 +71,20 @@ type epicRollupDTO struct {
 
 // epicDTO is one epic (workspace task) with its phases and rollup.
 type epicDTO struct {
-	TaskID      int64          `json:"taskId"`
-	ExternalID  string         `json:"externalId"`
-	ProjectID   int64          `json:"projectId"`
-	ProjectSlug string         `json:"projectSlug"`
-	Title       string         `json:"title"`
-	Status      string         `json:"status"` // active | paused | done | archived (planStatus)
-	StartedAt   *string        `json:"startedAt"`
-	PlanDir     string         `json:"planDir"`
-	Phases      []epicPhaseDTO `json:"phases"`
-	Rollup      epicRollupDTO  `json:"rollup"`
+	TaskID      int64   `json:"taskId"`
+	ExternalID  string  `json:"externalId"`
+	ProjectID   int64   `json:"projectId"`
+	ProjectSlug string  `json:"projectSlug"`
+	Title       string  `json:"title"`
+	Status      string  `json:"status"` // active | paused | done | archived (planStatus)
+	StartedAt   *string `json:"startedAt"`
+	PlanDir     string  `json:"planDir"`
+	// True when plan/SUMMARY.md exists — the plan-level completion summary the
+	// executor writes when the whole plan lands. The UI opens it (via the docs
+	// endpoint, path=SUMMARY.md) in a summary modal on done plans.
+	HasSummary bool           `json:"hasSummary"`
+	Phases     []epicPhaseDTO `json:"phases"`
+	Rollup     epicRollupDTO  `json:"rollup"`
 }
 
 // wsPlanPayload is the plan_updated WS payload (frozen once shipped) — a thin
@@ -171,6 +186,11 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		}
 		out[i].Phases = phases
 		out[i].Rollup = rollup
+		if out[i].PlanDir != "" {
+			if fi, err := os.Stat(filepath.Join(out[i].PlanDir, "SUMMARY.md")); err == nil && !fi.IsDir() {
+				out[i].HasSummary = true
+			}
+		}
 		// Normalize the raw tasks.status (running|paused|done) into the plan
 		// lifecycle contract: active | paused | done | archived.
 		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
@@ -184,8 +204,9 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epicRollupDTO, error) {
 	rows, err := h.DB.Query(`
 		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on,
-		       e.checkboxes_total, e.checkboxes_done, e.activated_at,
-		       e.activated_board_task_id, bt.external_id, bt.board_column
+		       e.checkboxes_total, e.checkboxes_done, e.doc_status, e.doc_updated_at,
+		       e.completion_report, e.activated_at, e.activated_board_task_id,
+		       bt.external_id, bt.board_column
 		FROM epic_phases e
 		LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
 		WHERE e.workspace_task_id = ?
@@ -199,19 +220,31 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 	var rollup epicRollupDTO
 	for rows.Next() {
 		var (
-			p           epicPhaseDTO
-			depsJSON    string
-			boardTaskID sql.NullInt64
-			boardExtID  sql.NullString
-			boardCol    sql.NullString
+			p            epicPhaseDTO
+			depsJSON     string
+			docStatus    sql.NullString
+			docUpdatedAt sql.NullString
+			completion   sql.NullString
+			boardTaskID  sql.NullInt64
+			boardExtID   sql.NullString
+			boardCol     sql.NullString
 		)
 		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.DocPath, &depsJSON,
-			&p.CheckboxesTotal, &p.CheckboxesDone, &p.ActivatedAt,
-			&boardTaskID, &boardExtID, &boardCol); err != nil {
+			&p.CheckboxesTotal, &p.CheckboxesDone, &docStatus, &docUpdatedAt,
+			&completion, &p.ActivatedAt, &boardTaskID, &boardExtID, &boardCol); err != nil {
 			return nil, epicRollupDTO{}, err
 		}
 		p.DependsOn = decodeIntList(depsJSON)
 		p.DocRelPath = relToPlan(planDir, p.DocPath)
+		if docStatus.Valid {
+			p.DocStatus = &docStatus.String
+		}
+		if docUpdatedAt.Valid {
+			p.DocUpdatedAt = &docUpdatedAt.String
+		}
+		if completion.Valid {
+			p.CompletionReport = &completion.String
+		}
 		if boardTaskID.Valid {
 			p.BoardTaskID = &boardTaskID.Int64
 		}

@@ -19,11 +19,13 @@ import {
   activateEpicPhase,
   epicLifecycle,
   fetchEpics,
+  fetchPlanDoc,
   PhaseAlreadyActivatedError,
   type EpicLifecycleAction,
 } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useLiveUpdates } from '../lib/ws';
+import { Markdown } from '../lib/markdown';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { PlanDocDrawer } from '../workspace/PlanDocDrawer';
 
@@ -42,10 +44,66 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   // checkbox progress — the board is the source of truth once dispatched.
   if (isResolvedColumn(p.boardColumn)) return 'done';
   if (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) return 'done';
+  // The doc's own `Status: In progress` marker wins over the dependency gate —
+  // an executor writing it is literally working on the phase right now.
+  // (`done` must be earned by ticking every checkbox; a `done` marker alone is ignored.)
+  if (p.docStatus === 'in_progress') return 'in_progress';
   if (p.dependsOn.some((seq) => !resolvedSeqs.has(seq))) return 'blocked';
   if (p.checkboxesDone > 0 || p.boardColumn === 'in_progress' || p.boardColumn === 'in_review')
     return 'in_progress';
   return 'pending';
+}
+
+/** Re-renders on an interval so elapsed-time labels stay fresh. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => {
+      setNow(Date.now());
+    }, intervalMs);
+    return () => {
+      clearInterval(id);
+    };
+  }, [intervalMs]);
+  return now;
+}
+
+function formatAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${String(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${String(m)}m`;
+  const h = Math.floor(m / 60);
+  return `${String(h)}h ${String(m % 60)}m`;
+}
+
+/** Past this silence window an in-progress phase is flagged as possibly stuck. */
+const STALL_AFTER_MS = 15 * 60_000;
+
+/** Liveness pulse for an in-progress phase. Every executor edit (checkbox
+ * tick, Status flip) touches the phase doc, so "time since last doc edit"
+ * answers the question the chip alone can't: is the session actually working
+ * right now, or has it silently died? */
+function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.Element | null {
+  const now = useNow(30_000);
+  if (docUpdatedAt === null) return null;
+  const elapsed = now - Date.parse(docUpdatedAt);
+  const stalled = elapsed > STALL_AFTER_MS;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1 font-mono text-[9.5px] ${
+        stalled ? 'text-amber' : 'text-brand'
+      }`}
+      title={
+        stalled
+          ? 'no phase-doc edits for a while — the executor may be stuck'
+          : 'the executor is actively editing this phase doc'
+      }
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${stalled ? 'bg-amber' : 'animate-pulse bg-brand'}`} />
+      {stalled ? `no activity · ${formatAgo(elapsed)}` : `active · ${formatAgo(elapsed)} ago`}
+    </span>
+  );
 }
 
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
@@ -348,6 +406,10 @@ function EpicDetail({
     return s;
   }, [epic.phases]);
 
+  // Details modal (tabbed summary / checks / doc): one phase, or — when
+  // `phase` is undefined — the plan itself (SUMMARY.md / per-phase checks / README).
+  const [modal, setModal] = useState<{ phase?: EpicPhase } | null>(null);
+
   return (
     <div className="pr-1">
       <div className="mb-3 flex items-baseline justify-between gap-3">
@@ -382,6 +444,16 @@ function EpicDetail({
             {busyLifecycle ? '…' : label}
           </button>
         ))}
+        {epic.hasSummary && (
+          <button
+            type="button"
+            onClick={() => setModal({})}
+            title="what was shipped — plan/SUMMARY.md, per-phase checks, README"
+            className="rounded-md border border-green/40 px-2 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/10"
+          >
+            ✓ summary
+          </button>
+        )}
       </div>
 
       <ol className="space-y-2">
@@ -426,6 +498,7 @@ function EpicDetail({
                     >
                       {PHASE_CHIP[status].label}
                     </span>
+                    {status === 'in_progress' && <PhaseActivity docUpdatedAt={p.docUpdatedAt} />}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5">
                     {p.dependsOn.map((seq) => (
@@ -472,6 +545,19 @@ function EpicDetail({
                       </button>
                     )
                   )}
+                  {status === 'done' && p.completionReport !== null && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setModal({ phase: p });
+                      }}
+                      title="what was shipped — Completion Report, checks, full doc"
+                      className="font-mono text-[9.5px] text-green underline-offset-2 transition-colors hover:underline"
+                    >
+                      ✓ summary
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={(e) => {
@@ -491,6 +577,208 @@ function EpicDetail({
           );
         })}
       </ol>
+
+      {modal !== null && (
+        <DetailsModal
+          epic={epic}
+          phase={modal.phase}
+          resolvedSeqs={resolvedSeqs}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+type DetailTab = 'summary' | 'checks' | 'doc';
+
+/** Acceptance-criteria checkbox lines of a markdown doc, in order. */
+function extractChecks(md: string): { text: string; done: boolean }[] {
+  const out: { text: string; done: boolean }[] = [];
+  for (const line of md.split('\n')) {
+    const m = /^\s*[-*]\s+\[( |x)\]\s+(.*)$/i.exec(line);
+    if (m !== null) out.push({ done: (m[1] ?? '').toLowerCase() === 'x', text: m[2] ?? '' });
+  }
+  return out;
+}
+
+/**
+ * Tabbed details modal. For a phase: summary (the doc's Completion Report) /
+ * checks (its acceptance-criteria states) / doc (full markdown). For the plan
+ * (phase undefined): summary (plan/SUMMARY.md) / checks (per-phase rollup) /
+ * readme. Esc / backdrop close; doc content fetched lazily per tab.
+ */
+function DetailsModal({
+  epic,
+  phase,
+  resolvedSeqs,
+  onClose,
+}: {
+  epic: Epic;
+  phase: EpicPhase | undefined;
+  resolvedSeqs: Set<number>;
+  onClose: () => void;
+}): JSX.Element {
+  const [tab, setTab] = useState<DetailTab>('summary');
+  const [docText, setDocText] = useState<string | null>(null); // doc/readme + phase checks
+  const [planSummary, setPlanSummary] = useState<string | null>(null);
+  const docPath = phase !== undefined ? phase.docRelPath : 'README.md';
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    const needDoc = tab === 'doc' || (tab === 'checks' && phase !== undefined);
+    if (needDoc && docText === null) {
+      fetchPlanDoc(epic.taskId, docPath)
+        .then((d) => setDocText(d.content))
+        .catch((e: unknown) =>
+          setDocText(`failed to load ${docPath}: ${e instanceof Error ? e.message : String(e)}`),
+        );
+    }
+    if (tab === 'summary' && phase === undefined && planSummary === null) {
+      fetchPlanDoc(epic.taskId, 'SUMMARY.md')
+        .then((d) => setPlanSummary(d.content))
+        .catch((e: unknown) =>
+          setPlanSummary(
+            `failed to load SUMMARY.md: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        );
+    }
+  }, [tab, phase, docText, planSummary, epic.taskId, docPath]);
+
+  const title =
+    phase !== undefined ? `Phase ${String(phase.seq)} — ${phase.name}` : epic.title;
+  const tabs: { id: DetailTab; label: string }[] = [
+    { id: 'summary', label: 'summary' },
+    { id: 'checks', label: 'checks' },
+    { id: 'doc', label: phase !== undefined ? 'doc' : 'readme' },
+  ];
+
+  const phaseChecks = phase !== undefined && docText !== null ? extractChecks(docText) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border border-line bg-surface"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div className="min-w-0 truncate font-display text-[14px] font-bold text-ink">
+            {title}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="flex items-center gap-1" role="tablist" aria-label="details tabs">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`rounded-md border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                    tab === t.id
+                      ? 'border-brand/40 bg-brand/10 text-brand'
+                      : 'border-line text-ink-dim hover:border-line-strong hover:text-ink'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="close details"
+              className="rounded px-1.5 font-mono text-[13px] text-ink-dim transition-colors hover:text-ink"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-y-auto px-4 py-3 text-[13px] leading-relaxed">
+          {tab === 'summary' &&
+            (phase !== undefined ? (
+              phase.completionReport !== null ? (
+                <Markdown text={phase.completionReport} />
+              ) : (
+                <div className="font-mono text-[11.5px] text-ink-faint">
+                  no completion report yet — the executor fills «## Completion Report» when the
+                  phase lands
+                </div>
+              )
+            ) : planSummary === null ? (
+              <Loading label="summary…" />
+            ) : (
+              <Markdown text={planSummary} />
+            ))}
+
+          {tab === 'checks' &&
+            (phase !== undefined ? (
+              phaseChecks === null ? (
+                <Loading label="checks…" />
+              ) : phaseChecks.length === 0 ? (
+                <div className="font-mono text-[11.5px] text-ink-faint">
+                  no checkboxes in this doc
+                </div>
+              ) : (
+                <ul className="space-y-1.5">
+                  {phaseChecks.map((c, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span
+                        className={`mt-px shrink-0 font-mono text-[12px] ${
+                          c.done ? 'text-green' : 'text-ink-faint'
+                        }`}
+                      >
+                        {c.done ? '✓' : '○'}
+                      </span>
+                      <span className={c.done ? 'text-ink-dim' : 'text-ink'}>{c.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : (
+              <ul className="space-y-2">
+                {epic.phases.map((p) => {
+                  const st = phaseStatus(p, resolvedSeqs);
+                  return (
+                    <li key={p.id} className="flex items-center gap-2">
+                      <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+                        Phase {p.seq}
+                      </span>
+                      <span className="min-w-0 truncate text-ink">{p.name}</span>
+                      <span
+                        className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9px] ${PHASE_CHIP[st].cls}`}
+                      >
+                        {PHASE_CHIP[st].label}
+                      </span>
+                      <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
+                        {p.checkboxesDone}/{p.checkboxesTotal || 0}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ))}
+
+          {tab === 'doc' &&
+            (docText === null ? <Loading label="doc…" /> : <Markdown text={docText} />)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -508,7 +796,10 @@ function ProgressBar({
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
     <div
-      className={`h-1.5 overflow-hidden rounded-full bg-surface2 ${className}`}
+      // Track must contrast with every card fill it sits on — the selected plan
+      // card is itself bg-surface2, which made a bg-surface2 track invisible and
+      // a partial fill read as a complete bar.
+      className={`h-1.5 overflow-hidden rounded-full bg-line-strong/50 ${className}`}
       role="progressbar"
       aria-valuenow={pct}
       aria-valuemin={0}
