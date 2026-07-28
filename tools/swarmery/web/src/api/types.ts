@@ -2082,6 +2082,41 @@ export interface RoutineInput {
 /** Direct phase-run lifecycle (interactive planning v2 phase 5). */
 export type PhaseRunState = 'idle' | 'running' | 'done' | 'failed';
 
+/** What a run ACHIEVED, derived server-side — mirrors internal/phasediag.OutcomeFromRow.
+ *  Distinct from PhaseRunState, which only says how the process ended. */
+export type PhaseRunOutcome = 'idle' | 'running' | 'completed' | 'partial' | 'noop' | 'failed';
+
+/** One reason a phase did not progress — mirrors phasediag.Blocker. */
+export interface PhaseBlocker {
+  kind: 'dep-incomplete' | 'dep-unmerged' | 'branch-blocks-retry' | 'branch-dirty' | 'no-criteria';
+  summary: string;
+  detail: string;
+}
+
+/** The executor's own last word — mirrors phasediag.AgentMessage. */
+export interface PhaseAgentMessage {
+  sessionUuid: string;
+  text: string;
+  truncated: boolean;
+}
+
+/** On-demand phase-run diagnosis — mirrors phasediag.Diagnosis. */
+export interface PhaseDiagnosis {
+  phaseId: number;
+  seq: number;
+  name: string;
+  runOutcome: PhaseRunOutcome;
+  criteriaTotal: number;
+  /** null when the run predates measurement — render "not measured", never 0. */
+  criteriaBefore: number | null;
+  criteriaAfter: number;
+  runStartedAt: string | null;
+  runEndedAt: string | null;
+  runError: string | null;
+  blockers: PhaseBlocker[];
+  agentMessage: PhaseAgentMessage | null;
+}
+
 /** One epic phase — mirrors epicPhaseDTO in internal/api/epics.go. */
 export interface EpicPhase {
   id: number;
@@ -2116,6 +2151,15 @@ export interface EpicPhase {
   runStartedAt: string | null;
   /** Failure detail (stderr tail / timeout / cancelled) when runState==='failed'. */
   runError: string | null;
+  /** Derived: what the run ACHIEVED, as opposed to how the process ended. A
+   * `runState: 'done'` run that ticked nothing is `noop`, not `completed` — the
+   * green chip keys on THIS, never on runState. */
+  runOutcome: PhaseRunOutcome;
+  /** End of the last run (null while running / never run). */
+  runEndedAt: string | null;
+  /** Ticked-criteria count snapshotted at the run's start. NULL means UNMEASURED
+   * (rows predating the snapshot), never zero — never render a 0 → N delta from it. */
+  runCheckboxesBefore: number | null;
 }
 
 /** Checkbox rollup across an epic's phases. */

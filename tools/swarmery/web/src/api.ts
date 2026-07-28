@@ -38,6 +38,7 @@ import type {
   OnboardResponse,
   Playbook,
   PermissionEscalation,
+  PhaseDiagnosis,
   PermissionPresetInput,
   PermissionPresetView,
   PermissionRequest,
@@ -1359,6 +1360,16 @@ export async function epicLifecycle(
 }
 
 /**
+ * A phase-run rejection that carries structured escape-hatch data. The
+ * branch-holds-commits 409 names the branch (and how far ahead it is) so the UI
+ * can offer "delete it and retry" instead of asking the user to parse prose.
+ */
+export type PhaseRunBranchError = Error & {
+  branch?: string | undefined;
+  commitsAhead?: number | undefined;
+};
+
+/**
  * POST /api/epics/{taskId}/phases/{phaseId}/run — execute one plan phase
  * headlessly in an isolated worktree (no board task). 202 {status, sessionUuid};
  * 409 carries the gate reason (already running / unmet deps / no doc) in the
@@ -1373,10 +1384,56 @@ export async function runEpicPhase(
     method: 'POST',
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `phase run failed (${String(res.status)})`);
+    // The branch-holds-commits 409 carries structured escape-hatch data
+    // (`branch`, `commitsAhead`) the caller turns into a "delete the branch"
+    // affordance — it rides along on the Error rather than being flattened
+    // into the message, which would force the UI to parse prose.
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      branch?: string;
+      commitsAhead?: number;
+    };
+    const err: PhaseRunBranchError = new Error(
+      body.error ?? `phase run failed (${String(res.status)})`,
+    );
+    if (body.branch !== undefined) {
+      err.branch = body.branch;
+      err.commitsAhead = body.commitsAhead;
+    }
+    throw err;
   }
   return (await res.json()) as { status: string; sessionUuid: string };
+}
+
+/**
+ * GET /api/epics/{taskId}/phases/{phaseId}/diagnosis — why a phase run did (or
+ * did not) achieve anything: the derived outcome, the criteria delta, the
+ * deterministic blockers and the executor's last word. READ-ONLY, so it stays
+ * available even while a plan run owns the docs.
+ */
+export function fetchPhaseDiagnosis(taskId: number, phaseId: number): Promise<PhaseDiagnosis> {
+  if (MOCK) return mockApi.phaseDiagnosis(taskId, phaseId);
+  return get(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/diagnosis`);
+}
+
+/**
+ * DELETE /api/epics/{taskId}/phases/{phaseId}/branch — reclaim the previous
+ * run's branch so the phase can be retried. 200 {deleted, branch}; 409 while a
+ * run is active or the branch is checked out.
+ */
+export async function deletePhaseRunBranch(
+  taskId: number,
+  phaseId: number,
+): Promise<{ deleted: boolean; branch: string }> {
+  if (MOCK) return { deleted: true, branch: 'swarm/phase-mock' };
+  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/branch`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `branch delete failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { deleted: boolean; branch: string };
 }
 
 /** POST /api/epics/{taskId}/phases/{phaseId}/run/cancel — 202 / 409 when idle. */
