@@ -13,7 +13,7 @@ package docsfs
 import (
 	"os"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -21,17 +21,44 @@ import (
 const (
 	glossaryPath = "../../web/src/lib/glossary.ts"
 	conceptsPath = "../../docs/concepts.md"
+	// conceptsSlug is the doc /docs/{slug} every concept must point at — the
+	// basename of conceptsPath, which is how internal/api/docs.go slugs it.
+	conceptsSlug = "concepts"
 )
 
 // `term: 'Handoff',` — the display name each concept declares. The quote after
 // the colon is what keeps the interface's own `term: string;` out of the match.
 var termRe = regexp.MustCompile(`(?m)^\s*term:\s*'([^']+)'`)
 
-// `anchor: 'handoff' }` — the deep-link target each concept declares.
+// `slug: 'concepts', anchor: 'handoff' }` — the two halves of a deep link.
+var slugRe = regexp.MustCompile(`slug:\s*'([^']+)'`)
 var anchorRe = regexp.MustCompile(`anchor:\s*'([^']+)'`)
 
 // `## Handoff` — exactly two hashes: `###` fails the \s+ and is not a concept.
+// Only ever applied to fenceStripped() output; see there for why.
 var headingRe = regexp.MustCompile(`(?m)^##\s+(.+?)\s*$`)
+
+// fenceStripped blanks the body of every ``` fenced block, keeping the fence
+// lines themselves so line-anchored matching elsewhere stays aligned.
+//
+// Without this, a `## Stage:` line inside a playbook example — exactly the kind
+// of snippet the Playbooks section invites — is read as a concept heading, and
+// the suite fails with "documents "Stage: implement", which is not a concept"
+// while pointing the reader at the wrong file entirely.
+func fenceStripped(md string) string {
+	lines := strings.Split(md, "\n")
+	inFence := false
+	for i, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // slugify mirrors the heading-id function in web/src/lib/markdown.tsx.
 func slugify(s string) string {
@@ -60,30 +87,41 @@ func readAll(t *testing.T, path string) string {
 	return string(b)
 }
 
+// matches returns capture group 1 of every match. Sorted so that a failing run
+// lists its complaints in a stable order — the results feed t.Errorf loops, not
+// just set membership, and flaky message ordering makes a diff of two failures
+// unreadable.
 func matches(re *regexp.Regexp, src string) []string {
-	out := []string{}
+	var out []string
 	for _, m := range re.FindAllStringSubmatch(src, -1) {
 		out = append(out, m[1])
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
+}
+
+// headings returns the `## ` section titles of a markdown doc, ignoring
+// anything inside a fenced code block.
+func headings(t *testing.T, path string) []string {
+	t.Helper()
+	return matches(headingRe, fenceStripped(readAll(t, path)))
 }
 
 // TestGlossaryAndConceptsAgree fails in BOTH directions: a concept with no doc
 // section, and a doc section with no concept.
 func TestGlossaryAndConceptsAgree(t *testing.T) {
 	terms := matches(termRe, readAll(t, glossaryPath))
-	headings := matches(headingRe, readAll(t, conceptsPath))
+	sections := headings(t, conceptsPath)
 
 	if len(terms) == 0 {
 		t.Fatalf("no concepts parsed from %s — the registry format changed", glossaryPath)
 	}
-	if len(headings) == 0 {
+	if len(sections) == 0 {
 		t.Fatalf("no `## ` sections parsed from %s — the doc format changed", conceptsPath)
 	}
 
 	inHeadings := map[string]bool{}
-	for _, h := range headings {
+	for _, h := range sections {
 		inHeadings[h] = true
 	}
 	for _, term := range terms {
@@ -96,7 +134,7 @@ func TestGlossaryAndConceptsAgree(t *testing.T) {
 	for _, term := range terms {
 		inTerms[term] = true
 	}
-	for _, h := range headings {
+	for _, h := range sections {
 		if !inTerms[h] {
 			t.Errorf("docs/concepts.md documents %q, which is not a concept in glossary.ts", h)
 		}
@@ -107,19 +145,42 @@ func TestGlossaryAndConceptsAgree(t *testing.T) {
 // heading id once markdown.tsx has slugified it.
 func TestAnchorsMatchHeadingSlugs(t *testing.T) {
 	anchors := matches(anchorRe, readAll(t, glossaryPath))
-	headings := matches(headingRe, readAll(t, conceptsPath))
+	sections := headings(t, conceptsPath)
 
 	if len(anchors) == 0 {
 		t.Fatalf("no doc anchors parsed from %s — the registry format changed", glossaryPath)
 	}
 
 	slugs := map[string]bool{}
-	for _, h := range headings {
+	for _, h := range sections {
 		slugs[slugify(h)] = true
 	}
 	for _, a := range anchors {
 		if !slugs[a] {
 			t.Errorf("anchor %q matches no heading slug in docs/concepts.md", a)
+		}
+	}
+}
+
+// TestDocSlugsPointAtConcepts guards the OTHER half of the deep link. An anchor
+// can be perfect while `slug: 'concept'` (a typo) sends "Read more →" to
+// /docs/concept — a 404 the anchor check would never notice.
+func TestDocSlugsPointAtConcepts(t *testing.T) {
+	slugs := matches(slugRe, readAll(t, glossaryPath))
+	anchors := matches(anchorRe, readAll(t, glossaryPath))
+
+	if len(slugs) == 0 {
+		t.Fatalf("no doc slugs parsed from %s — the registry format changed", glossaryPath)
+	}
+	// Every `doc` literal carries both halves; a mismatch means one was dropped.
+	if len(slugs) != len(anchors) {
+		t.Errorf("registry has %d doc slugs but %d anchors — a doc literal is missing a half",
+			len(slugs), len(anchors))
+	}
+	for _, s := range slugs {
+		if s != conceptsSlug {
+			t.Errorf("doc slug %q is not %q — /docs/%s is not a doc the daemon serves",
+				s, conceptsSlug, s)
 		}
 	}
 }
