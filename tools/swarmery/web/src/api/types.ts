@@ -312,6 +312,38 @@ export interface SessionHandoffResponse {
   createdAt: string;
 }
 
+/** One tool's share of a session's context growth (context-hogs analyzer). */
+export interface ContextHogTool {
+  name: string;
+  calls: number;
+  /** Σ len(raw tool-result content JSON)/4 for this tool — an ESTIMATE. */
+  estTokens: number;
+}
+
+/** One assistant API message's cache-write cost — the growth curve. */
+export interface ContextTurnGrowth {
+  seq: number;
+  cacheWrite: number;
+}
+
+/**
+ * GET /api/sessions/{id}/context-hogs — per-tool context attribution, parsed
+ * on demand from the session transcript. Token figures are estimates
+ * (~4 bytes/token from tool-result sizes), not real accounting.
+ */
+export interface ContextHogsReport {
+  /** Sorted by estTokens DESC, top 20. */
+  tools: ContextHogTool[];
+  /** Growth curve in file/seq order. */
+  turns: ContextTurnGrowth[];
+  /** Σ all tool-result estimates. */
+  totalEst: number;
+  /** tool_results whose tool_use id had no matching name. */
+  uninspected: number;
+  /** lines that failed to parse and were skipped. */
+  malformed: number;
+}
+
 // --- Future contracts (parallel wave — frozen NOW, implemented later) --------
 
 /** GET /api/stats/today — implemented by Agent C (metrics branch). */

@@ -13,6 +13,7 @@ import { fmtDurationMs, fmtTokens } from '../../lib/format';
 import { subagentDescription, subagentName, skillName } from '../../lib/payload';
 import { buildCallTree } from '../../lib/calltree';
 import { CallTreeCard } from './CallTree';
+import { ContextHogsCard } from './ContextHogsCard';
 import { HandoffCard } from './HandoffCard';
 
 interface UsageRow {
@@ -209,6 +210,7 @@ export function DetailRail({
   return (
     <div className="flex min-w-0 flex-col gap-2.5">
       {handoff != null && <HandoffCard sessionId={sessionId} handoffPath={handoff.path} />}
+      <ContextHogsCard sessionId={sessionId} />
       {models.length > 0 && (
         <UsageBlock label="models" labelTone="text-purple/70" barTone="bg-purple/60" rows={models} />
       )}

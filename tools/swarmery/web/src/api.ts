@@ -65,6 +65,7 @@ import type {
   RoutineInput,
   RoutineRun,
   SearchResponse,
+  ContextHogsReport,
   SessionDetailResponse,
   SessionHandoffResponse,
   SessionOutcome,
@@ -319,6 +320,11 @@ export function fetchSession(id: number | string): Promise<SessionDetailResponse
 export function fetchSessionHandoff(id: number | string): Promise<SessionHandoffResponse> {
   if (MOCK) return mockApi.sessionHandoff(id);
   return get(`/api/sessions/${encodeURIComponent(id)}/handoff`);
+}
+
+export function fetchSessionContextHogs(id: number | string): Promise<ContextHogsReport> {
+  if (MOCK) return mockApi.sessionContextHogs(id);
+  return get(`/api/sessions/${encodeURIComponent(id)}/context-hogs`);
 }
 
 export function fetchStatsToday(): Promise<StatsToday> {

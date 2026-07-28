@@ -27,6 +27,7 @@ import type {
   ProjectDetail,
   ProjectHealth,
   ProjectPluginsResponse,
+  ContextHogsReport,
   Session,
   SessionDetail,
   SessionHandoffResponse,
@@ -1711,6 +1712,38 @@ export const mockApi = {
       markdown: MOCK_HANDOFF_MARKDOWN,
       path: found.handoff.path,
       createdAt: found.handoff.createdAt,
+    };
+  },
+
+  async sessionContextHogs(id: number | string): Promise<ContextHogsReport> {
+    await delay(140);
+    const numeric = typeof id === 'number' ? id : Number.parseInt(id, 10);
+    const found = Number.isNaN(numeric)
+      ? mockSessions.find((s) => s.sessionUuid === id)
+      : mockSessions.find((s) => s.id === numeric);
+    if (!found) throw new Error(`mock: no transcript for session ${String(id)}`);
+    return {
+      tools: [
+        { name: 'Read', calls: 66, estTokens: 95400 },
+        { name: 'Bash', calls: 141, estTokens: 78200 },
+        { name: 'Edit', calls: 32, estTokens: 24100 },
+        { name: 'mcp__playwright__browser_snapshot', calls: 6, estTokens: 18800 },
+        { name: 'Write', calls: 9, estTokens: 11400 },
+        { name: 'Grep', calls: 27, estTokens: 6900 },
+        { name: 'Glob', calls: 12, estTokens: 1200 },
+        { name: 'TaskUpdate', calls: 14, estTokens: 600 },
+        { name: 'WebFetch', calls: 2, estTokens: 540 },
+        { name: 'TaskCreate', calls: 5, estTokens: 310 },
+        { name: 'ToolSearch', calls: 3, estTokens: 280 },
+        { name: '(unknown)', calls: 2, estTokens: 150 },
+      ],
+      turns: Array.from({ length: 48 }, (_, i) => ({
+        seq: i + 1,
+        cacheWrite: Math.round(4000 + 12000 * Math.abs(Math.sin(i * 1.7)) + (i % 7) * 900),
+      })),
+      totalEst: 237880,
+      uninspected: 2,
+      malformed: 1,
     };
   },
 

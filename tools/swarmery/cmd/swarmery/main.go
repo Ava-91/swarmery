@@ -1121,6 +1121,9 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Wire the projects root into the on-demand transcript-parsing endpoints
+	// (GET /api/sessions/{id}/context-hogs resolves uuid→transcript under it).
+	api.AttachProjectsRoot(cfg.ProjectsRoot)
 	bootLog.Info(logbuf.Phasef("api.build", time.Since(buildStart)))
 	addr := net.JoinHostPort(*bind, strconv.Itoa(*port))
 	log.Printf("swarmery serving on http://%s (db: %s)", addr, *dbPath)
