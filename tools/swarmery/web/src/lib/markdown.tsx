@@ -3,29 +3,87 @@
 // dangerouslySetInnerHTML); every fragment becomes a React text node, which
 // React escapes. Supported: paragraphs, headings (#–####), fenced code
 // blocks, unordered/ordered lists, pipe tables, **bold**, *italic*,
-// `inline code`.
+// `inline code`, [links](href). A link href never reaches a raw `href=`
+// unless it matched `^https?://`; everything else goes through a router
+// <Link>, which resolves it as a route — so `javascript:` cannot survive.
 
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
-/* ----- inline: `code` | **bold** | *italic* ----- */
+/* ----- inline: `code` | [link](href) | **bold** | *italic* ----- */
+
+/** Resolve a markdown href to something the SPA can navigate.
+ *
+ * Three shapes occur in the docs the daemon serves:
+ *   http(s)://…      → external, opens in a new tab
+ *   #anchor          → same-page heading, handled by the browser + Docs.tsx
+ *   OTHER.md#frag    → a sibling doc, which the docs pane addresses as
+ *                      /docs/<slug> where slug is the lowercased basename
+ *
+ * Anything else is treated as an in-app route. */
+function MarkdownLink({
+  href,
+  label,
+  labelKey,
+}: {
+  href: string;
+  label: string;
+  labelKey: string;
+}): JSX.Element {
+  const cls = 'text-brand underline decoration-brand/40 underline-offset-2 hover:decoration-brand';
+  const body = renderInline(label, labelKey);
+
+  if (/^https?:\/\//.test(href)) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer noopener" className={cls}>
+        {body}
+      </a>
+    );
+  }
+  if (href.startsWith('#')) {
+    return (
+      <a href={href} className={cls}>
+        {body}
+      </a>
+    );
+  }
+  const md = /^([^#]+)\.md(#.*)?$/i.exec(href);
+  if (md !== null) {
+    const slug = (md[1] ?? '').toLowerCase();
+    return (
+      <Link to={`/docs/${slug}${md[2] ?? ''}`} className={cls}>
+        {body}
+      </Link>
+    );
+  }
+  return (
+    <Link to={href} className={cls}>
+      {body}
+    </Link>
+  );
+}
 
 function renderInline(text: string, keyBase: string): ReactNode[] {
   // Fresh regex per call: a shared module-level /g regex would have its
   // lastIndex clobbered by the recursive bold/italic calls below.
-  const inline = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\n]+)\*/g;
+  // The link alternative comes before the emphasis ones so a bracketed label
+  // containing `*` cannot be mis-parsed as emphasis.
+  const inline = /`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*|\*([^*\n]+)\*/g;
   const out: ReactNode[] = [];
   let last = 0;
   let i = 0;
   for (let m = inline.exec(text); m !== null; m = inline.exec(text)) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const key = `${keyBase}-${String(i)}`;
-    const [, code, bold, italic] = m;
+    const [, code, linkText, linkHref, bold, italic] = m;
     if (code !== undefined) {
       out.push(
         <code key={key} className="rounded bg-surface2 px-1 py-px font-mono text-[0.88em] text-brand">
           {code}
         </code>,
       );
+    } else if (linkText !== undefined && linkHref !== undefined) {
+      out.push(<MarkdownLink key={key} href={linkHref} label={linkText} labelKey={`${key}-l`} />);
     } else if (bold !== undefined) {
       out.push(
         <strong key={key} className="font-semibold text-ink">
