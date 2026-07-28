@@ -92,6 +92,10 @@ func (w *stubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) e
 	return nil
 }
 
+// Branch reclamation is not exercised by planrun — inert here.
+func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
+func (w *stubWt) DeleteBranch(repoRoot, branch string) error              { return nil }
+
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
 

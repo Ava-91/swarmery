@@ -45,6 +45,11 @@ func (phaseStubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acqui
 }
 func (phaseStubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error { return nil }
 
+// No leftover branch in the api tests: reclaim always reports "nothing to do",
+// so Start proceeds straight to Acquire.
+func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
+func (phaseStubWt) DeleteBranch(repoRoot, branch string) error              { return nil }
+
 // attachPhaseRun wires a stub-backed phaserun service (package var, reset on
 // cleanup). sync=true runs the spawn inline so a POST response implies the run
 // finished (deterministic end-state assertions).

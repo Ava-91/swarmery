@@ -29,6 +29,17 @@ const tsFormat = "2006-01-02T15:04:05.000Z"
 type WorktreeManager interface {
 	Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error)
 	Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error
+	// ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead
+	// of the base, so a re-run can re-acquire the deterministic swarm/<taskID>
+	// name instead of dying on ErrBranchBusy (every Remove above keeps the
+	// branch, so it always survives). Returns the commits-ahead count when the
+	// branch HAS work — the branch is then left untouched and the caller must not
+	// destroy it; 0 means deleted or never existed.
+	ReclaimEmptyBranch(repoRoot, branch string) (int, error)
+	// DeleteBranch force-deletes branch INCLUDING its commits, refusing while it
+	// is checked out or is the repo's HEAD branch. Only for an explicit user
+	// decision — never call it to make room for a re-run.
+	DeleteBranch(repoRoot, branch string) error
 }
 
 // Verifier is the auto-verification trigger seam (fusion phase 6). Declared HERE

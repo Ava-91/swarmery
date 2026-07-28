@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,12 @@ var (
 	ErrRepoRootRefused = errors.New("worktree: refusing to use a path inside the repo root")
 	// ErrNotARepo: repoRoot is not a git repository / git could not operate on it.
 	ErrNotARepo = errors.New("worktree: repoRoot is not a git repository")
+	// ErrBranchCheckedOut: the branch is checked out in a live worktree. Reclaiming it
+	// would yank a running task's checkout, so the caller must resolve it.
+	ErrBranchCheckedOut = errors.New("worktree: branch is checked out in a worktree")
+	// ErrBranchIsHead: refusing to reclaim the repo's currently checked-out branch. A
+	// guard, not an expected condition — swarm/<taskID> is never the base branch.
+	ErrBranchIsHead = errors.New("worktree: refusing to reclaim the repo's HEAD branch")
 )
 
 // staleLockAge is how old a .git/worktrees/*/index.lock must be before the
@@ -194,6 +201,87 @@ func (m *Manager) Remove(repoRoot string, a Acquired, keepBranch bool) error {
 		if _, err := m.Git.Run(repoRoot, "branch", "-D", a.Branch); err != nil {
 			return fmt.Errorf("worktree: delete branch %s: %w", a.Branch, err)
 		}
+	}
+	return nil
+}
+
+// checkBranchReclaimable reports whether branch exists and is safe to delete:
+// it must not be the repo's HEAD branch and must not be checked out in any
+// worktree. A missing branch is (false, nil) — nothing to do, not an error.
+func (m *Manager) checkBranchReclaimable(repoRoot, branch string) (bool, error) {
+	if _, err := m.Git.Run(repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		return false, nil
+	}
+	if head, err := m.Git.Run(repoRoot, "symbolic-ref", "--short", "HEAD"); err == nil {
+		if strings.TrimSpace(head) == branch {
+			return false, fmt.Errorf("%w: %s", ErrBranchIsHead, branch)
+		}
+	}
+	// A stale registration must not look like a live checkout — prune first (the
+	// same best-effort posture Acquire uses).
+	_, _ = m.Git.Run(repoRoot, "worktree", "prune")
+	list, err := m.Git.Run(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("worktree: list worktrees: %w", err)
+	}
+	if path, ok := parseWorktreeList(list).pathForBranch(branch); ok {
+		return false, fmt.Errorf("%w: %s is on %s", ErrBranchCheckedOut, path, branch)
+	}
+	return true, nil
+}
+
+// ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead of the
+// repo's base branch, so a re-run can re-acquire the deterministic name swarm/<taskID>
+// instead of dying on ErrBranchBusy. The base is resolved internally by
+// resolveStartPoint — the same call Acquire makes — so reclaim and acquisition can
+// never disagree about what "base" means.
+//
+// Returns the number of commits ahead when the branch HAS work: the branch is left
+// untouched and the caller must not destroy it. Returns 0 when the branch was deleted
+// or never existed.
+func (m *Manager) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
+	exists, err := m.checkBranchReclaimable(repoRoot, branch)
+	if err != nil {
+		return 0, err
+	}
+	if !exists {
+		return 0, nil // nothing to reclaim
+	}
+	base, err := m.resolveStartPoint(repoRoot)
+	if err != nil {
+		return 0, err
+	}
+	out, err := m.Git.Run(repoRoot, "rev-list", "--count", base+"..refs/heads/"+branch)
+	if err != nil {
+		return 0, fmt.Errorf("worktree: count commits on %s: %w", branch, err)
+	}
+	ahead, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("worktree: unparseable commit count %q for %s: %w", strings.TrimSpace(out), branch, err)
+	}
+	if ahead > 0 {
+		// The branch carries work — never destroyed implicitly; the caller decides.
+		return ahead, nil
+	}
+	if _, err := m.Git.Run(repoRoot, "branch", "-D", branch); err != nil {
+		return 0, fmt.Errorf("worktree: delete branch %s: %w", branch, err)
+	}
+	return 0, nil
+}
+
+// DeleteBranch force-deletes branch (git branch -D), refusing while it is checked
+// out in a worktree or is the repo's HEAD branch. Unlike ReclaimEmptyBranch this
+// DOES discard commits — it exists only for an explicit user decision.
+func (m *Manager) DeleteBranch(repoRoot, branch string) error {
+	exists, err := m.checkBranchReclaimable(repoRoot, branch)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil // already gone — deleting is idempotent
+	}
+	if _, err := m.Git.Run(repoRoot, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("worktree: delete branch %s: %w", branch, err)
 	}
 	return nil
 }

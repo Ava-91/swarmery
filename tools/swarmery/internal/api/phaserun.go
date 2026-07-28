@@ -2,7 +2,8 @@ package api
 
 // Phase-run endpoints (interactive planning v2 phase 5): execute a plan phase
 // directly from its phase doc — a headless claude run in an isolated worktree
-// via internal/phaserun, state on epic_phases (run_state & co, migration 0034).
+// via internal/phaserun, state on epic_phases (run_state & co, migrations 0034 +
+// 0041 run_checkboxes_before/run_ended_at + 0042 run_checkboxes_after).
 // No `tasks` row and no board involvement; checkbox progress keeps flowing
 // through wsingest as the executor edits the docs.
 //

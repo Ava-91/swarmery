@@ -1,7 +1,9 @@
 // Package phaserun executes ONE plan phase directly from its phase doc
 // (interactive planning v2 phase 5): a headless `claude -p` run in an isolated
 // git worktree, state tracked on epic_phases (run_state / run_session_uuid /
-// run_started_at / run_error). No `tasks` row, no board involvement — progress
+// run_started_at / run_ended_at / run_error, plus the run's measurement interval
+// run_checkboxes_before → run_checkboxes_after). No `tasks` row, no board
+// involvement — progress
 // (checkbox ticks) keeps flowing through wsingest as the executor edits the
 // phase docs in the private workspace.
 //
@@ -40,7 +42,25 @@ var (
 	ErrNoDoc = errors.New("phase doc is unreadable")
 	// ErrNoPath: the project has no filesystem path to run in (409).
 	ErrNoPath = errors.New("project has no known path to run in")
+	// ErrBranchDirty: the previous run's branch still exists and holds commits, so
+	// the deterministic branch name cannot be reclaimed automatically. Returned as
+	// a *BranchDirtyError, which errors.Is-matches this sentinel.
+	ErrBranchDirty = errors.New("run branch has unmerged commits")
 )
+
+// BranchDirtyError names the blocking branch and how many commits would be lost, so
+// the api's 409 body and the UI can offer an explicit delete-or-merge decision
+// instead of silently destroying work.
+type BranchDirtyError struct {
+	Branch       string
+	CommitsAhead int
+}
+
+func (e *BranchDirtyError) Error() string {
+	return fmt.Sprintf("run branch %s has %d unmerged commit(s)", e.Branch, e.CommitsAhead)
+}
+
+func (e *BranchDirtyError) Is(target error) bool { return target == ErrBranchDirty }
 
 // DepsUnmetError carries WHICH dependency seqs are unmet so the api's 409 body
 // can name them. errors.Is(err, ErrDepsUnmet) matches.
@@ -184,7 +204,24 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		s.mu.Unlock()
 	}
 
-	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, "phase-"+strconv.FormatInt(phaseID, 10))
+	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
+	// run's swarm/phase-<id> is still there and Acquire would fail ErrBranchBusy.
+	// Reclaim it first when it is empty; refuse loudly when it holds work. The
+	// literal below must match worktree.branchName ("swarm/" + taskID) — it is the
+	// same deterministic name Acquire derives from the taskID passed just after.
+	taskName := "phase-" + strconv.FormatInt(phaseID, 10)
+	branch := "swarm/" + taskName
+	ahead, err := s.Wt.ReclaimEmptyBranch(info.ProjectPath, branch)
+	if err != nil {
+		release()
+		return "", fmt.Errorf("reclaim run branch: %w", err)
+	}
+	if ahead > 0 {
+		release()
+		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead}
+	}
+
+	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, taskName)
 	if err != nil {
 		release()
 		return "", fmt.Errorf("worktree acquire: %w", err)
@@ -193,14 +230,23 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	// run_checkboxes_before=checkboxes_done snapshots the ticked-criteria baseline
 	// in the SAME statement — no extra round trip, and no race with a concurrent
 	// wsingest rescan. The delta against it is what proves work actually landed.
+	// Opening the interval resets BOTH edges: run_checkboxes_after must not keep
+	// the PREVIOUS run's stamp, or a running phase's diagnosis quotes a right edge
+	// belonging to a different run — and a daemon crash mid-run freezes that
+	// mismatch in place (stamp() would otherwise heal it at exit).
 	if _, err := s.DB.Exec(`
 		UPDATE epic_phases
 		   SET run_state='running', run_session_uuid=?, run_started_at=?,
 		       run_error=NULL, run_ended_at=NULL,
-		       run_checkboxes_before=checkboxes_done
+		       run_checkboxes_before=checkboxes_done, run_checkboxes_after=NULL
 		 WHERE id=?`, uuid, s.ts(), phaseID); err != nil {
-		release()
+		// Worktree FIRST, slot LAST — the same invariant runAndHandle's defer
+		// enforces. Releasing the slot while the worktree still exists lets a
+		// concurrent Start warm-reuse (worktree invariant 4) the deterministic
+		// phase-<id> path we are about to delete; the failed UPDATE is precisely
+		// the write that would have closed the DB gate, so nothing else holds it.
 		s.removeWorktree(info.ProjectPath, acq)
+		release()
 		return "", err
 	}
 
@@ -308,9 +354,41 @@ func (s *Service) Cancel(phaseID int64) bool {
 	return ok
 }
 
+// DeleteRunBranch force-deletes a phase's run branch, INCLUDING one that holds
+// commits — the explicit user decision behind a BranchDirtyError. Refuses while the
+// branch is checked out or a run is in flight for this phase.
+func (s *Service) DeleteRunBranch(phaseID int64) (string, error) {
+	info, err := s.loadPhase(phaseID)
+	if err != nil {
+		return "", err
+	}
+	if info.ProjectPath == "" {
+		return "", ErrNoPath
+	}
+	// A live run owns the branch; deleting it underneath would strand its commits.
+	s.mu.Lock()
+	_, busy := s.active[phaseID]
+	s.mu.Unlock()
+	if busy {
+		return "", ErrRunning
+	}
+	// Same deterministic name Start reclaims and Acquire derives (worktree.branchName).
+	branch := "swarm/phase-" + strconv.FormatInt(phaseID, 10)
+	if err := s.Wt.DeleteBranch(info.ProjectPath, branch); err != nil {
+		return "", err
+	}
+	log.Printf("phaserun: deleted run branch %s (phase=%d)", branch, phaseID)
+	return branch, nil
+}
+
 // HealStale fails any epic_phases row left 'running' by a crashed/restarted
 // daemon (there can be no live run in THIS process — we just started). Mirrors
 // dispatch.HealStale's posture. Called from cmd/swarmery before serving.
+//
+// CAVEAT for any consumer deriving a duration: run_ended_at here is the RESTART
+// time, not the moment the run actually died — the daemon has no record of that.
+// A run orphaned for three days therefore reports a three-day duration. Callers
+// building a duration DTO must suppress or flag it when run_error='daemon restart'.
 func (s *Service) HealStale() error {
 	res, err := s.DB.Exec(`
 		UPDATE epic_phases
