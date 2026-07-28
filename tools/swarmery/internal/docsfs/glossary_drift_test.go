@@ -38,26 +38,48 @@ var anchorRe = regexp.MustCompile(`anchor:\s*'([^']+)'`)
 // Only ever applied to fenceStripped() output; see there for why.
 var headingRe = regexp.MustCompile(`(?m)^##\s+(.+?)\s*$`)
 
-// fenceStripped blanks the body of every ``` fenced block, keeping the fence
-// lines themselves so line-anchored matching elsewhere stays aligned.
+// fenceStripped blanks the body of every fenced block, keeping the fence lines
+// themselves so line-anchored matching elsewhere stays aligned.
 //
 // Without this, a `## Stage:` line inside a playbook example — exactly the kind
 // of snippet the Playbooks section invites — is read as a concept heading, and
 // the suite fails with "documents "Stage: implement", which is not a concept"
 // while pointing the reader at the wrong file entirely.
+//
+// Both CommonMark fence characters count, and a block closes only on a fence of
+// the SAME character that is at least as long as the one that opened it. That
+// is what lets a ````-delimited block quote a ``` fence inside it — the shape
+// any doc explaining markdown itself ends up needing.
 func fenceStripped(md string) string {
 	lines := strings.Split(md, "\n")
-	inFence := false
+	open := "" // the marker that opened the current block; "" ⇒ not inside one
 	for i, ln := range lines {
-		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
+		m := fenceMarker(strings.TrimSpace(ln))
+		switch {
+		case open == "" && m != "":
+			open = m
+		case open != "" && m != "" && m[0] == open[0] && len(m) >= len(open):
+			open = ""
+		case open != "":
 			lines[i] = ""
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// fenceMarker returns the leading run of ``` or ~~~ (three or more) on an
+// already-trimmed line, or "" when the line neither opens nor closes a fence.
+func fenceMarker(trimmed string) string {
+	for _, c := range []byte{'`', '~'} {
+		n := 0
+		for n < len(trimmed) && trimmed[n] == c {
+			n++
+		}
+		if n >= 3 {
+			return trimmed[:n]
+		}
+	}
+	return ""
 }
 
 // slugify mirrors the heading-id function in web/src/lib/markdown.tsx.
@@ -87,10 +109,13 @@ func readAll(t *testing.T, path string) string {
 	return string(b)
 }
 
-// matches returns capture group 1 of every match. Sorted so that a failing run
-// lists its complaints in a stable order — the results feed t.Errorf loops, not
-// just set membership, and flaky message ordering makes a diff of two failures
-// unreadable.
+// matches returns capture group 1 of every match, sorted.
+//
+// FindAllStringSubmatch already returns matches in source order, so the sort is
+// not about determinism within one run. It is about determinism ACROSS runs of
+// different inputs: sorted output means reordering the entries in glossary.ts,
+// or moving a section in concepts.md, does not reshuffle the failure list and
+// turn an unrelated edit into a noisy diff.
 func matches(re *regexp.Regexp, src string) []string {
 	var out []string
 	for _, m := range re.FindAllStringSubmatch(src, -1) {
@@ -182,5 +207,76 @@ func TestDocSlugsPointAtConcepts(t *testing.T) {
 			t.Errorf("doc slug %q is not %q — /docs/%s is not a doc the daemon serves",
 				s, conceptsSlug, s)
 		}
+	}
+}
+
+// TestFenceStrippedHidesHeadings locks the fence rules down directly. Every
+// case here is one a doc about swarmery genuinely reaches for: playbooks are
+// markdown, so concepts.md quotes `## Stage:` lines, and a doc explaining
+// fences has to nest them. `want` is the set of `## ` headings that survive.
+func TestFenceStrippedHidesHeadings(t *testing.T) {
+	cases := []struct {
+		name string
+		md   string
+		want []string
+	}{
+		{
+			name: "no fences — every heading is real",
+			md:   "## Real\ntext\n## Also real\n",
+			want: []string{"Also real", "Real"},
+		},
+		{
+			name: "backtick fence hides its body",
+			md:   "## Real\n```markdown\n## Stage: implement\n```\n",
+			want: []string{"Real"},
+		},
+		{
+			name: "tilde fence hides its body",
+			md:   "## Real\n~~~\n## Stage: implement\n~~~\n",
+			want: []string{"Real"},
+		},
+		{
+			name: "a tilde fence does not close a backtick fence",
+			md:   "## Real\n```\n~~~\n## Hidden\n```\n## After\n",
+			want: []string{"After", "Real"},
+		},
+		{
+			name: "longer fence quotes a shorter one without ending the block",
+			md:   "## Real\n````\n```\n## Hidden\n```\n````\n## After\n",
+			want: []string{"After", "Real"},
+		},
+		{
+			name: "indented fence still counts",
+			md:   "## Real\n  ```\n  ## Hidden\n  ```\n",
+			want: []string{"Real"},
+		},
+		{
+			name: "unclosed fence swallows the rest of the file",
+			md:   "## Real\n```\n## Hidden\n",
+			want: []string{"Real"},
+		},
+		{
+			name: "fence with an info string opens normally",
+			md:   "```go\n## Hidden\n```\n## Real\n",
+			want: []string{"Real"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matches(headingRe, fenceStripped(tc.md))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("headings = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFenceStrippedPreservesLineCount: blanking rather than deleting keeps
+// every other line-anchored regex in this file aligned with the source.
+func TestFenceStrippedPreservesLineCount(t *testing.T) {
+	src := "a\n```\nb\nc\n```\nd\n"
+	if got, want := strings.Count(fenceStripped(src), "\n"), strings.Count(src, "\n"); got != want {
+		t.Errorf("line count = %d, want %d", got, want)
 	}
 }
