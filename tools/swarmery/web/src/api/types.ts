@@ -81,6 +81,8 @@ export interface Project {
   pinned: boolean;
   /** Decoded projects.tags JSON array — [] when untagged, never null. */
   tags: string[];
+  /** The deliberate System project (~/.swarmery, daemon telemetry runs) — demoted out of the main list. */
+  isSystem: boolean;
   /** Null for telemetry-only projects (no readable .claude/settings.json). */
   plugin: PluginState | null;
 }
@@ -178,6 +180,13 @@ export interface Session {
   tokens?: number | null;
   /** Aggregate SUM(turns.cost_usd) — parity wave; optional until backend lands. */
   costUsd?: number | null;
+  /**
+   * Context occupancy: the last assistant turn's input footprint
+   * (tokens_in + cache_read + cache_write) ≈ how full the model's context
+   * window is. A large value on a long-lived session is the fat-session cost
+   * driver. Additive optional; null until the session has a priced turn.
+   */
+  contextTokens?: number | null;
   /** phase 3.5 workspaces (additive): best task link — explicit beats heuristic. */
   taskId?: number | null;
   /** Card task id (yyyy-mm-dd-slug) of the best-linked workspace task. */
@@ -1683,6 +1692,8 @@ export interface ProjectHealth {
   name: string | null;
   pinned: boolean;
   tags: string[];
+  /** Mirrors Project.isSystem — the health table drops the System row. */
+  isSystem: boolean;
   /** Σ turn cost over the rolling last 7 days; null when no priced turn. */
   costWeekUsd: number | null;
   /** Σ turn cost over days 8–14 back; null when no priced turn. */
@@ -1956,6 +1967,16 @@ export interface EpicPhase {
   dependsOn: number[];
   checkboxesDone: number;
   checkboxesTotal: number;
+  /** The phase doc's own `Status:` header marker (normalized); null when the
+   * doc carries none. Lets an executor flag "working on this now" before the
+   * first checkbox tick. */
+  docStatus: 'pending' | 'in_progress' | 'done' | null;
+  /** RFC3339 mtime of the phase doc at scan time — liveness signal (executor
+   * edits change the doc and re-trigger the scan). */
+  docUpdatedAt: string | null;
+  /** The doc's `## Completion Report` section (markdown) — what the executor
+   * shipped. Null until written; shown in a summary modal on done phases. */
+  completionReport: string | null;
   activatedAt: string | null;
   /** external_id of the board task this phase was activated into (null until). */
   boardTaskExternalId: string | null;
@@ -1983,6 +2004,9 @@ export interface Epic {
   status: 'active' | 'paused' | 'done' | 'archived';
   startedAt: string | null;
   planDir: string;
+  /** True when plan/SUMMARY.md exists — openable via the docs endpoint
+   * (path=SUMMARY.md) in the plan-level summary modal. */
+  hasSummary: boolean;
   phases: EpicPhase[];
   rollup: EpicRollup;
 }

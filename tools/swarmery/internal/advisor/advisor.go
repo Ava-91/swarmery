@@ -136,6 +136,7 @@ func Run(db *sql.DB, now time.Time) (Stats, error) {
 		{"R6", func() ([]finding, error) { return r6CacheRegression(db, win, now) }},
 		{"R7", func() ([]finding, error) { return r7StaleArchitectureMap(db, win, now) }},
 		{"R8", func() ([]finding, error) { return r8TrajectoryAntiPatterns(db, win) }},
+		{"R9", func() ([]finding, error) { return r9FatSessions(db, win) }},
 	}
 	for _, e := range evals {
 		fs, err := e.fn()
@@ -821,6 +822,14 @@ func metricValue(db *sql.DB, rule, target string, win window) (name string, valu
 		// verify loop never acts on it; the rule re-proposes naturally if the map
 		// stays stale after acceptance.
 		return "stale_map", 0, false, nil
+	case "R8":
+		// R8 (recurring trajectory anti-patterns) and R9 (fat sessions) are
+		// advisory notifications about a specific agent/session — there is no
+		// clean post-adoption scalar to verify against, so, like R7, the
+		// baseline records ok=false and the verify loop never acts on it.
+		return "anti_pattern", 0, false, nil
+	case "R9":
+		return "fat_session", 0, false, nil
 	default:
 		return "", 0, false, fmt.Errorf("unknown rule %q", rule)
 	}

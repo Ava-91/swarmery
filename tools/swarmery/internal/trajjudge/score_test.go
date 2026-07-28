@@ -171,3 +171,32 @@ func TestSelectCandidatesFlaggedBeatsRecency(t *testing.T) {
 		t.Errorf("cands = %+v, want the old flagged session 1 first", cands)
 	}
 }
+
+// TestJudgedWithin locks the startup-cooldown gate: the daemon restarts many
+// times on an active dev day (every `make install`), and each restart used to
+// fire a full capN judge batch. JudgedWithin lets main.go skip the batch when
+// a judgment for this model was persisted recently; errors and empty tables
+// fail open (false) so a fresh install still judges.
+func TestJudgedWithin(t *testing.T) {
+	db := openMigratedDB(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+
+	if JudgedWithin(db, "sonnet", now, 6*time.Hour) {
+		t.Error("empty table: want false (fail open)")
+	}
+
+	mustExec(t, db, `INSERT INTO projects(id,name,path,slug,first_seen) VALUES (1,'p','/p','p','2026-07-27T00:00:00Z')`)
+	mustExec(t, db, `INSERT INTO sessions(id,project_id,session_uuid,started_at) VALUES (1,1,'u1','2026-07-27T00:00:00Z')`)
+	mustExec(t, db, `INSERT INTO trajectory_judgments(session_id,agent,model,judged_at,end_result,instruction_compliance,pitfalls,tool_calls,overall,review)
+	                 VALUES (1,'main','sonnet','2026-07-27T11:00:00Z',4,4,4,4,4.0,'ok')`)
+
+	if !JudgedWithin(db, "sonnet", now, 6*time.Hour) {
+		t.Error("judgment 1h old, window 6h: want true")
+	}
+	if JudgedWithin(db, "sonnet", now, 30*time.Minute) {
+		t.Error("judgment 1h old, window 30m: want false")
+	}
+	if JudgedWithin(db, "opus", now, 6*time.Hour) {
+		t.Error("other model only: want false")
+	}
+}

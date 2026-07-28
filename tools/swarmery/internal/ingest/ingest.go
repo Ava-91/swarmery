@@ -1193,6 +1193,11 @@ func systemBase() string {
 	return filepath.Join(home, ".swarmery")
 }
 
+// SystemDir exposes the System project dir to other packages (the API layer
+// flags that projects row isSystem so the dashboard can demote it). Empty
+// only when the home dir is unresolvable.
+func SystemDir() string { return systemBase() }
+
 // CanonicalProjectPath maps a raw session cwd to the path of the registered
 // project it belongs to, so satellite cwds never mint phantom project rows:
 //   - a dispatcher worktree <root>/<parentSlug>/<task> resolves to the

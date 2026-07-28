@@ -9,6 +9,31 @@ import { ProcBadge } from './ProcBadge';
 import { StopButton } from './StopButton';
 import { TaskChip } from './TaskChip';
 
+/** Context-occupancy warning thresholds (tokens). Mirrors advisor R9's
+ * R9ContextTokens=300k danger line; 150k is an early amber warning. */
+const CONTEXT_WARN = 150_000;
+const CONTEXT_DANGER = 300_000;
+
+/** A chip showing how full the context window is — only when it's getting big.
+ * A fat context is the fat-session cost driver (every turn re-reads it), so it
+ * earns a visible warning: amber past 150k, red past 300k. */
+function ContextBadge({ session }: { session: Session }): JSX.Element | null {
+  const ctx = session.contextTokens;
+  if (ctx == null || ctx < CONTEXT_WARN) return null;
+  const danger = ctx >= CONTEXT_DANGER;
+  const k = Math.round(ctx / 1000);
+  return (
+    <span
+      title={`Context window ~${k}k tokens (last turn). Large contexts are re-read on every continuation — the main cost driver. Consider /compact or splitting the work.`}
+      className={`shrink-0 rounded-full border px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap ${
+        danger ? 'border-red/40 bg-red/10 text-red' : 'border-amber/40 bg-amber/10 text-amber'
+      }`}
+    >
+      {k}k ctx
+    </span>
+  );
+}
+
 function meta(session: Session): string {
   const parts: string[] = [];
   if (session.model !== null) parts.push(session.model);
@@ -150,6 +175,7 @@ export function SessionCard({
             className="min-w-0 flex-1 truncate font-mono text-[11px]"
           />
         )}
+        <ContextBadge session={session} />
         <ProcBadge session={session} />
         {session.outcome != null && (
           <span
@@ -259,6 +285,7 @@ export function SessionCard({
                 {OUTCOME_GLYPH[session.outcome].glyph}
               </span>
             )}
+            <ContextBadge session={session} />
           </span>
           <span className="mt-0.5 block truncate text-[12px] text-ink-dim">
             {liveNow ? `now: ${now}` : (session.why ?? meta(session))}

@@ -749,6 +749,9 @@ func cmdServe(args []string) error {
 		// judged model is stored per verdict, so the pin keeps scores comparable.
 		trajjudgeModel = "claude-sonnet-5"
 	}
+	// Minimum age of the newest verdict before another automatic batch may
+	// run (startup + 24h tick); the manual advise endpoint is not gated.
+	const trajjudgeCooldown = 6 * time.Hour
 	trajjudgeCap := 10
 	if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -879,7 +882,13 @@ func cmdServe(args []string) error {
 			if err := trajeval.Compute(db, time.Now()); err != nil {
 				log.Printf("trajeval.Compute: %v", err)
 			}
-			if err := trajjudge.Score(db, trajjudge.ClaudeRunner{Model: trajjudgeModel}, trajjudgeModel, time.Now(), trajjudgeCap); err != nil {
+			// Cooldown: a dev day restarts the daemon on every `make install`,
+			// and each restart lands here — without the gate that's a paid capN
+			// batch per restart. The 24h ticker is unaffected (24h > cooldown);
+			// POST /api/retro/advise stays unconditional.
+			if trajjudge.JudgedWithin(db, trajjudgeModel, time.Now(), trajjudgeCooldown) {
+				log.Printf("trajjudge: batch skipped, last %s verdict is younger than %s", trajjudgeModel, trajjudgeCooldown)
+			} else if err := trajjudge.Score(db, trajjudge.ClaudeRunner{Model: trajjudgeModel}, trajjudgeModel, time.Now(), trajjudgeCap); err != nil {
 				log.Printf("trajjudge.Score: %v", err)
 			}
 			stats, err := advisor.Run(db, time.Now())

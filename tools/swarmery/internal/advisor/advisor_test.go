@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
@@ -1232,6 +1233,94 @@ func TestR7StaleArchitectureMap(t *testing.T) {
 		}
 		if len(fs) != 0 {
 			t.Fatalf("findings = %+v, want none for archived project", fs)
+		}
+	})
+}
+
+// ── R9 ────────────────────────────────────────────────────────────────────
+
+// seedSessionCtx inserts a session with a single trailing assistant turn whose
+// input footprint (cache_read) is ctxTokens, cost is costUSD, at `daysAgo`.
+func seedSessionCtx(t *testing.T, db *sql.DB, id int64, cwd string, ctxTokens int64, costUSD float64, daysAgo int) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO sessions (id, project_id, session_uuid, status, cwd, started_at, title) VALUES
+		(?, 1, ?, 'completed', ?, ?, ?)`, id, fmt.Sprintf("fat-%d", id), cwd, ago(daysAgo), fmt.Sprintf("Session %d", id))
+	mustExec(t, db, `INSERT INTO turns (session_id, seq, role, started_at, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, cost_usd) VALUES
+		(?, 1, 'assistant', ?, 2, 20, ?, 0, ?)`, id, ago(daysAgo), ctxTokens, costUSD)
+}
+
+func TestR9FatSessions(t *testing.T) {
+	t.Run("flags oversized context and expensive sessions, spares normal", func(t *testing.T) {
+		db := testDB(t)
+		// 3: huge context (over token threshold), cheap.
+		seedSessionCtx(t, db, 3, "/work/alpha", R9ContextTokens+50_000, 1.0, 1)
+		// 4: small context but expensive (over cost threshold).
+		seedSessionCtx(t, db, 4, "/work/alpha", 20_000, R9CostUSD+30, 1)
+		// 5: normal — under both thresholds → no finding.
+		seedSessionCtx(t, db, 5, "/work/alpha", 20_000, 2.0, 1)
+
+		fs, err := r9FatSessions(db, evalWindow())
+		if err != nil {
+			t.Fatalf("r9: %v", err)
+		}
+		targets := map[string]bool{}
+		for _, f := range fs {
+			if f.rule != "R9" || f.targetKind != "session" {
+				t.Errorf("finding = %+v, want R9/session", f)
+			}
+			targets[f.target] = true
+		}
+		if !targets["fat-3"] || !targets["fat-4"] {
+			t.Errorf("targets = %v, want both fat-3 (context) and fat-4 (cost)", targets)
+		}
+		if targets["fat-5"] {
+			t.Errorf("targets = %v, must not flag the normal session fat-5", targets)
+		}
+	})
+
+	t.Run("never flags System sessions", func(t *testing.T) {
+		db := testDB(t)
+		sysDir := ingest.SystemDir()
+		if sysDir == "" {
+			t.Skip("home dir unresolvable")
+		}
+		seedSessionCtx(t, db, 6, sysDir, R9ContextTokens+100_000, R9CostUSD+100, 1)
+		seedSessionCtx(t, db, 7, "/", R9ContextTokens+100_000, R9CostUSD+100, 1)
+
+		fs, err := r9FatSessions(db, evalWindow())
+		if err != nil {
+			t.Fatalf("r9: %v", err)
+		}
+		if len(fs) != 0 {
+			t.Fatalf("findings = %+v, want none — System sessions are headless runs, not user work", fs)
+		}
+	})
+
+	t.Run("ignores sessions outside the window", func(t *testing.T) {
+		db := testDB(t)
+		seedSessionCtx(t, db, 8, "/work/alpha", R9ContextTokens+100_000, R9CostUSD+100, WindowDays+5)
+
+		fs, err := r9FatSessions(db, evalWindow())
+		if err != nil {
+			t.Fatalf("r9: %v", err)
+		}
+		if len(fs) != 0 {
+			t.Fatalf("findings = %+v, want none for an out-of-window session", fs)
+		}
+	})
+
+	// Full Run path: a session-kind finding must upsert without tripping the
+	// recommendations.target_kind CHECK (migration 0038 extends it). Guards the
+	// regression where R9 emitted 'session' against the original 5-kind CHECK.
+	t.Run("upserts through advisor.Run", func(t *testing.T) {
+		db := testDB(t)
+		seedSessionCtx(t, db, 3, "/work/alpha", R9ContextTokens+50_000, 1.0, 1)
+
+		if _, err := Run(db, testNow); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if n := count(t, db, `SELECT COUNT(*) FROM recommendations WHERE rule = 'R9' AND target_kind = 'session'`); n != 1 {
+			t.Errorf("R9 session recommendations = %d, want 1", n)
 		}
 	})
 }

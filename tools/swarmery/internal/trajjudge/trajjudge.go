@@ -113,6 +113,26 @@ func Score(db *sql.DB, runner Runner, model string, now time.Time, capN int) err
 	return nil
 }
 
+// JudgedWithin reports whether any judgment for this model was persisted
+// within window before now. main.go gates the startup Score batch on it so a
+// dev day full of daemon restarts (`make install`) doesn't fire a full capN
+// batch per restart. Fail-open by contract: an empty table or a query/parse
+// error returns false, so a fresh install still gets its first batch. The
+// manual "Analyze now" endpoint bypasses this gate on purpose.
+func JudgedWithin(db *sql.DB, model string, now time.Time, window time.Duration) bool {
+	var last sql.NullString
+	err := db.QueryRow(
+		`SELECT MAX(judged_at) FROM trajectory_judgments WHERE model = ?`, model).Scan(&last)
+	if err != nil || !last.Valid {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, last.String)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) < window
+}
+
 type candidate struct {
 	sessionID int64
 	agent     string
