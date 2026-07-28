@@ -40,6 +40,12 @@ type ClaudeRunner struct {
 	Model string
 }
 
+// isDir reports whether path exists and is a directory.
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
 func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	timeout := r.Timeout
 	if timeout <= 0 {
@@ -55,8 +61,13 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text")
 	// System home, not the inherited launchd cwd "/": transcripts then
 	// attribute to the deliberate "System" project (see internal/ingest).
+	// Only when it actually exists — a missing dir would fail the spawn with
+	// chdir ENOENT, and losing attribution beats not running at all (the
+	// daemon owns ~/.swarmery, so in production it is always there).
 	if home, err := os.UserHomeDir(); err == nil {
-		cmd.Dir = filepath.Join(home, ".swarmery")
+		if dir := filepath.Join(home, ".swarmery"); isDir(dir) {
+			cmd.Dir = dir
+		}
 	}
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
