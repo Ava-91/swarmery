@@ -2,19 +2,16 @@
 // documentation. Steps come from the glossary so the copy has one home; the
 // markup is unchanged from the two page-local copies this replaces.
 
-import { CONCEPTS, type Concept, type ConceptId } from '../lib/glossary';
+import { STEP_CONCEPTS, type StepConceptId } from '../lib/glossary';
 
 export function HowItWorks({
   id,
   className = '',
 }: {
-  id: ConceptId;
+  id: StepConceptId;
   className?: string;
-}): JSX.Element | null {
-  // Widened to Concept for the same reason as <Explain>: `steps` is optional,
-  // and the union of literal entry types does not expose it on every member.
-  const { steps }: Concept = CONCEPTS[id];
-  if (steps === undefined) return null;
+}): JSX.Element {
+  const { steps } = STEP_CONCEPTS[id];
   return (
     <ol className={`grid gap-3 border-t border-line pt-5 sm:grid-cols-2 ${className}`}>
       {steps.map((step, i) => (

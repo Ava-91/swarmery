@@ -27,7 +27,11 @@ export interface Concept {
   doc?: { slug: string; anchor: string };
 }
 
-export const CONCEPTS = {
+// `satisfies` keeps the literal shape of every entry (that is what makes
+// ConceptId and StepConceptId derivable) — but consumers must NOT read the
+// literal type, because on a union of entry types an optional field that some
+// members do not declare is unreadable. So the widening happens once, here.
+const RAW = {
   handoff: {
     term: 'Handoff',
     short:
@@ -194,4 +198,19 @@ export const CONCEPTS = {
   },
 } satisfies Record<string, Concept>;
 
-export type ConceptId = keyof typeof CONCEPTS;
+export type ConceptId = keyof typeof RAW;
+
+/** The registry as consumers see it: every optional field readable on every id. */
+export const CONCEPTS: Record<ConceptId, Concept> = RAW;
+
+/** A concept that is guaranteed to carry a walkthrough. */
+export type StepConcept = Concept & { steps: NonNullable<Concept['steps']> };
+
+/** The ids whose entry actually declares `steps`. <HowItWorks id="handoff"/> is
+ * therefore a compile error rather than a component that silently renders null. */
+export type StepConceptId = {
+  [K in ConceptId]: (typeof RAW)[K] extends { steps: unknown } ? K : never;
+}[ConceptId];
+
+/** The step-carrying subset, so <HowItWorks> reads a non-optional array. */
+export const STEP_CONCEPTS: Record<StepConceptId, StepConcept> = RAW;
