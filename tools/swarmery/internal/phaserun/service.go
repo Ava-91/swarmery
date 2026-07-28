@@ -190,9 +190,14 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		return "", fmt.Errorf("worktree acquire: %w", err)
 	}
 
+	// run_checkboxes_before=checkboxes_done snapshots the ticked-criteria baseline
+	// in the SAME statement — no extra round trip, and no race with a concurrent
+	// wsingest rescan. The delta against it is what proves work actually landed.
 	if _, err := s.DB.Exec(`
 		UPDATE epic_phases
-		   SET run_state='running', run_session_uuid=?, run_started_at=?, run_error=NULL
+		   SET run_state='running', run_session_uuid=?, run_started_at=?,
+		       run_error=NULL, run_ended_at=NULL,
+		       run_checkboxes_before=checkboxes_done
 		 WHERE id=?`, uuid, s.ts(), phaseID); err != nil {
 		release()
 		s.removeWorktree(info.ProjectPath, acq)
@@ -246,15 +251,16 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, p
 	}
 }
 
-// stamp writes the terminal run state; runError "" ⇒ NULL.
+// stamp writes the terminal run state; runError "" ⇒ NULL. run_ended_at is set on
+// every terminal transition so the UI can show a duration.
 func (s *Service) stamp(phaseID int64, state, runError string) {
 	var re any
 	if runError != "" {
 		re = runError
 	}
 	if _, err := s.DB.Exec(
-		`UPDATE epic_phases SET run_state=?, run_error=? WHERE id=?`,
-		state, re, phaseID); err != nil {
+		`UPDATE epic_phases SET run_state=?, run_error=?, run_ended_at=? WHERE id=?`,
+		state, re, s.ts(), phaseID); err != nil {
 		log.Printf("error: phaserun: stamp phase=%d state=%s: %v", phaseID, state, err)
 	}
 }
@@ -288,8 +294,9 @@ func (s *Service) Cancel(phaseID int64) bool {
 // dispatch.HealStale's posture. Called from cmd/swarmery before serving.
 func (s *Service) HealStale() error {
 	res, err := s.DB.Exec(`
-		UPDATE epic_phases SET run_state='failed', run_error='daemon restart'
-		 WHERE run_state='running'`)
+		UPDATE epic_phases
+		   SET run_state='failed', run_error='daemon restart', run_ended_at=?
+		 WHERE run_state='running'`, s.ts())
 	if err != nil {
 		return err
 	}
@@ -330,8 +337,8 @@ func (s *Service) loadPhase(phaseID int64) (phaseInfo, error) {
 
 // unmetDeps returns the dependency seqs of info that are NOT yet satisfied. A
 // dep seq is satisfied when a sibling phase row with that seq is complete via
-// any of the three paths: run_state='done'; all checkboxes ticked (total>0);
-// or a legacy activated board task that is done/archived.
+// one of the two paths: all checkboxes ticked (total>0); or a legacy activated
+// board task that is done/archived.
 func (s *Service) unmetDeps(info phaseInfo) ([]int, error) {
 	var unmet []int
 	for _, dep := range info.DependsOn {
@@ -346,9 +353,14 @@ func (s *Service) unmetDeps(info phaseInfo) ([]int, error) {
 	return unmet, nil
 }
 
+// depSatisfied reports whether the sibling phase at seq is complete. Completion is
+// proven by TICKED ACCEPTANCE CRITERIA, never by run_state: a headless run that
+// exits 0 without ticking anything (failed precondition, refused work) is not a
+// completed phase, and treating it as one let phases start on top of empty
+// dependencies. Legacy activated board tasks still count via their column.
 func (s *Service) depSatisfied(taskID int64, seq int) (bool, error) {
 	rows, err := s.DB.Query(`
-		SELECT e.run_state, e.checkboxes_done, e.checkboxes_total,
+		SELECT e.checkboxes_done, e.checkboxes_total,
 		       COALESCE(bt.board_column,''), bt.archived_at IS NOT NULL
 		  FROM epic_phases e
 		  LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
@@ -359,16 +371,14 @@ func (s *Service) depSatisfied(taskID int64, seq int) (bool, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			runState, boardCol string
-			done, total        int
-			archived           bool
+			boardCol    string
+			done, total int
+			archived    bool
 		)
-		if err := rows.Scan(&runState, &done, &total, &boardCol, &archived); err != nil {
+		if err := rows.Scan(&done, &total, &boardCol, &archived); err != nil {
 			return false, err
 		}
-		if runState == "done" ||
-			(total > 0 && done == total) ||
-			boardCol == "done" || archived {
+		if (total > 0 && done == total) || boardCol == "done" || archived {
 			return true, nil
 		}
 	}

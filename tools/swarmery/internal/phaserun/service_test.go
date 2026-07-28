@@ -169,6 +169,17 @@ func phaseRow(t *testing.T, db *sql.DB, id int64) (state string, uuid, startedAt
 	return
 }
 
+// phaseOutcome reads the run-outcome measurement columns (migration 0041):
+// the ticked-criteria baseline snapshotted at spawn and the terminal timestamp.
+func phaseOutcome(t *testing.T, db *sql.DB, id int64) (before sql.NullInt64, endedAt sql.NullString) {
+	t.Helper()
+	if err := db.QueryRow(`SELECT run_checkboxes_before, run_ended_at
+		FROM epic_phases WHERE id=?`, id).Scan(&before, &endedAt); err != nil {
+		t.Fatalf("phase outcome row: %v", err)
+	}
+	return
+}
+
 func taskCount(t *testing.T, db *sql.DB) int {
 	t.Helper()
 	var n int
@@ -256,6 +267,83 @@ func TestStart_HappyPath(t *testing.T) {
 	}
 }
 
+// TestStart_SnapshotsCheckboxesBefore: run_state records how the PROCESS ended,
+// never whether work landed. The baseline snapshot taken at spawn is what makes
+// the delta across a run measurable — a 'done' run with a zero delta produced
+// nothing.
+func TestStart_SnapshotsCheckboxesBefore(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	mustExec(t, db, `UPDATE epic_phases SET checkboxes_total=8, checkboxes_done=3 WHERE id=?`, p1)
+	s := newTestService(db, &stubRunner{}, &stubWt{})
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	before, _ := phaseOutcome(t, db, p1)
+	if !before.Valid || before.Int64 != 3 {
+		t.Errorf("run_checkboxes_before = %v (valid=%v), want 3 — the ticked count at spawn time",
+			before.Int64, before.Valid)
+	}
+}
+
+// TestStart_StampsRunEndedAt: every terminal transition records an end
+// timestamp so a run's duration is derivable (only run_started_at was persisted
+// before).
+func TestStart_StampsRunEndedAt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		runFn func(spec RunSpec) (*Run, error)
+		want  string
+	}{
+		{"completed", nil, "done"},
+		{"failed", func(spec RunSpec) (*Run, error) {
+			return &Run{SessionUUID: spec.SessionUUID, ExitCode: 3, Stderr: "boom"}, nil
+		}, "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, _, p1, _ := fixture(t)
+			s := newTestService(db, &stubRunner{runFn: tc.runFn}, &stubWt{})
+			if _, err := s.Start(p1); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if state, _, _, _ := phaseRow(t, db, p1); state != tc.want {
+				t.Fatalf("run_state = %q, want %q", state, tc.want)
+			}
+			_, endedAt := phaseOutcome(t, db, p1)
+			if !endedAt.Valid || endedAt.String == "" {
+				t.Errorf("run_ended_at = %q (valid=%v), want a timestamp on the terminal transition",
+					endedAt.String, endedAt.Valid)
+			}
+		})
+	}
+}
+
+// TestStart_ClearsPriorEndedAt: a re-run must not carry the previous run's end
+// stamp while it is in flight.
+func TestStart_ClearsPriorEndedAt(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	r := &stubRunner{block: make(chan struct{})}
+	s := NewService(db, r, &stubWt{}) // real goroutine — run stays in flight
+	s.UUID = func() string { return "uuid-1" }
+	mustExec(t, db, `UPDATE epic_phases SET run_state='failed', run_ended_at='2026-01-01T00:00:00Z' WHERE id=?`, p1)
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitFor(t, func() bool {
+		state, _, _, _ := phaseRow(t, db, p1)
+		return state == "running"
+	})
+	if _, endedAt := phaseOutcome(t, db, p1); endedAt.Valid {
+		t.Errorf("run_ended_at = %q while running, want NULL", endedAt.String)
+	}
+	close(r.block)
+	waitFor(t, func() bool {
+		state, _, _, _ := phaseRow(t, db, p1)
+		return state == "done"
+	})
+}
+
 func TestStart_NonzeroExit_Failed(t *testing.T) {
 	db, _, p1, _ := fixture(t)
 	r := &stubRunner{runFn: func(spec RunSpec) (*Run, error) {
@@ -323,18 +411,40 @@ func TestStart_DepsGate(t *testing.T) {
 		}
 	})
 
-	t.Run("met via run_state done", func(t *testing.T) {
+	// The live incident: a headless run that exits 0 without ticking anything
+	// (failed precondition, refused work) is NOT a completed phase. run_state
+	// answers "how did the process end", never "did work land" — and treating
+	// 'done' as completion let phases start on top of an empty dependency.
+	t.Run("run_state done with zero ticks does not satisfy", func(t *testing.T) {
 		db, _, p1, p2 := fixture(t)
-		mustExec(t, db, `UPDATE epic_phases SET run_state='done' WHERE id=?`, p1)
+		mustExec(t, db, `UPDATE epic_phases
+			SET run_state='done', checkboxes_total=7, checkboxes_done=0 WHERE id=?`, p1)
 		s := newTestService(db, &stubRunner{}, &stubWt{})
-		if _, err := s.Start(p2); err != nil {
-			t.Fatalf("Start: %v", err)
+		_, err := s.Start(p2)
+		if !errors.Is(err, ErrDepsUnmet) {
+			t.Fatalf("err = %v, want ErrDepsUnmet (a 0/7 'done' run is not a completed phase)", err)
+		}
+		var de *DepsUnmetError
+		if !errors.As(err, &de) || len(de.Unmet) != 1 || de.Unmet[0] != 1 {
+			t.Errorf("unmet = %+v, want [1]", de)
 		}
 	})
 
 	t.Run("met via full checkboxes", func(t *testing.T) {
 		db, _, p1, p2 := fixture(t)
 		mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=2 WHERE id=?`, p1)
+		s := newTestService(db, &stubRunner{}, &stubWt{})
+		if _, err := s.Start(p2); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	})
+
+	// Same dependency as the incident case, fully ticked: completion is proven
+	// by the criteria, with run_state playing no part either way.
+	t.Run("met via full checkboxes regardless of run_state", func(t *testing.T) {
+		db, _, p1, p2 := fixture(t)
+		mustExec(t, db, `UPDATE epic_phases
+			SET run_state='failed', checkboxes_total=7, checkboxes_done=7 WHERE id=?`, p1)
 		s := newTestService(db, &stubRunner{}, &stubWt{})
 		if _, err := s.Start(p2); err != nil {
 			t.Fatalf("Start: %v", err)
@@ -524,9 +634,16 @@ func TestHealStale(t *testing.T) {
 	if state != "failed" || runErr.String != "daemon restart" {
 		t.Errorf("healed row: state=%q run_error=%q", state, runErr.String)
 	}
+	// A crash-orphaned row is a terminal transition too — it gets an end stamp.
+	if _, endedAt := phaseOutcome(t, db, p1); !endedAt.Valid || endedAt.String == "" {
+		t.Errorf("healed row run_ended_at = %q (valid=%v), want a timestamp", endedAt.String, endedAt.Valid)
+	}
 	state, _, _, _ = phaseRow(t, db, p2)
 	if state != "done" {
 		t.Errorf("done row touched by heal: state=%q", state)
+	}
+	if _, endedAt := phaseOutcome(t, db, p2); endedAt.Valid {
+		t.Errorf("done row run_ended_at = %q, want untouched by heal", endedAt.String)
 	}
 }
 
