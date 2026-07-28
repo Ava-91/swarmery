@@ -41,12 +41,16 @@ type AgentMessage struct {
 
 // Diagnosis is the full answer for one phase.
 type Diagnosis struct {
-	PhaseID        int64         `json:"phaseId"`
-	Seq            int           `json:"seq"`
-	Name           string        `json:"name"`
-	RunOutcome     string        `json:"runOutcome"`
-	CriteriaTotal  int           `json:"criteriaTotal"`
-	CriteriaBefore int           `json:"criteriaBefore"`
+	PhaseID       int64  `json:"phaseId"`
+	Seq           int    `json:"seq"`
+	Name          string `json:"name"`
+	RunOutcome    string `json:"runOutcome"`
+	CriteriaTotal int    `json:"criteriaTotal"`
+	// CriteriaBefore is nil when run_checkboxes_before is NULL — the run's baseline
+	// was never measured. A plain int would serialise that as 0 and let the UI render
+	// a "0 → N" delta nobody measured, which is the exact claim the NULL policy in
+	// OutcomeFromRow exists to refuse.
+	CriteriaBefore *int          `json:"criteriaBefore"`
 	CriteriaAfter  int           `json:"criteriaAfter"`
 	RunStartedAt   *string       `json:"runStartedAt"`
 	RunEndedAt     *string       `json:"runEndedAt"`
@@ -131,21 +135,17 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 	if after.Valid {
 		d.CriteriaAfter = int(after.Int64)
 	}
-	d.CriteriaBefore = int(before.Int64)
-	// A NULL baseline means UNMEASURED, never "0 ticked". Feeding 0 into Outcome
-	// would derive the phase's entire ticked count as this run's delta and report a
-	// 'partial' success no one measured. Passing before = after collapses the delta
-	// to nothing, so an unmeasured run reads 'completed' when every box is ticked
-	// and 'noop' otherwise. Understating is the safe direction on a diagnostic
-	// surface: it prompts the user to look instead of asserting a win.
-	runBefore := d.CriteriaBefore
-	if !before.Valid {
-		runBefore = d.CriteriaAfter
+	// A NULL baseline is reported as such (nil), not as a fabricated 0 — see the
+	// field comment. The outcome derivation applies the same NULL policy via
+	// OutcomeFromRow, the one code path the api layer's phase DTO also uses.
+	if before.Valid {
+		b := int(before.Int64)
+		d.CriteriaBefore = &b
 	}
 	d.RunStartedAt = nullStr(startedAt)
 	d.RunEndedAt = nullStr(endedAt)
 	d.RunError = nullStr(runErr)
-	d.RunOutcome = Outcome(runState, total, runBefore, d.CriteriaAfter)
+	d.RunOutcome = OutcomeFromRow(runState, total, don, before, after)
 	d.Blockers = []Blocker{} // always a JSON array, never null
 
 	// The base branch is the one signal every branch-derived blocker is relative

@@ -46,7 +46,7 @@ var (
 type epicPhase struct {
 	seq              int
 	name             string
-	docPath          string // absolute path to the phase/step doc ("" when unresolved)
+	docPath          string // absolute path to the phase/step doc (may not exist on disk yet)
 	dependsOn        []int  // seq numbers this phase depends on
 	checkboxesDone   int
 	checkboxesTotal  int
@@ -282,10 +282,17 @@ func listPhaseDocs(planDir string) []string {
 // their doc files (checkbox counts folded in), or — when there is no table —
 // one phase per phase-*.md/step-*.md file, seq by filename sort. Every docPath
 // is resolved to an absolute path under planDir; a row pointing at a missing
-// file keeps its table metadata with zero checkboxes. Pure w.r.t. the DB
-// (touches only the filesystem); the workhorse behind applyEpics and the
-// table-driven tests.
-func parsePlan(planDir string) []epicPhase {
+// file keeps its table metadata (and that path) with zero checkboxes, and warns.
+//
+// The path is kept EVEN WHEN THE FILE IS ABSENT because doc_path is the natural
+// key of an epic_phases row: blanking it to "" made every unresolved row in a plan
+// collide on (task, ""), so a plan whose docs were not written yet indexed as one
+// mislabelled phase instead of all of them. A doc can also be deleted between
+// scans, so every reader already has to tolerate a path that no longer resolves.
+//
+// Pure w.r.t. the DB (touches only the filesystem); the workhorse behind
+// applyEpics and the table-driven tests.
+func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 	readme, _ := os.ReadFile(filepath.Join(planDir, "README.md")) // "" when absent
 	phases := parsePlanTable(string(readme))
 
@@ -305,7 +312,10 @@ func parsePlan(planDir string) []epicPhase {
 		phases[i].docPath = abs
 		body, err := os.ReadFile(abs)
 		if err != nil {
-			phases[i].docPath = "" // unresolved — keep table metadata, no counts
+			// Unresolved: keep the table metadata AND the path (the row's identity),
+			// just no counts. Loud, because a plan naming a doc that isn't there is a
+			// real authoring problem, not a shape to absorb silently.
+			warn("epics plan %s: phase doc %s named by the sequencing table is missing", planDir, doc)
 			continue
 		}
 		// Prefer the doc's own H1 as the display name over a terse table label.
@@ -383,14 +393,22 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 		return
 	}
 
-	phases := parsePlan(planDir)
+	phases := parsePlan(planDir, warn)
+
+	// README presence gates the prune: a plan dir caught mid-`git checkout` (or
+	// mid-archive-move) has neither README nor docs, and must not be read as
+	// "the plan now has no phases". See applyEpics.
+	readmePresent := false
+	if _, err := os.Stat(filepath.Join(planDir, "README.md")); err == nil {
+		readmePresent = true
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
 		warn("epics task#%d: begin: %v", taskID, err)
 		return
 	}
-	if err := applyEpics(tx, taskID, phases); err != nil {
+	if err := applyEpics(tx, taskID, phases, readmePresent); err != nil {
 		tx.Rollback()
 		warn("epics task#%d (%s): %v", taskID, planDir, err)
 		return
@@ -432,7 +450,15 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 // triggers exactly this path. A delete would wipe the run state the run is being
 // measured by, and the new row id would orphan the swarm/phase-<id> branch the run
 // just committed to — a run only kept its state if it achieved nothing.
-func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
+//
+// doc_path IS the identity: RENAMING a phase doc is therefore a delete + insert,
+// which mints a new row id and orphans the swarm/phase-<id> branch of any run that
+// phase already had. That is a known, accepted edge — a rename is a rare, human,
+// out-of-band edit, and the alternative (matching on seq or name, both of which the
+// plan doc legitimately rewrites) would silently merge genuinely different phases.
+//
+// readmePresent gates the prune — see the guard below.
+func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool) error {
 	for _, p := range phases {
 		depJSON, err := json.Marshal(p.dependsOn)
 		if err != nil {
@@ -472,6 +498,26 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
 			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
 			completionReport); err != nil {
 			return err
+		}
+	}
+
+	// A plan dir with no README is not a plan with no phases — it is a plan we
+	// caught mid-move: a `git checkout` swapping branches, or an `agent-work.sh
+	// archive` relocating the task dir, both transiently empty plan/. planHash
+	// happily hashes an empty dir, so without this guard that instant of emptiness
+	// prunes every phase of the epic and destroys the whole run_* family
+	// irreversibly — the one remaining way a rescan could still lose run state.
+	// A plan whose README IS present but lists no phases is a real edit and prunes
+	// normally below.
+	if !readmePresent {
+		var existing int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM epic_phases WHERE workspace_task_id = ?`, taskID).
+			Scan(&existing); err != nil {
+			return err
+		}
+		if existing > 0 {
+			return nil
 		}
 	}
 

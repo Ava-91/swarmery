@@ -1,6 +1,9 @@
 package phasediag
 
-import "testing"
+import (
+	"database/sql"
+	"testing"
+)
 
 // TestOutcome pins the run_state → outcome derivation. The interesting rows are
 // the 'done' ones: the whole point of the package is that a clean process exit
@@ -33,6 +36,43 @@ func TestOutcome(t *testing.T) {
 			if got := Outcome(tc.runState, tc.total, tc.before, tc.after); got != tc.want {
 				t.Fatalf("Outcome(%q, %d, %d, %d) = %q, want %q",
 					tc.runState, tc.total, tc.before, tc.after, got, tc.want)
+			}
+		})
+	}
+}
+
+func i64(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
+
+// TestOutcomeFromRow pins the two row-level policies that make the derivation
+// honest, so every caller that has a phase row gets them for free: the stamped
+// run_checkboxes_after beats the live count, and a NULL run_checkboxes_before is
+// UNMEASURED (collapsed to `after`), never "0 ticked".
+func TestOutcomeFromRow(t *testing.T) {
+	var null sql.NullInt64
+	cases := []struct {
+		name          string
+		runState      string
+		total, live   int
+		before, after sql.NullInt64
+		want          string
+	}{
+		{"stamped after beats the live count", "done", 7, 7, i64(1), i64(2), OutcomePartial},
+		{"live count used when after is NULL", "done", 7, 5, i64(3), null, OutcomePartial},
+		{"null baseline is never partial", "done", 7, 3, null, null, OutcomeNoop},
+		{"null baseline on a full phase still completes", "done", 7, 7, null, null, OutcomeCompleted},
+		{"null baseline with a stamped after", "done", 7, 7, null, i64(3), OutcomeNoop},
+		{"measured full run", "done", 4, 4, i64(0), i64(4), OutcomeCompleted},
+		{"measured no-op", "done", 4, 1, i64(1), i64(1), OutcomeNoop},
+		{"running short-circuits", "running", 4, 0, null, null, OutcomeRunning},
+		{"failed short-circuits", "failed", 4, 4, null, null, OutcomeFailed},
+		{"idle", "", 4, 0, null, null, OutcomeIdle},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := OutcomeFromRow(tc.runState, tc.total, tc.live, tc.before, tc.after)
+			if got != tc.want {
+				t.Fatalf("OutcomeFromRow(%q, total=%d, live=%d, before=%v, after=%v) = %q, want %q",
+					tc.runState, tc.total, tc.live, tc.before, tc.after, got, tc.want)
 			}
 		})
 	}

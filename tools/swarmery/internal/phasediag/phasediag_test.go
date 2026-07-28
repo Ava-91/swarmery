@@ -2,6 +2,7 @@ package phasediag
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -199,8 +200,8 @@ func TestDiagnoseNoopOnCleanExitWithoutTicks(t *testing.T) {
 	if d.RunOutcome != OutcomeNoop {
 		t.Fatalf("RunOutcome = %q, want %q", d.RunOutcome, OutcomeNoop)
 	}
-	if d.CriteriaBefore != 0 || d.CriteriaAfter != 0 || d.CriteriaTotal != 7 {
-		t.Fatalf("criteria = %d/%d (before %d), want 0/7 (before 0)",
+	if d.CriteriaBefore != nil || d.CriteriaAfter != 0 || d.CriteriaTotal != 7 {
+		t.Fatalf("criteria = %d/%d (before %v), want 0/7 (before nil — unmeasured)",
 			d.CriteriaAfter, d.CriteriaTotal, d.CriteriaBefore)
 	}
 	if d.PhaseID != id || d.Seq != 4 || d.Name != "Phase 4 — Rail" {
@@ -350,6 +351,49 @@ func TestDiagnoseNullBaselineIsNeverPartial(t *testing.T) {
 	}
 	if d.RunOutcome != OutcomeCompleted {
 		t.Errorf("RunOutcome = %q, want %q on a fully ticked phase", d.RunOutcome, OutcomeCompleted)
+	}
+}
+
+// TestDiagnoseCriteriaBeforeDistinguishesUnmeasured: the wire format must be able
+// to say "not measured". A non-pointer CriteriaBefore serialised a NULL baseline as
+// `"criteriaBefore": 0`, so a UI chip rendered "0 → 3" next to a 'noop' outcome —
+// a fabricated measurement the Go-side policy exists precisely to refuse.
+func TestDiagnoseCriteriaBeforeDistinguishesUnmeasured(t *testing.T) {
+	f := newFixture(t)
+	git := newGit("dev")
+
+	unmeasured := f.addPhase(t, 1, "Phase 1", "[]", 7, 3)
+	f.setRun(t, unmeasured, "done", "", -1) // NULL run_checkboxes_before
+	git.branchMissing(fmt.Sprintf("swarm/phase-%d", unmeasured))
+
+	d, err := Diagnose(f.db, git, unmeasured)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if d.CriteriaBefore != nil {
+		t.Errorf("CriteriaBefore = %d, want nil — a NULL baseline is unmeasured, not zero", *d.CriteriaBefore)
+	}
+	if body, err := json.Marshal(d); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(body), `"criteriaBefore":null`) {
+		t.Errorf("JSON = %s, want criteriaBefore null", body)
+	}
+
+	// A genuinely measured zero baseline still serialises as 0 — the two cases
+	// must stay distinguishable on the wire.
+	measured := f.addPhase(t, 2, "Phase 2", "[]", 7, 3)
+	f.setRun(t, measured, "done", "", 0)
+	git.branchMissing(fmt.Sprintf("swarm/phase-%d", measured))
+
+	d, err = Diagnose(f.db, git, measured)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if d.CriteriaBefore == nil || *d.CriteriaBefore != 0 {
+		t.Fatalf("CriteriaBefore = %v, want a measured 0", d.CriteriaBefore)
+	}
+	if d.RunOutcome != OutcomePartial {
+		t.Errorf("RunOutcome = %q, want %q (measured 0 → 3)", d.RunOutcome, OutcomePartial)
 	}
 }
 

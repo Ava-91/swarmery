@@ -198,7 +198,8 @@ func TestParsePlanWithTable(t *testing.T) {
 		"phase-1.md": "# Phase 1 — Schema\n\n## Acceptance criteria\n- [x] a\n- [ ] b\n",
 		"phase-2.md": "# Phase 2 — UI\n\nno checkboxes here\n",
 	})
-	phases := parsePlan(dir)
+	warn, _ := collectWarn(t)
+	phases := parsePlan(dir, warn)
 	if len(phases) != 2 {
 		t.Fatalf("phases = %d, want 2", len(phases))
 	}
@@ -220,13 +221,14 @@ func TestParsePlanWithTable(t *testing.T) {
 func TestParsePlanFallbackNoTable(t *testing.T) {
 	// No table in README → one phase per phase-*/step-* doc, seq by filename sort.
 	dir := writePlan(t, map[string]string{
-		"README.md":  "# Epic\n\nprose only, no table\n",
+		"README.md":    "# Epic\n\nprose only, no table\n",
 		"phase-2-b.md": "# Second\n- [x] done\n",
 		"phase-1-a.md": "# First\n- [ ] todo\n- [x] done\n",
 		"step-03-c.md": "# Third\nno boxes\n",
 		"notes.md":     "# Not a phase doc — ignored\n- [x] x\n",
 	})
-	phases := parsePlan(dir)
+	warn, _ := collectWarn(t)
+	phases := parsePlan(dir, warn)
 	if len(phases) != 3 {
 		t.Fatalf("phases = %d, want 3 (notes.md excluded)", len(phases))
 	}
@@ -242,32 +244,138 @@ func TestParsePlanFallbackNoTable(t *testing.T) {
 	}
 }
 
+// collectWarn returns a warn func plus a pointer to the formatted messages it
+// captured — the test-side stand-in for the scan's logging warn.
+func collectWarn(t *testing.T) (func(string, ...any), *[]string) {
+	t.Helper()
+	var msgs []string
+	return func(format string, args ...any) {
+		msgs = append(msgs, fmt.Sprintf(format, args...))
+	}, &msgs
+}
+
 func TestParsePlanMissingDocFile(t *testing.T) {
-	// A table row naming a doc that doesn't exist keeps its metadata, no counts,
-	// docPath cleared to "".
+	// A table row naming a doc that doesn't exist keeps its metadata and its
+	// (non-existent) path, with no counts.
 	dir := writePlan(t, map[string]string{
 		"README.md": "# Epic\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
 			"| 1 | Ghost | `phase-missing.md` | — |\n",
 	})
-	phases := parsePlan(dir)
+	warn, msgs := collectWarn(t)
+	phases := parsePlan(dir, warn)
 	if len(phases) != 1 {
 		t.Fatalf("phases = %d, want 1", len(phases))
 	}
 	if phases[0].name != "Ghost" {
 		t.Errorf("phase[0].name = %q, want Ghost (table label kept)", phases[0].name)
 	}
-	if phases[0].docPath != "" {
-		t.Errorf("phase[0].docPath = %q, want empty (unresolved)", phases[0].docPath)
+	if want := filepath.Join(dir, "phase-missing.md"); phases[0].docPath != want {
+		t.Errorf("phase[0].docPath = %q, want %q — the table's filename joined to the plan dir",
+			phases[0].docPath, want)
 	}
 	if phases[0].checkboxesTotal != 0 {
 		t.Errorf("phase[0] total = %d, want 0", phases[0].checkboxesTotal)
+	}
+	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "phase-missing.md") {
+		t.Errorf("warnings = %v, want one naming the missing doc", *msgs)
+	}
+}
+
+// TestParsePlanMissingDocsStayDistinct is the regression for the collision that
+// blanking docPath to "" created: every unresolved row shared the natural key
+// (task, ""), so the UNIQUE(workspace_task_id, doc_path) upsert kept exactly ONE
+// of them (last writer wins, mislabelled) — and before the upsert landed, the
+// constraint violation rolled the whole plan back to zero indexed phases.
+func TestParsePlanMissingDocsStayDistinct(t *testing.T) {
+	dir := writePlan(t, map[string]string{
+		"README.md": "# Epic\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
+			"| 1 | Phase 1 | `phase-1-gone.md` | — |\n" +
+			"| 2 | Phase 2 | `phase-2-gone.md` | 1 |\n",
+	})
+	warn, msgs := collectWarn(t)
+	phases := parsePlan(dir, warn)
+	if len(phases) != 2 {
+		t.Fatalf("phases = %d, want 2", len(phases))
+	}
+	if phases[0].docPath == phases[1].docPath {
+		t.Fatalf("both unresolved docs share doc_path %q — they collide on the natural key",
+			phases[0].docPath)
+	}
+	if phases[0].docPath != filepath.Join(dir, "phase-1-gone.md") ||
+		phases[1].docPath != filepath.Join(dir, "phase-2-gone.md") {
+		t.Errorf("docPaths = %q / %q, want the table filenames under %s",
+			phases[0].docPath, phases[1].docPath, dir)
+	}
+	if phases[0].seq != 1 || phases[0].name != "Phase 1" ||
+		phases[1].seq != 2 || phases[1].name != "Phase 2" {
+		t.Errorf("table metadata lost: %+v / %+v", phases[0], phases[1])
+	}
+	if len(*msgs) != 2 {
+		t.Errorf("warnings = %v, want one per missing doc", *msgs)
 	}
 }
 
 func TestParsePlanEmptyDir(t *testing.T) {
 	dir := writePlan(t, map[string]string{}) // no files at all
-	if got := parsePlan(dir); len(got) != 0 {
+	warn, _ := collectWarn(t)
+	if got := parsePlan(dir, warn); len(got) != 0 {
 		t.Errorf("parsePlan(empty) = %v, want none", got)
+	}
+}
+
+// TestScanEpicsIndexesEveryUnresolvedPhase is the end-to-end shape of the same
+// defect: a plan whose docs have not been written yet must still index EVERY table
+// row, not collapse to a single mislabelled survivor.
+func TestScanEpicsIndexesEveryUnresolvedPhase(t *testing.T) {
+	db := testDB(t)
+	root := t.TempDir()
+	planDir := filepath.Join(root, "demo", "workspace", "working", "2026", "07", "26", "demo", "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	card := "# Task: Demo epic\n\n" +
+		"- **Статус**: active\n- **Старт**: 2026-07-26 · **Завершено**: —\n- **Ціль**: demo goal\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(planDir), "README.md"), []byte(card), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readme := "# Demo plan\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
+		"| 1 | Schema | `phase-1-schema.md` | — |\n" +
+		"| 2 | Parser | `phase-2-parser.md` | 1 |\n"
+	if err := os.WriteFile(filepath.Join(planDir, "README.md"), []byte(readme), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	rows, err := db.Query(`SELECT seq, name, doc_path FROM epic_phases ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type ph struct {
+		seq       int
+		name, doc string
+	}
+	var got []ph
+	for rows.Next() {
+		var p ph
+		if err := rows.Scan(&p.seq, &p.name, &p.doc); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, p)
+	}
+	if len(got) != 2 {
+		t.Fatalf("epic_phases = %+v (%d rows), want 2 — unresolved docs collided on (task, \"\")",
+			got, len(got))
+	}
+	if got[0].seq != 1 || got[0].name != "Schema" || filepath.Base(got[0].doc) != "phase-1-schema.md" {
+		t.Errorf("phase 1 = %+v", got[0])
+	}
+	if got[1].seq != 2 || got[1].name != "Parser" || filepath.Base(got[1].doc) != "phase-2-parser.md" {
+		t.Errorf("phase 2 = %+v", got[1])
 	}
 }
 
@@ -599,6 +707,52 @@ func TestScanEpicsEmptyPlanDeletesAllPhases(t *testing.T) {
 	}
 	if n := count(t, db, `SELECT COUNT(*) FROM epic_phases`); n != 0 {
 		t.Errorf("phases after emptying the plan = %d, want 0", n)
+	}
+}
+
+// TestScanEpicsMissingReadmeKeepsPhases: a plan dir that momentarily holds no
+// files at all — a `git checkout` of another branch, an `agent-work.sh archive`
+// mid-move — parses as zero phases, and the unconditional prune then destroyed
+// every phase's run_* state irreversibly. That was the last remaining path that
+// lost run state after the delete+re-insert was replaced by an upsert.
+func TestScanEpicsMissingReadmeKeepsPhases(t *testing.T) {
+	db := testDB(t)
+	root, planDir := multiPhaseWorkspace(t, "phase-1-a.md", "phase-2-b.md")
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+	before := phaseIDsByDoc(t, db)
+	if len(before) != 2 {
+		t.Fatalf("phases after first scan = %v, want 2", before)
+	}
+	mustExec(t, db, `UPDATE epic_phases SET run_state='done', run_session_uuid='uuid-run-1',
+		run_checkboxes_before=0, run_checkboxes_after=2`)
+
+	// The whole plan dir goes empty — README and every phase doc.
+	entries, err := os.ReadDir(planDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if err := os.Remove(filepath.Join(planDir, e.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+
+	after := phaseIDsByDoc(t, db)
+	if len(after) != 2 {
+		t.Fatalf("phases after the plan dir emptied = %v, want both kept", after)
+	}
+	if after["phase-1-a.md"] != before["phase-1-a.md"] || after["phase-2-b.md"] != before["phase-2-b.md"] {
+		t.Errorf("phase identities changed: %v → %v", before, after)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM epic_phases
+		WHERE run_state='done' AND run_checkboxes_before=0 AND run_checkboxes_after=2`); n != 2 {
+		t.Errorf("phases with intact run_* = %d, want 2", n)
 	}
 }
 
