@@ -10,10 +10,12 @@ import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'r
 import { useParams } from 'react-router-dom';
 import type { Project } from '../api/types';
 import { saveLastProject } from '../lib/lastProject';
+import { findProject } from '../lib/projectSlug';
 import { useScope } from '../lib/scope';
 
 interface ProjectWorkspaceValue {
-  /** The :slug route param (the project path slug). */
+  /** The :slug route param — the pretty name slug, or a legacy path slug on
+   * old deep links. Reuse it verbatim when building sibling /p/ links. */
   slug: string;
   /** Resolved project row, or null while the scope store is still loading /
    * the slug matches no known project. */
@@ -36,10 +38,7 @@ export function ProjectWorkspaceProvider({ children }: { children: ReactNode }):
   const { slug = '' } = useParams<{ slug: string }>();
   const { projects, setScope, scope } = useScope();
 
-  const project = useMemo(
-    () => projects.find((p) => p.slug === slug) ?? null,
-    [projects, slug],
-  );
+  const project = useMemo(() => findProject(projects, slug), [projects, slug]);
 
   // Drive the global scope to this project so wrapped fleet pages filter to it.
   // Only writes when it actually differs to avoid a setState/URL loop with the

@@ -17,6 +17,7 @@ import {
   runRoutine,
 } from '../api';
 import { fmtAgo } from '../lib/format';
+import { findProject } from '../lib/projectSlug';
 import { useScope } from '../lib/scope';
 import { ConfirmDialog, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
@@ -617,7 +618,7 @@ export function Routines(): JSX.Element {
   const { scope, projects } = useScope();
   const scopeProjectId = useMemo(() => {
     if (scope === null) return undefined;
-    return projects.find((p) => p.slug === scope)?.id;
+    return findProject(projects, scope)?.id;
   }, [scope, projects]);
 
   const [routines, setRoutines] = useState<Routine[] | null>(null);

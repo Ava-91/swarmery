@@ -21,6 +21,8 @@ export function ScopedGraphify(): JSX.Element {
 }
 
 export function ScopedArchitecture(): JSX.Element {
-  const { slug } = useProjectWorkspace();
-  return <Architecture scopedSlug={slug} />;
+  // projectId comes from the shared project list, so the page can offer
+  // enable-and-build even when the project is not in the architecture feed yet.
+  const { slug, projectId } = useProjectWorkspace();
+  return <Architecture scopedSlug={slug} scopedId={projectId} />;
 }

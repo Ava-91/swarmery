@@ -164,7 +164,7 @@ func hubScope(r *http.Request) (string, []any) {
 	if pid == "" {
 		return "", nil
 	}
-	return projectScopePredicate, []any{pid, pid}
+	return projectScopePredicate, scopeArgs(pid)
 }
 
 // hubRange is the fixed 30-day rollup window (last 30 local days ending today),

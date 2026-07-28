@@ -423,7 +423,7 @@ func systemFilters(query string, args []any, r *http.Request) (string, []any) {
 	}
 	if project := r.URL.Query().Get("project"); project != "" {
 		query += projectScopePredicate
-		args = append(args, project, project)
+		args = append(args, scopeArgs(project)...)
 	}
 	return query, args
 }

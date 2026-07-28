@@ -9,6 +9,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BoardTask, TaskPriority } from '../api/types';
 import type { PatchBoardTaskInput } from '../api';
 import { fmtAgo } from '../lib/format';
+import { displaySlug, findProject } from '../lib/projectSlug';
+import { useScope } from '../lib/scope';
 import { PlaybookHint, PlaybookSelect, usePlaybooks } from './PlaybookPicker';
 import { useWorkspaceTerminal } from './ProjectWorkspaceLayout';
 
@@ -115,6 +117,12 @@ export function TaskDrawer({
   const closeRef = useRef<HTMLButtonElement>(null);
   const { playbooks } = usePlaybooks(task.projectId);
   const openTerminal = useWorkspaceTerminal();
+  const { projects } = useScope();
+  // Linked-sessions scope link: the task row carries the DB path slug — use
+  // the pretty slug when the project resolves.
+  const scopeProject = findProject(projects, task.projectSlug);
+  const scopeSlug =
+    scopeProject !== null ? displaySlug(scopeProject, projects) : task.projectSlug;
 
   // Re-seed local edit state when a different task is opened into the drawer.
   useEffect(() => {
@@ -345,9 +353,9 @@ export function TaskDrawer({
                 {task.verifyDetail !== null && <ReadOnlyRow label="detail" value={task.verifyDetail} />}
               </div>
             )}
-            {task.branch !== null && task.projectSlug !== null && (
+            {task.branch !== null && scopeSlug !== null && (
               <a
-                href={`/sessions?scope=${task.projectSlug}`}
+                href={`/sessions?scope=${scopeSlug}`}
                 className="mt-1.5 inline-block font-mono text-[10.5px] text-ink-dim underline transition-colors hover:text-ink"
               >
                 ❯ linked sessions →

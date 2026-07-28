@@ -120,8 +120,11 @@ function WorkspaceInner(): JSX.Element {
       fetchTools()
         .then((t) => {
           if (disposed) return;
-          setHasSerena(t.serena.available && t.serena.projects.some((p) => p.slug === slug));
-          setHasGraphify(t.graphify.projects.some((p) => p.slug === slug && p.hasViz));
+          // Tools rows carry the DB path slug; the route slug may be pretty —
+          // match on the resolved project's slug.
+          const dbSlug = project?.slug ?? slug;
+          setHasSerena(t.serena.available && t.serena.projects.some((p) => p.slug === dbSlug));
+          setHasGraphify(t.graphify.projects.some((p) => p.slug === dbSlug && p.hasViz));
         })
         .catch(() => {
           if (disposed) return;
@@ -135,7 +138,7 @@ function WorkspaceInner(): JSX.Element {
       disposed = true;
       clearInterval(timer);
     };
-  }, [slug]);
+  }, [slug, project?.slug]);
 
   const counts = useMemo(() => boardCounts(board.tasks), [board.tasks]);
   const subPath = activeSubPath(pathname, slug);

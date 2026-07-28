@@ -772,7 +772,7 @@ function JudgedSessionRow({
         </button>
       </div>
       <div className="mt-0.5 font-mono text-[10px] text-ink-faint">
-        {session.projectSlug} · {session.startedAt.slice(0, 10)}
+        {session.projectName ?? session.projectSlug} · {session.startedAt.slice(0, 10)}
       </div>
       {open && <JudgmentPanel judgments={judgments} />}
     </div>

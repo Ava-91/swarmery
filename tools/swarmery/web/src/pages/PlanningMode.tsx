@@ -182,9 +182,11 @@ export function PlanningMode(): JSX.Element {
 
   // Settle-poll for the plan dir → a workspace task row for this project that
   // appeared at/after the run start. Runs while active or just after (until a
-  // plan is found), then stops.
+  // plan is found), then stops. Task rows carry the DB path slug, so match on
+  // the resolved project's slug (the route slug may be the pretty name slug).
+  const dbSlug = project?.slug ?? '';
   useEffect(() => {
-    if (projectId === null || slug === '') return undefined;
+    if (projectId === null || dbSlug === '') return undefined;
     if (plan !== null) return undefined; // already found
     let disposed = false;
     const poll = (): void => {
@@ -192,7 +194,7 @@ export function PlanningMode(): JSX.Element {
         .then((tasks) => {
           if (disposed) return;
           const mine = tasks
-            .filter((t) => t.projectSlug === slug)
+            .filter((t) => t.projectSlug === dbSlug)
             .filter((t) => {
               const started = t.startedAt != null ? new Date(t.startedAt).getTime() : 0;
               return runStartedRef.current === 0 || started >= runStartedRef.current - 60_000;
@@ -215,7 +217,7 @@ export function PlanningMode(): JSX.Element {
       };
     }
     return undefined;
-  }, [projectId, slug, active, plan]);
+  }, [projectId, dbSlug, active, plan]);
 
   // Live nudges: session_updated / task_updated → refresh status + plan.
   const onMessage = useCallback(
@@ -342,23 +344,6 @@ export function PlanningMode(): JSX.Element {
           >
             {busy ? 'starting…' : 'Start planning'}
           </button>
-
-          <ol className="mt-6 grid gap-3 border-t border-line pt-5 sm:grid-cols-2">
-            {HOW_IT_WORKS.map((step, i) => (
-              <li key={step.title} className="flex gap-2.5">
-                <span
-                  aria-hidden="true"
-                  className="mt-[1px] inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line font-mono text-[10px] text-ink-dim"
-                >
-                  {i + 1}
-                </span>
-                <div className="min-w-0">
-                  <div className="text-[12.5px] font-semibold text-ink">{step.title}</div>
-                  <p className="mt-0.5 text-[12px] leading-relaxed text-ink-dim">{step.body}</p>
-                </div>
-              </li>
-            ))}
-          </ol>
         </div>
       )}
 
@@ -495,6 +480,25 @@ export function PlanningMode(): JSX.Element {
           )}
         </Card>
       )}
+
+      {/* How it works — outside the state branches so the explainer stays visible
+          during active runs and after the plan lands, not just on the intake screen. */}
+      <ol className="mt-6 grid max-w-[80ch] gap-3 border-t border-line pt-5 sm:grid-cols-2">
+        {HOW_IT_WORKS.map((step, i) => (
+          <li key={step.title} className="flex gap-2.5">
+            <span
+              aria-hidden="true"
+              className="mt-[1px] inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line font-mono text-[10px] text-ink-dim"
+            >
+              {i + 1}
+            </span>
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-semibold text-ink">{step.title}</div>
+              <p className="mt-0.5 text-[12px] leading-relaxed text-ink-dim">{step.body}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

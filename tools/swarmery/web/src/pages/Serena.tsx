@@ -12,6 +12,7 @@ import type { ToolsResponse, ToolsSerenaProject } from '../api/types';
 import { fetchTools, serenaStart, serenaStop } from '../api';
 import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { fmtAgo } from '../lib/format';
+import { findProject } from '../lib/projectSlug';
 
 const SETTLE_POLL_MS = 2_000;
 const SETTLE_MAX_MS = 30_000;
@@ -106,7 +107,7 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
   const projects = data?.serena.projects ?? [];
   const scoped = scopedSlug !== undefined;
   const project = scoped
-    ? projects.find((p) => p.slug === scopedSlug)
+    ? (findProject(projects, scopedSlug ?? null) ?? undefined)
     : (projects.find((p) => p.id === selectedId) ??
       projects.find((p) => p.state === 'running') ??
       projects[0]);

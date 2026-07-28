@@ -976,7 +976,7 @@ function nineAmMs(): number {
 
 export function Overview(): JSX.Element {
   const day = isoDay();
-  const { scope } = useScope();
+  const { scope, scopeProject } = useScope();
   const query = usePageSearch();
   const nowMs = useNowMs();
   const [sessions, setSessions] = useState<Session[] | null>(null);
@@ -1040,8 +1040,8 @@ export function Overview(): JSX.Element {
   // sessions must pass the same scope filter or an out-of-scope
   // session_created/session_updated pollutes the list until reload.
   const matchesProject = useCallback(
-    (s: Session): boolean => scope === null || s.projectSlug === scope,
-    [scope],
+    (s: Session): boolean => scope === null || s.projectSlug === (scopeProject?.slug ?? scope),
+    [scope, scopeProject],
   );
 
   const onMessage = useCallback(
@@ -1231,7 +1231,9 @@ export function Overview(): JSX.Element {
                 name:
                   name ??
                   (project !== null
-                    ? (stats.errors_by_project.find((r) => r.slug === project)?.name ?? null)
+                    ? (stats.errors_by_project.find((r) => r.slug === project)?.name ??
+                      scopeProject?.name ??
+                      null)
                     : null),
               });
             }}

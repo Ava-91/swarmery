@@ -505,7 +505,7 @@ export function Approvals(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const { scope } = useScope();
+  const { scope, scopeProject } = useScope();
   const query = usePageSearch();
 
   // Global scope, applied client-side over the lazy sessions join. A request
@@ -515,9 +515,9 @@ export function Approvals(): JSX.Element {
     (r: PermissionRequest): boolean => {
       if (scope === null) return true;
       const s = sessions?.find((x) => x.id === r.sessionId);
-      return s === undefined || s.projectSlug === scope;
+      return s === undefined || s.projectSlug === (scopeProject?.slug ?? scope);
     },
-    [scope, sessions],
+    [scope, scopeProject, sessions],
   );
 
   // Auto-approve rules (control-plane v2).

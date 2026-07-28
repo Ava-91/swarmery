@@ -40,17 +40,14 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/advisor"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajjudge"
 )
 
 // ── /api/retro/agents ─────────────────────────────────────────────────────
@@ -954,8 +951,8 @@ func (h *Handler) enabledRulePatterns(project string) ([]approvals.RulePattern, 
 		// (pid stays 0) keeps only the global rules.
 		var pid int64
 		err := h.DB.QueryRow(
-			`SELECT id FROM projects WHERE slug = ? OR CAST(id AS TEXT) = ?`,
-			project, project).Scan(&pid)
+			`SELECT id FROM projects WHERE `+projectMatchExpr(""),
+			scopeArgs(project)...).Scan(&pid)
 		if err != nil && err != sql.ErrNoRows {
 			return nil, err
 		}
@@ -1109,7 +1106,7 @@ func (h *Handler) projectSessionUUIDs(project string) (map[string]struct{}, erro
 		SELECT s.session_uuid
 		  FROM sessions s
 		  JOIN projects p ON p.id = s.project_id
-		 WHERE p.slug = ? OR CAST(p.id AS TEXT) = ?`, project, project)
+		 WHERE `+projectMatchExpr("p."), scopeArgs(project)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1272,25 +1269,15 @@ func (h *Handler) patchRecommendation(w http.ResponseWriter, r *http.Request) {
 // GET filters by evidence session). An unknown project id is not an error —
 // the run proceeds fleet-wide either way.
 func (h *Handler) retroAdvise(w http.ResponseWriter, r *http.Request) {
+	// "Analyze now" runs the DETERMINISTIC path only: trajeval (local, free,
+	// System-excluded) + the rule engine. It deliberately does NOT fire the
+	// LLM-judge (trajjudge.Score) — that spawned up to capN headless `claude -p`
+	// runs per click, which read as a burst of mystery "System" sessions and
+	// burned tokens on a manual refresh. The LLM judge now runs only on the
+	// daemon's 24h schedule, gated by the restart cooldown.
 	go func() {
 		if err := trajeval.Compute(h.DB, time.Now()); err != nil {
 			log.Printf("trajeval.Compute: %v", err)
-		}
-		model := os.Getenv("SWARMERY_TRAJJUDGE_MODEL")
-		if model == "" {
-			// Full ID, not the "sonnet" alias — keep in sync with main.go's default.
-			model = "claude-sonnet-5"
-		}
-		capN := 10
-		if v := os.Getenv("SWARMERY_TRAJJUDGE_CAP"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				capN = n
-			} else {
-				log.Printf("warn: ignoring invalid SWARMERY_TRAJJUDGE_CAP=%q", v)
-			}
-		}
-		if err := trajjudge.Score(h.DB, trajjudge.ClaudeRunner{Model: model}, model, time.Now(), capN); err != nil {
-			log.Printf("trajjudge.Score: %v", err)
 		}
 	}()
 	stats, err := advisor.Run(h.DB, time.Now())

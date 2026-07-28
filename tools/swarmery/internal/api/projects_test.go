@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
@@ -226,5 +227,40 @@ func TestListProjectsPinnedFirstWithTags(t *testing.T) {
 	}
 	if list[1].Pinned {
 		t.Error("project 1 should report pinned=false")
+	}
+}
+
+// TestListProjectsFlagsSystem: the projects row whose path is the System dir
+// (~/.swarmery — daemon-spawned telemetry runs) carries isSystem=true on both
+// /api/projects and /api/projects/health; ordinary rows stay false. The
+// dashboard uses the flag to demote System out of the main project list.
+func TestListProjectsFlagsSystem(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	sysDir := ingest.SystemDir()
+	if sysDir == "" {
+		t.Skip("home dir unresolvable — no System dir")
+	}
+	execSQL(t, db, `INSERT INTO projects (id, path, slug, name, first_seen, last_activity, archived)
+		VALUES (4, ?, 'system', 'System', '2026-07-12T00:00:00Z', '2026-07-14T00:00:00Z', 0)`, sysDir)
+
+	list := getProjectsList(t, srv.URL+"/api/projects")
+	if len(list) != 3 {
+		t.Fatalf("list len = %d, want 3", len(list))
+	}
+	for _, p := range list {
+		if got, want := p.IsSystem, p.ID == 4; got != want {
+			t.Errorf("project %d isSystem = %v, want %v", p.ID, got, want)
+		}
+	}
+
+	var health []projectHealthDTO
+	getJSON(t, srv.URL+"/api/projects/health", &health)
+	if len(health) != 3 {
+		t.Fatalf("health rows = %d, want 3", len(health))
+	}
+	for _, r := range health {
+		if got, want := r.IsSystem, r.ID == 4; got != want {
+			t.Errorf("health row %d isSystem = %v, want %v", r.ID, got, want)
+		}
 	}
 }

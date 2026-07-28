@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Project } from '../api/types';
 import { useProjectColor } from '../lib/projectColors';
 import { projectLabel } from '../lib/format';
+import { displaySlug, findProject } from '../lib/projectSlug';
 
 interface ProjectGroup {
   /** Group eyebrow; null = no header (flat list). */
@@ -97,7 +98,7 @@ export function ProjectDropdown({
     buttonRef.current?.focus();
   };
 
-  const selected = value !== null ? (projects.find((p) => p.slug === value) ?? null) : null;
+  const selected = findProject(projects, value);
   // Deep-linked slug not in /api/projects yet — show the raw slug, keep the filter.
   const label =
     value === null ? allLabel : selected !== null ? projectLabel(selected.name, selected.slug) : value;
@@ -128,12 +129,12 @@ export function ProjectDropdown({
           <span
             aria-hidden="true"
             className={`h-[8px] w-[8px] shrink-0 rounded-full ${value === null ? 'bg-line-strong' : ''}`}
-            style={value !== null ? { backgroundColor: colorFor(value) } : undefined}
+            style={value !== null ? { backgroundColor: colorFor(selected?.slug ?? value) } : undefined}
           />
         )}
         <span
           className={block ? 'min-w-0 flex-1 truncate text-[13px] font-semibold text-ink' : 'truncate'}
-          style={!block && value !== null ? { color: colorFor(value) } : undefined}
+          style={!block && value !== null ? { color: colorFor(selected?.slug ?? value) } : undefined}
         >
           {label}
         </span>
@@ -171,10 +172,10 @@ export function ProjectDropdown({
               {g.projects.map((p) => (
                 <DropdownOption
                   key={`${g.label ?? ''}:${String(p.id)}`}
-                  selected={value === p.slug}
+                  selected={selected?.id === p.id}
                   label={projectLabel(p.name, p.slug)}
                   labelColor={colorFor(p.slug)}
-                  onSelect={() => select(p.slug)}
+                  onSelect={() => select(displaySlug(p, projects))}
                 />
               ))}
             </div>

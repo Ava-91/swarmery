@@ -862,8 +862,8 @@ func (h *Handler) resolveHubProjectID(pid string) (int64, bool, error) {
 	}
 	var id int64
 	err := h.DB.QueryRow(
-		`SELECT id FROM projects WHERE (slug = ? OR CAST(id AS TEXT) = ?) AND archived = 0`,
-		pid, pid).Scan(&id)
+		`SELECT id FROM projects WHERE `+projectMatchExpr("")+` AND archived = 0`,
+		scopeArgs(pid)...).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil // unknown project → treat as no scope → global
 	}
@@ -877,8 +877,8 @@ func (h *Handler) resolveHubProjectID(pid string) (int64, bool, error) {
 func (h *Handler) projectPathForTemplateScope(pid string) (string, bool, error) {
 	var path string
 	err := h.DB.QueryRow(
-		`SELECT path FROM projects WHERE (slug = ? OR CAST(id AS TEXT) = ?) AND archived = 0`,
-		pid, pid).Scan(&path)
+		`SELECT path FROM projects WHERE `+projectMatchExpr("")+` AND archived = 0`,
+		scopeArgs(pid)...).Scan(&path)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

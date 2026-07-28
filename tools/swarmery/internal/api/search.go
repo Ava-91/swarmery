@@ -141,8 +141,8 @@ func (h *Handler) searchSessions(q, project string, limit int) ([]searchSessionD
 	pat := likePattern(q)
 	args := []any{pat, pat}
 	if project != "" {
-		query += projectScopePredicate // slug OR id — the shared global-scope match (scope.go)
-		args = append(args, project, project)
+		query += projectScopePredicate // slug OR id OR name — the shared global-scope match (scope.go)
+		args = append(args, scopeArgs(project)...)
 	}
 	query += ` ORDER BY s.started_at DESC LIMIT ?`
 	args = append(args, limit)
@@ -175,8 +175,8 @@ func (h *Handler) searchTurns(q, project string, limit int) ([]searchTurnDTO, er
 		WHERE turns_fts MATCH ? AND s.hidden = 0 AND p.archived = 0`
 	args := []any{ftsQuery(q)}
 	if project != "" {
-		query += projectScopePredicate // slug OR id — the shared global-scope match (scope.go)
-		args = append(args, project, project)
+		query += projectScopePredicate // slug OR id OR name — the shared global-scope match (scope.go)
+		args = append(args, scopeArgs(project)...)
 	}
 	query += ` ORDER BY bm25(turns_fts) LIMIT ?`
 	args = append(args, limit)
@@ -208,8 +208,8 @@ func (h *Handler) searchFiles(q, project string, limit int) ([]searchFileDTO, er
 		WHERE fc.file_path LIKE ? ESCAPE '\' AND s.hidden = 0 AND p.archived = 0`
 	args := []any{likePattern(q)}
 	if project != "" {
-		query += projectScopePredicate // slug OR id — the shared global-scope match (scope.go)
-		args = append(args, project, project)
+		query += projectScopePredicate // slug OR id OR name — the shared global-scope match (scope.go)
+		args = append(args, scopeArgs(project)...)
 	}
 	query += `
 		GROUP BY fc.file_path
