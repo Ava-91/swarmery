@@ -247,6 +247,10 @@ function DeadRow({ d }: { d: SystemDeadComponent }): JSX.Element {
 // the finding. Errors mean the plugin is not loaded at all; warns mean it loads
 // but is stale or came from a reclaimed cache dir.
 function PluginDriftRow({ d }: { d: SystemPluginDrift }): JSX.Element {
+  // The DTO carries the DB slug (path-derived); the label shows the clean
+  // project name from the same map every other chip on this tab uses. The href
+  // keeps the raw slug — findProject resolves path slugs exactly.
+  const names = useContext(NamesCtx);
   return (
     <div className="flex flex-col gap-1 border-b border-line-soft py-2 last:border-b-0">
       <div className="flex items-center gap-2">
@@ -269,7 +273,7 @@ function PluginDriftRow({ d }: { d: SystemPluginDrift }): JSX.Element {
               className="rounded-full border border-blue/40 px-2 py-px font-mono text-[10px] whitespace-nowrap text-blue hover:underline"
               title={d.projectPath}
             >
-              {d.projectSlug}
+              {names[d.projectSlug] ?? d.projectSlug}
             </Link>
           ) : (
             <span className="font-mono text-[10px] whitespace-nowrap text-ink-faint">
