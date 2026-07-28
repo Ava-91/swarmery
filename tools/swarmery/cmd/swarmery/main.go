@@ -1116,6 +1116,9 @@ func cmdServe(args []string) error {
 		log.Printf("warning: phaserun heal on startup: %v", err)
 	}
 	api.AttachPhaseRun(phaserunSvc)
+	// The diagnosis endpoint reads git directly (branch ancestry) through the same
+	// boundary the worktree manager uses.
+	api.AttachPhaseDiag(wtMgr.Git)
 
 	// Plan runs: hand a WHOLE plan to one agent — one headless session in one
 	// worktree, driving core's run-plan skill (state on plan_runs). Same

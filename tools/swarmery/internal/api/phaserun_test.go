@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
@@ -55,7 +56,14 @@ func (phaseStubWt) DeleteBranch(repoRoot, branch string) error              { re
 // finished (deterministic end-state assertions).
 func attachPhaseRun(t *testing.T, db *sql.DB, r phaserun.Runner, sync bool) *phaserun.Service {
 	t.Helper()
-	svc := phaserun.NewService(db, r, phaseStubWt{})
+	return attachPhaseRunWt(t, db, r, sync, phaseStubWt{})
+}
+
+// attachPhaseRunWt is attachPhaseRun with an explicit worktree manager, for the
+// branch-lifecycle paths (dirty reclaim, DeleteRunBranch).
+func attachPhaseRunWt(t *testing.T, db *sql.DB, r phaserun.Runner, sync bool, wt dispatch.WorktreeManager) *phaserun.Service {
+	t.Helper()
+	svc := phaserun.NewService(db, r, wt)
 	svc.UUID = func() string { return "phase-uuid-1" }
 	if sync {
 		svc.Go = func(fn func()) { fn() }
