@@ -24,16 +24,26 @@ import { Link } from 'react-router-dom';
 
 /* ----- inline: `code` | [link](href) | **bold** | *italic* ----- */
 
+/** Split an href into path and fragment, lowercasing the fragment.
+ *
+ * Heading ids come from slugify(), which lowercases unconditionally, so
+ * `CONCEPTS.md#Handoff` must become `#handoff` or it scrolls nowhere and the
+ * reader is left staring at the top of the right page with no clue why. */
+function splitFrag(href: string): [path: string, frag: string] {
+  const at = href.indexOf('#');
+  return at < 0 ? [href, ''] : [href.slice(0, at), href.slice(at).toLowerCase()];
+}
+
 /** The docs pane's route target for a relative href, or null when this
  * renderer cannot resolve it.
  *
  * The daemon slugs a doc by its lowercased BASENAME minus `.md`
  * (internal/api/docs.go), so basename is the only mapping that can agree
  * with what /api/docs actually serves:
- *   EXTENDING.md                → extending
- *   docs/PLUGINS.md#how-a-…     → plugins, keeping the fragment
- *   extending                   → extending  (extension-less sibling link,
- *                                 the shape docs/WORKFLOW.md uses)
+ *   EXTENDING.md                → /docs/extending
+ *   docs/PLUGINS.md#How-A-…     → /docs/plugins#how-a-…
+ *   extending                   → /docs/extending  (extension-less sibling
+ *                                 link, the shape docs/WORKFLOW.md uses)
  *
  * An href that walks upward is refused outright: basename-slugging
  * `../README.md` would silently aim at an unrelated doc.
@@ -41,24 +51,33 @@ import { Link } from 'react-router-dom';
  * An unknown-but-well-formed slug is still safe to link — `/docs/:slug` is a
  * real route, so it renders the pane's own "doc not found" box. It is the
  * hrefs that match NO route that must never become links (see MarkdownLink). */
-function docTarget(href: string): { slug: string; frag: string } | null {
+function docTarget(href: string): string | null {
   if (href.includes('../')) return null;
-  const md = /^([^#?]*\/)?([^/#?]+)\.md(#[^?]*)?$/i.exec(href);
-  if (md !== null) return { slug: (md[2] ?? '').toLowerCase(), frag: md[3] ?? '' };
-  const bare = /^([a-z0-9][a-z0-9_-]*)(#.*)?$/i.exec(href);
-  if (bare !== null) return { slug: (bare[1] ?? '').toLowerCase(), frag: bare[2] ?? '' };
+  const [path, frag] = splitFrag(href);
+  const md = /^(?:[^/?]*\/)*([^/?]+)\.md$/i.exec(path);
+  if (md !== null) return `/docs/${(md[1] ?? '').toLowerCase()}${frag}`;
+  const bare = /^[a-z0-9][a-z0-9_-]*$/i.exec(path);
+  if (bare !== null) return `/docs/${path.toLowerCase()}${frag}`;
   return null;
 }
 
 /** Render a markdown link, or its bare label when the href resolves to no
  * route this app serves.
  *
- * Falling back to inert text is the whole point. The router registers `docs`
- * and `docs/:slug` with no catch-all and no errorElement, so a <Link> to an
- * unmatched path throws react-router's full-page "Unexpected Application
- * Error" and takes the app shell down with it. `mailto:`, `tel:`, image
- * paths and anything else exotic therefore stay text — exactly what they
- * rendered as before links were supported. */
+ * Falling back to inert text is the point. The router registers a fixed set of
+ * paths with no catch-all and no errorElement, so a <Link> to an unmatched
+ * path throws react-router's full-page "Unexpected Application Error" and
+ * takes the app shell down with it. `mailto:`, `tel:`, image paths and
+ * anything else exotic therefore stay text — exactly what they rendered as
+ * before links were supported.
+ *
+ * The one place that trade is knowingly reversed is an absolute in-app path
+ * (`/settings`, `/docs/concepts#handoff`): it is the shape a doc author
+ * reaches for first, and swallowing it silently is the worse failure. A
+ * MISTYPED absolute path can therefore still hit the router's error boundary
+ * — but it is a bug in a committed doc, caught in review, not the systematic
+ * breakage that relative hrefs produced. `/docs/*` cannot fail either way,
+ * since `docs/:slug` matches any slug. */
 function MarkdownLink({
   href,
   label,
@@ -71,7 +90,9 @@ function MarkdownLink({
   const cls = 'text-brand underline decoration-brand/40 underline-offset-2 hover:decoration-brand';
   const body = renderInline(label, labelKey);
 
-  if (/^https?:\/\//.test(href)) {
+  // Scheme is case-insensitive per RFC 3986 — `HTTPS://…` is a valid external
+  // link, and without /i it would fall all the way through to inert text.
+  if (/^https?:\/\//i.test(href)) {
     return (
       <a href={href} target="_blank" rel="noreferrer noopener" className={cls}>
         {body}
@@ -84,15 +105,21 @@ function MarkdownLink({
   // never re-run. Routing it keeps in-doc jumps on the same path as deep links.
   if (href.startsWith('#')) {
     return (
-      <Link to={href} className={cls}>
+      <Link to={href.toLowerCase()} className={cls}>
         {body}
       </Link>
     );
   }
-  const doc = docTarget(href);
-  if (doc !== null) {
+  // Any authority or scheme left at this point is not ours to route. This MUST
+  // precede the absolute-path branch below: `//evil.com/x.md` also starts with
+  // `/`, and routing it would emit a protocol-relative href the browser
+  // resolves cross-host — a link whose label lies about where it goes.
+  if (/^[^#?]*(\/\/|:)/.test(href)) return <>{body}</>;
+
+  const target = href.startsWith('/') ? splitFrag(href).join('') : docTarget(href);
+  if (target !== null) {
     return (
-      <Link to={`/docs/${doc.slug}${doc.frag}`} className={cls}>
+      <Link to={target} className={cls}>
         {body}
       </Link>
     );
