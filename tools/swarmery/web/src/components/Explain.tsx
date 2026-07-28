@@ -6,7 +6,7 @@
 // is a real <button> with keyboard access and Escape-to-close. Hover-on-dense-
 // data-rows stays HoverTip's job.
 
-import { useCallback, useEffect, useId, useRef } from 'react';
+import { useCallback, useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { CONCEPTS, type ConceptId } from '../lib/glossary';
@@ -68,26 +68,36 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
     if (open) layerRef.current?.focus({ preventScroll: true });
   }, [open, layerRef]);
 
-  // Escape + outside-pointer close, following useDropdownDismiss
-  // (pages/system/shared.tsx) — Escape closes AND returns focus to the trigger.
-  // An outside pointer-down deliberately does NOT restore focus: the user is
-  // already on their way somewhere else, and yanking focus back would fight the
-  // element they just clicked.
+  // Dismissal, following useDropdownDismiss (pages/system/shared.tsx) — Escape
+  // closes AND returns focus to the trigger. An outside pointer-down or a focus
+  // move deliberately does NOT restore focus: the user is already on their way
+  // somewhere else, and yanking focus back would fight what they just reached.
   //
-  // The trigger guard below is what stops the CLOSING click from flickering the
-  // panel back open: pointerdown on the trigger would close it, and the click
-  // that follows would then see open === false and immediately reopen.
+  // The trigger guard in onPointerDown is what stops the CLOSING click from
+  // flickering the panel back open: pointerdown on the trigger would close it,
+  // and the click that follows would then see open === false and reopen.
   //
   // Escape is listened for in the CAPTURE phase, and that phase is load-bearing.
-  // These chips are placed inside drawers that close themselves on Escape —
-  // workspace/TaskDrawer.tsx (document, bubble) and workspace/PlanDocDrawer.tsx
-  // (window, bubble). In the bubble phase a window listener runs *after* every
-  // document one, so a bubble-phase stopPropagation() here would fire too late
-  // and one Escape would close both the popover and its drawer. window is the
-  // first node in the capture path, so capture + stopPropagation() makes the
-  // topmost layer — this popover — the only thing that consumes the key. No
-  // other keydown listener in this tree registers on capture (verified), so
-  // nothing else is being pre-empted.
+  // This chip is placed inside workspace/TaskDrawer.tsx (via PlaybookHint), a
+  // drawer that closes itself on a document-level, bubble-phase Escape. In the
+  // bubble phase a window listener runs AFTER every document one, so a
+  // bubble-phase stopPropagation() here would fire too late and one Escape
+  // would close both the popover and the drawer. window is the first node in
+  // the capture path, so capture + stopPropagation() makes the topmost layer —
+  // this popover — the only thing that consumes the key.
+  //
+  // Capture is a real cost, not a free win: React 19 delegates synthetic events
+  // to the createRoot container, a DESCENDANT of document, so stopping at
+  // window/capture also pre-empts every React onKeyDown for that Escape —
+  // SessionDetail's title editor (SessionDetail.tsx:87) and the tag input
+  // (ProjectActions.tsx:97) among them. That is only sound while this popover
+  // genuinely IS the topmost layer, which is what onFocusOut below enforces:
+  // the moment focus lands anywhere outside the trigger and the panel — a
+  // command palette opened with Cmd+K, an autofocused input, a drawer — the
+  // popover closes and stops intercepting anything. Without that guard a
+  // popover left open behind a newer layer would silently eat that layer's
+  // first Escape. It also rules out two popovers open at once, which
+  // onPointerDown alone cannot: Enter/Space fires a click with no pointerdown.
   useEffect(() => {
     if (!open) return;
     const onKey = (ev: KeyboardEvent): void => {
@@ -104,11 +114,32 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
       if (inTrigger || inPanel) return;
       close();
     };
+    const onFocusOut = (ev: FocusEvent): void => {
+      // relatedTarget, NOT document.activeElement. During focusout the focus has
+      // left the old node and not yet landed, so activeElement reads <body> —
+      // and deferring the read by a microtask does not help: the microtask
+      // checkpoint runs between focusout and focusin, still on <body>. Measured,
+      // not assumed: that version closed the panel on its own trigger's
+      // mousedown (so the click that followed re-opened it — the exact flicker
+      // onPointerDown's trigger guard exists to prevent) and tore the panel out
+      // from under the "Read more" link before its click could navigate.
+      // relatedTarget is the node actually receiving focus, available
+      // synchronously.
+      const next = ev.relatedTarget as Node | null;
+      // null means focus left to nothing at all (window blur, devtools). The
+      // popover is still the topmost layer in this document — leave it alone.
+      if (next === null) return;
+      if (btnRef.current?.contains(next) === true) return;
+      if (layerRef.current?.contains(next) === true) return;
+      close();
+    };
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('focusout', onFocusOut, true);
     return () => {
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('focusout', onFocusOut, true);
     };
   }, [open, close, layerRef]);
 
@@ -146,21 +177,13 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
             </ul>
           )}
 
-          {concept.steps !== undefined && (
-            <ol className="mt-2.5 space-y-1.5 border-t border-line pt-2.5">
-              {concept.steps.map((s, i) => (
-                <li key={s.title} className="text-[11.5px] leading-relaxed">
-                  {/* The <ol> already numbers this for AT — the visible numeral
-                      would otherwise be read twice ("1. 1."). */}
-                  <span aria-hidden="true" className="font-mono text-[10px] text-ink-faint">
-                    {i + 1}.{' '}
-                  </span>
-                  <span className="font-semibold text-ink">{s.title}</span>
-                  <span className="text-ink-dim"> — {s.body}</span>
-                </li>
-              ))}
-            </ol>
-          )}
+          {/* `steps` is deliberately NOT rendered here. A 300px popover
+              reproducing four multi-sentence paragraphs is a panel pretending
+              to be a tooltip, and both step-carrying concepts already render
+              their walkthrough inline via <HowItWorks> on their own page — so
+              the popover would repeat it verbatim a few hundred pixels away.
+              The popover is the compression; the inline block is the long
+              form; "Read more →" is the full text. */}
 
           {concept.facts !== undefined && (
             <dl className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1 border-t border-line pt-2.5 font-mono text-[10.5px]">
@@ -208,5 +231,38 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
       </button>
       {panel}
     </>
+  );
+}
+
+/**
+ * The standard pairing of a chip (or control) with its explainer: one flex row,
+ * one gap, decided once here rather than at nine call sites.
+ *
+ * Why a wrapper at all: dropped as a bare sibling into a row that already has
+ * its own gap, the trigger sits exactly as far from what it explains as from
+ * the next chip along, and reads as belonging to either. The wrapper binds it
+ * to its subject and leaves the row's own spacing alone.
+ *
+ * Why gap-2 specifically: TRIGGER_CLASS grows the hit target with
+ * `before:-inset-1.5` — 6px in every direction on a `position: relative`
+ * element, so that halo hit-tests ABOVE non-positioned siblings. At gap-1 (4px)
+ * it overlaps its neighbour by 2px and steals clicks from it; gap-2 (8px)
+ * clears it exactly.
+ *
+ * Explainers that flow inside a sentence (Playbooks.tsx `worktree`) do not use
+ * this — they are part of the text and need no box.
+ */
+export function ExplainPair({
+  id,
+  children,
+}: {
+  id: ConceptId;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <span className="inline-flex items-center gap-2">
+      {children}
+      <Explain id={id} />
+    </span>
   );
 }
