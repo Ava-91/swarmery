@@ -86,12 +86,18 @@ const RAW = {
   'kill-vs-stop': {
     term: 'Stop vs Kill',
     short:
-      'Stop is graceful: SIGTERM, escalated to SIGKILL by the server after a grace period, and the row is recorded as completed. Kill is immediate and records the row as killed.',
+      'Both send SIGTERM and escalate to SIGKILL after a grace period. What differs is the status recorded: Stop writes completed, which ingest may revert if the session speaks again; Kill writes killed, which is terminal.',
     tone: 'explain',
     actions: [
-      'Prefer Stop — it lets the agent finish its current write.',
-      'Stop needs no PID, so it also closes out a zombie row that Kill cannot touch.',
-      'Kill is offered only for running or orphaned sessions.',
+      'Prefer Stop — it needs no PID, so it also closes out a zombie row Kill refuses.',
+      'Kill needs a live, identity-checked PID in a running or orphaned state.',
+      'Only "Force kill", offered 10s after a Kill, sends SIGKILL straight away.',
+    ],
+    facts: [
+      { label: 'both signal', value: 'SIGTERM → SIGKILL' },
+      { label: 'grace', value: '5s · SWARMERY_KILL_ESCALATION' },
+      { label: 'stop records', value: 'completed (revertible)' },
+      { label: 'kill records', value: 'killed (terminal)' },
     ],
     doc: { slug: 'concepts', anchor: 'stop-vs-kill' },
   },
@@ -104,7 +110,8 @@ const RAW = {
     actions: [
       'Read the dry-run preview before confirming — it lists every file that would change.',
       'Lines starting with "!" flag foreign values the merge refused to overwrite; resolve those by hand.',
-      'Detach restores from the .bak the attach wrote.',
+      'Each writes a .bak before rewriting settings.json; a full detach also backs up project.json.',
+      'Attach restores project.json from that backup only when the file itself is gone.',
     ],
     doc: { slug: 'concepts', anchor: 'attach-detach' },
   },
@@ -137,7 +144,7 @@ const RAW = {
       },
       {
         title: 'The verify knob sets the bar',
-        body: 'Each playbook declares strict, normal, or off. Strict keeps the trajectory verifier’s default-FAIL wording (review-heavy uses it), normal is the usual bar, off skips verification entirely — no verdict is stamped.',
+        body: 'Each playbook declares strict, normal, or off. The verifier’s read-only contract and its PASS/FAIL/INCONCLUSIVE vocabulary are identical at every level — strict only adds one clause demanding each criterion be positively demonstrated (review-heavy uses it), and off skips the run before a prompt is built, so no verdict is stamped.',
       },
       {
         title: 'Make it your own',
@@ -150,10 +157,11 @@ const RAW = {
   'verify-knob': {
     term: 'Verify level',
     short:
-      'How hard the trajectory verifier judges a stage. Strict keeps the verifier’s default-FAIL wording, normal is the usual bar, off skips verification and stamps no verdict at all.',
+      'How hard the trajectory verifier judges a stage. Its read-only contract and PASS/FAIL/INCONCLUSIVE vocabulary are fixed at every level; the knob moves exactly one line of the prompt — the bar.',
     tone: 'explain',
     actions: [
       'Use strict for review stages, where a false pass is the expensive error.',
+      'Strict adds one clause: every criterion positively demonstrated, not merely plausible.',
       'Use off only for stages with no reviewable output — it means no verdict, not a passing one.',
     ],
     doc: { slug: 'concepts', anchor: 'verify-level' },
