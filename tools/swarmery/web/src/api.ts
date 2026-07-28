@@ -132,6 +132,18 @@ export async function restoreProject(id: number): Promise<void> {
   }
 }
 
+/** POST /api/projects/{id}/architecture/rebuild — force-regenerate the
+ * architecture map via the provision pipeline (single-flight; 202 returns the
+ * in-flight job when one is already running). */
+export async function rebuildArchitectureMap(id: number): Promise<void> {
+  if (MOCK) return; // no-op in mock mode
+  const res = await fetch(`/api/projects/${String(id)}/architecture/rebuild`, { method: 'POST' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `rebuild failed: ${String(res.status)}`);
+  }
+}
+
 /** GET /api/projects/health — per-project week-over-week health rows. */
 export function fetchProjectsHealth(): Promise<ProjectsHealthResponse> {
   if (MOCK) return mockApi.projectsHealth();

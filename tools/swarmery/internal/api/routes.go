@@ -204,6 +204,8 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("/api/projects/{id}/serena/{rest...}", h.serenaProxy)
 	mux.HandleFunc("/api/projects/{id}/graphify/{rest...}", h.graphifyStatic)
 	mux.HandleFunc("/api/projects/{id}/architecture/{rest...}", h.architectureStatic)
+	// More specific than the static jail, so POST …/rebuild wins over {rest...}.
+	mux.HandleFunc("POST /api/projects/{id}/architecture/rebuild", requireLocalOrigin(h.architectureRebuild))
 
 	// control-plane v2: notifications & auto-approve rules. Writes carry the
 	// same D4 origin hardening as every other mutating endpoint; evaluation
