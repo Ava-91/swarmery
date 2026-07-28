@@ -97,6 +97,7 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 		endedAt    sql.NullString
 		runErr     sql.NullString
 		before     sql.NullInt64
+		after      sql.NullInt64
 		docPath    string
 		projPath   sql.NullString
 		total, don int
@@ -105,14 +106,14 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 		SELECT e.workspace_task_id, e.seq, e.name, e.doc_path, e.depends_on,
 		       e.checkboxes_total, e.checkboxes_done, e.run_state, e.run_session_uuid,
 		       e.run_started_at, e.run_ended_at, e.run_error, e.run_checkboxes_before,
-		       p.path
+		       e.run_checkboxes_after, p.path
 		  FROM epic_phases e
 		  JOIN tasks t ON t.id = e.workspace_task_id
 		  JOIN projects p ON p.id = t.project_id
 		 WHERE e.id = ?`, phaseID).Scan(
 		&taskID, &d.Seq, &d.Name, &docPath, &depsJSON,
 		&total, &don, &runState, &uuid,
-		&startedAt, &endedAt, &runErr, &before,
+		&startedAt, &endedAt, &runErr, &before, &after,
 		&projPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Diagnosis{}, ErrPhaseNotFound
@@ -123,12 +124,28 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 
 	d.PhaseID = phaseID
 	d.CriteriaTotal = total
+	// The run's right edge is the count stamped at exit (0042) when it exists;
+	// otherwise the LIVE count, which may have moved since — the wsingest rescan
+	// and TickPhaseChecklist both write checkboxes_done.
 	d.CriteriaAfter = don
-	d.CriteriaBefore = int(before.Int64) // NULL ⇒ 0, correct for pre-0041 rows
+	if after.Valid {
+		d.CriteriaAfter = int(after.Int64)
+	}
+	d.CriteriaBefore = int(before.Int64)
+	// A NULL baseline means UNMEASURED, never "0 ticked". Feeding 0 into Outcome
+	// would derive the phase's entire ticked count as this run's delta and report a
+	// 'partial' success no one measured. Passing before = after collapses the delta
+	// to nothing, so an unmeasured run reads 'completed' when every box is ticked
+	// and 'noop' otherwise. Understating is the safe direction on a diagnostic
+	// surface: it prompts the user to look instead of asserting a win.
+	runBefore := d.CriteriaBefore
+	if !before.Valid {
+		runBefore = d.CriteriaAfter
+	}
 	d.RunStartedAt = nullStr(startedAt)
 	d.RunEndedAt = nullStr(endedAt)
 	d.RunError = nullStr(runErr)
-	d.RunOutcome = Outcome(runState, total, d.CriteriaBefore, don)
+	d.RunOutcome = Outcome(runState, total, runBefore, d.CriteriaAfter)
 	d.Blockers = []Blocker{} // always a JSON array, never null
 
 	// The base branch is the one signal every branch-derived blocker is relative
@@ -147,15 +164,25 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 		return Diagnosis{}, err
 	}
 
-	// 1. dep-incomplete — a dependency cannot prove it is done.
+	// 1. dep-incomplete — a dependency cannot prove it is done. A dependency with
+	// NO criteria is equally unprovable (same rule as phaserun.depSatisfied), but
+	// "is only 0/0 complete" implies a count that came up short; the truth is that
+	// nothing was ever countable. Same Kind — the UI renders kinds, and a sixth one
+	// would widen a contract other phases consume — different sentence.
 	for _, dep := range deps {
-		if !dep.Complete {
-			d.Blockers = append(d.Blockers, Blocker{
-				Kind:    KindDepIncomplete,
-				Summary: fmt.Sprintf("Phase %d is only %d/%d complete", dep.Seq, dep.Done, dep.Total),
-				Detail:  fmt.Sprintf("phase %d — %s", dep.Seq, filepath.Base(dep.DocPath)),
-			})
+		if dep.Complete {
+			continue
 		}
+		summary := fmt.Sprintf("Phase %d is only %d/%d complete", dep.Seq, dep.Done, dep.Total)
+		if dep.Total == 0 {
+			summary = fmt.Sprintf(
+				"Phase %d has no acceptance-criteria checkboxes, so its completion cannot be proven", dep.Seq)
+		}
+		d.Blockers = append(d.Blockers, Blocker{
+			Kind:    KindDepIncomplete,
+			Summary: summary,
+			Detail:  fmt.Sprintf("phase %d — %s", dep.Seq, filepath.Base(dep.DocPath)),
+		})
 	}
 
 	// 2. dep-unmerged — the dependency IS ticked, but its code never reached base.

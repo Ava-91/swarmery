@@ -418,40 +418,21 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 	}
 }
 
-// applyEpics replaces the task's epic_phases rows. Activation state
-// (activated_at + activated_board_task_id) is preserved across a rescan by
-// re-reading it per doc_path BEFORE the delete, then restoring it on reinsert —
-// a checkbox flip must not un-activate a phase whose board task already exists.
+// applyEpics folds the parsed plan into the task's epic_phases rows by UPSERTING
+// on the natural key UNIQUE(workspace_task_id, doc_path).
+//
+// The plan doc is authoritative for STRUCTURE only — seq, name, depends_on,
+// checkbox counts, doc status, completion report. It owns nothing else. Everything
+// the daemon writes about a phase (activated_at / activated_board_task_id and the
+// whole run_* family) is deliberately absent from the DO UPDATE SET list, so it
+// survives a rescan untouched.
+//
+// This must never go back to delete + re-insert: the phase executor's own job is
+// to edit its phase doc and tick its checkbox, which changes the plan hash and
+// triggers exactly this path. A delete would wipe the run state the run is being
+// measured by, and the new row id would orphan the swarm/phase-<id> branch the run
+// just committed to — a run only kept its state if it achieved nothing.
 func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
-	// Snapshot prior activation state keyed by doc_path.
-	type act struct {
-		at   sql.NullString
-		task sql.NullInt64
-	}
-	prior := map[string]act{}
-	rows, err := tx.Query(
-		`SELECT doc_path, activated_at, activated_board_task_id FROM epic_phases WHERE workspace_task_id = ?`,
-		taskID)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var dp string
-		var a act
-		if err := rows.Scan(&dp, &a.at, &a.task); err != nil {
-			rows.Close()
-			return err
-		}
-		prior[dp] = a
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(`DELETE FROM epic_phases WHERE workspace_task_id = ?`, taskID); err != nil {
-		return err
-	}
 	for _, p := range phases {
 		depJSON, err := json.Marshal(p.dependsOn)
 		if err != nil {
@@ -459,16 +440,6 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
 		}
 		if p.dependsOn == nil {
 			depJSON = []byte("[]")
-		}
-		var activatedAt any
-		var activatedTask any
-		if a, ok := prior[p.docPath]; ok {
-			if a.at.Valid {
-				activatedAt = a.at.String
-			}
-			if a.task.Valid {
-				activatedTask = a.task.Int64
-			}
 		}
 		var docStatus any
 		if p.docStatus != "" {
@@ -486,13 +457,41 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
 			INSERT INTO epic_phases
 				(workspace_task_id, seq, name, doc_path, depends_on,
 				 checkboxes_total, checkboxes_done, doc_status, doc_updated_at,
-				 completion_report, activated_at, activated_board_task_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 completion_report)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(workspace_task_id, doc_path) DO UPDATE SET
+				seq               = excluded.seq,
+				name              = excluded.name,
+				depends_on        = excluded.depends_on,
+				checkboxes_total  = excluded.checkboxes_total,
+				checkboxes_done   = excluded.checkboxes_done,
+				doc_status        = excluded.doc_status,
+				doc_updated_at    = excluded.doc_updated_at,
+				completion_report = excluded.completion_report`,
 			taskID, p.seq, p.name, p.docPath, string(depJSON),
 			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
-			completionReport, activatedAt, activatedTask); err != nil {
+			completionReport); err != nil {
 			return err
 		}
+	}
+
+	// A phase doc removed from the plan README must not linger. Delete by
+	// exclusion AFTER the upserts — never before, or the surviving rows lose
+	// their identity (and their run state) on every rescan. With no phases at
+	// all the guard collapses to an unconditional delete, which is correct.
+	keep := make([]any, 0, len(phases)+1)
+	keep = append(keep, taskID)
+	ph := make([]string, 0, len(phases))
+	for _, p := range phases {
+		ph = append(ph, "?")
+		keep = append(keep, p.docPath)
+	}
+	q := `DELETE FROM epic_phases WHERE workspace_task_id = ?`
+	if len(ph) > 0 {
+		q += ` AND doc_path NOT IN (` + strings.Join(ph, ",") + `)`
+	}
+	if _, err := tx.Exec(q, keep...); err != nil {
+		return err
 	}
 	return nil
 }

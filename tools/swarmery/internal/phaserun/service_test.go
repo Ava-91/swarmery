@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,6 +69,7 @@ type stubWt struct {
 	removed    []worktree.Acquired
 	keepBranch []bool
 	acquireErr error
+	onRemove   func() // observed inside Remove, before it returns
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -85,9 +87,13 @@ func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquire
 
 func (w *stubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.removed = append(w.removed, a)
 	w.keepBranch = append(w.keepBranch, keepBranch)
+	hook := w.onRemove
+	w.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return nil
 }
 
@@ -283,6 +289,103 @@ func TestStart_SnapshotsCheckboxesBefore(t *testing.T) {
 	if !before.Valid || before.Int64 != 3 {
 		t.Errorf("run_checkboxes_before = %v (valid=%v), want 3 — the ticked count at spawn time",
 			before.Int64, before.Valid)
+	}
+}
+
+// phaseAfter reads run_checkboxes_after (migration 0042) — the right edge of the
+// run's measurement interval, stamped at exit.
+func phaseAfter(t *testing.T, db *sql.DB, id int64) sql.NullInt64 {
+	t.Helper()
+	var after sql.NullInt64
+	if err := db.QueryRow(`SELECT run_checkboxes_after FROM epic_phases WHERE id=?`, id).
+		Scan(&after); err != nil {
+		t.Fatalf("phase after row: %v", err)
+	}
+	return after
+}
+
+// TestStamp_ClosesCheckboxInterval: the exit stamp pins the ticked count as it was
+// when the run ended. checkboxes_done keeps moving afterwards (the wsingest rescan
+// and TickPhaseChecklist both write it) — the stamped edge must not follow it, or
+// another writer's ticks get attributed to this run.
+func TestStamp_ClosesCheckboxInterval(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	mustExec(t, db, `UPDATE epic_phases SET checkboxes_total=8, checkboxes_done=1 WHERE id=?`, p1)
+	// The run itself ticks two more boxes before it exits.
+	r := &stubRunner{runFn: func(spec RunSpec) (*Run, error) {
+		mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=3 WHERE id=?`, p1)
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(db, r, &stubWt{})
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	before, _ := phaseOutcome(t, db, p1)
+	if !before.Valid || before.Int64 != 1 {
+		t.Errorf("run_checkboxes_before = %v, want 1", before)
+	}
+	after := phaseAfter(t, db, p1)
+	if !after.Valid || after.Int64 != 3 {
+		t.Fatalf("run_checkboxes_after = %v, want 3 — the count at exit", after)
+	}
+
+	// A later writer moves the live count; the closed interval must not budge.
+	mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=8 WHERE id=?`, p1)
+	if got := phaseAfter(t, db, p1); !got.Valid || got.Int64 != 3 {
+		t.Errorf("run_checkboxes_after = %v after a later tick, want a frozen 3", got)
+	}
+}
+
+// TestRunTeardown_WorktreeRemovedBeforeSlotRelease: the single-flight slot is the
+// LAST thing the teardown releases. stamp() has already opened the DB gate, so a
+// slot released before the git shell-out lets a re-Start re-acquire the same
+// deterministic worktree path — which this defer would then delete underneath it.
+func TestRunTeardown_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	wt := &stubWt{}
+	var (
+		s          *Service
+		slotHeld   bool
+		hookCalled bool
+	)
+	wt.onRemove = func() {
+		hookCalled = true
+		s.mu.Lock()
+		_, slotHeld = s.active[p1]
+		s.mu.Unlock()
+	}
+	s = newTestService(db, &stubRunner{}, wt)
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !hookCalled {
+		t.Fatal("worktree was never removed")
+	}
+	if !slotHeld {
+		t.Error("single-flight slot was already released when the worktree was removed — " +
+			"a concurrent re-Start could reuse and then lose that worktree")
+	}
+	if _, busy := s.active[p1]; busy {
+		t.Error("slot still held after the run finished")
+	}
+}
+
+// TestStamp_RowVanished: an UPDATE that matches nothing is the exact shape the
+// delete+reinsert defect took — it must be loud, not silent, and never panic.
+func TestStamp_RowVanished(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	s := newTestService(db, &stubRunner{}, &stubWt{})
+	mustExec(t, db, `DELETE FROM epic_phases WHERE id=?`, p1)
+
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	s.stamp(p1, "done", "") // must not panic
+	if !strings.Contains(buf.String(), "row vanished mid-run") {
+		t.Errorf("stamp against a deleted row logged %q, want a 'row vanished mid-run' error", buf.String())
 	}
 }
 

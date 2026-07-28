@@ -2,6 +2,8 @@ package wsingest
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -324,8 +326,10 @@ func TestScanEpicsGammaFixture(t *testing.T) {
 }
 
 // TestScanEpicsPreservesActivation checks that a rescan after an activation
-// (activated_at + board task stamped) does NOT clear the activation state, even
-// though applyEpics deletes+reinserts the phase rows.
+// (activated_at + board task stamped) does NOT clear the activation state. The
+// guarantee used to come from snapshotting those two columns around a
+// delete+reinsert; it now falls out of the upsert leaving them off its
+// DO UPDATE SET list.
 func TestScanEpicsPreservesActivation(t *testing.T) {
 	db := testDB(t)
 	seed(t, db)
@@ -358,6 +362,90 @@ func TestScanEpicsPreservesActivation(t *testing.T) {
 	}
 }
 
+// TestScanEpicsPreservesRunStateAcrossCheckboxFlip is THE regression for the
+// inverted run measurement: applyEpics used to DELETE + re-INSERT every phase row
+// on any plan-content change, carrying over only the activation columns. The
+// phase executor's job is to edit its phase doc and tick its checkbox
+// (phaserun/prompt.go), so the very act of succeeding wiped the run_* family the
+// run was being measured by — and minted a NEW row id, orphaning the
+// swarm/phase-<id> branch the run had just committed to. Runs that produced
+// nothing kept their state; runs that landed work looked idle.
+func TestScanEpicsPreservesRunStateAcrossCheckboxFlip(t *testing.T) {
+	db := testDB(t)
+	root, phaseDoc := demoWorkspace(t)
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+
+	var id int64
+	if err := db.QueryRow(`SELECT id FROM epic_phases`).Scan(&id); err != nil {
+		t.Fatalf("phase row: %v", err)
+	}
+	mustExec(t, db, `UPDATE epic_phases
+		SET run_state='done', run_session_uuid='uuid-run-1',
+		    run_started_at='2026-07-28T10:00:00Z', run_ended_at='2026-07-28T10:20:00Z',
+		    run_error='boom', run_checkboxes_before=0
+		WHERE id=?`, id)
+
+	// The executor ticks one acceptance criterion — the one edit every run that
+	// achieves anything makes.
+	raw, err := os.ReadFile(phaseDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipped := strings.Replace(string(raw), "- [ ] a", "- [x] a", 1)
+	if err := os.WriteFile(phaseDoc, []byte(flipped), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+
+	var (
+		gotID       int64
+		state       string
+		uuid        sql.NullString
+		startedAt   sql.NullString
+		endedAt     sql.NullString
+		runErr      sql.NullString
+		before      sql.NullInt64
+		done, total int
+	)
+	if err := db.QueryRow(`SELECT id, run_state, run_session_uuid, run_started_at,
+		run_ended_at, run_error, run_checkboxes_before, checkboxes_done, checkboxes_total
+		FROM epic_phases`).Scan(&gotID, &state, &uuid, &startedAt, &endedAt, &runErr,
+		&before, &done, &total); err != nil {
+		t.Fatalf("phase row after rescan: %v", err)
+	}
+	if gotID != id {
+		t.Errorf("phase id = %d, want %d — the row was deleted and re-inserted, "+
+			"orphaning swarm/phase-%d", gotID, id, id)
+	}
+	if state != "done" {
+		t.Errorf("run_state = %q, want \"done\" (wiped by the rescan)", state)
+	}
+	if uuid.String != "uuid-run-1" {
+		t.Errorf("run_session_uuid = %v, want uuid-run-1", uuid)
+	}
+	if startedAt.String != "2026-07-28T10:00:00Z" {
+		t.Errorf("run_started_at = %v, want 2026-07-28T10:00:00Z", startedAt)
+	}
+	if endedAt.String != "2026-07-28T10:20:00Z" {
+		t.Errorf("run_ended_at = %v, want 2026-07-28T10:20:00Z", endedAt)
+	}
+	if runErr.String != "boom" {
+		t.Errorf("run_error = %v, want boom", runErr)
+	}
+	if !before.Valid || before.Int64 != 0 {
+		t.Errorf("run_checkboxes_before = %v, want 0 (measured baseline lost)", before)
+	}
+	// Structure IS the doc's to own: the tick must still land.
+	if done != 1 || total != 2 {
+		t.Errorf("checkboxes = %d/%d, want 1/2", done, total)
+	}
+}
+
 // demoWorkspace builds a minimal temp workspace with one epic task
 // (working/2026/07/26/demo: card README + plan/README.md phase table +
 // plan/phase-1-demo.md with checkboxes) and returns the root and the phase
@@ -385,6 +473,133 @@ func demoWorkspace(t *testing.T) (root, phaseDoc string) {
 		}
 	}
 	return root, filepath.Join(planDir, "phase-1-demo.md")
+}
+
+// multiPhaseWorkspace builds a temp workspace with one epic task whose plan
+// README lists the given phase docs in order. Returns the workspace root and the
+// plan dir, so a test can rewrite the plan with writePlanDocs and rescan.
+func multiPhaseWorkspace(t *testing.T, docs ...string) (root, planDir string) {
+	t.Helper()
+	root = t.TempDir()
+	taskDir := filepath.Join(root, "demo", "workspace", "working", "2026", "07", "26", "demo")
+	planDir = filepath.Join(taskDir, "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	card := "# Task: Demo epic\n\n" +
+		"- **Статус**: active\n- **Старт**: 2026-07-26 · **Завершено**: —\n- **Ціль**: demo goal\n"
+	if err := os.WriteFile(filepath.Join(taskDir, "README.md"), []byte(card), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePlanDocs(t, planDir, docs...)
+	return root, planDir
+}
+
+// writePlanDocs (re)writes the plan README's sequencing table plus one doc per
+// name, and REMOVES any phase doc not in the list — the "a phase left the plan"
+// edit. With no names at all the plan keeps a header-only table and no docs.
+func writePlanDocs(t *testing.T, planDir string, docs ...string) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("# Demo plan\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n")
+	keep := map[string]bool{"README.md": true}
+	for i, d := range docs {
+		fmt.Fprintf(&b, "| %d | Phase %d | `%s` | — |\n", i+1, i+1, d)
+		keep[d] = true
+		body := fmt.Sprintf("# Phase %d — Demo\n\n## Acceptance criteria\n- [ ] a\n- [ ] b\n", i+1)
+		if err := os.WriteFile(filepath.Join(planDir, d), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(planDir, "README.md"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(planDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && !keep[e.Name()] {
+			if err := os.Remove(filepath.Join(planDir, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// phaseIDsByDoc maps doc basename → epic_phases.id for the sole indexed task.
+func phaseIDsByDoc(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	rows, err := db.Query(`SELECT id, doc_path FROM epic_phases`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id int64
+		var doc string
+		if err := rows.Scan(&id, &doc); err != nil {
+			t.Fatal(err)
+		}
+		out[filepath.Base(doc)] = id
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestScanEpicsDeletesPhaseDocRemovedFromPlan: delete-by-exclusion still prunes a
+// phase whose doc left the plan, and the survivors keep their row ids (and hence
+// their run branches).
+func TestScanEpicsDeletesPhaseDocRemovedFromPlan(t *testing.T) {
+	db := testDB(t)
+	root, planDir := multiPhaseWorkspace(t, "phase-1-a.md", "phase-2-b.md")
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+	before := phaseIDsByDoc(t, db)
+	if len(before) != 2 {
+		t.Fatalf("phases after first scan = %v, want 2", before)
+	}
+
+	writePlanDocs(t, planDir, "phase-1-a.md") // phase 2 leaves the plan
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+
+	after := phaseIDsByDoc(t, db)
+	if len(after) != 1 {
+		t.Fatalf("phases after removal = %v, want only phase-1-a.md", after)
+	}
+	if after["phase-1-a.md"] != before["phase-1-a.md"] {
+		t.Errorf("survivor id = %d, want %d (identity lost)",
+			after["phase-1-a.md"], before["phase-1-a.md"])
+	}
+}
+
+// TestScanEpicsEmptyPlanDeletesAllPhases: with no phases parsed, the exclusion
+// guard collapses to an unconditional delete.
+func TestScanEpicsEmptyPlanDeletesAllPhases(t *testing.T) {
+	db := testDB(t)
+	root, planDir := multiPhaseWorkspace(t, "phase-1-a.md", "phase-2-b.md")
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM epic_phases`); n != 2 {
+		t.Fatalf("phases after first scan = %d, want 2", n)
+	}
+
+	writePlanDocs(t, planDir) // every phase doc leaves the plan
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM epic_phases`); n != 0 {
+		t.Errorf("phases after emptying the plan = %d, want 0", n)
+	}
 }
 
 // TestScanNotifiesPlanUpdated: Config.NotifyPlan fires exactly once per task

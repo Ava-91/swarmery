@@ -267,7 +267,9 @@ func TestDiagnoseDepIncomplete(t *testing.T) {
 	}
 }
 
-// A dependency with zero criteria cannot prove completion — it is incomplete.
+// A dependency with zero criteria cannot prove completion — it is incomplete. The
+// derivation is right, but "is only 0/0 complete" would imply a count that came up
+// short; nothing was ever countable. Same Kind, different sentence.
 func TestDiagnoseDepWithoutCriteriaIsIncomplete(t *testing.T) {
 	f := newFixture(t)
 	dep := f.addPhase(t, 2, "Phase 2 — Store", "[]", 0, 0)
@@ -283,6 +285,71 @@ func TestDiagnoseDepWithoutCriteriaIsIncomplete(t *testing.T) {
 	}
 	if got := kinds(d.Blockers); len(got) != 1 || got[0] != KindDepIncomplete {
 		t.Fatalf("kinds = %v, want [%s]", got, KindDepIncomplete)
+	}
+	b := blockerOf(t, d, KindDepIncomplete)
+	if strings.Contains(b.Summary, "0/0") {
+		t.Errorf("summary %q reports a 0/0 count; the dependency has no criteria to count", b.Summary)
+	}
+	if !strings.Contains(b.Summary, "Phase 2") || !strings.Contains(b.Summary, "acceptance-criteria") {
+		t.Errorf("summary %q must name Phase 2 and say it has no acceptance-criteria checkboxes", b.Summary)
+	}
+	if !strings.Contains(b.Detail, "phase-2-slug.md") {
+		t.Errorf("detail %q must name the dependency doc", b.Detail)
+	}
+}
+
+// TestDiagnoseStampedAfterWinsOverLiveCount: run_checkboxes_after (0042) closes the
+// measurement interval at exit. Later writers of checkboxes_done — the wsingest
+// rescan, TickPhaseChecklist — must not be able to inflate what the run achieved.
+func TestDiagnoseStampedAfterWinsOverLiveCount(t *testing.T) {
+	f := newFixture(t)
+	id := f.addPhase(t, 1, "Phase 1", "[]", 7, 7) // live count has since reached 7/7
+	f.setRun(t, id, "done", "", 1)
+	mustExec(t, f.db, `UPDATE epic_phases SET run_checkboxes_after=2 WHERE id=?`, id)
+	git := newGit("dev").branchMissing(fmt.Sprintf("swarm/phase-%d", id))
+
+	d, err := Diagnose(f.db, git, id)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if d.CriteriaAfter != 2 {
+		t.Errorf("CriteriaAfter = %d, want the stamped 2 — not the live 7", d.CriteriaAfter)
+	}
+	if d.RunOutcome != OutcomePartial {
+		t.Errorf("RunOutcome = %q, want %q (1 → 2 of 7)", d.RunOutcome, OutcomePartial)
+	}
+}
+
+// TestDiagnoseNullBaselineIsNeverPartial: a NULL run_checkboxes_before means the
+// run was never measured. Reading it as 0 would derive the phase's whole ticked
+// count as this run's delta and claim a 'partial' success nobody measured.
+func TestDiagnoseNullBaselineIsNeverPartial(t *testing.T) {
+	f := newFixture(t)
+	id := f.addPhase(t, 1, "Phase 1", "[]", 7, 3) // 3 of 7 ticked, provenance unknown
+	f.setRun(t, id, "done", "", -1)               // NULL baseline
+	git := newGit("dev").branchMissing(fmt.Sprintf("swarm/phase-%d", id))
+
+	d, err := Diagnose(f.db, git, id)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if d.RunOutcome != OutcomeNoop {
+		t.Errorf("RunOutcome = %q, want %q — an unmeasured run cannot claim progress",
+			d.RunOutcome, OutcomeNoop)
+	}
+	if d.CriteriaAfter != 3 || d.CriteriaTotal != 7 {
+		t.Errorf("criteria = %d/%d, want 3/7", d.CriteriaAfter, d.CriteriaTotal)
+	}
+
+	// The same NULL baseline on a fully ticked phase still reads 'completed' —
+	// understating progress, never overstating it.
+	mustExec(t, f.db, `UPDATE epic_phases SET checkboxes_done=7 WHERE id=?`, id)
+	d, err = Diagnose(f.db, git, id)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if d.RunOutcome != OutcomeCompleted {
+		t.Errorf("RunOutcome = %q, want %q on a fully ticked phase", d.RunOutcome, OutcomeCompleted)
 	}
 }
 

@@ -16,9 +16,11 @@ const (
 	OutcomeFailed    = "failed"
 )
 
-// Outcome derives what a run achieved. before is the pre-run checkbox snapshot
-// (0 for historical rows whose run_checkboxes_before is NULL — correct for them,
-// since those runs ticked nothing).
+// Outcome derives what a run achieved from the closed interval [before, after].
+// Both edges are the CALLER's problem: it decides what an unmeasured run means
+// (Diagnose passes before = after, collapsing the delta, so a run with no recorded
+// baseline can never be reported 'partial'). Keeping that policy out here is why
+// the signature does not admit NULLs.
 //
 // This is the SINGLE implementation of the derivation: the api layer calls it for
 // the phase DTO too, so the list chip and the diagnosis modal can never disagree.

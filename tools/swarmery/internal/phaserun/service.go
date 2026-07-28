@@ -218,10 +218,16 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, phaseID int64, info phaseInfo, acq worktree.Acquired, spec RunSpec) {
 	defer func() {
 		cancel()
+		// Worktree FIRST, slot LAST. stamp() has already moved the row off
+		// 'running', so the DB gate in Start is open; releasing the single-flight
+		// slot before the (git shell-out, tens of ms) removal opens a window where a
+		// re-Start re-acquires the SAME deterministic worktree path (worktree
+		// invariant-4 reuse) and this defer then rips the new run's worktree out
+		// from under it.
+		s.removeWorktree(info.ProjectPath, acq)
 		s.mu.Lock()
 		delete(s.active, phaseID)
 		s.mu.Unlock()
-		s.removeWorktree(info.ProjectPath, acq)
 		s.notify(info.WorkspaceTaskID)
 	}()
 
@@ -252,16 +258,29 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, p
 }
 
 // stamp writes the terminal run state; runError "" ⇒ NULL. run_ended_at is set on
-// every terminal transition so the UI can show a duration.
+// every terminal transition so the UI can show a duration, and
+// run_checkboxes_after closes the measurement interval opened by
+// run_checkboxes_before at spawn — same self-referencing trick, so the right edge
+// is pinned at the same instant the run ends rather than left to drift with every
+// later writer of checkboxes_done.
 func (s *Service) stamp(phaseID int64, state, runError string) {
 	var re any
 	if runError != "" {
 		re = runError
 	}
-	if _, err := s.DB.Exec(
-		`UPDATE epic_phases SET run_state=?, run_error=?, run_ended_at=? WHERE id=?`,
-		state, re, s.ts(), phaseID); err != nil {
+	res, err := s.DB.Exec(`
+		UPDATE epic_phases
+		   SET run_state=?, run_error=?, run_ended_at=?,
+		       run_checkboxes_after=checkboxes_done
+		 WHERE id=?`, state, re, s.ts(), phaseID)
+	if err != nil {
 		log.Printf("error: phaserun: stamp phase=%d state=%s: %v", phaseID, state, err)
+		return
+	}
+	// Zero rows means the phase row vanished mid-run — historically a rescan
+	// deleting and re-inserting it. Silent data loss; log it loudly.
+	if n, _ := res.RowsAffected(); n == 0 {
+		log.Printf("error: phaserun: stamp phase=%d state=%s: row vanished mid-run", phaseID, state)
 	}
 }
 
