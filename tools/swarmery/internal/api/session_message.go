@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
@@ -236,6 +237,11 @@ func runSessionMessage(ctx context.Context, cancel context.CancelFunc, id int64,
 
 	cmd := exec.CommandContext(ctx, bin, "-r", sessionUUID, "-p", text, "--output-format", "json")
 	cmd.Dir = cwd
+	// Own process group: a daemon restart (make install / launchd job stop)
+	// SIGKILLs the daemon's process group — without this, every in-flight
+	// dashboard-driven session dies mid-turn. Detached children survive as
+	// procwatch 'orphaned' and finish their work.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("session_message: resume uuid=%s ended: %v — output: %s", sessionUUID, err, truncateOutput(string(out), 500))

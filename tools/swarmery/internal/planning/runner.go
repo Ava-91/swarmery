@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -82,6 +83,9 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 	cmd := exec.CommandContext(ctx, bin, "-p", spec.Prompt, "--session-id", spec.SessionUUID, "--model", model)
 	cmd.Dir = spec.Cwd
+	// Own process group — survive daemon restarts (same rationale as the
+	// session resume spawn in api/session_message.go).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// stdout is the assistant text; we do NOT parse it — the planner's transcript
