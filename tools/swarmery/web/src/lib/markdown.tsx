@@ -51,6 +51,16 @@ const HEADING_SIZES: Record<number, string> = {
   4: 'text-[13px]',
 };
 
+/** Heading id for in-page anchors: lowercase, non-alphanumeric runs collapsed
+ * to a single dash, ends trimmed. Kept in sync with the glossary's doc.anchor
+ * values by internal/docsfs/glossary_drift_test.go. */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 /* ----- pipe tables — `| a | b |` header + `|---|---|` separator ----- */
 
 function isTableRow(s: string): boolean {
@@ -161,18 +171,22 @@ export function Markdown({ text }: { text: string }): JSX.Element {
       continue;
     }
 
-    // Heading.
+    // Heading. Real h2–h5 (the pane owns the h1) with a slug id so /docs
+    // deep links like /docs/concepts#handoff resolve.
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h !== null) {
       flushParagraph(para, `${key}-p`, out);
       const level = (h[1] ?? '#').length;
+      const text = h[2] ?? '';
+      const Tag = (['h2', 'h3', 'h4', 'h5'] as const)[level - 1] ?? 'h5';
       out.push(
-        <div
+        <Tag
           key={key}
+          id={slugify(text)}
           className={`mt-3 mb-1.5 font-semibold text-ink first:mt-0 ${HEADING_SIZES[level] ?? 'text-[13px]'}`}
         >
-          {renderInline(h[2] ?? '', key)}
-        </div>,
+          {renderInline(text, key)}
+        </Tag>,
       );
       i += 1;
       continue;
