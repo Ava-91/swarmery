@@ -77,7 +77,7 @@ const RAW = {
     tone: 'action',
     actions: [
       'Reattach in the terminal where it was started, if that terminal is still open.',
-      'Otherwise Kill the row to close it out — an orphaned row stays killable.',
+      'Otherwise close it out with whichever control the row offers — Stop while it still reads as active, Kill once it reads as stuck.',
       'If the work matters, resume from the session’s Handoff brief instead.',
     ],
     doc: { slug: 'concepts', anchor: 'orphaned-dead' },
@@ -215,7 +215,7 @@ const RAW = {
     facts: [
       { label: 'plans land in', value: '<root>/<project>/workspace/working/' },
       { label: 'root', value: 'AGENT_WORKSPACE_ROOT · default ~/swarmery-workspace' },
-      { label: 'plan docs', value: 'read-only — swarmery indexes them, never edits' },
+      { label: 'plan docs', value: 'yours to edit; swarmery ticks acceptance boxes as phases finish' },
     ],
     doc: { slug: 'concepts', anchor: 'planning-mode' },
   },
