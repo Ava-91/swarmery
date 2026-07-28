@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,7 +52,31 @@ var (
 	ErrNoPath = errors.New("project has no known path to run in")
 	// ErrComplete: every phase is already done — nothing to run (409).
 	ErrComplete = errors.New("every phase of this plan is already done")
+	// ErrBranchDirty: the previous run's branch still exists and holds commits, so
+	// the deterministic branch name cannot be reclaimed automatically. Returned as
+	// a *BranchDirtyError, which errors.Is-matches this sentinel. Mirrors
+	// phaserun.ErrBranchDirty — the two run surfaces answer retry identically.
+	ErrBranchDirty = errors.New("run branch has unmerged commits")
 )
+
+// BranchDirtyError names the blocking branch and how many commits would be lost, so
+// the api's 409 body and the UI can offer an explicit delete-or-merge decision
+// instead of silently destroying work. Shape mirrors phaserun.BranchDirtyError.
+type BranchDirtyError struct {
+	Branch       string
+	CommitsAhead int
+	// Base is the branch CommitsAhead was measured against — the repo's current
+	// checkout, because worktree.ReclaimEmptyBranch counts against the same start
+	// point Acquire pins to. Empty when the base could not be named (no Git seam
+	// wired, detached HEAD, git failure) — never guessed.
+	Base string
+}
+
+func (e *BranchDirtyError) Error() string {
+	return fmt.Sprintf("run branch %s has %d unmerged commit(s)", e.Branch, e.CommitsAhead)
+}
+
+func (e *BranchDirtyError) Is(target error) bool { return target == ErrBranchDirty }
 
 // run is one in-flight plan run: its cancel (aborts the child claude) and the
 // pre-generated session uuid.
@@ -65,9 +90,13 @@ type run struct {
 // plan_updated publisher) is keyed by the workspace task id so the Plans page
 // refetches on run edges.
 type Service struct {
-	DB   *sql.DB
-	Wt   dispatch.WorktreeManager // shared worktree mechanics (dispatch's seam)
-	Run  Runner
+	DB  *sql.DB
+	Wt  dispatch.WorktreeManager // shared worktree mechanics (dispatch's seam)
+	Run Runner
+	// Git is an OPTIONAL read-only seam, used for one thing: naming the branch a
+	// commits-ahead count was measured against (BranchDirtyError.Base). nil ⇒ the
+	// base is reported as unknown; no run behaviour depends on it.
+	Git  worktree.Git
 	UUID func() string    // session-uuid generator (test seam; default newUUID)
 	now  func() time.Time // clock (test seam; default time.Now)
 	Go   func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors phaserun.Go
@@ -203,15 +232,38 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 		s.mu.Unlock()
 	}
 
-	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, "plan-"+strconv.FormatInt(taskID, 10))
+	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
+	// run's swarm/plan-<taskID> is still there and Acquire would fail ErrBranchBusy
+	// — the dead end that made a plan's SECOND run fail for ever. Reclaim it first
+	// when it is empty; refuse loudly when it holds work. The literal below must
+	// match worktree.branchName ("swarm/" + taskID) — the same deterministic name
+	// Acquire derives from the taskName passed just after.
+	taskName := "plan-" + strconv.FormatInt(taskID, 10)
+	branch := "swarm/" + taskName
+	ahead, err := s.Wt.ReclaimEmptyBranch(info.ProjectPath, branch)
+	if err != nil {
+		release()
+		return "", fmt.Errorf("reclaim run branch: %w", err)
+	}
+	if ahead > 0 {
+		release()
+		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead, Base: s.baseBranch(info.ProjectPath)}
+	}
+
+	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, taskName)
 	if err != nil {
 		release()
 		return "", fmt.Errorf("worktree acquire: %w", err)
 	}
 
 	if err := s.stampStart(taskID, agent, string(runMode), uuid); err != nil {
-		release()
+		// Worktree FIRST, slot LAST — the same invariant runAndHandle's defer
+		// enforces. Releasing the slot while the worktree still exists lets a
+		// concurrent Start warm-reuse (worktree invariant 4) the deterministic
+		// plan-<taskID> path we are about to delete; the failed stamp is precisely
+		// the write that would have closed the DB gate, so nothing else holds it.
 		s.removeWorktree(info.ProjectPath, acq)
+		release()
 		return "", err
 	}
 
@@ -244,10 +296,16 @@ func allComplete(phases []Phase) bool {
 func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, info planInfo, acq worktree.Acquired, spec RunSpec) {
 	defer func() {
 		cancel()
+		// Worktree FIRST, slot LAST. stamp() has already moved the row off
+		// 'running', so the DB gate in Start is open; releasing the single-flight
+		// slot before the (git shell-out, tens of ms) removal opens a window where a
+		// re-Start re-acquires the SAME deterministic worktree path (worktree
+		// invariant-4 reuse) and this defer then rips the new run's worktree out
+		// from under it.
+		s.removeWorktree(info.ProjectPath, acq)
 		s.mu.Lock()
 		delete(s.active, info.TaskID)
 		s.mu.Unlock()
-		s.removeWorktree(info.ProjectPath, acq)
 		s.notify(info.TaskID)
 	}()
 
@@ -305,6 +363,22 @@ func (s *Service) stamp(taskID int64, state, runError string) {
 	}
 }
 
+// baseBranch names the repo's current checkout — the branch
+// worktree.ReclaimEmptyBranch's commit count is relative to (it resolves its start
+// point from the same symbolic HEAD Acquire does). Purely descriptive: any failure,
+// a detached HEAD, or no Git seam yields "" and the consumer omits the base rather
+// than naming one that was not measured. Mirrors phaserun.baseBranch.
+func (s *Service) baseBranch(repoRoot string) string {
+	if s.Git == nil || repoRoot == "" {
+		return ""
+	}
+	out, err := s.Git.Run(repoRoot, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
 // removeWorktree best-effort removes the run's worktree, KEEPING the branch
 // (its commits stay reachable for the user — mirrors phaserun.removeWorktree).
 func (s *Service) removeWorktree(repoRoot string, acq worktree.Acquired) {
@@ -327,6 +401,63 @@ func (s *Service) Cancel(taskID int64) bool {
 		r.cancel()
 	}
 	return ok
+}
+
+// DeleteRunBranch force-deletes a plan's run branch, INCLUDING one that holds
+// commits — the explicit user decision behind a BranchDirtyError. Refuses while
+// the branch is checked out or a run is in flight for this plan. Mirrors
+// phaserun.DeleteRunBranch.
+//
+// existed reports whether the branch was actually there: worktree.DeleteBranch is
+// idempotent (a missing branch is a silent nil), so a caller with only an error to
+// read cannot tell a real deletion from a no-op and would claim "deleted" either
+// way. phaserun.DeleteRunBranch is scheduled to take this same shape; it is
+// adopted here from the start so the two run surfaces never disagree.
+func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, err error) {
+	info, err := s.loadPlan(taskID)
+	if err != nil {
+		return "", false, err
+	}
+	if info.ProjectPath == "" {
+		return "", false, ErrNoPath
+	}
+	// A live run owns the branch; deleting it underneath would strand its commits.
+	s.mu.Lock()
+	_, busy := s.active[taskID]
+	s.mu.Unlock()
+	if busy {
+		return "", false, ErrRunning
+	}
+	// Same deterministic name Start reclaims and Acquire derives (worktree.branchName).
+	branch = "swarm/plan-" + strconv.FormatInt(taskID, 10)
+	existed = s.branchExists(info.ProjectPath, branch)
+	if err := s.Wt.DeleteBranch(info.ProjectPath, branch); err != nil {
+		return "", false, err
+	}
+	if existed {
+		log.Printf("planrun: deleted run branch %s (plan=%d)", branch, taskID)
+	}
+	return branch, existed, nil
+}
+
+// branchExists probes whether branch is present, through the SAME optional Git
+// seam baseBranch uses and with the same rev-parse contract worktree.branchExists
+// applies. It is a probe, not a gate: dispatch.WorktreeManager.DeleteBranch cannot
+// report existence yet (the follow-up that widens it will let this collapse into
+// the delete call), so the answer is read before the delete.
+//
+// Unverifiable — no Git seam wired, no project path, or git itself unhappy —
+// answers false. The bool is a CLAIM ("this branch was deleted") that a caller
+// turns into user-visible truth, and a claim that could not be checked must not be
+// made; the deletion itself still happened and is reported by err.
+func (s *Service) branchExists(repoRoot, branch string) bool {
+	if s.Git == nil || repoRoot == "" {
+		return false
+	}
+	// `rev-parse --verify --quiet` exits non-zero when the ref is absent; any error
+	// (absent or git unhappy) is "cannot claim it existed".
+	_, err := s.Git.Run(repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
 }
 
 // HealStale fails any plan_runs row left 'running' by a crashed/restarted
