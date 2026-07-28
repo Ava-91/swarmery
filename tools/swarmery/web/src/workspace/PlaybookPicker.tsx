@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react';
 import type { Playbook } from '../api/types';
 import { fetchPlaybooks } from '../api';
+import { Explain } from '../components/Explain';
 
 /** The recipe used when no playbook is selected — its selection maps to "". */
 export const DEFAULT_PLAYBOOK = 'standard';
@@ -108,6 +109,7 @@ export function PlaybookHint({
   return (
     <div className="mt-1 flex items-start gap-1.5">
       <VerifyChip verify={pb.verify} />
+      <Explain id="verify-knob" />
       <span className="font-mono text-[10px] leading-snug text-ink-faint">{pb.description}</span>
     </div>
   );
