@@ -16,8 +16,8 @@
 //
 // BOTH detail panels are tabbed, with the same tab-bar idiom:
 //   phase → Phase (run state, interactive acceptance criteria, full doc)
-//         | Summary (Completion Report, ticked criteria, `## Execution record`)
-//         | Edit (raw markdown + Save)
+//         | Summary (what was done: Completion Report + `## Execution record`)
+//         | Edit (raw markdown + Save) — retired once the phase is done
 //   plan  → Plan (README markdown)
 //         | Summary (per-phase executed work; only when every phase is done)
 //         | Edit (raw README + Save)
@@ -1089,7 +1089,7 @@ function PhaseList({
                       onClick={() => {
                         onOpenPhase(p.seq, 'summary');
                       }}
-                      data-tip="what was shipped — completed criteria, Completion Report, execution record"
+                      data-tip="what was done — the executor's Completion Report and execution record"
                       className="font-mono text-[9.5px] text-green underline-offset-2 transition-colors hover:underline"
                     >
                       ✓ summary
@@ -1123,16 +1123,22 @@ function PhaseList({
                     </button>
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenPhase(p.seq, 'edit');
-                  }}
-                  className="font-mono text-[9.5px] text-ink-dim underline-offset-2 transition-colors hover:text-ink hover:underline"
-                >
-                  edit doc
-                </button>
+                {/* A done phase is history: its doc describes work already
+                    shipped, so editing it would rewrite the record rather than
+                    steer the work. The ✓ summary button above is the only
+                    affordance it keeps. */}
+                {status !== 'done' && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenPhase(p.seq, 'edit');
+                    }}
+                    className="font-mono text-[9.5px] text-ink-dim underline-offset-2 transition-colors hover:text-ink hover:underline"
+                  >
+                    edit doc
+                  </button>
+                )}
               </div>
             </div>
           </li>
@@ -1738,6 +1744,16 @@ function PhaseDetailPanel({
   const chip = phaseChip(status, running);
   const [doc, setDoc] = usePlanDoc(epic.taskId, phase.docRelPath, phase.docUpdatedAt);
   const checks = useMemo(() => (doc !== null ? extractChecks(doc) : null), [doc]);
+  // A done phase retires its Edit tab along with the Run button: the doc is the
+  // record of work already shipped, not a plan still being steered. A stale
+  // `edit` selection (the phase finished while the tab was open) degrades to
+  // Summary instead of leaving a dead panel.
+  const editable = status !== 'done';
+  const activeTab: PhaseDetailTab = tab === 'edit' && !editable ? 'summary' : tab;
+  const tabs = useMemo(
+    () => (editable ? PHASE_TABS : PHASE_TABS.filter((t) => t.id !== 'edit')),
+    [editable],
+  );
   const [busyLine, setBusyLine] = useState<number | null>(null);
   const [toggleErr, setToggleErr] = useState<string | null>(null);
 
@@ -1846,20 +1862,20 @@ function PhaseDetailPanel({
       tabBar={
         <DetailTabs
           label="phase details tabs"
-          tabs={PHASE_TABS}
-          active={tab}
+          tabs={tabs}
+          active={activeTab}
           onTab={onTab}
         />
       }
     >
-      {tab === 'edit' ? (
+      {activeTab === 'edit' ? (
         <DocEditor
           taskId={epic.taskId}
           path={phase.docRelPath}
           version={phase.docUpdatedAt}
           onSaved={onDocChanged}
         />
-      ) : tab === 'summary' ? (
+      ) : activeTab === 'summary' ? (
         <PhaseSummary phase={phase} doc={doc} />
       ) : (
         <>
@@ -1905,35 +1921,46 @@ const PHASE_TABS: { id: PhaseDetailTab; label: string }[] = [
   { id: 'edit', label: 'Edit' },
 ];
 
-/** Summary tab of one phase: what was actually shipped — the Completion Report
- * the executor wrote, the criteria it ticked, and the doc's `## Execution
- * record` section. Nothing written yet reads as an explicit empty state rather
- * than a missing tab. */
+/** Summary tab of one phase: a prose account of WHAT WAS DONE — the Completion
+ * Report the executor wrote plus the doc's `## Execution record` section.
+ *
+ * Acceptance criteria are deliberately NOT listed here: they are the phase's
+ * contract, not its summary, and they already live (interactive, in full) on
+ * the Phase tab. All this tab keeps of them is the one-line score, as context
+ * for the narrative. A phase whose executor wrote no report says so plainly
+ * instead of padding the tab with a re-run of the checklist. */
 function PhaseSummary({ phase, doc }: { phase: EpicPhase; doc: string | null }): JSX.Element {
-  const ticked = useMemo(() => (doc !== null ? extractChecks(doc).filter((c) => c.done) : []), [doc]);
+  const checks = useMemo(() => (doc !== null ? extractChecks(doc) : []), [doc]);
   const execRecord = useMemo(() => (doc !== null ? extractSection(doc, 'Execution record') : null), [doc]);
 
   if (doc === null) return <Loading label="summary…" />;
 
-  const empty = phase.completionReport === null && ticked.length === 0 && execRecord === null;
-  if (empty) {
+  const done = checks.filter((c) => c.done).length;
+  const score = (
+    <div className="mb-3 font-mono text-[10.5px] text-ink-faint">
+      {done}/{checks.length} acceptance criteria met · full list on the Phase tab
+    </div>
+  );
+
+  if (phase.completionReport === null && execRecord === null) {
     return (
-      <div className="font-mono text-[11.5px] text-ink-faint">
-        nothing shipped yet — no ticked criteria, no Completion Report, no execution record
-      </div>
+      <>
+        {checks.length > 0 && score}
+        <div className="font-mono text-[11.5px] text-ink-faint">
+          no summary of the work written — the executor left neither a{' '}
+          <span className="text-ink-dim">## Completion Report</span> nor an{' '}
+          <span className="text-ink-dim">## Execution record</span> section in this phase doc
+        </div>
+      </>
     );
   }
 
   return (
     <>
+      {checks.length > 0 && score}
       {phase.completionReport !== null && (
-        <RailSection label="completion report">
+        <RailSection label="what was done">
           <Markdown text={phase.completionReport} />
-        </RailSection>
-      )}
-      {ticked.length > 0 && (
-        <RailSection label={`completed criteria (${String(ticked.length)})`}>
-          <ChecksList checks={ticked} />
         </RailSection>
       )}
       {execRecord !== null && (
@@ -2011,8 +2038,10 @@ function PlanReadme({ epic }: { epic: Epic }): JSX.Element {
 }
 
 /** Summary tab body (complete plans only): per-phase executed work — phase
- * title + N/N, its TICKED acceptance criteria, and, when present, the phase's
- * Completion Report and/or `## Execution record` doc section. Derived
+ * title + the N/N score, and what the executor reported doing (Completion
+ * Report and/or the `## Execution record` doc section). The criteria
+ * themselves stay on the phase docs — a summary reports work, not contract.
+ * Derived
  * client-side from the existing docs endpoint (one fetch per phase doc, plus
  * plan/SUMMARY.md when the executor wrote one) — no API extension needed. */
 function PlanSummary({
@@ -2064,7 +2093,6 @@ function PlanSummary({
       )}
       {epic.phases.map((p) => {
         const doc = docs[p.docRelPath] ?? '';
-        const ticked = extractChecks(doc).filter((c) => c.done);
         const execRecord = extractSection(doc, 'Execution record');
         const status = phaseStatus(p, resolvedSeqs);
         return (
@@ -2082,15 +2110,10 @@ function PlanSummary({
                 {p.checkboxesDone}/{p.checkboxesTotal || 0}
               </span>
             </div>
-            {ticked.length > 0 && (
-              <div className="mt-2">
-                <ChecksList checks={ticked} />
-              </div>
-            )}
             {p.completionReport !== null && (
               <div className="mt-2 border-t border-line pt-2">
                 <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-faint">
-                  completion report
+                  what was done
                 </div>
                 <Markdown text={p.completionReport} />
               </div>
@@ -2101,6 +2124,11 @@ function PlanSummary({
                   execution record
                 </div>
                 <Markdown text={execRecord} />
+              </div>
+            )}
+            {p.completionReport === null && execRecord === null && (
+              <div className="mt-2 font-mono text-[10.5px] text-ink-faint">
+                no summary written for this phase
               </div>
             )}
           </section>
