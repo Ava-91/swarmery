@@ -13,10 +13,22 @@ import (
 // Sentinel errors — errors.Is-able. The dispatcher (Phase 3) maps these to
 // dispatch_error messages on the task row.
 var (
-	// ErrBranchBusy: swarm/<taskID> already exists and is checked out in a
-	// different worktree. No silent rename (Fusion lesson) — the caller must
-	// resolve the conflict.
+	// ErrBranchBusy: swarm/<taskID> is checked out in a worktree at a DIFFERENT
+	// path than the one we would hand this task. A live checkout owns the branch,
+	// so the remedy is to find and release that worktree. No silent rename (Fusion
+	// lesson) — the caller must resolve the conflict.
+	//
+	// Strictly the checked-out case: a branch that merely EXISTS is ErrBranchExists.
+	// The two used to share this sentinel, and the message sent operators hunting for
+	// a worktree that was not there — `git worktree list` showed nothing holding it.
 	ErrBranchBusy = errors.New("worktree: task branch is busy in another worktree")
+	// ErrBranchExists: swarm/<taskID> exists as a ref but NO worktree has it checked
+	// out, so `git worktree add -b` collides on the name alone. Nothing has to be
+	// released; the branch is either an empty leftover (ReclaimEmptyBranch deletes it
+	// automatically) or it holds commits, which is a decision for the operator —
+	// merge them or discard them. Different remedy from ErrBranchBusy, hence a
+	// different sentinel.
+	ErrBranchExists = errors.New("worktree: task branch already exists")
 	// ErrRepoRootRefused: the computed worktree path equals or contains repoRoot
 	// (or vice versa). A runtime invariant — never hand a task the repo root.
 	ErrRepoRootRefused = errors.New("worktree: refusing to use a path inside the repo root")
@@ -108,7 +120,8 @@ func taskIDForBranch(branch string) string {
 // explicit start point. It enforces invariants 1–6 (see the phase doc):
 //  1. explicit startPoint — never ambient HEAD;
 //  2. repo-root guard — runtime, not caller-trusted;
-//  3. branch-busy conflict fails loudly (ErrBranchBusy);
+//  3. a branch conflict fails loudly — ErrBranchBusy when another worktree has it
+//     checked out, ErrBranchExists when the name is merely taken;
 //  4. reuse-or-reset — reuse only a branch-matched worktree, recreate on any
 //     proven mismatch, never destroy on a transient probe failure;
 //  5. stale-lock sweep before acquisition;
@@ -181,10 +194,12 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 		return Acquired{}, fmt.Errorf("worktree: mkdir base %s: %w", filepath.Dir(path), err)
 	}
 	if out, err := m.Git.Run(repoRoot, "worktree", "add", "-b", branch, path, startSHA); err != nil {
-		// A branch that exists but is not checked out anywhere collides on add;
-		// surface it as busy rather than a raw git error.
+		// A branch that exists but is not checked out anywhere collides on add. It is
+		// NOT busy — the list probe above already proved no worktree holds it — so it
+		// gets its own sentinel and a message that does not send the reader looking
+		// for a checkout that does not exist.
 		if strings.Contains(out, "already exists") {
-			return Acquired{}, fmt.Errorf("%w: branch %s already exists", ErrBranchBusy, branch)
+			return Acquired{}, fmt.Errorf("%w: %s (no worktree holds it — merge or delete it)", ErrBranchExists, branch)
 		}
 		return Acquired{}, fmt.Errorf("worktree: add %s: %w", path, err)
 	}
@@ -346,7 +361,7 @@ func (m *Manager) reclaimBase(repoRoot string) (string, error) {
 
 // ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead of the
 // repo's base branch, so a re-run can re-acquire the deterministic name swarm/<taskID>
-// instead of dying on ErrBranchBusy. The base is the repo's checked-out branch
+// instead of dying on ErrBranchExists. The base is the repo's checked-out branch
 // (reclaimBase) — the same signal Acquire pins to whenever there IS one, and an
 // ErrDetachedHead refusal when there is not.
 //

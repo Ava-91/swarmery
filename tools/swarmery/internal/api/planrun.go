@@ -6,8 +6,9 @@ package api
 // this layer only starts and stops it. Per-phase progress keeps flowing through
 // wsingest as the controller ticks the phase docs.
 //
-//	POST /api/epics/{taskId}/run        {agent?} → 202 {status, sessionUuid, agent}
-//	POST /api/epics/{taskId}/run/cancel          → 202 {status}
+//	POST   /api/epics/{taskId}/run        {agent?} → 202 {status, sessionUuid, agent}
+//	POST   /api/epics/{taskId}/run/cancel          → 202 {status}
+//	DELETE /api/epics/{taskId}/branch              → 200 {deleted, branch}
 //
 // The service is attached once at daemon startup (AttachPlanRun) — the same
 // package-var idiom as AttachPhaseRun/AttachPlanning — so httptest handlers
@@ -24,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrun"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // planrunSvc is attached once at daemon startup (nil ⇒ plan-run endpoints 503
@@ -83,6 +85,7 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 	mode := planrun.ValidMode(body.Mode)
 
 	uuid, err := planrunSvc.Start(taskID, agent, string(mode))
+	var dirtyErr *planrun.BranchDirtyError
 	switch {
 	case errors.Is(err, planrun.ErrPlanNotFound):
 		writeClientErr(w, http.StatusNotFound, "plan not found")
@@ -100,6 +103,32 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusConflict, "plan README is unreadable")
 	case errors.Is(err, planrun.ErrNoPath):
 		writeClientErr(w, http.StatusConflict, "project has no known path to run in")
+	// The previous run's branch still holds commits, so reclaiming its name would
+	// destroy them. Same body shape runPhase emits (error/branch/commitsAhead/base)
+	// — the two run surfaces answer retry identically, and the UI parses one shape.
+	// `base` is what turns "2 commits ahead" into a decision: ahead of `dev` is work
+	// to merge, ahead of a branch that already contains them is nothing at all.
+	// errors.As (not a type assertion): Start returns the value directly today, but
+	// a future wrap must not silently downgrade this back to a 500.
+	case errors.As(err, &dirtyErr):
+		writeJSONStatus(w, http.StatusConflict, map[string]any{
+			"error":        dirtyErr.Error(),
+			"branch":       dirtyErr.Branch,
+			"commitsAhead": dirtyErr.CommitsAhead,
+			"base":         dirtyErr.Base,
+		})
+	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
+	// errors.Is still matches through the wrap. Without this arm a checked-out run
+	// branch surfaces as a raw 500 and the UI can show the user nothing actionable.
+	case errors.Is(err, worktree.ErrBranchCheckedOut):
+		writeClientErr(w, http.StatusConflict, "the run branch is checked out in another worktree")
+	// Same category, same wrap: with no checked-out branch there is no base to
+	// measure the leftover run branch against, so reclaim refuses rather than guess
+	// one — and a guessed base is what a `git branch -D` must never run on. The user
+	// resolves it by checking out a branch, which a raw 500 would never say.
+	case errors.Is(err, worktree.ErrDetachedHead):
+		writeClientErr(w, http.StatusConflict,
+			"the repo is on a detached HEAD, so the run branch cannot be measured against a base — check out a branch first")
 	case err != nil:
 		writeErr(w, err)
 	default:
@@ -132,4 +161,48 @@ func (h *Handler) cancelPlanRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "cancelling"})
+}
+
+// deletePlanRunBranch — DELETE /api/epics/{taskId}/branch. requireLocalOrigin.
+// The explicit user decision behind the branch-dirty 409: force-deletes
+// swarm/plan-<taskId> INCLUDING its commits. Mirrors deletePhaseRunBranch — same
+// {deleted, branch} shape, same 503-when-unattached posture.
+//
+// `deleted` reports what actually happened, not what was attempted:
+// DeleteRunBranch answers `existed` because worktree.DeleteBranch is idempotent
+// (a missing branch is a silent nil), and a handler that hard-coded true would
+// let the UI clear a dirty-branch banner on a no-op.
+//
+// Every refusal DeleteRunBranch can raise is a state the user can resolve — the
+// branch is checked out somewhere, a run owns it, it is the repo's HEAD, or it is
+// outside the swarm/ namespace this daemon is allowed to `branch -D`. Those are
+// 409s with a message, never the raw 500 an unmatched error produces.
+func (h *Handler) deletePlanRunBranch(w http.ResponseWriter, r *http.Request) {
+	if planrunSvc == nil {
+		writeClientErr(w, http.StatusServiceUnavailable, "plan runs not attached")
+		return
+	}
+	taskID, ok := parsePlanRunTask(w, r)
+	if !ok {
+		return
+	}
+	branch, existed, err := planrunSvc.DeleteRunBranch(taskID)
+	switch {
+	case errors.Is(err, planrun.ErrPlanNotFound):
+		writeClientErr(w, http.StatusNotFound, "plan not found")
+	case errors.Is(err, planrun.ErrRunning):
+		writeClientErr(w, http.StatusConflict, "a run is active for this plan")
+	case errors.Is(err, planrun.ErrNoPath):
+		writeClientErr(w, http.StatusConflict, "project has no known path")
+	case errors.Is(err, worktree.ErrBranchCheckedOut):
+		writeClientErr(w, http.StatusConflict, "branch is checked out in a worktree")
+	case errors.Is(err, worktree.ErrBranchIsHead):
+		writeClientErr(w, http.StatusConflict, "the run branch is the repo's checked-out branch")
+	case errors.Is(err, worktree.ErrRefusedBranch):
+		writeClientErr(w, http.StatusConflict, "refusing to delete a branch outside the swarm/ namespace")
+	case err != nil:
+		writeErr(w, err)
+	default:
+		writeJSON(w, map[string]any{"deleted": existed, "branch": branch}, nil)
+	}
 }

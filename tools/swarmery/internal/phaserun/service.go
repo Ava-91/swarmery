@@ -48,6 +48,13 @@ var (
 	// the deterministic branch name cannot be reclaimed automatically. Returned as
 	// a *BranchDirtyError, which errors.Is-matches this sentinel.
 	ErrBranchDirty = errors.New("run branch has unmerged commits")
+	// ErrNoRunBranch: the phase has no recorded run_branch (0043), so there is no
+	// branch this service is willing to name — either it never ran, or it ran before
+	// the column existed and the backfill did not reach it. Deliberately NOT a
+	// fallback to the derived "swarm/phase-<id>": after a doc rename that name is a
+	// branch that does not exist, and deleting it would report success while the
+	// branch actually holding the commits survives (409).
+	ErrNoRunBranch = errors.New("phase has no recorded run branch")
 )
 
 // BranchDirtyError names the blocking branch and how many commits would be lost, so
@@ -170,6 +177,13 @@ type phaseInfo struct {
 	RunState        string
 	ProjectPath     string
 	ProjectSlug     string
+	// RunBranch is the branch a previous run committed to, as STAMPED at spawn
+	// (migration 0043) — never re-derived from the row id. epic_phases identity is
+	// doc_path, so a renamed or regenerated phase doc replaces the row and mints a
+	// new id; a derived name would then point at a branch that does not exist while
+	// the real one, holding the run's commits, became unreachable. Empty only for a
+	// phase that has never run.
+	RunBranch string
 }
 
 // Start admits a run for a phase: gates (single-flight, deps, doc, path), then
@@ -218,7 +232,7 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	}
 
 	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
-	// run's swarm/phase-<id> is still there and Acquire would fail ErrBranchBusy.
+	// run's swarm/phase-<id> is still there and Acquire would fail ErrBranchExists.
 	// Reclaim it first when it is empty; refuse loudly when it holds work. The
 	// literal below must match worktree.branchName ("swarm/" + taskID) — it is the
 	// same deterministic name Acquire derives from the taskID passed just after.
@@ -234,6 +248,25 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead, Base: s.baseBranch(info.ProjectPath)}
 	}
 
+	// A run this phase performed under a PREVIOUS row id left its commits on a branch
+	// the deterministic name above no longer reaches (epic_phases identity is doc_path,
+	// so a renamed doc mints a new id). run_branch is the only record of it. Reclaim it
+	// too: empty ⇒ a harmless leftover name, deleted; non-empty ⇒ real work that this
+	// run would strand for ever, so refuse and let the operator decide — the same
+	// contract the deterministic branch gets, applied to the branch that actually holds
+	// the commits.
+	if prev := info.RunBranch; prev != "" && prev != branch {
+		prevAhead, err := s.Wt.ReclaimEmptyBranch(info.ProjectPath, prev)
+		if err != nil {
+			release()
+			return "", fmt.Errorf("reclaim previous run branch %s: %w", prev, err)
+		}
+		if prevAhead > 0 {
+			release()
+			return "", &BranchDirtyError{Branch: prev, CommitsAhead: prevAhead, Base: s.baseBranch(info.ProjectPath)}
+		}
+	}
+
 	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, taskName)
 	if err != nil {
 		release()
@@ -247,12 +280,15 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	// the PREVIOUS run's stamp, or a running phase's diagnosis quotes a right edge
 	// belonging to a different run — and a daemon crash mid-run freezes that
 	// mismatch in place (stamp() would otherwise heal it at exit).
+	// run_branch is stamped in the SAME statement that opens the run: the branch must
+	// be recorded before anything can commit to it, or a crash between the two writes
+	// leaves commits on a branch nothing names (migration 0043).
 	if _, err := s.DB.Exec(`
 		UPDATE epic_phases
 		   SET run_state='running', run_session_uuid=?, run_started_at=?,
-		       run_error=NULL, run_ended_at=NULL,
+		       run_error=NULL, run_ended_at=NULL, run_branch=?,
 		       run_checkboxes_before=checkboxes_done, run_checkboxes_after=NULL
-		 WHERE id=?`, uuid, s.ts(), phaseID); err != nil {
+		 WHERE id=?`, uuid, s.ts(), branch, phaseID); err != nil {
 		// Worktree FIRST, slot LAST — the same invariant runAndHandle's defer
 		// enforces. Releasing the slot while the worktree still exists lets a
 		// concurrent Start warm-reuse (worktree invariant 4) the deterministic
@@ -444,8 +480,15 @@ func (s *Service) DeleteRunBranch(phaseID int64) (string, error) {
 	if busy {
 		return "", ErrRunning
 	}
-	// Same deterministic name Start reclaims and Acquire derives (worktree.branchName).
-	branch := "swarm/phase-" + strconv.FormatInt(phaseID, 10)
+	// The branch STAMPED at spawn (0043) — never re-derived from the row id. Deriving
+	// it here would name swarm/phase-<current id>, which after a doc rename is a branch
+	// that does not exist, while the one holding the run's commits survives untouched:
+	// a delete that reports success and destroys nothing. No fallback for the same
+	// reason — a fallback reinstates exactly that failure.
+	branch := info.RunBranch
+	if branch == "" {
+		return "", ErrNoRunBranch
+	}
 	if err := s.Wt.DeleteBranch(info.ProjectPath, branch); err != nil {
 		return "", err
 	}
@@ -493,19 +536,20 @@ func (s *Service) HealStale() error {
 // loadPhase reads the phase + its epic task + project for admission.
 func (s *Service) loadPhase(phaseID int64) (phaseInfo, error) {
 	var (
-		info     phaseInfo
-		depsJSON string
-		path     sql.NullString
+		info      phaseInfo
+		depsJSON  string
+		path      sql.NullString
+		runBranch sql.NullString
 	)
 	err := s.DB.QueryRow(`
 		SELECT e.workspace_task_id, e.seq, e.doc_path, e.depends_on, e.run_state,
-		       p.path, p.slug
+		       e.run_branch, p.path, p.slug
 		  FROM epic_phases e
 		  JOIN tasks t ON t.id = e.workspace_task_id
 		  JOIN projects p ON p.id = t.project_id
 		 WHERE e.id = ?`, phaseID).Scan(
 		&info.WorkspaceTaskID, &info.Seq, &info.DocPath, &depsJSON,
-		&info.RunState, &path, &info.ProjectSlug)
+		&info.RunState, &runBranch, &path, &info.ProjectSlug)
 	if errors.Is(err, sql.ErrNoRows) {
 		return info, ErrPhaseNotFound
 	}
@@ -513,6 +557,7 @@ func (s *Service) loadPhase(phaseID int64) (phaseInfo, error) {
 		return info, err
 	}
 	info.ProjectPath = path.String
+	info.RunBranch = runBranch.String
 	if err := json.Unmarshal([]byte(depsJSON), &info.DependsOn); err != nil {
 		info.DependsOn = nil // garbage depends_on ⇒ no gate (same posture as epics.go decodeIntList)
 	}

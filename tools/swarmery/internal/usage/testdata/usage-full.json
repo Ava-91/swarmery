@@ -1,0 +1,47 @@
+{
+  "five_hour": {
+    "utilization": 42,
+    "resets_at": "2026-07-28T15:30:00Z"
+  },
+  "seven_day": {
+    "utilization": 19,
+    "resets_at": "2026-08-02T12:00:00Z"
+  },
+  "seven_day_opus": null,
+  "seven_day_sonnet": null,
+  "limits": [
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 28,
+      "resets_at": "2026-08-02T12:00:00Z",
+      "scope": { "model": { "display_name": "Fable" } }
+    },
+    {
+      "kind": "five_hour",
+      "group": "session",
+      "percent": 42,
+      "resets_at": "2026-07-28T15:30:00Z",
+      "scope": { "model": { "display_name": "Fable" } }
+    },
+    {
+      "kind": "weekly",
+      "group": "weekly",
+      "percent": 19,
+      "resets_at": "2026-08-02T12:00:00Z"
+    },
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 3,
+      "resets_at": "2026-08-02T12:00:00Z",
+      "scope": { "model": { "display_name": "   " } }
+    },
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "resets_at": "2026-08-02T12:00:00Z",
+      "scope": { "model": { "display_name": "Nopercent" } }
+    }
+  ]
+}

@@ -40,6 +40,8 @@ var (
 		"resumeInFlight",
 		// fat-session handoff wave: latest daemon-generated brief (nullable).
 		"handoff",
+		// plan-run grouping: the plan run that spawned this session (nullable).
+		"planGroup",
 	}
 	eventKeys = []string{
 		"id", "turnId", "ts", "type", "toolName", "parentEventId",

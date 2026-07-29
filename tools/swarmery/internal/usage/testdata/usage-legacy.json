@@ -1,0 +1,27 @@
+{
+  "five_hour": {
+    "percent_used": 61,
+    "reset_at": 1785247200
+  },
+  "seven_day": {
+    "used_percent": 12,
+    "resetAt": "2026-08-02T12:00:00Z"
+  },
+  "seven_day_sonnet": {
+    "percentUsed": 33,
+    "resetsAt": 1785672000000
+  },
+  "seven_day_opus": {
+    "usage_percent": 7,
+    "reset_time": "2026-08-01T00:00:00Z"
+  },
+  "limits": [
+    {
+      "kind": "weekly_scoped",
+      "group": "weekly",
+      "percent": 99,
+      "resets_at": "2026-08-02T12:00:00Z",
+      "scope": { "model": { "display_name": "Sonnet" } }
+    }
+  ]
+}

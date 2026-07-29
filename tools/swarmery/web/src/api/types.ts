@@ -160,6 +160,25 @@ export interface AttachResponse {
 /** sessions.outcome (migration 0014) — manual verdict; null = not judged. */
 export type SessionOutcome = 'success' | 'fail' | 'abandoned';
 
+/**
+ * Go: sessionPlanDTO — the plan run that spawned a session, resolved server-side
+ * from the run branch the daemon stamps (`swarm/plan-<taskId>` for the plan-run
+ * controller, `swarm/phase-<phaseId>` for one phase of it). Null on ordinary
+ * interactive sessions.
+ */
+export interface SessionPlanGroup {
+  /** Workspace task holding the plan — the group key AND the Plans-page target. */
+  taskId: number;
+  /** Plan title, for the group header. */
+  title: string;
+  role: 'controller' | 'phase';
+  /** epic_phases.id — set only when role === 'phase'. */
+  phaseId: number | null;
+  /** 1-based order within the plan; drives in-group ordering and the `#N` label. */
+  phaseSeq: number | null;
+  phaseName: string | null;
+}
+
 /** Go: sessionDTO */
 export interface Session {
   id: number;
@@ -223,6 +242,12 @@ export interface Session {
     createdAt: string;
     contextTokens: number;
   } | null;
+  /**
+   * The plan run that spawned this session (additive optional): the plan-run
+   * controller itself or one of its phases. Null/absent for an ordinary
+   * interactive session. Drives the Sessions page's group-by-plan view.
+   */
+  planGroup?: SessionPlanGroup | null;
 }
 
 /** Go: turnDTO */
@@ -676,29 +701,65 @@ export interface PlaybookRollup {
   tokens: number;
 }
 
-/** One subscription-usage window with a pace indicator. */
-export interface UsageWindow {
-  key: string;
-  label: string;
-  used: number;
-  limit: number;
-  /** used/limit as a fraction (may exceed 1). */
-  usedPct: number;
-  /** usedPct/elapsedPct - 1; positive = over pace. */
-  pace: number;
-  /** RFC3339 timestamp when the rolling window resets. */
-  resetsAt: string;
-  /** "estimate" (telemetry) | "oauth" (future). */
-  source: string;
+/**
+ * Consumption vs. time elapsed inside a window, in PERCENTAGE POINTS
+ * (percentUsed - percentElapsed, ±5-point dead band).
+ *
+ * Mind the vocabulary — it reads backwards at first pass and is kept verbatim
+ * from the reference implementation: `ahead` means burning FASTER than a linear
+ * burn of the window (render it as a warning), `behind` means under pace
+ * (render it positively).
+ */
+export interface UsagePace {
+  status: 'ahead' | 'on-track' | 'behind';
+  percentElapsed: number;
+  message: string;
 }
 
-/** GET /api/usage — subscription windows. `configured` false → set SWARMERY_USAGE_LIMITS. */
-export interface UsageResp {
-  configured: boolean;
-  /** "estimate" — never presented as exact (see usage.go OAuth spike note). */
-  source: string;
-  generatedAt: string;
+/** One quota window: session, weekly, per-model weekly, or a telemetry estimate. */
+export interface UsageWindow {
+  /** Stable id across refreshes — safe for React keys and per-window prefs. */
+  key: string;
+  label: string;
+  percentUsed: number;
+  percentLeft: number;
+  /** "resets in 3h 30m" — absent when the window has no known reset instant. */
+  resetText?: string;
+  resetMs?: number;
+  /** RFC3339 instant of the reset. */
+  resetAt?: string;
+  windowDurationMs?: number;
+  /** Absent when the window lacks the timing data to compute a pace. */
+  pace?: UsagePace;
+  source: 'oauth' | 'estimate';
+  /** Estimate provider only — the telemetry card's raw token counts. */
+  used?: number;
+  limit?: number;
+}
+
+/**
+ * One card in the Usage modal. `status` carries every failure mode so a broken
+ * provider degrades to one error card instead of breaking the endpoint.
+ */
+export interface UsageProvider {
+  name: string;
+  status: 'ok' | 'error' | 'no-auth';
+  error?: string;
+  /** "Max" | "Pro" | "Team" — oauth provider only, omitted when unknown. */
+  plan?: string;
+  source: 'oauth' | 'estimate';
   windows: UsageWindow[];
+}
+
+/**
+ * GET /api/usage — the operator's LIVE Claude subscription windows (read from
+ * their own local credential via internal/usage) plus an optional
+ * telemetry-estimate card, present only when SWARMERY_USAGE_LIMITS is set.
+ * The estimate card's presence replaces the old top-level `configured` flag.
+ */
+export interface UsageResp {
+  generatedAt: string;
+  providers: UsageProvider[];
 }
 
 // --- Retro loop (GET /api/retro/{agents,friction}) ---------------------------

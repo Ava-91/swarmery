@@ -12,3 +12,19 @@ description = "Redaction unit-test fixtures — deliberately fake/example secret
 paths = [
   '''tools/swarmery/internal/api/system_test\.go''',
 ]
+
+[[allowlists]]
+description = "The PUBLIC first-party OAuth client id, sent as client_id on the refresh_token grant (internal/usage/claude.go). An OAuth client identifier is non-confidential by design (RFC 6749 s2.2) — it ships in the Claude CLI itself; generic-api-key only flags it because a UUID scores 3.72 entropy. Scoped to this one literal value rather than to the file, so a real secret added next to it is still caught."
+regexTarget = "line"
+regexes = [
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''',
+]
+
+[[allowlists]]
+description = "internal/usage test fixtures — the live-quota path is built around an OAuth bearer, so its tests must carry `sk-ant`-shaped strings to prove the redactor scrubs them and that no token reaches a DTO. Every value here is a literal NOT-A-REAL/FAKE placeholder. Path-scoped, so a real credential committed anywhere else is still caught."
+paths = [
+  '''tools/swarmery/internal/usage/claude_test\.go''',
+  '''tools/swarmery/internal/usage/creds_test\.go''',
+  '''tools/swarmery/internal/usage/testdata/credentials\.json''',
+  '''tools/swarmery/internal/api/usage_test\.go''',
+]

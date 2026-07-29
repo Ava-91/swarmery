@@ -282,6 +282,9 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// the service.
 	mux.HandleFunc("POST /api/epics/{taskId}/run", requireLocalOrigin(h.runPlan))
 	mux.HandleFunc("POST /api/epics/{taskId}/run/cancel", requireLocalOrigin(h.cancelPlanRun))
+	// The escape hatch for the branch-dirty 409 POST /run returns — the plan-level
+	// twin of the phase branch delete above.
+	mux.HandleFunc("DELETE /api/epics/{taskId}/branch", requireLocalOrigin(h.deletePlanRunBranch))
 
 	// fusion phase 13: playbooks — selectable execution recipes. GET lists the
 	// registry (built-ins overlaid by a project's own files); the duplicate POST
@@ -304,8 +307,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// (LOC/languages/durations/hours-saved-ESTIMATE), the SDLC funnel snapshot,
 	// and the per-playbook rollup (degrades to an empty list pre-Phase-13). All
 	// read-only, range-scoped by the shared ?project= filter. Plus /api/usage —
-	// the Usage-popover windows with pace (telemetry ESTIMATE; the OAuth path is
-	// out of policy — see usage.go). /api/usage is unscoped (quota is global).
+	// a provider array: the operator's LIVE Claude subscription windows (read via
+	// internal/usage; the earlier "OAuth is out of policy" call is reversed, see
+	// that package's doc) plus an optional telemetry-estimate card when
+	// SWARMERY_USAGE_LIMITS is set. /api/usage is unscoped (quota is global).
 	mux.HandleFunc("GET /api/stats/autonomy", h.statsAutonomy)
 	mux.HandleFunc("GET /api/stats/productivity", h.statsProductivity)
 	mux.HandleFunc("GET /api/stats/funnel", h.statsFunnel)

@@ -31,8 +31,9 @@ type WorktreeManager interface {
 	Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error
 	// ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead
 	// of the base, so a re-run can re-acquire the deterministic swarm/<taskID>
-	// name instead of dying on ErrBranchBusy (every Remove above keeps the
-	// branch, so it always survives). Returns the commits-ahead count when the
+	// name instead of dying on ErrBranchExists — the leftover is a name nothing has
+	// checked out, not a live conflict (every Remove above keeps the branch, so it
+	// always survives). Returns the commits-ahead count when the
 	// branch HAS work — the branch is then left untouched and the caller must not
 	// destroy it; 0 means deleted or never existed. Errors when the repo has no
 	// checked-out branch to measure against (worktree.ErrDetachedHead): a guessed

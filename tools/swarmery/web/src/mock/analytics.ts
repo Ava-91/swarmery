@@ -400,35 +400,88 @@ export function mockPlaybookStats(range: Range): PlaybookRollup[] {
   ];
 }
 
+/**
+ * Two providers, so mock-mode screenshots show both states the modal must
+ * handle: a healthy live Claude card and a provider that failed.
+ *
+ * Every number is internally consistent with the daemon's pace rule
+ * (percentUsed - percentElapsed, ±5-point dead band), so the mock cannot drift
+ * into a combination the real backend would never produce:
+ *
+ *   Session (5h)    28% used, 3h 30m left of 5h → 30% elapsed → -2 pts → on-track
+ *   Weekly          19% used, 5d 6h left of 7d  → 25% elapsed → -6 pts → behind
+ *   Weekly (Fable)  28% used, same 7d window    → 25% elapsed → +3 pts → on-track
+ */
 export function mockUsage(): UsageResp {
   const now = Date.now();
   const hr = 3_600_000;
+  const fiveHours = 5 * hr;
+  const sevenDays = 168 * hr;
   return {
-    configured: true,
-    source: 'estimate',
     generatedAt: new Date(now).toISOString(),
-    windows: [
+    providers: [
       {
-        key: 'session5h',
-        label: '5-hour session',
-        used: 32_500_000,
-        limit: 50_000_000,
-        usedPct: 0.65,
-        // Over pace (Fusion's canonical red state): 65% used at ~55% elapsed.
-        pace: 0.65 / 0.55 - 1,
-        resetsAt: new Date(now + 2.2 * hr).toISOString(),
-        source: 'estimate',
+        name: 'Claude',
+        status: 'ok',
+        plan: 'Max',
+        source: 'oauth',
+        windows: [
+          {
+            key: 'session-5h',
+            label: 'Session (5h)',
+            percentUsed: 28,
+            percentLeft: 72,
+            resetText: 'resets in 3h 30m',
+            resetMs: 3.5 * hr,
+            resetAt: new Date(now + 3.5 * hr).toISOString(),
+            windowDurationMs: fiveHours,
+            pace: {
+              status: 'on-track',
+              percentElapsed: 30,
+              message: 'On pace with time elapsed',
+            },
+            source: 'oauth',
+          },
+          {
+            key: 'weekly',
+            label: 'Weekly',
+            percentUsed: 19,
+            percentLeft: 81,
+            resetText: 'resets in 5d 6h',
+            resetMs: 126 * hr,
+            resetAt: new Date(now + 126 * hr).toISOString(),
+            windowDurationMs: sevenDays,
+            // Under pace — the good state, despite how "behind" reads.
+            pace: { status: 'behind', percentElapsed: 25, message: '6% under pace' },
+            source: 'oauth',
+          },
+          {
+            key: 'weekly-fable',
+            label: 'Weekly (Fable)',
+            percentUsed: 28,
+            percentLeft: 72,
+            resetText: 'resets in 5d 6h',
+            resetMs: 126 * hr,
+            resetAt: new Date(now + 126 * hr).toISOString(),
+            windowDurationMs: sevenDays,
+            pace: {
+              status: 'on-track',
+              percentElapsed: 25,
+              message: 'On pace with time elapsed',
+            },
+            source: 'oauth',
+          },
+        ],
       },
+      // Exercises the failure card. NOTE: the real daemon OMITS the estimate
+      // provider entirely when SWARMERY_USAGE_LIMITS is unset — this error card
+      // exists so mock mode can render the per-provider failure state at all.
       {
-        key: 'weekly',
-        label: 'Weekly',
-        used: 118_000_000,
-        limit: 300_000_000,
-        usedPct: 118 / 300,
-        // Under pace: ~39% used at ~50% elapsed.
-        pace: (118 / 300) / 0.5 - 1,
-        resetsAt: new Date(now + 84 * hr).toISOString(),
+        name: 'Telemetry estimate',
+        status: 'error',
+        error: 'SWARMERY_USAGE_LIMITS not set — no quota to compare against',
         source: 'estimate',
+        windows: [],
       },
     ],
   };
