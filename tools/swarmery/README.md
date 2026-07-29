@@ -5,7 +5,7 @@ React SPA. It indexes session transcripts from `~/.claude/projects/` into local
 SQLite and serves a live dashboard at `http://localhost:7777`. Fully local — no
 cloud, no account, no telemetry.
 
-**Dashboard** (see the repo-root [README](../../README.md#control-plane) for screenshots):
+**Dashboard** (see the repo-root [README](../../README.md#the-dashboard) for screenshots):
 
 - **Command deck** — triage view: what's working vs. waiting, availability/cost/quality headlines, today's activity feed, and an approvals rail.
 - **Sessions** — every session across all projects, filterable by project and status; each opens to **Chat · Timeline · Diffs**.
