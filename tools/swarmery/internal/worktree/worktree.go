@@ -109,11 +109,25 @@ func branchName(taskID string) string { return swarmPrefix + taskID }
 
 // taskIDForBranch is branchName's exact inverse: "" when branch is not one of
 // ours, so callers get the namespace check and the id in one step.
+//
+// A remainder containing "/" is refused too, because this inverse is what
+// authorizes ownsWorktreePath's single-component reasoning: that check compares
+// filepath.Base(p) against the WHOLE task id and requires Dir(Dir(p)) == Root, so
+// a multi-component id fails both silently — the leftover is then read as a
+// foreign checkout and the C1 crash-leftover warm reuse quietly stops working for
+// it. phaserun ("phase-<id>") and planrun ("plan-<id>") are single-component by
+// construction, but dispatch passes an unvalidated ExternalID straight through;
+// asserting the precondition where the inverse is computed makes that reuse
+// provably safe instead of incidentally safe.
 func taskIDForBranch(branch string) string {
 	if !strings.HasPrefix(branch, swarmPrefix) {
 		return ""
 	}
-	return strings.TrimPrefix(branch, swarmPrefix)
+	id := strings.TrimPrefix(branch, swarmPrefix)
+	if strings.Contains(id, "/") {
+		return ""
+	}
+	return id
 }
 
 // Acquire creates (or safely reuses) a worktree for taskID pinned to an
@@ -239,6 +253,14 @@ func (m *Manager) Remove(repoRoot string, a Acquired, keepBranch bool) error {
 		return fmt.Errorf("worktree: remove %s: %w", a.Path, err)
 	}
 	if !keepBranch && a.Branch != "" {
+		// The last `git branch -D` in this package that does NOT go through
+		// checkBranchReclaimable. Acquired is an exported struct any caller can
+		// construct, and a.Branch is trusted verbatim, so the namespace class is
+		// closed here at the boundary too rather than by assuming every caller
+		// built the name through Acquire.
+		if taskIDForBranch(a.Branch) == "" {
+			return fmt.Errorf("%w: %s", ErrRefusedBranch, a.Branch)
+		}
 		if _, err := m.Git.Run(repoRoot, "branch", "-D", a.Branch); err != nil {
 			return fmt.Errorf("worktree: delete branch %s: %w", a.Branch, err)
 		}
@@ -416,18 +438,25 @@ func (m *Manager) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
 // trade a sentinel naming the holding worktree for a raw git failure. The user's
 // way out is to retry the phase (Acquire warm-reuses and the run's teardown
 // removes the worktree) or remove that worktree by hand.
-func (m *Manager) DeleteBranch(repoRoot, branch string) error {
+//
+// existed reports whether a branch was actually deleted. Deleting is idempotent —
+// a missing branch is (false, nil), NOT an error — so an error alone cannot tell
+// a real deletion from a no-op, and every caller with only `err` to read claimed
+// "deleted" for both. The probe that answers this already runs inside
+// checkBranchReclaimable, so reporting it costs nothing and removes the duplicate
+// rev-parse callers were doing to reconstruct it.
+func (m *Manager) DeleteBranch(repoRoot, branch string) (existed bool, err error) {
 	exists, err := m.checkBranchReclaimable(repoRoot, branch, false /* reuseOwn */)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !exists {
-		return nil // already gone — deleting is idempotent
+		return false, nil // already gone — deleting is idempotent
 	}
 	if _, err := m.Git.Run(repoRoot, "branch", "-D", branch); err != nil {
-		return fmt.Errorf("worktree: delete branch %s: %w", branch, err)
+		return false, fmt.Errorf("worktree: delete branch %s: %w", branch, err)
 	}
-	return nil
+	return true, nil
 }
 
 // Prune runs `git worktree prune` and sweeps stale index.lock files — the same

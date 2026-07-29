@@ -104,12 +104,15 @@ func TestDeleteRunBranchUsesStampedBranch(t *testing.T) {
 	wt := &stubWt{}
 	s := newTestService(db, &stubRunner{}, wt)
 
-	branch, err := s.DeleteRunBranch(p1)
+	branch, existed, err := s.DeleteRunBranch(p1)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if branch != orphan {
 		t.Errorf("branch = %q, want %q", branch, orphan)
+	}
+	if !existed {
+		t.Error("existed = false, want true — the stub reports the branch was there")
 	}
 	if len(wt.deleted) != 1 || wt.deleted[0] != orphan {
 		t.Errorf("deleted = %v, want [%s]", wt.deleted, orphan)
@@ -123,7 +126,7 @@ func TestDeleteRunBranchWithoutStampRefuses(t *testing.T) {
 	wt := &stubWt{}
 	s := newTestService(db, &stubRunner{}, wt)
 
-	if _, err := s.DeleteRunBranch(p1); !errors.Is(err, ErrNoRunBranch) {
+	if _, _, err := s.DeleteRunBranch(p1); !errors.Is(err, ErrNoRunBranch) {
 		t.Fatalf("err = %v, want ErrNoRunBranch", err)
 	}
 	if len(wt.deleted) != 0 {

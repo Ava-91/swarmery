@@ -658,7 +658,7 @@ func TestDeleteBranchRefusesForeignNamespace(t *testing.T) {
 	for _, branch := range []string{"dev", "main", "feature/x", "swarm/"} {
 		g := baseStub()
 		m := newMgr(t, g)
-		err := m.DeleteBranch("/tmp/repo", branch)
+		_, err := m.DeleteBranch("/tmp/repo", branch)
 		if !errors.Is(err, ErrRefusedBranch) {
 			t.Errorf("DeleteBranch(%q) err = %v, want ErrRefusedBranch", branch, err)
 		}
@@ -700,8 +700,12 @@ func TestDeleteBranchDeletesBranchWithCommits(t *testing.T) {
 	g := baseStub()
 	g.on("rev-list --count", "3\n", nil) // has work — DeleteBranch discards it anyway
 	m := newMgr(t, g)
-	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-715"); err != nil {
+	existed, err := m.DeleteBranch("/tmp/repo", "swarm/phase-715")
+	if err != nil {
 		t.Fatalf("DeleteBranch: %v", err)
+	}
+	if !existed {
+		t.Error("existed = false, want true — the branch was there and was deleted")
 	}
 	wantCalls(t, g,
 		"rev-parse --verify --quiet refs/heads/swarm/phase-715",
@@ -717,8 +721,15 @@ func TestDeleteBranchMissingIsIdempotent(t *testing.T) {
 	g := baseStub()
 	g.on("rev-parse --verify --quiet", "", errors.New("exit 1"))
 	m := newMgr(t, g)
-	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-999"); err != nil {
+	existed, err := m.DeleteBranch("/tmp/repo", "swarm/phase-999")
+	if err != nil {
 		t.Fatalf("DeleteBranch on a missing branch = %v, want nil", err)
+	}
+	// The whole point of the second return value: idempotent is not the same as
+	// "deleted something", and a caller that cannot tell them apart reports a no-op
+	// as a deletion.
+	if existed {
+		t.Error("existed = true on a missing branch, want false")
 	}
 	if g.called("branch -D") {
 		t.Error("nothing to delete, yet a delete was issued")
@@ -730,7 +741,7 @@ func TestDeleteBranchRefusesCheckedOut(t *testing.T) {
 	g.on("worktree list --porcelain",
 		"worktree /wt/proj/phase-716\nbranch refs/heads/swarm/phase-716\n\n", nil)
 	m := newMgr(t, g)
-	err := m.DeleteBranch("/tmp/repo", "swarm/phase-716")
+	_, err := m.DeleteBranch("/tmp/repo", "swarm/phase-716")
 	if !errors.Is(err, ErrBranchCheckedOut) {
 		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
 	}
@@ -743,7 +754,7 @@ func TestDeleteBranchRefusesHead(t *testing.T) {
 	g := baseStub()
 	g.on("symbolic-ref --short HEAD", "swarm/phase-716\n", nil)
 	m := newMgr(t, g)
-	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-716"); !errors.Is(err, ErrBranchIsHead) {
+	if _, err := m.DeleteBranch("/tmp/repo", "swarm/phase-716"); !errors.Is(err, ErrBranchIsHead) {
 		t.Fatalf("err = %v, want ErrBranchIsHead", err)
 	}
 	if g.called("branch -D") {
@@ -755,7 +766,7 @@ func TestDeleteBranchPropagatesGitError(t *testing.T) {
 	g := baseStub()
 	g.on("branch -D", "error: cannot delete", errors.New("exit 1"))
 	m := newMgr(t, g)
-	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-1"); err == nil {
+	if _, err := m.DeleteBranch("/tmp/repo", "swarm/phase-1"); err == nil {
 		t.Error("DeleteBranch should propagate a git branch -D failure")
 	}
 }
@@ -847,7 +858,7 @@ func TestReclaimEmptyBranchForeignTaskUnderRoot(t *testing.T) {
 // — and far better than the silent success I6 is about.
 func TestDeleteBranchRefusesOwnLeftoverWorktree(t *testing.T) {
 	g, m, own := ownLeftoverStub(t, "proj", "phase-714")
-	err := m.DeleteBranch("/tmp/repo", "swarm/phase-714")
+	_, err := m.DeleteBranch("/tmp/repo", "swarm/phase-714")
 	if !errors.Is(err, ErrBranchCheckedOut) {
 		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
 	}
@@ -871,7 +882,7 @@ func TestDeleteBranchSurfacesProbeFailure(t *testing.T) {
 		"fatal: not a git repository (or any of the parent directories): .git",
 		errors.New("exit 128"))
 	m := newMgr(t, g)
-	err := m.DeleteBranch("/tmp/repo", "swarm/phase-714")
+	_, err := m.DeleteBranch("/tmp/repo", "swarm/phase-714")
 	if err == nil {
 		t.Fatal("DeleteBranch = nil on a broken probe, want an error — the branch is still there")
 	}

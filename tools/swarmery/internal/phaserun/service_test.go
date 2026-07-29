@@ -81,6 +81,9 @@ type stubWt struct {
 	reclaimAheadBy map[string]int
 	deleted        []string // branches handed to DeleteBranch
 	deleteErr      error
+	// branchMissing makes DeleteBranch report existed=false — the idempotent
+	// "already gone" path worktree.DeleteBranch answers with (false, nil).
+	branchMissing bool
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -121,11 +124,14 @@ func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
 	return w.reclaimAhead, nil
 }
 
-func (w *stubWt) DeleteBranch(repoRoot, branch string) error {
+func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.deleted = append(w.deleted, branch)
-	return w.deleteErr
+	if w.deleteErr != nil {
+		return false, w.deleteErr
+	}
+	return !w.branchMissing, nil
 }
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
@@ -1103,15 +1109,38 @@ func TestDeleteRunBranch(t *testing.T) {
 	want := "swarm/phase-" + itoa64(p1)
 	mustExec(t, db, `UPDATE epic_phases SET run_state='done', run_branch=? WHERE id=?`, want, p1)
 
-	branch, err := s.DeleteRunBranch(p1)
+	branch, existed, err := s.DeleteRunBranch(p1)
 	if err != nil {
 		t.Fatalf("DeleteRunBranch: %v", err)
 	}
 	if branch != want {
 		t.Errorf("branch = %q, want %q", branch, want)
 	}
+	if !existed {
+		t.Error("existed = false for a branch the boundary reported deleted")
+	}
 	if len(wt.deleted) != 1 || wt.deleted[0] != want {
 		t.Errorf("deleted = %v, want [%s]", wt.deleted, want)
+	}
+}
+
+// A branch that was never there must not be reported as deleted — worktree.DeleteBranch
+// is idempotent, so "deleted: true" on a no-op is a claim the UI turns into a cleared
+// dirty-branch banner over a branch that is still (or was never) there.
+func TestDeleteRunBranch_MissingBranchReportsNotExisted(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	wt := &stubWt{branchMissing: true} // worktree.DeleteBranch: (false, nil)
+	s := newTestService(db, &stubRunner{}, wt)
+
+	branch, existed, err := s.DeleteRunBranch(p1)
+	if err != nil {
+		t.Fatalf("DeleteRunBranch on a missing branch = %v, want nil (idempotent)", err)
+	}
+	if branch != "swarm/phase-"+itoa64(p1) {
+		t.Errorf("branch = %q", branch)
+	}
+	if existed {
+		t.Error("existed = true for a branch that was never there")
 	}
 }
 
@@ -1131,7 +1160,7 @@ func TestDeleteRunBranch_ErrRunning(t *testing.T) {
 		state, _, _, _ := phaseRow(t, db, p1)
 		return state == "running"
 	})
-	if _, err := s.DeleteRunBranch(p1); !errors.Is(err, ErrRunning) {
+	if _, _, err := s.DeleteRunBranch(p1); !errors.Is(err, ErrRunning) {
 		t.Fatalf("err = %v, want ErrRunning while a run is in flight", err)
 	}
 	if len(wt.deleted) != 0 {
@@ -1144,7 +1173,7 @@ func TestDeleteRunBranch_ErrRunning(t *testing.T) {
 		return state == "done"
 	})
 	// Once the run is over the deletion is allowed.
-	if _, err := s.DeleteRunBranch(p1); err != nil {
+	if _, _, err := s.DeleteRunBranch(p1); err != nil {
 		t.Fatalf("DeleteRunBranch after the run finished: %v", err)
 	}
 }
@@ -1152,7 +1181,7 @@ func TestDeleteRunBranch_ErrRunning(t *testing.T) {
 func TestDeleteRunBranch_UnknownPhase(t *testing.T) {
 	db, _, _, _ := fixture(t)
 	s := newTestService(db, &stubRunner{}, &stubWt{})
-	if _, err := s.DeleteRunBranch(9999); !errors.Is(err, ErrPhaseNotFound) {
+	if _, _, err := s.DeleteRunBranch(9999); !errors.Is(err, ErrPhaseNotFound) {
 		t.Fatalf("err = %v, want ErrPhaseNotFound", err)
 	}
 }
@@ -1161,7 +1190,7 @@ func TestDeleteRunBranch_NoProjectPath(t *testing.T) {
 	db, _, p1, _ := fixture(t)
 	mustExec(t, db, `UPDATE projects SET path='' WHERE id=1`)
 	s := newTestService(db, &stubRunner{}, &stubWt{})
-	if _, err := s.DeleteRunBranch(p1); !errors.Is(err, ErrNoPath) {
+	if _, _, err := s.DeleteRunBranch(p1); !errors.Is(err, ErrNoPath) {
 		t.Fatalf("err = %v, want ErrNoPath", err)
 	}
 }

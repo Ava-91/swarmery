@@ -78,8 +78,8 @@ func (w *stubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) e
 
 // Branch reclamation is not part of the dispatch flow (dispatch tasks own their
 // branch for their whole lifetime) — inert here.
-func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
-func (w *stubWt) DeleteBranch(repoRoot, branch string) error              { return nil }
+func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error)   { return 0, nil }
+func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error)        { return false, nil }
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }

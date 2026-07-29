@@ -48,8 +48,8 @@ func (phaseStubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool)
 
 // No leftover branch in the api tests: reclaim always reports "nothing to do",
 // so Start proceeds straight to Acquire.
-func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
-func (phaseStubWt) DeleteBranch(repoRoot, branch string) error              { return nil }
+func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error)   { return 0, nil }
+func (phaseStubWt) DeleteBranch(repoRoot, branch string) (bool, error)        { return true, nil }
 
 // attachPhaseRun wires a stub-backed phaserun service (package var, reset on
 // cleanup). sync=true runs the spawn inline so a POST response implies the run
@@ -71,6 +71,36 @@ func attachPhaseRunWt(t *testing.T, db *sql.DB, r phaserun.Runner, sync bool, wt
 	AttachPhaseRun(svc)
 	t.Cleanup(func() { AttachPhaseRun(nil) })
 	return svc
+}
+
+// detachPhaseRun clears the phaserun package var for the 503 tests and RESTORES
+// whatever was there on cleanup. A bare AttachPhaseRun(nil) is order-dependent:
+// it is safe only because every other test attaches what it needs before acting,
+// and it would break outright under t.Parallel().
+func detachPhaseRun(t *testing.T) {
+	t.Helper()
+	prev := phaserunSvc
+	phaserunSvc = nil
+	t.Cleanup(func() { phaserunSvc = prev })
+}
+
+// detachPlanRun is detachPhaseRun for the plan-run package var.
+func detachPlanRun(t *testing.T) {
+	t.Helper()
+	prev := planrunSvc
+	planrunSvc = nil
+	t.Cleanup(func() { planrunSvc = prev })
+}
+
+// attachPhaseDiag wires the diagnosis endpoint's git seam and resets it on
+// cleanup — the same idiom attachPhaseRunWt uses for phaserunSvc. AttachPhaseDiag
+// is a bare package-var setter, so the first test to wire a git stub without this
+// would leak it into every later test in the package.
+func attachPhaseDiag(t *testing.T, g worktree.Git) {
+	t.Helper()
+	prev := phasediagGit
+	AttachPhaseDiag(g)
+	t.Cleanup(func() { AttachPhaseDiag(prev) })
 }
 
 // fixturePhaseIDs reads the two phase ids the epicFixture inserted (seq order).
@@ -126,7 +156,7 @@ func i64(n int64) string { return strconv.FormatInt(n, 10) }
 func TestPhaseRun_NotAttached_503(t *testing.T) {
 	srv, db, taskID, _ := epicFixture(t)
 	p1, _ := fixturePhaseIDs(t, db, taskID)
-	AttachPhaseRun(nil)
+	detachPhaseRun(t)
 	resp := postPhase(t, phaseRunURL(srv, taskID, p1))
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
@@ -281,7 +311,7 @@ func TestPhaseRunCancel_NothingRunning_409(t *testing.T) {
 func TestPhaseRunCancel_NotAttached_503(t *testing.T) {
 	srv, db, taskID, _ := epicFixture(t)
 	p1, _ := fixturePhaseIDs(t, db, taskID)
-	AttachPhaseRun(nil)
+	detachPhaseRun(t)
 	resp := postPhase(t, phaseRunURL(srv, taskID, p1)+"/cancel")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
