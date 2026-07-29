@@ -92,15 +92,28 @@ const sessionPlanGroupCols = `,
 // sessionSelect. Both joins land on an INTEGER PRIMARY KEY, so each row costs a
 // rowid lookup — epic_phases is never scanned.
 //
-// NOTE — plan phase 1 introduces epic_phases.run_branch, the branch STAMPED at
-// spawn. Once that column exists the phase join should key off it
-// (`run_phase.run_branch = <the session's run branch>`) instead of the row id,
-// because a plan re-index can move the id out from under a live run. Until it
-// lands, 'swarm/phase-' || id is exactly what phaserun/service.go stamps, so
-// the derived form is correct for all current data; the switch is this one join.
+// The phase join keys off epic_phases.run_branch (migration 0043, indexed by 0044) —
+// the branch STAMPED at spawn — and only falls back to the row id when that finds
+// nothing. epic_phases identity is doc_path, so a plan re-index replaces the row and
+// mints a new id; matching on 'swarm/phase-' || id therefore stops resolving the
+// moment a phase doc is renamed, which is exactly when a session is most worth
+// finding. Observed on this machine: the sessions for swarm/phase-1279/1280 resolved
+// to nothing, because ids 1279/1280 no longer existed.
+//
+// The fallback is still needed and is not dead code: rows that ran before 0043 and
+// were missed by its backfill have a NULL run_branch, and subagent sessions carry no
+// branch at all — only a cwd, from which runIDExpr can recover an id but never a
+// branch string.
+//
+// MIN(id) makes the subquery deterministic if two rows ever carry one branch. The
+// carry-over in wsingest.applyEpics drains the source row before the prune, so that
+// should not happen; picking arbitrarily on a broken invariant would be worse.
 var sessionPlanGroupJoins = `
 	LEFT JOIN tasks plan_task ON plan_task.id = (` + runIDExpr("plan") + `)
-	LEFT JOIN epic_phases run_phase ON run_phase.id = (` + runIDExpr("phase") + `)
+	LEFT JOIN epic_phases run_phase ON run_phase.id = COALESCE(
+		(SELECT MIN(ep.id) FROM epic_phases ep
+		  WHERE s.git_branch LIKE 'swarm/phase-%' AND ep.run_branch = s.git_branch),
+		(` + runIDExpr("phase") + `))
 	LEFT JOIN tasks phase_task ON phase_task.id = run_phase.workspace_task_id`
 
 // sessionPlanGroupScan holds the sessionPlanGroupCols tail of a session row, so

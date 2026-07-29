@@ -169,3 +169,54 @@ func TestSessionPlanGroupNonNumericSuffixIsNull(t *testing.T) {
 		t.Errorf("planGroup = %+v, want null for a non-numeric branch suffix", g)
 	}
 }
+
+// THE case the run_branch join exists for. A plan re-index replaces a phase row and
+// mints a new id (epic_phases identity is doc_path), so the branch the session ran on
+// no longer matches 'swarm/phase-' || id. Observed live: the sessions for
+// swarm/phase-1279/1280 resolved to nothing once task 72's rows became 1290–1295.
+// Matching the STAMPED run_branch survives that.
+func TestSessionPlanGroupPhaseSurvivesRowIDChange(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "moved.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	mustExec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES
+		(1, '/work/repo', '-work-repo', 'repo', '2026-07-01T00:00:00Z')`)
+	mustExec(`INSERT INTO tasks (id, project_id, title, prompt, created_at, source)
+		VALUES (72, 1, 'Usage modal live quotas', '', '2026-07-29T09:00:00Z', 'workspace')`)
+	// The row the run happened on is GONE. Its replacement carries a new id and the
+	// branch that run committed to, exactly as wsingest.applyEpics hands it over.
+	mustExec(`INSERT INTO epic_phases (id, workspace_task_id, seq, name, doc_path, run_state, run_branch)
+		VALUES (1292, 72, 3, 'Consolidate and land', '/w/plan/phase-3-new-name.md', 'done', 'swarm/phase-1280')`)
+	mustExec(`INSERT INTO sessions (id, project_id, session_uuid, status, started_at, git_branch, cwd)
+		VALUES (1, 1, 'moved', 'completed', '2026-07-29T10:00:00.000Z', 'swarm/phase-1280',
+		        '/Users/dev/.swarmery/worktrees/-work-repo/phase-1280')`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	g := planGroupOf(t, srv, "moved")
+	if g == nil {
+		t.Fatal("planGroup = null — the session was orphaned by the row-id change, which is the whole defect")
+	}
+	if g.TaskID != 72 || g.Role != "phase" {
+		t.Errorf("taskId/role = %d/%q, want 72/phase", g.TaskID, g.Role)
+	}
+	if g.PhaseID == nil || *g.PhaseID != 1292 {
+		t.Errorf("phaseId = %v, want the REPLACEMENT row 1292", g.PhaseID)
+	}
+	if g.PhaseSeq == nil || *g.PhaseSeq != 3 {
+		t.Errorf("phaseSeq = %v, want 3", g.PhaseSeq)
+	}
+}
