@@ -271,7 +271,7 @@ function PluginDriftRow({ d }: { d: SystemPluginDrift }): JSX.Element {
             <Link
               to={`/p/${d.projectSlug}`}
               className="rounded-full border border-blue/40 px-2 py-px font-mono text-[10px] whitespace-nowrap text-blue hover:underline"
-              title={d.projectPath}
+              data-tip-mono data-tip={d.projectPath}
             >
               {names[d.projectSlug] ?? d.projectSlug}
             </Link>

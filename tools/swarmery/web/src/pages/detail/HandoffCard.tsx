@@ -66,7 +66,7 @@ export function HandoffCard({
           <button
             type="button"
             onClick={copyResume}
-            title="Copy the command that starts a fresh session from this handoff"
+            data-tip="Copy the command that starts a fresh session from this handoff"
             className="mb-3 w-full rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-left font-mono text-[11px] text-violet-300 transition-colors hover:bg-violet-500/20"
           >
             {copied ? 'copied ✓' : 'copy resume command'}

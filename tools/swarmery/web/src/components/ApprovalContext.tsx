@@ -79,7 +79,7 @@ export function ApprovalContext({
           {request.toolName}
         </span>
         {cwd !== null && (
-          <span className="min-w-0 font-mono text-[10px] text-ink-faint" title={cwd}>
+          <span className="min-w-0 font-mono text-[10px] text-ink-faint" data-tip-mono data-tip={cwd}>
             cwd <span className="text-ink-dim">{cwd}</span>
           </span>
         )}

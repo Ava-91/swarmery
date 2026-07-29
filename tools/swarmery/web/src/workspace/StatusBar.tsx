@@ -112,7 +112,7 @@ export function StatusBar({
           <>
             <span
               className="flex items-center gap-1.5"
-              title={
+              data-tip={
                 globalPaused
                   ? 'dispatcher globally paused'
                   : `${dispatch.freeSlots} of ${dispatch.maxConcurrent} slots free`

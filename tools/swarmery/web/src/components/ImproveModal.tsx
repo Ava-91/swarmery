@@ -121,7 +121,7 @@ export function ImproveModal({
             {/* Summary block — no extra call, derived from the scorecard row + path. */}
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11.5px]">
               <dt className="text-ink-faint">file</dt>
-              <dd className="truncate text-ink-2" title={evidence.agent_path}>
+              <dd className="truncate text-ink-2" data-tip-mono data-tip={evidence.agent_path}>
                 {evidence.agent_path ?? '—'}
               </dd>
               <dt className="text-ink-faint">runs</dt>

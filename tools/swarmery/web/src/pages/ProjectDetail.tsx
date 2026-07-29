@@ -48,7 +48,7 @@ function ComponentList({ title, items }: { title: string; items: ProjectComponen
           {items.map((c) => (
             <span
               key={c.name}
-              title={`source: ${c.source}`}
+              data-tip={`source: ${c.source}`}
               className="rounded-full border border-line px-2 py-0.5 font-mono text-[10.5px] text-ink-2"
             >
               {c.name}
@@ -131,7 +131,7 @@ export function ProjectDetail(): JSX.Element {
           <ProjectActions project={project} onChanged={load} />
         </div>
       </div>
-      <div className="mt-1.5 font-mono text-[11px] text-ink-faint" title={project.path}>
+      <div className="mt-1.5 font-mono text-[11px] text-ink-faint" data-tip-mono data-tip={project.path}>
         {project.path}
       </div>
       {project.plugin?.marketplace !== undefined && project.plugin.marketplace !== '' && (

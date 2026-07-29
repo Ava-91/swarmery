@@ -262,7 +262,7 @@ function Versions({
                 current
               </span>
             )}
-            <span className="font-mono text-[10px] text-ink-dim" title={v.contentHash}>
+            <span className="font-mono text-[10px] text-ink-dim" data-tip-mono data-tip={v.contentHash}>
               {v.contentHash.slice(0, 8)}
             </span>
             {writable && v.id !== currentVersionId && currentVersionId !== null && (
@@ -387,7 +387,7 @@ function DaySparkline({ days }: { days: AgentHistory['byDay'] }): JSX.Element | 
       {days.map((d) => (
         <div
           key={d.day}
-          title={`${d.day}: ${String(d.runs)} run${d.runs === 1 ? '' : 's'}`}
+          data-tip={`${d.day}: ${String(d.runs)} run${d.runs === 1 ? '' : 's'}`}
           className="min-w-[3px] flex-1 rounded-sm bg-brand/60"
           style={{ height: `${String(Math.max(6, (d.runs / max) * 40))}px` }}
         />
@@ -503,7 +503,7 @@ function AgentHistoryPanel({ agentId }: { agentId: number }): JSX.Element {
               <Link
                 to={`/sessions/${run.sessionUuid}`}
                 className="flex items-baseline gap-2 rounded-md px-2 py-1 text-[12px] transition-colors hover:bg-surface2"
-                title={run.description}
+                data-tip={run.description}
               >
                 <span
                   className={`mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -846,7 +846,7 @@ export function SystemItemPanel({
           {detail.origin === 'plugin' && (
             <span
               className="rounded-lg border border-brand/35 bg-brand/5 px-3 py-1.5 font-mono text-[11px] text-brand"
-              title="plugin items are read-only — edit them in the plugin's marketplace repo and adopt via /plugin update"
+              data-tip="plugin items are read-only — edit them in the plugin's marketplace repo and adopt via /plugin update"
             >
               managed by the plugin marketplace — read-only
             </span>

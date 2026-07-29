@@ -165,7 +165,7 @@ export function RunOutcomeModal({
         <button
           type="button"
           disabled={busy || writesDisabled}
-          title={
+          data-tip={
             writesDisabled ? writesDisabledReason : 'delete the run branch so a retry can recreate it'
           }
           onClick={() => setConfirmingDelete(true)}
@@ -226,14 +226,14 @@ export function RunOutcomeModal({
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             {duration !== null && (
-              <span className="font-mono text-[10px] text-ink-faint" title="run duration">
+              <span className="font-mono text-[10px] text-ink-faint" data-tip="run duration">
                 ran {duration}
               </span>
             )}
             {diag !== null && (
               <span
                 className={`rounded border px-1.5 py-px font-mono text-[9.5px] ${chip.cls}`}
-                title={chip.title}
+                data-tip={chip.title}
               >
                 {chip.label}
               </span>
@@ -328,7 +328,7 @@ export function RunOutcomeModal({
           <button
             type="button"
             disabled={busy || writesDisabled}
-            title={writesDisabled ? writesDisabledReason : 'run this phase again'}
+            data-tip={writesDisabled ? writesDisabledReason : 'run this phase again'}
             onClick={() => {
               onRetry();
               onClose();

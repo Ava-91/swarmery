@@ -9,6 +9,7 @@ import {
   useRouteError,
 } from 'react-router-dom';
 import { App } from './App';
+import { TooltipLayer } from './components/Tooltip';
 import { PageSearchProvider } from './lib/pageSearch';
 import { ProjectColorProvider } from './lib/projectColors';
 import { ScopeProvider } from './lib/scope';
@@ -85,6 +86,9 @@ function RootProviders(): JSX.Element {
     <ScopeProvider>
       <PageSearchProvider>
         <Outlet />
+        {/* One themed tooltip layer for the whole app — every `data-tip=` in
+            any route draws through this node (see components/Tooltip.tsx). */}
+        <TooltipLayer />
       </PageSearchProvider>
     </ScopeProvider>
   );

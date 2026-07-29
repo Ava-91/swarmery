@@ -168,7 +168,7 @@ function VerifyProgress({ rec }: { rec: Recommendation }): JSX.Element | null {
   return (
     <span
       className="font-mono text-[10px] text-ink-faint"
-      title={`verified when ${b.metric} is ≥${String(VERIFY_IMPROVEMENT * 100)}% better than the baseline snapshot`}
+      data-tip={`verified when ${b.metric} is ≥${String(VERIFY_IMPROVEMENT * 100)}% better than the baseline snapshot`}
     >
       {b.metric} {fmtMetric(b.value)}
       {postValue !== null ? ` → ${fmtMetric(postValue)}` : ''}
@@ -364,7 +364,7 @@ function RecommendationsRail(): JSX.Element | null {
           type="button"
           disabled={analyzing}
           onClick={analyze}
-          title="run the advisor rule engine now"
+          data-tip="run the advisor rule engine now"
           className="ml-auto rounded-[7px] border border-line-strong px-2 py-[3px] font-mono text-[10.5px] text-ink-dim transition-colors hover:border-brand/40 hover:text-brand disabled:opacity-50"
         >
           {analyzing ? 'analyzing…' : 'Analyze now'}
@@ -484,11 +484,11 @@ function ProposalDetail({
   return (
     <div className="mt-2 border-t border-line pt-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-ink-faint">
-        <span className="truncate" title={p.agent_path}>
+        <span className="truncate" data-tip-mono data-tip={p.agent_path}>
           {p.agent_path}
         </span>
         {p.recommendation_id !== null && (
-          <span title="source recommendation">from recommendation #{p.recommendation_id}</span>
+          <span data-tip="source recommendation">from recommendation #{p.recommendation_id}</span>
         )}
         <span>created {fmtAgo(p.created_at)}</span>
       </div>
@@ -543,7 +543,7 @@ function ProposalDetail({
             type="button"
             disabled={busy}
             onClick={() => onReapply(p.id)}
-            title="re-run the apply/PR pipeline (e.g. after a gh outage)"
+            data-tip="re-run the apply/PR pipeline (e.g. after a gh outage)"
             className="rounded-[7px] border border-line-strong px-2 py-[3px] font-mono text-[10.5px] text-ink-dim transition-colors hover:border-amber/40 hover:text-amber disabled:opacity-50"
           >
             {busy ? '…' : 'Re-run apply'}
@@ -757,7 +757,7 @@ function JudgedSessionRow({
           {session.title ?? session.sessionUuid.slice(0, 16)}
         </span>
         <span
-          title="LLM-judge trajectory score"
+          data-tip="LLM-judge trajectory score"
           className="rounded-[7px] border border-brand/40 bg-brand/10 px-1.5 py-[2px] font-mono text-[10px] text-brand"
         >
           judged · {overall.toFixed(1)}
@@ -845,7 +845,7 @@ function DeltaArrow({
   const up = cur > prev;
   const cls = up ? (goodUp ? 'text-green' : 'text-red') : goodUp ? 'text-ink-dim' : 'text-green';
   return (
-    <span className={`font-mono text-[12px] ${cls}`} title={`prev window: ${fmt(prev)}`}>
+    <span className={`font-mono text-[12px] ${cls}`} data-tip={`prev window: ${fmt(prev)}`}>
       {up ? '↑' : '↓'}
     </span>
   );
@@ -1010,7 +1010,7 @@ function Scorecard({
           <button
             type="button"
             onClick={() => onImprove(row)}
-            title="preview the evidence and generate an improvement proposal for this agent"
+            data-tip="preview the evidence and generate an improvement proposal for this agent"
             className="rounded-[7px] border border-line-strong px-1.5 py-[2px] font-mono text-[10px] text-ink-dim transition-colors hover:border-green/40 hover:text-green"
           >
             Improve
@@ -1018,7 +1018,7 @@ function Scorecard({
         )}
         <span
           className={`font-mono text-[11px] ${errRateClass(row.error_rate)}`}
-          title={`share of runs with ≥1 behavior-fixable error (${String(row.errors)} error events total)`}
+          data-tip={`share of runs with ≥1 behavior-fixable error (${String(row.errors)} error events total)`}
         >
           {(row.error_rate * 100).toFixed(1)}% err
         </span>
@@ -1026,7 +1026,7 @@ function Scorecard({
       {row.errors > 0 && row.errors_by_class && (
         <div
           className="mt-1 font-mono text-[10px] text-ink-faint"
-          title="error events by class — behavior: prompt-fixable agent behavior · harness: harness rule hit, self-recovered · infra: network/API noise (not the agent's fault)"
+          data-tip="error events by class — behavior: prompt-fixable agent behavior · harness: harness rule hit, self-recovered · infra: network/API noise (not the agent's fault)"
         >
           <span className={split.behavior > 0 ? 'text-amber' : ''}>behavior {split.behavior}</span>
           {' · '}
@@ -1065,7 +1065,7 @@ function Scorecard({
         <div className="mt-2.5 flex flex-wrap gap-1.5">
           {row.re_dispatch_rate !== null && (
             <span
-              title="redispatch-classified ledger rows / total delegations in range"
+              data-tip="redispatch-classified ledger rows / total delegations in range"
               className={`rounded-[7px] border px-1.5 py-[2px] font-mono text-[10px] ${
                 row.re_dispatch_rate > 0.25
                   ? 'border-red/40 text-red'
@@ -1077,7 +1077,7 @@ function Scorecard({
           )}
           {row.eval !== null && (
             <span
-              title={`latest eval run, finished ${row.eval.finished_at}`}
+              data-tip={`latest eval run, finished ${row.eval.finished_at}`}
               className="rounded-[7px] border border-line-strong px-1.5 py-[2px] font-mono text-[10px] text-ink-dim"
             >
               evals {String(row.eval.passed)}/{String(row.eval.passed + row.eval.failed)}
@@ -1086,7 +1086,7 @@ function Scorecard({
           {trajectoryKinds.map((kind) => (
             <span
               key={kind}
-              title={`trajectory anti-pattern detected: ${kind}`}
+              data-tip={`trajectory anti-pattern detected: ${kind}`}
               className="rounded-[7px] border border-amber/40 px-1.5 py-[2px] font-mono text-[10px] text-amber"
             >
               {kind}
@@ -1189,7 +1189,7 @@ function EstimationTable({ tasks }: { tasks: RetroTaskRow[] }): JSX.Element {
       </div>
       {tasks.map((t) => (
         <div key={t.external_id} className="flex items-baseline gap-2 font-mono text-[11.5px]">
-          <span className="min-w-0 flex-1 truncate text-ink-3" title={t.external_id}>
+          <span className="min-w-0 flex-1 truncate text-ink-3" data-tip-mono data-tip={t.external_id}>
             {t.title}
           </span>
           <span className="w-20 text-right text-ink-dim">
@@ -1201,7 +1201,7 @@ function EstimationTable({ tasks }: { tasks: RetroTaskRow[] }): JSX.Element {
           <span className="w-12 text-right text-ink-dim">{t.loops}</span>
           <span
             className="w-24 text-right"
-            title={`${String(t.delegations)} delegations: ${String(t.verdicts.ok)} ok, ${String(t.verdicts.redispatch)} re-dispatched`}
+            data-tip={`${String(t.delegations)} delegations: ${String(t.verdicts.ok)} ok, ${String(t.verdicts.redispatch)} re-dispatched`}
           >
             <span className="text-green">{t.verdicts.ok} ok</span>
             {t.verdicts.redispatch > 0 && (
@@ -1268,7 +1268,7 @@ function DeniedToolsPanel({ data }: { data: RetroFrictionResp }): JSX.Element {
             <span className="w-14 text-right text-ink-dim">{d.calls}</span>
             <span className="w-20 text-right">
               {covered ? (
-                <span className="text-green" title="an enabled auto-approve rule covers this tool">
+                <span className="text-green" data-tip="an enabled auto-approve rule covers this tool">
                   ✓ rule
                 </span>
               ) : (
@@ -1276,7 +1276,7 @@ function DeniedToolsPanel({ data }: { data: RetroFrictionResp }): JSX.Element {
                   type="button"
                   disabled={busy.has(d.tool)}
                   onClick={() => addRule(d.tool)}
-                  title={`auto-approve every ${d.tool} request`}
+                  data-tip={`auto-approve every ${d.tool} request`}
                   className="rounded-[7px] border border-line-strong px-2 py-[3px] text-[10.5px] text-ink-dim transition-colors hover:border-green/40 hover:text-green disabled:opacity-50"
                 >
                   {busy.has(d.tool) ? '…' : '+ rule'}

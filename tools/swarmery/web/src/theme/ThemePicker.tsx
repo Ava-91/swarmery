@@ -224,7 +224,7 @@ export function ThemePicker(): JSX.Element {
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label="theme settings"
-        title="theme"
+        data-tip="theme"
         className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg border border-line bg-field text-[13px] leading-none text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
       >
         <span aria-hidden="true">{theme === 'light' ? '☾' : '☀'}</span>

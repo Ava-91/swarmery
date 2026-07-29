@@ -44,7 +44,7 @@ function OverlayRow({ overlay }: { overlay: SystemOverlay }): JSX.Element {
         {overlay.parseError && (
           <span
             className="rounded-full border border-red/40 px-2 py-px font-mono text-[10px] whitespace-nowrap text-red"
-            title="project.json exists but is not valid JSON — fields unavailable"
+            data-tip="project.json exists but is not valid JSON — fields unavailable"
           >
             parse error
           </span>

@@ -399,7 +399,7 @@ function PendingCard({
             type="button"
             disabled={busy}
             onClick={onAlwaysAllow}
-            title="pre-fill an auto-approve rule from this request (the rule catches future requests; this one still needs your decision)"
+            data-tip="pre-fill an auto-approve rule from this request (the rule catches future requests; this one still needs your decision)"
             className={`${ACTION_BTN} border-line-strong font-normal text-ink-3 hover:bg-surface2`}
           >
             always allow…
@@ -410,7 +410,7 @@ function PendingCard({
             type="button"
             disabled={busy}
             onClick={() => onResolve('terminal')}
-            title="release with no decision — the native selector renders in the terminal (E12d/E12e)"
+            data-tip="release with no decision — the native selector renders in the terminal (E12d/E12e)"
             className={`${ACTION_BTN} border-line-strong font-normal text-ink-3 hover:bg-surface2`}
           >
             answer in terminal →

@@ -20,7 +20,7 @@ export function TaskChip({
     : 'linked via the task card (logs/sessions.md)';
   return (
     <span
-      title={title}
+      data-tip={title}
       className={`inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border px-1.5 py-[1px] font-mono text-[10px] text-ink-3 ${
         heuristic ? 'border-dashed border-ink-dim/60' : 'border-line bg-surface2'
       }`}

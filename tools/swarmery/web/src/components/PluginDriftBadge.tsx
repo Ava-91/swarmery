@@ -18,7 +18,7 @@ export function PluginDriftBadge({
   if (drift === undefined || drift.error + drift.warn === 0) return null;
   return (
     <span
-      title={`${String(drift.error)} error / ${String(drift.warn)} warn plugin findings — see System → Insights`}
+      data-tip={`${String(drift.error)} error / ${String(drift.warn)} warn plugin findings — see System → Insights`}
       className={drift.error > 0 ? 'text-red' : 'text-amber'}
     >
       {drift.error > 0 ? `· plugins ⚠ ${String(drift.error)}` : `· plugins ${String(drift.warn)}`}

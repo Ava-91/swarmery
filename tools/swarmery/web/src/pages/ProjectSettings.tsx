@@ -52,7 +52,7 @@ export function ProjectSettings(): JSX.Element {
           <ProjectActions project={project} onChanged={load} />
         </div>
       </div>
-      <div className="mt-1.5 font-mono text-[11px] text-ink-faint" title={project.path}>
+      <div className="mt-1.5 font-mono text-[11px] text-ink-faint" data-tip-mono data-tip={project.path}>
         {project.path}
       </div>
       {project.plugin?.marketplace !== undefined && project.plugin.marketplace !== '' && (

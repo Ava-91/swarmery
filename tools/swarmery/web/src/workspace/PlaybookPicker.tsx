@@ -131,7 +131,7 @@ export function VerifyChip({ verify }: { verify: string }): JSX.Element {
   return (
     <span
       className={`shrink-0 rounded-full border px-1.5 py-[1px] font-mono text-[9px] uppercase ${style}`}
-      title={`verification: ${verify}`}
+      data-tip={`verification: ${verify}`}
     >
       verify {verify}
     </span>

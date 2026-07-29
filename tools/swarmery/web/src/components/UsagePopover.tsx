@@ -134,7 +134,7 @@ export function UsagePopover(): JSX.Element {
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label="Subscription usage"
-        title="Subscription usage (estimate)"
+        data-tip="Subscription usage (estimate)"
         className="rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[11px] font-semibold text-ink-2 transition-colors hover:bg-surface2"
       >
         <span className={anyOver ? 'text-red' : 'text-ink-2'}>◔</span> usage

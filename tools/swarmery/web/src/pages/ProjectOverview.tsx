@@ -388,7 +388,7 @@ function CapabilityCard({
           items.map((c) => (
             <div
               key={c.name}
-              title={`source: ${c.source}`}
+              data-tip={`source: ${c.source}`}
               className="flex items-baseline gap-2 border-t border-line-soft py-[6px] font-mono text-[11.5px] first:border-t-0"
             >
               <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-ink-2">
@@ -561,7 +561,7 @@ export function ProjectOverview(): JSX.Element {
           <ProjectActions project={project} onChanged={loadData} />
         </div>
       </div>
-      <div className="mt-1.5 font-mono text-[11px] text-ink-faint" title={project.path}>
+      <div className="mt-1.5 font-mono text-[11px] text-ink-faint" data-tip-mono data-tip={project.path}>
         {project.path}
       </div>
 
