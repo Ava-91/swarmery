@@ -438,6 +438,34 @@ func TestRepairPluginRefusesUserScopeWhenGlobalSettingsMalformed(t *testing.T) {
 	}
 }
 
+// A repair must force a drift pass BEFORE reading the status back, and do it
+// synchronously — otherwise the response (and the list the UI refetches) still
+// carries the pre-repair status, and a working repair renders as a dead button.
+func TestRepairPluginRefreshesDriftBeforeReportingStatus(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_enabled_not_installed", "error", "gone", "")
+	attachRepairer(t, &repairSpy{out: []byte("ok")})
+
+	refreshed := false
+	AttachDriftRefresher(func() {
+		refreshed = true
+		// what a real pass would do once the plugin is installed
+		execSQL(t, db, `UPDATE config_lint_findings SET resolved_at = '2026-07-29T00:00:00Z'
+			WHERE rule = 'plugin_enabled_not_installed'`)
+	})
+	t.Cleanup(func() { driftRefresher = nil })
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
+	if !refreshed {
+		t.Fatal("repair did not force a drift pass")
+	}
+	if out["status"] != "ok" {
+		t.Errorf("status = %v, want ok — the refresh must land BEFORE the status is read", out["status"])
+	}
+}
+
 // The ordinary (non-symlinked) path must keep reporting project scope.
 func TestRepairPluginReportsProjectScopeNormally(t *testing.T) {
 	srv, db := projectsTestServer(t)

@@ -398,13 +398,24 @@ func (h *Handler) repairProjectPlugin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp, nil)
 }
 
-// recomputedDriftStatus re-reads the drift status after a repair. It reads the
-// findings table, which the ticker refreshes every 5 minutes — so right after a
-// repair it usually still reports the pre-repair status. That is honest: the
-// plugin genuinely is not loaded until Claude Code restarts, which is what
-// Restart tells the UI to say. A read error leaves the status empty rather than
-// asserting "ok".
+// recomputedDriftStatus re-reads the drift status after a repair.
+//
+// It forces a drift pass first. The findings table is otherwise only refreshed
+// by the 5-minute ticker, so the response — and the list the UI refetches right
+// after it — would still carry the PRE-repair status, leaving the row unchanged
+// and the repair button in place. A successful repair that renders as "nothing
+// happened" is indistinguishable from a broken one.
+//
+// Synchronous, unlike the session-start hook's fire-and-forget refresh
+// (prockill.go): that path has a 2s budget and nothing to render, whereas here
+// the freshly scanned status IS the response. One pass costs a single
+// `claude plugin list --json` (~300ms), paid only on an explicit button press.
+//
+// A read error leaves the status empty rather than asserting "ok".
 func recomputedDriftStatus(db *sql.DB, path, name string) string {
+	if driftRefresher != nil {
+		driftRefresher()
+	}
 	again, err := driftStatus(db, path)
 	if err != nil {
 		return ""
