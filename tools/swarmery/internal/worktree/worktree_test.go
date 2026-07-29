@@ -458,6 +458,61 @@ func TestRemoveDeleteBranch(t *testing.T) {
 	}
 }
 
+// Remove is the third `git branch -D` door, and the only one that does not go
+// through checkBranchReclaimable. Acquired is an exported struct any caller can
+// construct with a hand-built Branch, so the namespace class is closed here too:
+// the worktree still comes off (that part is unconditionally safe), but the
+// branch delete is refused before the git call is issued.
+func TestRemoveRefusesForeignNamespace(t *testing.T) {
+	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarm/a/b"} {
+		g := &stubGit{}
+		m := &Manager{Git: g}
+		a := Acquired{Path: "/wt/T-x", Branch: branch}
+		err := m.Remove("/tmp/repo", a, false)
+		if !errors.Is(err, ErrRefusedBranch) {
+			t.Errorf("Remove(%q, keepBranch=false) err = %v, want ErrRefusedBranch", branch, err)
+		}
+		if !strings.Contains(err.Error(), branch) {
+			t.Errorf("err = %v, want it to name the branch %q", err, branch)
+		}
+		if g.called("branch -D") {
+			t.Errorf("Remove(%q) issued `branch -D` despite the refusal", branch)
+		}
+	}
+}
+
+// taskIDForBranch is the inverse that authorizes ownsWorktreePath's
+// single-component reasoning (Base(p) == taskID && Dir(Dir(p)) == Root). A
+// multi-component remainder fails BOTH of those silently, so the leftover would
+// be read as a foreign checkout and the crash-leftover warm reuse would quietly
+// stop working for it. Refusing "/" here makes the swarm/plan- reuse provably
+// safe instead of incidentally safe.
+func TestTaskIDForBranch(t *testing.T) {
+	for _, tc := range []struct {
+		branch string
+		want   string
+	}{
+		{"swarm/phase-714", "phase-714"},
+		{"swarm/plan-71", "plan-71"},
+		{"swarm/T-abc123", "T-abc123"},
+		// Multi-component remainders — the precondition being asserted.
+		{"swarm/a/b", ""},
+		{"swarm/phase-1/x", ""},
+		{"swarm/plan-71/nested", ""},
+		// Outside the namespace entirely.
+		{"swarm/", ""},
+		{"dev", ""},
+		{"main", ""},
+		{"feature/x", ""},
+		{"swarmish/x", ""},
+		{"", ""},
+	} {
+		if got := taskIDForBranch(tc.branch); got != tc.want {
+			t.Errorf("taskIDForBranch(%q) = %q, want %q", tc.branch, got, tc.want)
+		}
+	}
+}
+
 func TestPruneSweepsAndPrunes(t *testing.T) {
 	repoRoot := t.TempDir()
 	wtDir := filepath.Join(repoRoot, ".git", "worktrees", "gone")
@@ -638,7 +693,7 @@ func TestReclaimEmptyBranchRefusesHeadBranch(t *testing.T) {
 // deletes dev — the guard closes the class at the boundary rather than relying on
 // every caller to build the name correctly.
 func TestReclaimEmptyBranchRefusesForeignNamespace(t *testing.T) {
-	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarmish/x"} {
+	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarmish/x", "swarm/a/b"} {
 		g := baseStub()
 		m := newMgr(t, g)
 		_, err := m.ReclaimEmptyBranch("/tmp/repo", branch)
@@ -655,7 +710,7 @@ func TestReclaimEmptyBranchRefusesForeignNamespace(t *testing.T) {
 }
 
 func TestDeleteBranchRefusesForeignNamespace(t *testing.T) {
-	for _, branch := range []string{"dev", "main", "feature/x", "swarm/"} {
+	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarm/a/b"} {
 		g := baseStub()
 		m := newMgr(t, g)
 		_, err := m.DeleteBranch("/tmp/repo", branch)
@@ -849,6 +904,48 @@ func TestReclaimEmptyBranchForeignTaskUnderRoot(t *testing.T) {
 	m := &Manager{Git: g, Root: root}
 	if _, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714"); !errors.Is(err, ErrBranchCheckedOut) {
 		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
+	}
+}
+
+// The case ownsWorktreePath's comment is actually defending, and the one the
+// sibling tests miss: same Root, same task LEAF, but a DIFFERENT project slug.
+//
+// ownsWorktreePath checks Base(p) == taskID and Dir(Dir(p)) == Root; it does not
+// pin the slug component, so a leftover minted under a previous slug reads as
+// "ours" and reclaim answers (0, nil) — it will not delete a branch it believes a
+// live run of ours holds. Acquire then computes a path under the NEW slug, finds
+// the branch checked out at a path that is not it, and refuses with ErrBranchBusy.
+//
+// That is the accepted behaviour, not a defect: slug churn is real here (the
+// attribution canonicalization collapsed 15 project rows to 9), and failing loudly
+// on a mapped 409 beats silently reusing a worktree under a stale slug. This test
+// pins it so the next reader does not "fix" the missing slug pin without noticing
+// it converts a 409 into a wrong warm reuse.
+func TestReclaimThenAcquireIsBusyAcrossSlugChurn(t *testing.T) {
+	g, m, own := ownLeftoverStub(t, "old-slug", "phase-714")
+
+	ahead, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714")
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch = %v, want nil — the leaf matches, so it reads as ours", err)
+	}
+	if ahead != 0 {
+		t.Errorf("ahead = %d, want 0 — reclaim stops at the list for an own checkout", ahead)
+	}
+	if g.called("branch -D") {
+		t.Fatalf("reclaim deleted a branch held by a live worktree (calls: %v)", g.calls)
+	}
+
+	// Same task, NEW slug ⇒ a different deterministic path, so warm reuse cannot
+	// apply and the branch is genuinely busy elsewhere.
+	_, err = m.Acquire("/tmp/repo", "new-slug", "phase-714")
+	if !errors.Is(err, ErrBranchBusy) {
+		t.Fatalf("Acquire under a new slug = %v, want ErrBranchBusy (the mapped 409 path)", err)
+	}
+	if !strings.Contains(err.Error(), own) {
+		t.Errorf("err = %v, want it to name the holding worktree %s", err, own)
+	}
+	if g.called("worktree add") {
+		t.Error("Acquire must not create a second worktree for a branch already checked out")
 	}
 }
 

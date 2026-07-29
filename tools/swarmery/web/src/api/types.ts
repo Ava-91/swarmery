@@ -2205,6 +2205,36 @@ export type PhaseRunState = 'idle' | 'running' | 'done' | 'failed';
  *  Distinct from PhaseRunState, which only says how the process ended. */
 export type PhaseRunOutcome = 'idle' | 'running' | 'completed' | 'partial' | 'noop' | 'failed';
 
+/**
+ * The `code` discriminator every run 409 carries — mirrors the constants in
+ * internal/api/runconflict.go, which is the authoritative list.
+ *
+ * POST …/run and DELETE …/branch answer 409 for a dozen different reasons, and the
+ * client used to tell them apart by sniffing which fields were present (`branch`
+ * ⇒ "the branch holds commits"). That silently mis-classifies every future case
+ * that happens to carry the same field, so the discriminator is the contract and
+ * the fields are display data.
+ */
+export type RunConflictCode =
+  // Run admission (both the phase and the whole-plan surface).
+  | 'already-running'
+  | 'deps-unmet'
+  | 'doc-unreadable'
+  | 'no-project-path'
+  // Branch lifecycle — the phase surface's own gate, then the worktree sentinels.
+  | 'no-run-branch'
+  | 'branch-dirty'
+  | 'branch-checked-out'
+  | 'branch-is-head'
+  | 'branch-refused'
+  | 'branch-busy'
+  | 'detached-head'
+  // Plan-run-only admission gates.
+  | 'phase-running'
+  | 'plan-not-active'
+  | 'no-phases'
+  | 'plan-complete';
+
 /** One reason a phase did not progress — mirrors phasediag.Blocker. */
 export interface PhaseBlocker {
   kind: 'dep-incomplete' | 'dep-unmerged' | 'branch-blocks-retry' | 'branch-dirty' | 'no-criteria';

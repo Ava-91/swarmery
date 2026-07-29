@@ -48,6 +48,7 @@ import type {
   PlanningStart,
   PlanningStatus,
   ProjectDetail,
+  RunConflictCode,
   ProjectMeta,
   ProjectMetaPatch,
   ProjectOverviewResp,
@@ -1410,10 +1411,47 @@ export async function epicLifecycle(
  * name a base (no git seam, detached HEAD) — never guessed.
  */
 export type PhaseRunBranchError = Error & {
+  /**
+   * The 409's stable discriminator. Callers switch on THIS, never on which
+   * fields happen to be present: a body-shape sniff mis-classifies every future
+   * case that carries the same field. Undefined only for a non-409 failure (or a
+   * body the daemon could not encode), so a consumer must treat "no code" as
+   * "unknown rejection", not as any particular case.
+   */
+  code?: RunConflictCode | undefined;
   branch?: string | undefined;
   commitsAhead?: number | undefined;
   base?: string | undefined;
 };
+
+/**
+ * runConflictError builds the enriched error every run/branch endpoint throws.
+ *
+ * The branch facts ride along only for the case that actually measured them
+ * (`branch-dirty`), keyed off `code` rather than off `body.branch !== undefined`
+ * — the sniff this helper exists to replace. Every other 409 still gets its
+ * `code`, so a caller can distinguish "checked out elsewhere" from "is HEAD"
+ * from "outside swarm/" without reading the prose.
+ */
+function runConflictError(
+  body: {
+    error?: string;
+    code?: RunConflictCode;
+    branch?: string;
+    commitsAhead?: number;
+    base?: string;
+  },
+  fallback: string,
+): PhaseRunBranchError {
+  const err: PhaseRunBranchError = new Error(body.error ?? fallback);
+  if (body.code !== undefined) err.code = body.code;
+  if (body.code === 'branch-dirty') {
+    err.branch = body.branch;
+    err.commitsAhead = body.commitsAhead;
+    err.base = body.base;
+  }
+  return err;
+}
 
 /**
  * POST /api/epics/{taskId}/phases/{phaseId}/run — execute one plan phase
@@ -1430,25 +1468,19 @@ export async function runEpicPhase(
     method: 'POST',
   });
   if (!res.ok) {
-    // The branch-holds-commits 409 carries structured escape-hatch data
-    // (`branch`, `commitsAhead`) the caller turns into a "delete the branch"
-    // affordance — it rides along on the Error rather than being flattened
-    // into the message, which would force the UI to parse prose.
+    // Every 409 carries a `code`; the branch-holds-commits one additionally
+    // carries structured escape-hatch data (`branch`, `commitsAhead`, `base`) the
+    // caller turns into a "delete the branch" affordance. Both ride along on the
+    // Error rather than being flattened into the message, which would force the
+    // UI to parse prose.
     const body = (await res.json().catch(() => ({}))) as {
       error?: string;
+      code?: RunConflictCode;
       branch?: string;
       commitsAhead?: number;
       base?: string;
     };
-    const err: PhaseRunBranchError = new Error(
-      body.error ?? `phase run failed (${String(res.status)})`,
-    );
-    if (body.branch !== undefined) {
-      err.branch = body.branch;
-      err.commitsAhead = body.commitsAhead;
-      err.base = body.base;
-    }
-    throw err;
+    throw runConflictError(body, `phase run failed (${String(res.status)})`);
   }
   return (await res.json()) as { status: string; sessionUuid: string };
 }
@@ -1478,8 +1510,14 @@ export async function deletePhaseRunBranch(
     method: 'DELETE',
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `branch delete failed (${String(res.status)})`);
+    // Same enriched error the run endpoints throw: a delete refusal is a state
+    // the user can resolve (checked out somewhere, is HEAD, a run owns it), and
+    // `code` is what lets the caller say which one without matching on prose.
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      code?: RunConflictCode;
+    };
+    throw runConflictError(body, `branch delete failed (${String(res.status)})`);
   }
   return (await res.json()) as { deleted: boolean; branch: string };
 }
@@ -1531,19 +1569,12 @@ export async function runEpicPlan(
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as {
       error?: string;
+      code?: RunConflictCode;
       branch?: string;
       commitsAhead?: number;
       base?: string;
     };
-    const err: PhaseRunBranchError = new Error(
-      body.error ?? `plan run failed (${String(res.status)})`,
-    );
-    if (body.branch !== undefined) {
-      err.branch = body.branch;
-      err.commitsAhead = body.commitsAhead;
-      err.base = body.base;
-    }
-    throw err;
+    throw runConflictError(body, `plan run failed (${String(res.status)})`);
   }
   return (await res.json()) as {
     status: string;
@@ -1567,8 +1598,14 @@ export async function deletePlanRunBranch(
   if (MOCK) return { deleted: true, branch: 'swarm/plan-mock' };
   const res = await fetch(`/api/epics/${String(taskId)}/branch`, { method: 'DELETE' });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `branch delete failed (${String(res.status)})`);
+    // Same enriched error the phase-scoped delete throws — the plan and phase
+    // surfaces answer the same condition with the same `code` (runconflict.go),
+    // so one client-side shape covers both.
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      code?: RunConflictCode;
+    };
+    throw runConflictError(body, `branch delete failed (${String(res.status)})`);
   }
   return (await res.json()) as { deleted: boolean; branch: string };
 }
