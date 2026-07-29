@@ -46,11 +46,16 @@ function RepairButton({
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A repair can succeed and still need the operator's attention — the
+  // user-scope fallback reverts a global enable, and that revert can fail.
+  const [warning, setWarning] = useState<string | null>(null);
   const run = (): void => {
     setBusy(true);
     setErr(null);
+    setWarning(null);
     repairProjectPlugin(projectId, `${row.name}@${marketplace}`)
-      .then(() => {
+      .then((res) => {
+        setWarning(res.warning ?? null);
         onDone();
       })
       .catch((e: unknown) => {
@@ -60,6 +65,7 @@ function RepairButton({
         setBusy(false);
       });
   };
+  const label = busy ? '…' : err !== null ? 'failed' : warning !== null ? 'check' : 'repair';
   return (
     <button
       type="button"
@@ -67,13 +73,16 @@ function RepairButton({
       onClick={run}
       title={
         err ??
+        warning ??
         (disabled
           ? 'read-only — daemon started without SWARMERY_ONBOARD_ROOTS'
           : 'run claude plugin install/update for this project')
       }
-      className="shrink-0 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+      className={`shrink-0 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 ${
+        warning !== null ? 'text-amber' : 'text-ink-dim'
+      }`}
     >
-      {busy ? '…' : err !== null ? 'failed' : 'repair'}
+      {label}
     </button>
   );
 }

@@ -268,12 +268,25 @@ export async function toggleProjectPlugin(
  * by the daemon from the current drift status, so the client cannot ask for an
  * install where an update is what is needed. Takes effect in the NEXT Claude
  * Code session, which is why the response always sets restart.
+ *
+ * Projects whose .claude is a symlinked overlay cannot take a project-scope
+ * write at all; the daemon installs at user scope instead and says so in
+ * `scope`. Check `warning` on success — it is set when that fallback could not
+ * revert the global enable it caused.
  */
 export async function repairProjectPlugin(
   id: number,
   pluginId: string,
 ): Promise<PluginRepairResponse> {
-  if (MOCK) return { id: pluginId, action: 'install', output: 'mock', status: 'ok', restart: true };
+  if (MOCK)
+    return {
+      id: pluginId,
+      action: 'install',
+      scope: 'project',
+      output: 'mock',
+      status: 'ok',
+      restart: true,
+    };
   const res = await fetch(
     `/api/projects/${String(id)}/plugins/${encodeURIComponent(pluginId)}/repair`,
     { method: 'POST' },

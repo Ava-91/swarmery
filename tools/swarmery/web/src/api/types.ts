@@ -1902,10 +1902,22 @@ export interface ProjectPluginsResponse {
 export interface PluginRepairResponse {
   id: string;
   action: 'install' | 'update';
+  /**
+   * Which scope the CLI was actually asked for. 'user' means the project's
+   * .claude is a symlinked overlay, where a project-scope write is impossible —
+   * the daemon installed at user scope and reverted the global enable.
+   */
+  scope: 'project' | 'user';
   output: string;
   status: PluginDriftStatus;
   /** Always true: a repaired plugin loads only in the next Claude Code session. */
   restart: boolean;
+  /**
+   * Set when the repair succeeded but left something the operator must act on
+   * (currently: the global enable could not be reverted, so the pack is on for
+   * every project until the key is removed by hand).
+   */
+  warning?: string;
 }
 
 /** PUT /api/projects/{id}/plugins/{name} result. */

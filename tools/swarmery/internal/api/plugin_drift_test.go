@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -165,11 +168,17 @@ type repairSpy struct {
 	dirs  []string
 	out   []byte
 	err   error
+	// onRun simulates a side effect of the real CLI (a user-scope install
+	// writing enabledPlugins into the user settings.json).
+	onRun func()
 }
 
 func (s *repairSpy) Run(_ context.Context, dir string, args ...string) ([]byte, error) {
 	s.calls = append(s.calls, args)
 	s.dirs = append(s.dirs, dir)
+	if s.onRun != nil {
+		s.onRun()
+	}
 	return s.out, s.err
 }
 
@@ -285,6 +294,161 @@ func TestRepairPluginUnavailableWithoutRepairer(t *testing.T) {
 	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 503)
 	if msg, _ := out["error"].(string); !strings.Contains(msg, "claude CLI") {
 		t.Errorf("error = %q, want the unresolved-CLI message", msg)
+	}
+}
+
+// ── the symlinked-overlay fallback ───────────────────────────────────────────
+//
+// The multi-repo consumer overlay pattern (CLAUDE.md / EXTENDING.md): .claude
+// is itself a symlink into a shared agents/ repo. The claude CLI refuses to
+// write project-scope settings through such a directory (SymlinkWriteRefusedError,
+// observed against a real consumer with `.claude -> agents`), so repair falls
+// back to a user-scope install — which resolves the drift, because
+// plugindrift.resolveFor counts a Scope=="user" entry as available to every
+// project — and then reverts the global enable the CLI sets as a side effect.
+
+// seedOverlayProject registers project 4 with a symlinked .claude and a seeded
+// enabled-but-not-installed finding, and points the user-settings anchor at a
+// temp dir. Returns the project dir and the user settings.json path.
+func seedOverlayProject(t *testing.T, srvURL string, db *sql.DB, globalSettings string) (string, string) {
+	t.Helper()
+	root := filepath.Dir(projectPath(t, srvURL, "1")) // project 1's onboarding root
+	projDir := filepath.Join(root, "overlay-consumer")
+	agentsDir := filepath.Join(projDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "settings.json"),
+		[]byte(`{"enabledPlugins": {"core@swarmery": true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("agents", filepath.Join(projDir, ".claude")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	execSQL(t, db, `INSERT INTO projects (id, path, slug, name, first_seen, archived)
+		VALUES (4, ?, 'overlay', 'Overlay', '2026-07-29T00:00:00Z', 0)`, projDir)
+	seedFinding(t, db, pluginTarget("core@swarmery", projDir), "plugin_enabled_not_installed", "error", "gone", "")
+
+	claudeDir := t.TempDir()
+	userSettings := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(userSettings, []byte(globalSettings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := pluginsClaudeDir
+	pluginsClaudeDir = claudeDir
+	t.Cleanup(func() { pluginsClaudeDir = prev })
+	return projDir, userSettings
+}
+
+func globalEnabled(t *testing.T, path, key string) (any, bool) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d map[string]any
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	ep, _ := d["enabledPlugins"].(map[string]any)
+	v, ok := ep[key]
+	return v, ok
+}
+
+func TestRepairPluginFallsBackToUserScopeOnSymlinkedClaudeDir(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	_, userSettings := seedOverlayProject(t, srv.URL, db, `{"enabledPlugins":{"lsp-pack@swarmery":true}}`)
+
+	spy := &repairSpy{out: []byte("installed core@swarmery")}
+	// the real CLI's side effect at user scope
+	spy.onRun = func() {
+		if err := os.WriteFile(userSettings,
+			[]byte(`{"enabledPlugins":{"lsp-pack@swarmery":true,"core@swarmery":true}}`), 0o644); err != nil {
+			t.Error(err)
+		}
+	}
+	attachRepairer(t, spy)
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/4/plugins/core@swarmery/repair", nil, 200)
+	if out["scope"] != "user" {
+		t.Errorf("scope = %v, want user", out["scope"])
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(spy.calls))
+	}
+	// No --scope project: that is the whole point — it cannot succeed here.
+	want := []string{"plugin", "install", "core@swarmery"}
+	if strings.Join(spy.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", spy.calls[0], want)
+	}
+	if spy.dirs[0] != "" {
+		t.Errorf("cmd dir = %q, want empty — a user-scope install must not run in the symlinked project", spy.dirs[0])
+	}
+	// The global enable the install caused must be gone again.
+	if _, present := globalEnabled(t, userSettings, "core@swarmery"); present {
+		t.Error("core@swarmery is still globally enabled — repairing one consumer turned the pack on for every project")
+	}
+	if v, present := globalEnabled(t, userSettings, "lsp-pack@swarmery"); !present || v != true {
+		t.Error("a foreign global enable was clobbered by the revert")
+	}
+	if w, _ := out["warning"].(string); w != "" {
+		t.Errorf("warning = %q, want none on a clean run", w)
+	}
+}
+
+// The revert must run even when the CLI fails — a partial install can still
+// have written the key.
+func TestRepairPluginUserScopeRevertsAfterCLIFailure(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	_, userSettings := seedOverlayProject(t, srv.URL, db, `{"enabledPlugins":{}}`)
+
+	spy := &repairSpy{out: []byte("partial"), err: errors.New("exit status 1")}
+	spy.onRun = func() {
+		if err := os.WriteFile(userSettings,
+			[]byte(`{"enabledPlugins":{"core@swarmery":true}}`), 0o644); err != nil {
+			t.Error(err)
+		}
+	}
+	attachRepairer(t, spy)
+
+	doJSON(t, "POST", srv.URL+"/api/projects/4/plugins/core@swarmery/repair", nil, 502)
+	if _, present := globalEnabled(t, userSettings, "core@swarmery"); present {
+		t.Error("a failed repair left the pack globally enabled")
+	}
+}
+
+// An untrustworthy snapshot must stop the install BEFORE it runs: a global
+// enable swarmery cannot revert is worse than an unrepaired plugin.
+func TestRepairPluginRefusesUserScopeWhenGlobalSettingsMalformed(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	seedOverlayProject(t, srv.URL, db, `{"enabledPlugins": [broken`)
+
+	spy := &repairSpy{out: []byte("installed")}
+	attachRepairer(t, spy)
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/4/plugins/core@swarmery/repair", nil, 409)
+	if len(spy.calls) != 0 {
+		t.Fatalf("runner ran %d times without a trustworthy snapshot, want 0", len(spy.calls))
+	}
+	if body, _ := out["output"].(string); !strings.Contains(body, "refused") {
+		t.Errorf("output = %q, want it to say the fallback was refused", body)
+	}
+}
+
+// The ordinary (non-symlinked) path must keep reporting project scope.
+func TestRepairPluginReportsProjectScopeNormally(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_enabled_not_installed", "error", "gone", "")
+	attachRepairer(t, &repairSpy{out: []byte("ok")})
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
+	if out["scope"] != "project" {
+		t.Errorf("scope = %v, want project", out["scope"])
 	}
 }
 

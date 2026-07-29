@@ -7,11 +7,13 @@ package api
 // tells the UI whether the PUT fence (step 03, same file) would admit a write.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -240,12 +242,76 @@ var pluginRepairer plugindrift.Runner
 // AttachPluginRepairer points the repair endpoint at a CLI runner.
 func AttachPluginRepairer(r plugindrift.Runner) { pluginRepairer = r }
 
+// isSymlinkedClaudeDir reports whether projectPath/.claude is itself a symlink
+// — the multi-repo consumer overlay pattern (a shared agents/ repo with each
+// consuming repo's .claude symlinked into it; see CLAUDE.md's Self-hosting
+// section and EXTENDING.md). Lstat (not Stat) so the symlink itself is
+// inspected rather than followed; any error (missing/unreadable) reports false
+// so the normal repair path still runs and surfaces its own error.
+func isSymlinkedClaudeDir(projectPath string) bool {
+	fi, err := os.Lstat(filepath.Join(projectPath, ".claude"))
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+// pluginsClaudeDir anchors the user-level settings.json that the user-scope
+// repair fallback has to revert. Injectable for tests.
+var pluginsClaudeDir = defaultMemoryClaudeDir()
+
 type repairPluginResponse struct {
-	ID      string `json:"id"`
-	Action  string `json:"action"` // install | update
+	ID     string `json:"id"`
+	Action string `json:"action"` // install | update
+	// Scope is which scope the CLI was actually asked for: "project" normally,
+	// "user" for the symlinked-overlay fallback. The UI shows it because the
+	// two are not equivalent — see repairViaUserScope.
+	Scope   string `json:"scope"`
 	Output  string `json:"output"`
 	Status  string `json:"status"` // recomputed after the run
 	Restart bool   `json:"restart"`
+	// Warning is set when the repair succeeded but left the machine in a state
+	// the operator must know about (currently: the global enable could not be
+	// reverted). Empty on a clean run.
+	Warning string `json:"warning,omitempty"`
+}
+
+// repairViaUserScope is the repair path for a project whose .claude is a
+// symlinked overlay, where `--scope project` cannot run at all.
+//
+// It installs at USER scope, which resolves the drift (plugindrift.resolveFor
+// counts a Scope=="user" entry as available to every project), then reverts the
+// enabledPlugins key the CLI sets in the user settings.json as a side effect —
+// otherwise repairing one consumer would switch the pack on for every project
+// on the machine. See internal/onboard/globalenable.go for why the revert keeps
+// the install drift-resolving.
+//
+// The revert runs even when the CLI failed: a partial install can still have
+// written the key.
+func repairViaUserScope(ctx context.Context, pluginID, action string) (repairPluginResponse, int) {
+	resp := repairPluginResponse{ID: pluginID, Action: action, Scope: "user", Restart: true}
+
+	snap, cerr := onboard.CaptureGlobalEnable(pluginsClaudeDir, pluginID)
+	if cerr != nil {
+		// Refuse rather than risk an irreversible global enable.
+		resp.Restart = false
+		resp.Output = "refused: " + cerr.Error() + " — a user-scope install would enable " +
+			pluginID + " for every project on this machine, and swarmery could not " +
+			"guarantee reverting that. Fix the user settings.json and retry."
+		return resp, http.StatusConflict
+	}
+
+	out, rerr := pluginRepairer.Run(ctx, "", "plugin", action, pluginID)
+	resp.Output = string(out)
+
+	if resErr := snap.Restore(); resErr != nil {
+		log.Printf("repair: user-scope %s of %s left the global enable in place: %v", action, pluginID, resErr)
+		resp.Warning = "installed, but the global enable in " + pluginsClaudeDir +
+			"/settings.json could not be reverted (" + resErr.Error() + ") — " + pluginID +
+			" is now enabled for every project until you remove that key by hand"
+	}
+	if rerr != nil {
+		resp.Output = strings.TrimSpace(resp.Output + "\n" + rerr.Error())
+		return resp, http.StatusBadGateway
+	}
+	return resp, http.StatusOK
 }
 
 // repairProjectPlugin handles POST /api/projects/{id}/plugins/{name}/repair.
@@ -306,25 +372,47 @@ func (h *Handler) repairProjectPlugin(w http.ResponseWriter, r *http.Request) {
 		action = "update"
 	}
 
+	// Multi-repo consumer overlay (CLAUDE.md / EXTENDING.md): <project>/.claude
+	// is itself a symlink into a shared agents/ repo. The claude CLI refuses to
+	// write project-scope settings through a symlinked .claude directory
+	// (SymlinkWriteRefusedError), so `--scope project` can never succeed there;
+	// fall back to a user-scope install that resolves the drift without writing
+	// through the symlink at all.
+	if isSymlinkedClaudeDir(path) {
+		resp, code := repairViaUserScope(r.Context(), pluginID, action)
+		if code == http.StatusOK {
+			resp.Status = recomputedDriftStatus(h.DB, path, name)
+		}
+		writeJSONStatus(w, code, resp)
+		return
+	}
+
 	out, rerr := pluginRepairer.Run(r.Context(), path, "plugin", action, pluginID, "--scope", "project")
-	resp := repairPluginResponse{ID: pluginID, Action: action, Output: string(out), Restart: true}
+	resp := repairPluginResponse{ID: pluginID, Action: action, Scope: "project", Output: string(out), Restart: true}
 	if rerr != nil {
 		resp.Output = strings.TrimSpace(resp.Output + "\n" + rerr.Error())
 		writeJSONStatus(w, http.StatusBadGateway, resp)
 		return
 	}
-	// The recomputed status reads the findings table, which the ticker refreshes
-	// every 5 minutes — so right after a repair it usually still reports the
-	// pre-repair status. That is honest: the plugin genuinely is not loaded
-	// until Claude Code restarts, which is what Restart tells the UI to say.
-	if again, aerr := driftStatus(h.DB, path); aerr == nil {
-		if d, ok := again[name]; ok {
-			resp.Status = d.status
-		} else {
-			resp.Status = "ok"
-		}
-	}
+	resp.Status = recomputedDriftStatus(h.DB, path, name)
 	writeJSON(w, resp, nil)
+}
+
+// recomputedDriftStatus re-reads the drift status after a repair. It reads the
+// findings table, which the ticker refreshes every 5 minutes — so right after a
+// repair it usually still reports the pre-repair status. That is honest: the
+// plugin genuinely is not loaded until Claude Code restarts, which is what
+// Restart tells the UI to say. A read error leaves the status empty rather than
+// asserting "ok".
+func recomputedDriftStatus(db *sql.DB, path, name string) string {
+	again, err := driftStatus(db, path)
+	if err != nil {
+		return ""
+	}
+	if d, ok := again[name]; ok {
+		return d.status
+	}
+	return "ok"
 }
 
 type putPluginRequest struct {
