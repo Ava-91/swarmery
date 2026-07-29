@@ -942,3 +942,16 @@ func TestDeleteOrphanBranch_RefusesOversizedID(t *testing.T) {
 		t.Errorf("deleted %q for an id that cannot be checked against the table", wt.deleted)
 	}
 }
+
+// Unattached daemon: the route answers 503 rather than nil-dereferencing
+// phaserunSvc.Wt. detachPhaseRun restores the package var, so this cannot leak
+// into a later test in the package.
+func TestDeleteOrphanBranch_NotAttached_503(t *testing.T) {
+	srv, _, taskID, _ := epicFixture(t)
+	detachPhaseRun(t)
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-999999"))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+}
