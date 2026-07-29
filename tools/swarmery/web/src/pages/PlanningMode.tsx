@@ -33,6 +33,7 @@ import {
   startPlanning,
 } from '../api';
 import { fmtAgo } from '../lib/format';
+import { useSessionHref } from '../lib/sessionHref';
 import { useLiveUpdates } from '../lib/ws';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { Card, Empty, ErrorBox, Loading } from '../components/ui';
@@ -58,6 +59,7 @@ function fmtElapsed(startedAt: string, nowMs: number): string {
 
 export function PlanningMode(): JSX.Element {
   const { projectId, project, slug, loading } = useProjectWorkspace();
+  const sessionHref = useSessionHref();
 
   const [status, setStatus] = useState<PlanningStatus | null>(null);
   const [idea, setIdea] = useState('');
@@ -322,7 +324,7 @@ export function PlanningMode(): JSX.Element {
       )}
       {sessionUuid !== '' && (
         <Link
-          to={`/sessions/${sessionUuid}`}
+          to={sessionHref(sessionUuid)}
           className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
         >
           open session →
@@ -382,7 +384,7 @@ export function PlanningMode(): JSX.Element {
             <span className="text-[13px] font-semibold text-ink">Planning run failed</span>
             {sessionUuid !== '' && (
               <Link
-                to={`/sessions/${sessionUuid}`}
+                to={sessionHref(sessionUuid)}
                 className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
               >
                 open session →

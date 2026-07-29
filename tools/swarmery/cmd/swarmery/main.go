@@ -4,6 +4,7 @@
 //	swarmery backfill              one-shot full scan of the projects root
 //	swarmery serve                 serve the API/SPA + live ingest pipeline
 //	swarmery recost                recompute cost_usd for all turns
+//	swarmery economics             five token-economy metrics (read-only)
 //	swarmery backup                write a VACUUM-INTO snapshot of the DB
 //	swarmery prune                 retention: roll up + delete old sessions' raw rows
 //	swarmery install               launchd auto-start (uninstall / status)
@@ -34,6 +35,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/economics"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/evals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/handoff"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookcfg"
@@ -82,6 +84,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "recost":
 		err = cmdRecost(os.Args[2:])
+	case "economics":
+		err = cmdEconomics(os.Args[2:])
 	case "backup":
 		err = cmdBackup(os.Args[2:])
 	case "prune":
@@ -142,6 +146,11 @@ func usage() {
                     [--notify-url <url>] [--notify-events <list>] [--notify-template <generic|ntfy|telegram>]
                     [--notify-telegram-chat <id>]
   swarmery recost   [--db <path>]
+  swarmery economics [--db <path>] [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>]
+                    [--project <id>] [--json]
+                                   token economy of the agent system: cost per completed task,
+                                   cache efficiency, delegation cost, wasted work, model mix
+                                   (read-only; safe while the daemon is serving)
   swarmery backup   [--db <path>] [--out <path>]   VACUUM-INTO snapshot (safe while serving)
   swarmery prune    [--db <path>] --older-than <Nd> [--dry-run]
                                    retention: write daily_rollups for sessions ended > Nd ago,
@@ -277,6 +286,39 @@ func cmdRecost(args []string) error {
 	fmt.Printf("recost %s\n  turns examined: %d\n  priced: %d\n  unpriced (unknown model → NULL): %d\n  no usage (user turns → NULL): %d\n",
 		*dbPath, stats.Total, stats.Priced, stats.Unpriced, stats.NoUsage)
 	return nil
+}
+
+// cmdEconomics prints the five token-economy metrics the agent-system audit is
+// measured on: cost per completed task, cache efficiency, delegation cost,
+// wasted work, and model mix. Read-only — internal/economics issues no
+// INSERT/UPDATE/DELETE, so this is safe to run against a live daemon's
+// database. --json emits the same report machine-readably, which is how a
+// baseline is captured for later comparison.
+func cmdEconomics(args []string) error {
+	fs := flag.NewFlagSet("economics", flag.ExitOnError)
+	dbPath := dbFlag(fs)
+	since := fs.String("since", "", "lower bound, YYYY-MM-DD inclusive")
+	until := fs.String("until", "", "upper bound, YYYY-MM-DD inclusive")
+	project := fs.Int64("project", 0, "project id filter (0 = all)")
+	asJSON := fs.Bool("json", false, "emit the report as JSON instead of text")
+	fs.Parse(args)
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: swarmery economics [--db <path>] [--since <d>] [--until <d>] [--project <id>] [--json]")
+	}
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	rep, err := economics.Compute(db, economics.Options{
+		Since: *since, Until: *until, ProjectID: *project,
+	})
+	if err != nil {
+		return err
+	}
+	return economics.Render(os.Stdout, rep, *asJSON)
 }
 
 // cmdBackup writes a consistent snapshot of the database to a standalone file

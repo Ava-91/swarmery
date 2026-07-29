@@ -1,6 +1,7 @@
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import type { Session } from '../api/types';
 import { fmtSpan, fmtTime } from '../lib/format';
+import { useSessionHref } from '../lib/sessionHref';
 import { sessionState, useNowMs, type SessionState } from '../lib/sessionState';
 import { ExplainPair } from './Explain';
 import { KillButton, killSlotKind } from './KillButton';
@@ -181,12 +182,12 @@ export function SessionCard({
   const navigate = useNavigate();
   // Preserve the mode when opening a session: in project mode (/p/:slug/…) stay
   // under the project subtree so the header/sidebar don't flip to session mode.
-  const { slug } = useParams<{ slug?: string }>();
+  const sessionHref = useSessionHref();
   const nowMs = useNowMs();
   const tone = toneOf(session, nowMs);
   const liveNow = now !== null && (tone === 'active' || tone === 'waiting');
   const goToDetail = (): void => {
-    navigate(slug != null ? `/p/${slug}/sessions/${session.id}` : `/sessions/${session.id}`);
+    navigate(sessionHref(session.id));
   };
   const headline = label ?? session.title;
 

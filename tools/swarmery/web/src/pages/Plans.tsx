@@ -64,6 +64,7 @@ import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useLiveUpdates } from '../lib/ws';
 import { Markdown } from '../lib/markdown';
 import { fmtElapsed } from '../lib/format';
+import { useSessionHref } from '../lib/sessionHref';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { RunOutcomeModal } from '../components/RunOutcomeModal';
 import { PlanBranchDirtyModal, type PlanBranchDirty } from '../components/PlanBranchDirtyModal';
@@ -952,6 +953,7 @@ function PhaseList({
   onCancelRun: (phaseId: number) => void;
   onOpenOutcome: (phaseId: number) => void;
 }): JSX.Element {
+  const sessionHref = useSessionHref();
   return (
     <ol className="space-y-2">
       {epic.phases.map((p) => {
@@ -1055,7 +1057,7 @@ function PhaseList({
                     </span>
                     {p.runSessionUuid !== null && (
                       <Link
-                        to={`/sessions/${p.runSessionUuid}`}
+                        to={sessionHref(p.runSessionUuid)}
                         onClick={(e) => e.stopPropagation()}
                         className="font-mono text-[9.5px] text-ink-dim underline-offset-2 transition-colors hover:text-brand hover:underline"
                       >
@@ -1263,6 +1265,7 @@ function PlanRunControls({
   onCancel: () => void;
 }): JSX.Element | null {
   const [open, setOpen] = useState(false);
+  const sessionHref = useSessionHref();
   const run = epic.planRun;
 
   if (run?.runState === 'running') {
@@ -1278,7 +1281,7 @@ function PlanRunControls({
         </span>
         {run.runSessionUuid !== null && (
           <Link
-            to={`/sessions/${run.runSessionUuid}`}
+            to={sessionHref(run.runSessionUuid)}
             className="font-mono text-[10.5px] text-ink-dim underline-offset-2 transition-colors hover:text-brand hover:underline"
           >
             session
@@ -1737,6 +1740,7 @@ function PhaseDetailPanel({
   onDocChanged: () => void;
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
+  const sessionHref = useSessionHref();
   const status = phaseStatus(phase, resolvedSeqs);
   // Same split as the list row: `phaseStatus` reads the doc, `running` reads the
   // process, and only the second one may put the word `running` on screen.
@@ -1799,7 +1803,7 @@ function PhaseDetailPanel({
                 <>
                   {phase.runSessionUuid !== null && (
                     <Link
-                      to={`/sessions/${phase.runSessionUuid}`}
+                      to={sessionHref(phase.runSessionUuid)}
                       className="font-mono text-[10px] text-ink-dim underline-offset-2 transition-colors hover:text-brand hover:underline"
                     >
                       session
