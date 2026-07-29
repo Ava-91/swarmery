@@ -16,12 +16,14 @@ import (
 
 // phaseWtStub is a configurable WorktreeManager for the branch-lifecycle paths:
 // reclaimAhead>0 makes Start report a *BranchDirtyError, deleteErr is what
-// DeleteRunBranch's DeleteBranch reports.
+// DeleteRunBranch's DeleteBranch reports, and branchMissing drives the idempotent
+// "already gone" answer (false, nil) the honest `deleted` field is derived from.
 type phaseWtStub struct {
-	reclaimAhead int
-	reclaimErr   error
-	deleteErr    error
-	deleted      string
+	reclaimAhead  int
+	reclaimErr    error
+	deleteErr     error
+	deleted       string
+	branchMissing bool
 }
 
 func (s *phaseWtStub) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -34,12 +36,15 @@ func (s *phaseWtStub) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
 	return s.reclaimAhead, s.reclaimErr
 }
 
-func (s *phaseWtStub) DeleteBranch(repoRoot, branch string) error {
+func (s *phaseWtStub) DeleteBranch(repoRoot, branch string) (bool, error) {
 	if s.deleteErr != nil {
-		return s.deleteErr
+		return false, s.deleteErr
+	}
+	if s.branchMissing {
+		return false, nil // already gone — deleting is idempotent
 	}
 	s.deleted = branch
-	return nil
+	return true, nil
 }
 
 func diagURL(srv *httptest.Server, taskID, phaseID int64) string {
@@ -439,7 +444,7 @@ func TestDeletePhaseRunBranch_NoRecordedBranch_409(t *testing.T) {
 func TestDeletePhaseRunBranch_NotAttached_503(t *testing.T) {
 	srv, db, taskID, _ := epicFixture(t)
 	p1, _ := fixturePhaseIDs(t, db, taskID)
-	AttachPhaseRun(nil)
+	detachPhaseRun(t)
 	resp := deletePhase(t, branchURL(srv, taskID, p1))
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)

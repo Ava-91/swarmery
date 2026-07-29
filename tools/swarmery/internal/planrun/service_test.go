@@ -77,6 +77,9 @@ type stubWt struct {
 	reclaimErr   error
 	deleted      []string // branches handed to DeleteBranch
 	deleteErr    error
+	// branchMissing makes DeleteBranch report existed=false — the idempotent
+	// "already gone" path worktree.DeleteBranch answers with (false, nil).
+	branchMissing bool
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -114,11 +117,14 @@ func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
 	return w.reclaimAhead, nil
 }
 
-func (w *stubWt) DeleteBranch(repoRoot, branch string) error {
+func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.deleted = append(w.deleted, branch)
-	return w.deleteErr
+	if w.deleteErr != nil {
+		return false, w.deleteErr
+	}
+	return !w.branchMissing, nil
 }
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
@@ -891,9 +897,10 @@ func TestStart_DBFailure_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 
 func TestDeleteRunBranch(t *testing.T) {
 	db, taskID, _ := fixture(t)
+	// existed now comes from the delete call itself (worktree.DeleteBranch reports
+	// it), not from a local rev-parse probe — no Git seam needed.
 	wt := &stubWt{}
 	s := newTestService(db, &stubRunner{}, wt)
-	s.Git = &stubGit{head: "aaaa1111"} // the branch probe answers "present"
 
 	branch, existed, err := s.DeleteRunBranch(taskID)
 	if err != nil {
@@ -904,10 +911,14 @@ func TestDeleteRunBranch(t *testing.T) {
 		t.Errorf("branch = %q, want %q", branch, want)
 	}
 	if !existed {
-		t.Error("existed = false for a branch the probe found")
+		t.Error("existed = false for a branch the boundary reported deleted")
 	}
 	if got := wt.deletedList(); len(got) != 1 || got[0] != want {
 		t.Errorf("deleted = %v, want [%s]", got, want)
+	}
+	// The duplicate probe is gone: the only source of `existed` is the boundary.
+	if s.Git != nil {
+		t.Fatal("test wired a Git seam it no longer needs")
 	}
 }
 
@@ -915,9 +926,8 @@ func TestDeleteRunBranch(t *testing.T) {
 // on a no-op is the claim the caller turns into a cleared banner.
 func TestDeleteRunBranch_MissingBranchReportsNotExisted(t *testing.T) {
 	db, taskID, _ := fixture(t)
-	wt := &stubWt{}
+	wt := &stubWt{branchMissing: true} // worktree.DeleteBranch: (false, nil)
 	s := newTestService(db, &stubRunner{}, wt)
-	s.Git = &stubGit{err: errors.New("exit 1")} // rev-parse: no such ref
 
 	branch, existed, err := s.DeleteRunBranch(taskID)
 	if err != nil {

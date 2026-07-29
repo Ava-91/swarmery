@@ -138,7 +138,7 @@ func postPlanRun(t *testing.T, url, body string) *http.Response {
 
 func TestRunPlan503WhenUnattached(t *testing.T) {
 	srv, _, taskID, _ := epicFixture(t)
-	AttachPlanRun(nil)
+	detachPlanRun(t)
 	resp := postPlanRun(t, planRunURL(srv, taskID), "")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 when the service is not attached", resp.StatusCode)

@@ -1204,6 +1204,12 @@ func cmdServe(args []string) error {
 	// verify so all three agree on the worktree root and git boundary. Heal any
 	// 'running' rows a crashed daemon left behind to failed before serving.
 	phaserunSvc := phaserun.NewService(db, phaserun.ClaudeRunner{}, wtMgr)
+	// Read-only git seam, through the same boundary the worktree manager uses: it
+	// NAMES the base a dirty-branch refusal counted commits against. NewService
+	// does not set it, so without this line BranchDirtyError.Base is always "" in
+	// the running daemon and the 409 cannot qualify its own count — the field would
+	// be dead weight. Same wiring planrunSvc gets below.
+	phaserunSvc.Git = wtMgr.Git
 	if err := phaserunSvc.HealStale(); err != nil {
 		log.Printf("warning: phaserun heal on startup: %v", err)
 	}

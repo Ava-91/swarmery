@@ -213,7 +213,7 @@ func TestCrashLeftoverRetryIntegration(t *testing.T) {
 
 	// DeleteBranch, by contrast, must NOT pretend it succeeded while the branch is
 	// checked out — git itself would refuse the `branch -D`.
-	if err := m.DeleteBranch(repo, branch); !errors.Is(err, ErrBranchCheckedOut) {
+	if _, err := m.DeleteBranch(repo, branch); !errors.Is(err, ErrBranchCheckedOut) {
 		t.Fatalf("DeleteBranch on a live checkout = %v, want ErrBranchCheckedOut", err)
 	}
 }
@@ -269,7 +269,7 @@ func TestBranchProbeDistinguishesMissingFromBrokenIntegration(t *testing.T) {
 		t.Fatal("branchExists in a non-repo = nil error, want the git failure surfaced")
 	}
 	// …so DeleteBranch there refuses instead of reporting a delete that never ran.
-	if err := m.DeleteBranch(t.TempDir(), "swarm/phase-1"); err == nil {
+	if _, err := m.DeleteBranch(t.TempDir(), "swarm/phase-1"); err == nil {
 		t.Fatal("DeleteBranch in a non-repo = nil, want an error")
 	}
 }

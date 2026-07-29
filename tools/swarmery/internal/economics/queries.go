@@ -104,8 +104,12 @@ SELECT COALESCE(tu.agent_name, '(main-session)') AS agent,
 FROM turns tu
 JOIN sessions s ON s.id = tu.session_id
 WHERE tu.role = 'assistant' AND ` + turnScope + `
-GROUP BY agent, model
-ORDER BY SUM(tu.cost_usd) DESC, agent, model`
+-- Grouped/ordered by the SOURCE columns, not the output aliases: sessions also
+-- has a `+"`model`"+` column (0001_init), and the join puts both in scope, so a bare
+-- `+"`model`"+` here resolves to neither — SQLite rejects the whole query as an
+-- ambiguous column name rather than picking one.
+GROUP BY tu.agent_name, tu.model
+ORDER BY SUM(tu.cost_usd) DESC, tu.agent_name, tu.model`
 
 // ---------------------------------------------- metric 3: delegation --------
 
@@ -200,8 +204,10 @@ SELECT COALESCE(tu.model, '(unknown)') AS model,
 FROM turns tu
 JOIN sessions s ON s.id = tu.session_id
 WHERE tu.role = 'assistant' AND ` + turnScope + `
-GROUP BY model
-ORDER BY SUM(tu.cost_usd) DESC, model`
+-- tu.model, not the `+"`model`"+` alias — sessions carries a model column too, so the
+-- bare name is ambiguous across this join (see qCacheEfficiency).
+GROUP BY tu.model
+ORDER BY SUM(tu.cost_usd) DESC, tu.model`
 
 // ------------------------------------------------------------ loaders -------
 
