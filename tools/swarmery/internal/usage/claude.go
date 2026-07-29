@@ -1,0 +1,637 @@
+package usage
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+)
+
+// Endpoint constants, copied from Fusion (usage.ts:349-369) with the exact
+// values. These are the same calls `claude /usage` makes.
+const (
+	oauthUsagePath = "/api/oauth/usage"
+	tokenPath      = "/v1/oauth/token"
+	// oauthClientID is the public first-party OAuth client id, required as
+	// client_id on the refresh_token grant.
+	oauthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	// anthropicBeta authorizes OAuth-scoped access to /api/oauth/usage.
+	// Without this header the endpoint answers 401 "OAuth authentication is
+	// currently not supported".
+	anthropicBeta    = "oauth-2025-04-20"
+	userAgent        = "swarmery-dashboard"
+	maxRetries       = 3
+	initialRetryWait = time.Second
+)
+
+const (
+	defaultAPIBase   = "https://api.anthropic.com"
+	defaultAuthBase  = "https://platform.claude.com"
+	defaultTimeout   = 15 * time.Second
+	requiredScope    = "user:profile"
+	tokenExpiryGrace = 60 * time.Second
+	maxBodyBytes     = 1 << 20 // cap an unbounded upstream body
+	snippetRunes     = 120     // error-body snippet budget
+	providerName     = "Claude"
+
+	fiveHours = 5 * time.Hour
+	sevenDays = 7 * 24 * time.Hour
+)
+
+// Client fetches the operator's Claude subscription usage. The zero value is
+// usable; every field is a default-or-seam so the whole flow is testable
+// against an httptest server with no network and no real credential.
+//
+// A Client carries a mutex and must not be copied after first use.
+type Client struct {
+	HTTP      *http.Client                          // default: 15s timeout
+	Now       func() time.Time                      // test seam
+	APIBase   string                                // default "https://api.anthropic.com"
+	AuthBase  string                                // default "https://platform.claude.com"
+	LoadCreds func(context.Context) (*Creds, error) // test seam
+
+	// sleep is the retry-backoff seam; tests replace it so a 429 path costs no
+	// wall-clock time. nil means time.Sleep.
+	sleep func(time.Duration)
+
+	mu             sync.Mutex
+	refreshedToken string // in-memory only, daemon lifetime
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return &http.Client{Timeout: defaultTimeout}
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
+
+func (c *Client) apiBase() string {
+	if c.APIBase != "" {
+		return strings.TrimRight(c.APIBase, "/")
+	}
+	return defaultAPIBase
+}
+
+func (c *Client) authBase() string {
+	if c.AuthBase != "" {
+		return strings.TrimRight(c.AuthBase, "/")
+	}
+	return defaultAuthBase
+}
+
+func (c *Client) loadCreds(ctx context.Context) (*Creds, error) {
+	if c.LoadCreds != nil {
+		return c.LoadCreds(ctx)
+	}
+	return LoadCreds(ctx)
+}
+
+func (c *Client) wait(d time.Duration) {
+	if c.sleep != nil {
+		c.sleep(d)
+		return
+	}
+	time.Sleep(d)
+}
+
+func (c *Client) cachedToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.refreshedToken
+}
+
+func (c *Client) cacheToken(tok string) {
+	c.mu.Lock()
+	c.refreshedToken = tok
+	c.mu.Unlock()
+}
+
+// Fetch reads the operator's live Claude quota windows.
+//
+// It never returns an error: every outcome — opted out, not logged in, auth
+// rejected, rate limited, malformed payload — is encoded in the returned
+// Provider's Status and Error so a broken provider degrades to one error card
+// and can never break the endpoint.
+func (c *Client) Fetch(ctx context.Context) Provider {
+	p := Provider{
+		Name:    providerName,
+		Status:  StatusNoAuth,
+		Source:  SourceOAuth,
+		Windows: []Window{},
+	}
+
+	creds, err := c.loadCreds(ctx)
+	switch {
+	case errors.Is(err, ErrDisabled):
+		p.Error = "usage OAuth disabled (SWARMERY_USAGE_OAUTH=0)"
+		return p
+	case err != nil, creds == nil, creds.AccessToken == "":
+		p.Error = "No Claude credentials — run `claude` to log in"
+		return p
+	}
+
+	if !hasScope(creds.Scopes, requiredScope) {
+		p.Error = "Claude token missing user:profile scope — re-run `claude` login"
+		return p
+	}
+	p.Plan = inferPlan(creds)
+
+	token, refreshed, errMsg := c.resolveToken(ctx, creds)
+	if errMsg != "" {
+		p.Status, p.Error = StatusError, errMsg
+		return p
+	}
+
+	body, errMsg := c.fetchUsage(ctx, creds, token, refreshed)
+	if errMsg != "" {
+		p.Status, p.Error = StatusError, errMsg
+		return p
+	}
+
+	windows, err := parsePayload(body, c.now())
+	if err != nil {
+		p.Status = StatusError
+		p.Error = "Claude usage response was not valid JSON"
+		return p
+	}
+	p.Status = StatusOK
+	p.Windows = windows
+	return p
+}
+
+// resolveToken picks the bearer to use: the in-memory refreshed token when we
+// have one, otherwise the stored token — refreshing up front when the stored
+// token is expired (or expires within the grace window). The bool reports
+// whether the returned token came from a refresh, so the 401 path knows not to
+// refresh the same token twice.
+func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, refreshed bool, errMsg string) {
+	if tok := c.cachedToken(); tok != "" {
+		return tok, true, ""
+	}
+	if !c.tokenExpired(creds.ExpiresAt) {
+		return creds.AccessToken, false, ""
+	}
+	if creds.RefreshToken == "" {
+		return "", false, "Claude token expired and no refresh token — run `claude` to re-login"
+	}
+	tok, ok := c.refresh(ctx, creds)
+	if !ok {
+		return "", false, "Claude token refresh failed — run `claude` to re-login"
+	}
+	return tok, true, ""
+}
+
+// tokenExpired treats a token expiring within the grace window as expired. An
+// unknown expiry (0) is assumed valid — the 401 path is the real backstop.
+func (c *Client) tokenExpired(expiresAtMs int64) bool {
+	if expiresAtMs <= 0 {
+		return false
+	}
+	return c.now().UnixMilli() >= expiresAtMs-tokenExpiryGrace.Milliseconds()
+}
+
+// fetchUsage performs GET /api/oauth/usage with the retry/refresh policy:
+// one refresh attempt on 401/403, up to maxRetries attempts on 429 honouring
+// Retry-After (seconds) or exponential backoff from 1s, and immediate failure
+// on any other non-200.
+func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, refreshed bool) (body []byte, errMsg string) {
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		status, header, b, err := c.get(ctx, c.apiBase()+oauthUsagePath, token)
+		if err != nil {
+			return nil, "Claude usage request failed: " + scrubSecrets(err.Error())
+		}
+
+		switch {
+		case status == http.StatusUnauthorized, status == http.StatusForbidden:
+			if creds.RefreshToken != "" && !refreshed {
+				if tok, ok := c.refresh(ctx, creds); ok {
+					token, refreshed = tok, true
+					continue
+				}
+			}
+			return nil, "Claude auth rejected — run `claude` to re-login"
+
+		case status == http.StatusTooManyRequests:
+			if attempt < maxRetries-1 {
+				c.wait(retryDelay(header.Get("Retry-After"), attempt))
+				continue
+			}
+			return nil, "Claude usage rate-limited (HTTP 429) — retry later"
+
+		case status != http.StatusOK:
+			if s := snippet(b); s != "" {
+				return nil, fmt.Sprintf("HTTP %d: %s", status, s)
+			}
+			return nil, fmt.Sprintf("HTTP %d", status)
+		}
+		return b, ""
+	}
+	// Only reachable when every attempt was consumed by a 401→refresh retry.
+	return nil, "Claude auth rejected — run `claude` to re-login"
+}
+
+// retryDelay honours a numeric Retry-After (seconds) when the server sends one,
+// otherwise backs off exponentially from initialRetryWait.
+func retryDelay(retryAfter string, attempt int) time.Duration {
+	if s := strings.TrimSpace(retryAfter); s != "" {
+		if secs, err := strconv.ParseFloat(s, 64); err == nil && secs >= 0 {
+			return time.Duration(secs * float64(time.Second))
+		}
+	}
+	return initialRetryWait * time.Duration(1<<attempt)
+}
+
+// refresh exchanges the refresh token for a new access token and caches it IN
+// MEMORY ONLY. The result is never written back to disk or the keychain — the
+// CLI's own stored credential is left untouched (see the package policy note).
+//
+// The request shape mirrors what the CLI sends: JSON body (not form-encoded),
+// including `scope`; omitting either makes Anthropic answer 4xx even for a
+// valid refresh token.
+func (c *Client) refresh(ctx context.Context, creds *Creds) (string, bool) {
+	if creds.RefreshToken == "" {
+		return "", false
+	}
+	payload := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": creds.RefreshToken,
+		"client_id":     oauthClientID,
+	}
+	if len(creds.Scopes) > 0 {
+		payload["scope"] = strings.Join(creds.Scopes, " ")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.authBase()+tokenPath, bytes.NewReader(body))
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("user-agent", userAgent)
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+
+	var out struct {
+		AccessToken      string `json:"access_token"`
+		AccessTokenCamel string `json:"accessToken"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return "", false
+	}
+	tok := out.AccessToken
+	if tok == "" {
+		tok = out.AccessTokenCamel
+	}
+	if tok == "" {
+		return "", false
+	}
+	c.cacheToken(tok)
+	return tok, true
+}
+
+// get issues the authenticated usage request. The bearer is set here and
+// nowhere else; it is never logged and never echoed into a returned value.
+func (c *Client) get(ctx context.Context, url, token string) (int, http.Header, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	req.Header.Set("authorization", "Bearer "+token)
+	req.Header.Set("anthropic-beta", anthropicBeta)
+	req.Header.Set("user-agent", userAgent)
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil {
+		return resp.StatusCode, resp.Header, nil, err
+	}
+	return resp.StatusCode, resp.Header, body, nil
+}
+
+func hasScope(scopes []string, want string) bool {
+	for _, s := range scopes {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// inferPlan derives the plan label from credential metadata: the title-cased
+// subscriptionType when present, else a rateLimitTier keyword match
+// (usage.ts:988). Empty when neither is set — never guessed.
+func inferPlan(c *Creds) string {
+	if s := strings.TrimSpace(c.SubscriptionType); s != "" {
+		r := []rune(s)
+		r[0] = unicode.ToUpper(r[0])
+		return string(r)
+	}
+	tier := strings.TrimSpace(c.RateLimitTier)
+	if tier == "" {
+		return ""
+	}
+	switch lower := strings.ToLower(tier); {
+	case strings.Contains(lower, "max"):
+		return "Max"
+	case strings.Contains(lower, "pro"):
+		return "Pro"
+	case strings.Contains(lower, "team"):
+		return "Team"
+	}
+	return tier
+}
+
+// ── payload parsing ────────────────────────────────────────────────────────
+//
+// Anthropic ships several shapes for this undocumented endpoint, so every read
+// is tolerant: multiple key spellings per field, three accepted timestamp
+// encodings, and a generic limits[] walk for per-model weekly buckets. A shape
+// we do not recognise costs one row, never the response.
+
+var percentKeys = []string{"utilization", "percent_used", "percentUsed", "used_percent", "usage_percent"}
+
+var resetKeys = []string{"resets_at", "reset_at", "resetAt", "resetsAt", "reset_time"}
+
+// namedWindows are the fixed windows, in render order.
+var namedWindows = []struct {
+	keys   []string
+	label  string
+	window time.Duration
+}{
+	{[]string{"five_hour", "session"}, "Session (5h)", fiveHours},
+	{[]string{"seven_day"}, "Weekly", sevenDays},
+	{[]string{"seven_day_sonnet"}, "Weekly (Sonnet)", sevenDays},
+	{[]string{"seven_day_opus"}, "Weekly (Opus)", sevenDays},
+}
+
+func parsePayload(body []byte, now time.Time) ([]Window, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, err
+	}
+
+	windows := make([]Window, 0, len(namedWindows)+2)
+	for _, spec := range namedWindows {
+		if w := parseNamedWindow(root, spec.keys, spec.label, spec.window, now); w != nil {
+			windows = append(windows, *w)
+		}
+	}
+	windows = append(windows, parseLimits(root["limits"], windows, now)...)
+
+	for i := range windows {
+		windows[i].Pace = CalculatePace(windows[i].PercentUsed, windows[i].ResetMs, windows[i].WindowMs)
+	}
+	return windows, nil
+}
+
+func parseNamedWindow(root map[string]json.RawMessage, keys []string, label string, window time.Duration, now time.Time) *Window {
+	obj := firstObject(root, keys)
+	if obj == nil {
+		return nil
+	}
+	w := newWindow(label, firstNumber(obj, percentKeys), window)
+	if ms, at, ok := parseResetTimestamp(firstValue(obj, resetKeys), now); ok {
+		w.ResetMs, w.ResetAt = ms, at
+		w.ResetText = "resets in " + FormatDuration(time.Duration(ms)*time.Millisecond)
+	} else if window == fiveHours {
+		// Session fallback (usage.ts:1126): when the API omits or invalidates
+		// the session reset instant, assume a full window so the row still
+		// renders a countdown and a pace marker. Deliberately NOT applied to
+		// weekly windows — a fabricated weekly reset would be a lie the
+		// operator cannot spot.
+		w.ResetMs = window.Milliseconds()
+		w.ResetAt = now.Add(window).UTC().Format(time.RFC3339)
+		w.ResetText = "resets in 5h"
+	}
+	return &w
+}
+
+// limitEntry is one element of the top-level limits[] array. A live OAuth probe
+// (Fusion FNXC:UsageIndicator 2026-07-11) showed Anthropic ships per-model
+// weekly usage here as {kind:"weekly_scoped", group:"weekly", percent,
+// resets_at, scope.model.display_name} while seven_day_opus/seven_day_sonnet
+// went null — so this walk is generic and future models appear automatically.
+type limitEntry struct {
+	Kind      string   `json:"kind"`
+	Group     string   `json:"group"`
+	Percent   *float64 `json:"percent"`
+	ResetsAt  any      `json:"resets_at"`
+	ResetAt   any      `json:"reset_at"`
+	ResetsAtC any      `json:"resetsAt"`
+	Scope     struct {
+		Model struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
+func (e limitEntry) resetValue() any {
+	for _, v := range []any{e.ResetsAt, e.ResetAt, e.ResetsAtC} {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func parseLimits(raw json.RawMessage, existing []Window, now time.Time) []Window {
+	if len(raw) == 0 {
+		return nil
+	}
+	var entries []limitEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(existing))
+	for _, w := range existing {
+		seen[w.Label] = true
+	}
+
+	var out []Window
+	for _, e := range entries {
+		name := strings.TrimSpace(e.Scope.Model.DisplayName)
+		if name == "" {
+			continue
+		}
+		if e.Percent == nil || math.IsNaN(*e.Percent) || math.IsInf(*e.Percent, 0) {
+			continue
+		}
+		if e.Group != "weekly" && !strings.HasPrefix(e.Kind, "weekly") {
+			continue
+		}
+		label := "Weekly (" + name + ")"
+		if seen[label] {
+			continue // a named key already emitted this model — no double row
+		}
+		seen[label] = true
+
+		w := newWindow(label, *e.Percent, sevenDays)
+		if ms, at, ok := parseResetTimestamp(e.resetValue(), now); ok {
+			w.ResetMs, w.ResetAt = ms, at
+			w.ResetText = "resets in " + FormatDuration(time.Duration(ms)*time.Millisecond)
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// newWindow builds a window with a clamped percentage and a stable key.
+func newWindow(label string, percentUsed float64, window time.Duration) Window {
+	used := math.Min(100, math.Max(0, percentUsed))
+	return Window{
+		Key:         slug(label),
+		Label:       label,
+		PercentUsed: used,
+		PercentLeft: 100 - used,
+		WindowMs:    window.Milliseconds(),
+		Source:      SourceOAuth,
+	}
+}
+
+var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+
+// slug derives a window key from its label: "Session (5h)" → "session-5h",
+// "Weekly (Fable)" → "weekly-fable". Stable across refreshes so the UI's
+// per-window hide preferences survive.
+func slug(label string) string {
+	return strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(label), "-"), "-")
+}
+
+// parseResetTimestamp accepts an RFC3339 string, unix seconds, or unix millis
+// (values at or above 1e12 are millis), as a JSON number or a numeric string.
+// It reports the ms remaining and the absolute instant, or ok=false when the
+// value is absent, unparseable, or already in the past.
+func parseResetTimestamp(v any, now time.Time) (msLeft int64, resetAt string, ok bool) {
+	var ts int64
+	switch t := v.(type) {
+	case nil:
+		return 0, "", false
+	case float64:
+		ts = toMillis(t)
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return 0, "", false
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			ts = toMillis(f)
+		} else if parsed, err := time.Parse(time.RFC3339, s); err == nil {
+			ts = parsed.UnixMilli()
+		} else {
+			return 0, "", false
+		}
+	default:
+		return 0, "", false
+	}
+
+	left := ts - now.UnixMilli()
+	if left <= 0 {
+		return 0, "", false
+	}
+	return left, time.UnixMilli(ts).UTC().Format(time.RFC3339), true
+}
+
+func toMillis(v float64) int64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	if v >= 1e12 {
+		return int64(v)
+	}
+	return int64(v * 1000)
+}
+
+// firstObject returns the first key that decodes to a JSON object. A key that
+// is absent, null, or not an object is skipped — Anthropic nulls the legacy
+// per-model keys rather than omitting them.
+func firstObject(root map[string]json.RawMessage, keys []string) map[string]any {
+	for _, k := range keys {
+		raw, present := root[k]
+		if !present {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+			continue
+		}
+		return obj
+	}
+	return nil
+}
+
+func firstNumber(obj map[string]any, keys []string) float64 {
+	for _, k := range keys {
+		if f, ok := obj[k].(float64); ok {
+			return f
+		}
+	}
+	return 0
+}
+
+func firstValue(obj map[string]any, keys []string) any {
+	for _, k := range keys {
+		if v, ok := obj[k]; ok && v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// ── error-string hygiene ───────────────────────────────────────────────────
+
+var (
+	bearerRe = regexp.MustCompile(`(?i)(bearer\s+)\S+`)
+	apiKeyRe = regexp.MustCompile(`sk-[A-Za-z0-9_-]{4,}`)
+)
+
+// scrubSecrets removes bearer and API-key material from any string that is
+// about to become operator-visible. Applied BEFORE truncation so a token can
+// never survive as a partial suffix.
+func scrubSecrets(s string) string {
+	s = bearerRe.ReplaceAllString(s, "${1}[redacted]")
+	return apiKeyRe.ReplaceAllString(s, "[redacted]")
+}
+
+// snippet renders an upstream error body as a single scrubbed line of at most
+// snippetRunes characters.
+func snippet(b []byte) string {
+	s := strings.TrimSpace(strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(string(b)))
+	s = scrubSecrets(s)
+	if r := []rune(s); len(r) > snippetRunes {
+		return string(r[:snippetRunes])
+	}
+	return s
+}

@@ -12,3 +12,12 @@ description = "Redaction unit-test fixtures — deliberately fake/example secret
 paths = [
   '''tools/swarmery/internal/api/system_test\.go''',
 ]
+
+[[allowlists]]
+description = "internal/usage test fixtures — the live-quota path is built around an OAuth bearer, so its tests must carry `sk-ant`-shaped strings to prove the redactor scrubs them and that no token reaches a DTO. Every value here is a literal NOT-A-REAL/FAKE placeholder. Path-scoped, so a real credential committed anywhere else is still caught."
+paths = [
+  '''tools/swarmery/internal/usage/claude_test\.go''',
+  '''tools/swarmery/internal/usage/creds_test\.go''',
+  '''tools/swarmery/internal/usage/testdata/credentials\.json''',
+  '''tools/swarmery/internal/api/usage_test\.go''',
+]
