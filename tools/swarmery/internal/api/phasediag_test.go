@@ -373,6 +373,7 @@ func TestDeletePhaseRunBranch_200(t *testing.T) {
 	p1, _ := fixturePhaseIDs(t, db, taskID)
 	wt := &phaseWtStub{}
 	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+	stampRunBranch(t, db, p1, "swarm/phase-"+i64(p1))
 
 	resp := deletePhase(t, branchURL(srv, taskID, p1))
 	if resp.StatusCode != http.StatusOK {
@@ -394,6 +395,47 @@ func TestDeletePhaseRunBranch_200(t *testing.T) {
 	}
 }
 
+// The regression this whole change exists for: after a phase doc is renamed the row is
+// replaced and its id moves, so "swarm/phase-<current id>" names a branch that does not
+// exist while the one holding the run's commits survives. Deleting must follow the
+// STAMPED branch, or it reports success and destroys nothing.
+func TestDeletePhaseRunBranch_UsesStampedBranchNotRowID(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+	const stamped = "swarm/phase-1279" // the id this phase ran under, before a rename
+	stampRunBranch(t, db, p1, stamped)
+
+	resp := deletePhase(t, branchURL(srv, taskID, p1))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if wt.deleted != stamped {
+		t.Errorf("deleted branch = %q, want the stamped %q (not the row-id-derived name)", wt.deleted, stamped)
+	}
+	if derived := "swarm/phase-" + i64(p1); wt.deleted == derived {
+		t.Errorf("deleted the derived name %q — the row id is not a branch name", derived)
+	}
+}
+
+// A phase with no recorded run branch has no branch this service is willing to name.
+// It must say so rather than guess one and delete whatever answers to it.
+func TestDeletePhaseRunBranch_NoRecordedBranch_409(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+
+	resp := deletePhase(t, branchURL(srv, taskID, p1))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if wt.deleted != "" {
+		t.Errorf("deleted = %q, want no delete attempted at all", wt.deleted)
+	}
+}
+
 func TestDeletePhaseRunBranch_NotAttached_503(t *testing.T) {
 	srv, db, taskID, _ := epicFixture(t)
 	p1, _ := fixturePhaseIDs(t, db, taskID)
@@ -409,6 +451,7 @@ func TestDeletePhaseRunBranch_CheckedOut_409(t *testing.T) {
 	p1, _ := fixturePhaseIDs(t, db, taskID)
 	attachPhaseRunWt(t, db, &phaseStubRunner{}, true,
 		&phaseWtStub{deleteErr: worktree.ErrBranchCheckedOut})
+	stampRunBranch(t, db, p1, "swarm/phase-"+i64(p1))
 
 	resp := deletePhase(t, branchURL(srv, taskID, p1))
 	if resp.StatusCode != http.StatusConflict {

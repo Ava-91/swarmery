@@ -75,8 +75,12 @@ type stubWt struct {
 	reclaimed    []string // branches handed to ReclaimEmptyBranch, in order
 	reclaimAhead int      // commits-ahead ReclaimEmptyBranch reports (0 ⇒ reclaimed)
 	reclaimErr   error
-	deleted      []string // branches handed to DeleteBranch
-	deleteErr    error
+	// reclaimAheadBy overrides reclaimAhead per branch. Start reclaims TWO names when a
+	// previous run's branch no longer matches the deterministic one, and the whole point
+	// of that second call is that the two can answer differently.
+	reclaimAheadBy map[string]int
+	deleted        []string // branches handed to DeleteBranch
+	deleteErr      error
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -110,6 +114,9 @@ func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
 	w.reclaimed = append(w.reclaimed, branch)
 	if w.reclaimErr != nil {
 		return 0, w.reclaimErr
+	}
+	if n, ok := w.reclaimAheadBy[branch]; ok {
+		return n, nil
 	}
 	return w.reclaimAhead, nil
 }
@@ -1091,12 +1098,15 @@ func TestDeleteRunBranch(t *testing.T) {
 	db, _, p1, _ := fixture(t)
 	wt := &stubWt{}
 	s := newTestService(db, &stubRunner{}, wt)
+	// The branch has to be on the row: DeleteRunBranch follows the stamp (0043) and
+	// refuses to re-derive one from the row id. See TestDeleteRunBranchUsesStampedBranch.
+	want := "swarm/phase-" + itoa64(p1)
+	mustExec(t, db, `UPDATE epic_phases SET run_state='done', run_branch=? WHERE id=?`, want, p1)
 
 	branch, err := s.DeleteRunBranch(p1)
 	if err != nil {
 		t.Fatalf("DeleteRunBranch: %v", err)
 	}
-	want := "swarm/phase-" + itoa64(p1)
 	if branch != want {
 		t.Errorf("branch = %q, want %q", branch, want)
 	}
