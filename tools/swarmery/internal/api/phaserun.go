@@ -127,6 +127,13 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	// branch surfaces as a raw 500 and the UI can show the user nothing actionable.
 	case errors.Is(err, worktree.ErrBranchCheckedOut):
 		writeClientErr(w, http.StatusConflict, "the run branch is checked out in another worktree")
+	// Same category, same wrap: with no checked-out branch there is no base to
+	// measure the leftover run branch against, so reclaim refuses rather than guess
+	// one — and a guessed base is what a `git branch -D` must never run on. The user
+	// resolves it by checking out a branch, which a raw 500 would never say.
+	case errors.Is(err, worktree.ErrDetachedHead):
+		writeClientErr(w, http.StatusConflict,
+			"the repo is on a detached HEAD, so the run branch cannot be measured against a base — check out a branch first")
 	case err != nil:
 		writeErr(w, err)
 	default:

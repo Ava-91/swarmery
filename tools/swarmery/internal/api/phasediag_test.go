@@ -343,6 +343,31 @@ func TestPhaseRun_BranchCheckedOut_409(t *testing.T) {
 	}
 }
 
+// A detached HEAD leaves reclaim with no base to measure the leftover run branch
+// against, so it refuses rather than guess one a `branch -D` would run on. That
+// refusal is the user's to resolve (check out a branch), so it must arrive as an
+// actionable 409 and not as the raw 500 an unmatched error produces.
+func TestPhaseRun_DetachedHead_409(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true,
+		&phaseWtStub{reclaimErr: worktree.ErrDetachedHead})
+
+	resp := postPhase(t, phaseRunURL(srv, taskID, p1))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Error, "detached HEAD") {
+		t.Errorf("error = %q, want it to name the detached HEAD", body.Error)
+	}
+}
+
 func TestDeletePhaseRunBranch_200(t *testing.T) {
 	srv, db, taskID, _ := epicFixture(t)
 	p1, _ := fixturePhaseIDs(t, db, taskID)
