@@ -74,7 +74,9 @@ function isResolvedColumn(col: BoardColumn | null): boolean {
 
 type PhaseStatus = 'pending' | 'in_progress' | 'done' | 'blocked';
 
-/** Derives a phase's display status from checkbox progress and the dependency gate. */
+/** Derives a phase's display status from checkbox progress, a live run, and the
+ * dependency gate. The result stays a coarse LIFECYCLE state — whether a process
+ * is attached to it is resolved by `phaseChip` at the call site. */
 function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   // An activated phase whose board task is resolved is done regardless of
   // checkbox progress — the board is the source of truth once dispatched.
@@ -84,6 +86,11 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   // an executor writing it is literally working on the phase right now.
   // (`done` must be earned by ticking every checkbox; a `done` marker alone is ignored.)
   if (p.docStatus === 'in_progress') return 'in_progress';
+  // A run in flight is the strongest statement that can be made about a phase —
+  // stronger than a dependency gate computed from checkboxes the run is in the
+  // middle of ticking. Without this a phase whose dependency sits at 11/12
+  // renders `blocked` while its executor is demonstrably working.
+  if (p.runState === 'running') return 'in_progress';
   if (p.dependsOn.some((seq) => !resolvedSeqs.has(seq))) return 'blocked';
   if (p.checkboxesDone > 0 || p.boardColumn === 'in_progress' || p.boardColumn === 'in_review')
     return 'in_progress';
@@ -148,14 +155,35 @@ function formatAgo(ms: number): string {
 /** Past this silence window an in-progress phase is flagged as possibly stuck. */
 const STALL_AFTER_MS = 15 * 60_000;
 
-/** Liveness pulse for an in-progress phase. Every executor edit (checkbox
+/** Liveness pulse for a phase with a LIVE run. Every executor edit (checkbox
  * tick, Status flip) touches the phase doc, so "time since last doc edit"
  * answers the question the chip alone can't: is the session actually working
- * right now, or has it silently died? */
-function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.Element | null {
+ * right now, or has it silently died?
+ *
+ * That question only exists while a process is attached. With `running={false}`
+ * there is no executor to be stuck, so the pulse and the stuck-executor tooltip
+ * are dropped for a neutral `edited <ago>` — the doc's mtime, stated as such.
+ * The old markup showed `no activity · 1h 7m` in amber on phases whose run had
+ * exited cleanly an hour earlier, which read as an alarm about nothing. */
+function PhaseActivity({
+  docUpdatedAt,
+  running,
+}: {
+  docUpdatedAt: string | null;
+  running: boolean;
+}): JSX.Element | null {
   const now = useNow(30_000);
   if (docUpdatedAt === null) return null;
   const elapsed = now - Date.parse(docUpdatedAt);
+  if (!running)
+    return (
+      <span
+        className="inline-flex shrink-0 items-center gap-1 font-mono text-[9.5px] text-ink-faint"
+        data-tip="when this phase doc was last edited — no run is attached to it"
+      >
+        edited {formatAgo(elapsed)} ago
+      </span>
+    );
   const stalled = elapsed > STALL_AFTER_MS;
   return (
     <span
@@ -174,12 +202,24 @@ function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.E
   );
 }
 
+/** Status chips. `in_progress` says `started` because that is all the DOCUMENT
+ * can support — checkboxes ticked, or a `Status: In progress` marker. `running`
+ * is reserved for a live process and is resolved by `phaseChip` below. */
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
   done: { label: 'done', cls: 'border-green/40 text-green' },
-  in_progress: { label: 'in progress', cls: 'border-brand/40 text-brand' },
+  in_progress: { label: 'started', cls: 'border-brand/40 text-brand' },
   blocked: { label: 'blocked', cls: 'border-red/40 text-red' },
   pending: { label: 'pending', cls: 'border-line text-ink-faint' },
 };
+
+/** The chip a phase row actually renders. The `running` variant lives HERE and
+ * not in `PhaseStatus`, so the union — and every dependency/completion decision
+ * derived from it — stays a pure function of the plan documents. */
+function phaseChip(status: PhaseStatus, running: boolean): { label: string; cls: string } {
+  if (running && status === 'in_progress')
+    return { label: 'running', cls: PHASE_CHIP.in_progress.cls };
+  return PHASE_CHIP[status];
+}
 
 /** Terminal run outcomes that did NOT complete the phase. Each renders as a
  * chip BUTTON opening the diagnosis modal, because "why?" is the only useful
@@ -247,6 +287,36 @@ function RunOutcomeChip({
     >
       {outcomeChipLabel(phase, outcome)}
     </button>
+  );
+}
+
+/** The completed-outcome chip, shared by every render site. It describes the
+ * LAST RUN, not the present — hence `last run: done` rather than `Run done`,
+ * which read as a claim about the phase and collided with a live `11/12`
+ * beside it.
+ *
+ * Detecting that collision without a `runCheckboxesAfter` field (the DTO exposes
+ * only `runCheckboxesBefore`): `completed` is derivable ONLY when the run's
+ * stamped end count reached the total (internal/phasediag/outcome.go:35), and
+ * that stamped count wins over the live one (`OutcomeFromRow`). So a `completed`
+ * outcome sitting next to `checkboxesDone < checkboxesTotal` is precisely — and
+ * only — the case where the two counts disagree, i.e. the doc changed after the
+ * run ended. The measured count is rendered as `total/total`: `after >= total`
+ * is exactly what the daemon asserted. */
+function RunCompletedChip({ phase }: { phase: EpicPhase }): JSX.Element {
+  const total = phase.checkboxesTotal;
+  const drifted = total > 0 && phase.checkboxesDone < total;
+  return (
+    <span
+      className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+      data-tip={
+        drifted
+          ? `the run ticked every criterion (${String(total)}/${String(total)}); the doc has since changed to ${String(phase.checkboxesDone)}/${String(total)}`
+          : 'the run ticked every acceptance criterion'
+      }
+    >
+      last run: done
+    </span>
   );
 }
 
@@ -849,6 +919,10 @@ function PhaseList({
       {epic.phases.map((p) => {
         const activated = p.activatedAt !== null;
         const status = phaseStatus(p, resolvedSeqs);
+        // Process state, kept out of `phaseStatus` on purpose: only a live run
+        // may say `running`, and only a live run may claim liveness.
+        const running = p.runState === 'running';
+        const chip = phaseChip(status, running);
         const depsUnmet = p.dependsOn.filter((seq) => !resolvedSeqs.has(seq));
         const runDisabled =
           runBusy !== null || planRunning || epic.status !== 'active' || depsUnmet.length > 0;
@@ -886,11 +960,13 @@ function PhaseList({
                   </span>
                   <span className="truncate text-[13px] font-medium text-ink">{p.name}</span>
                   <span
-                    className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9px] ${PHASE_CHIP[status].cls}`}
+                    className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9px] ${chip.cls}`}
                   >
-                    {PHASE_CHIP[status].label}
+                    {chip.label}
                   </span>
-                  {status === 'in_progress' && <PhaseActivity docUpdatedAt={p.docUpdatedAt} />}
+                  {status === 'in_progress' && (
+                    <PhaseActivity docUpdatedAt={p.docUpdatedAt} running={running} />
+                  )}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   {p.dependsOn.map((seq) => (
@@ -962,14 +1038,7 @@ function PhaseList({
                   </span>
                 ) : status === 'done' ? (
                   <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                    {p.runOutcome === 'completed' && (
-                      <span
-                        className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-                        data-tip="the run ticked every acceptance criterion"
-                      >
-                        Run done
-                      </span>
-                    )}
+                    {p.runOutcome === 'completed' && <RunCompletedChip phase={p} />}
                     {isUnresolvedOutcome(p.runOutcome) && (
                       <RunOutcomeChip
                         phase={p}
@@ -990,14 +1059,7 @@ function PhaseList({
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                    {p.runOutcome === 'completed' && (
-                      <span
-                        className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-                        data-tip="the run ticked every acceptance criterion"
-                      >
-                        Run done
-                      </span>
-                    )}
+                    {p.runOutcome === 'completed' && <RunCompletedChip phase={p} />}
                     {isUnresolvedOutcome(p.runOutcome) && (
                       <RunOutcomeChip
                         phase={p}
@@ -1596,15 +1658,7 @@ function RunStateChip({
         Running
       </span>
     );
-  if (phase.runOutcome === 'completed')
-    return (
-      <span
-        className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-        data-tip="the run ticked every acceptance criterion"
-      >
-        Run done
-      </span>
-    );
+  if (phase.runOutcome === 'completed') return <RunCompletedChip phase={phase} />;
   if (isUnresolvedOutcome(phase.runOutcome))
     return <RunOutcomeChip phase={phase} outcome={phase.runOutcome} onOpen={onOpenOutcome} />;
   return null;
@@ -1640,6 +1694,10 @@ function PhaseDetailPanel({
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
   const status = phaseStatus(phase, resolvedSeqs);
+  // Same split as the list row: `phaseStatus` reads the doc, `running` reads the
+  // process, and only the second one may put the word `running` on screen.
+  const running = phase.runState === 'running';
+  const chip = phaseChip(status, running);
   const [doc, setDoc] = usePlanDoc(epic.taskId, phase.docRelPath, phase.docUpdatedAt);
   const checks = useMemo(() => (doc !== null ? extractChecks(doc) : null), [doc]);
   const [busyLine, setBusyLine] = useState<number | null>(null);
@@ -1720,11 +1778,12 @@ function PhaseDetailPanel({
             </div>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span
-              className={`rounded border px-1.5 py-px font-mono text-[9px] ${PHASE_CHIP[status].cls}`}
-            >
-              {PHASE_CHIP[status].label}
+            <span className={`rounded border px-1.5 py-px font-mono text-[9px] ${chip.cls}`}>
+              {chip.label}
             </span>
+            {status === 'in_progress' && (
+              <PhaseActivity docUpdatedAt={phase.docUpdatedAt} running={running} />
+            )}
             <RunStateChip phase={phase} onOpenOutcome={onOpenOutcome} />
             <span className="font-mono text-[10px] text-ink-faint">
               {phase.checkboxesDone}/{phase.checkboxesTotal || 0}
