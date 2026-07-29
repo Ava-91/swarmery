@@ -490,7 +490,16 @@ export function Plans(): JSX.Element {
   // gate; the client-side disable is a courtesy, and a 409 body (unmet deps,
   // already running) surfaces in the inline error strip in EpicDetail.
   const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
-  const [runMsg, setRunMsg] = useState<string | null>(null);
+  // Keyed by the plan the failure belongs to. A bare string here was rendered under
+  // whichever epic happened to be selected, so one plan's acquire error appeared to
+  // afflict every plan in the workspace — and survived switching between them.
+  const [runMsg, setRunMsg] = useState<{ taskId: number; text: string } | null>(null);
+  const failRunMsg = useCallback(
+    (taskId: number) =>
+      (e: unknown): void =>
+        setRunMsg({ taskId, text: e instanceof Error ? e.message : String(e) }),
+    [],
+  );
   // Which phase's run diagnosis is open (phase id) — the modal is read-only, so
   // it can be open over any state, including a live plan run.
   const [outcomeFor, setOutcomeFor] = useState<number | null>(null);
@@ -502,7 +511,7 @@ export function Plans(): JSX.Element {
       runEpicPhase(taskId, phaseId)
         .then(() => reload())
         .catch((e: unknown) => {
-          setRunMsg(e instanceof Error ? e.message : String(e));
+          failRunMsg(taskId)(e);
           // The branch-holds-commits 409 carries `branch` — that is not a
           // message to read, it is a blocker with an action, so land the user
           // on the diagnosis (which offers Delete branch) instead of a toast.
@@ -511,7 +520,7 @@ export function Plans(): JSX.Element {
         })
         .finally(() => setRunBusy(null));
     },
-    [reload],
+    [reload, failRunMsg],
   );
   const cancelRun = useCallback(
     (taskId: number, phaseId: number): void => {
@@ -519,10 +528,10 @@ export function Plans(): JSX.Element {
       setRunMsg(null);
       cancelEpicPhaseRun(taskId, phaseId)
         .then(() => reload())
-        .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+        .catch(failRunMsg(taskId))
         .finally(() => setRunBusy(null));
     },
-    [reload],
+    [reload, failRunMsg],
   );
 
   // Whole-plan runs: one agent driving core's run-plan skill over every phase.
@@ -548,7 +557,7 @@ export function Plans(): JSX.Element {
       runEpicPlan(taskId, { agent, mode })
         .then(() => reload())
         .catch((e: unknown) => {
-          setRunMsg(e instanceof Error ? e.message : String(e));
+          failRunMsg(taskId)(e);
           const branchErr = e as Error & { branch?: string; commitsAhead?: number; base?: string };
           if (e instanceof Error && typeof branchErr.branch === 'string')
             setPlanDirty({
@@ -565,7 +574,7 @@ export function Plans(): JSX.Element {
         })
         .finally(() => setPlanRunBusy(false));
     },
-    [reload],
+    [reload, failRunMsg],
   );
   const cancelPlanRun = useCallback(
     (taskId: number): void => {
@@ -573,10 +582,10 @@ export function Plans(): JSX.Element {
       setRunMsg(null);
       cancelEpicPlanRun(taskId)
         .then(() => reload())
-        .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+        .catch(failRunMsg(taskId))
         .finally(() => setPlanRunBusy(false));
     },
-    [reload],
+    [reload, failRunMsg],
   );
 
   if (projLoading) return <Loading label="workspace…" />;
@@ -705,7 +714,7 @@ export function Plans(): JSX.Element {
               onOpenPlan={(tab) => setDetailTarget({ kind: 'plan', tab })}
               onCloseDetail={() => setDetailTarget(null)}
               runBusy={runBusy}
-              runMsg={runMsg}
+              runMsg={runMsg !== null && runMsg.taskId === activeEpic.taskId ? runMsg.text : null}
               onRun={(phaseId) => startRun(activeEpic.taskId, phaseId)}
               onCancelRun={(phaseId) => cancelRun(activeEpic.taskId, phaseId)}
               planRunBusy={planRunBusy}

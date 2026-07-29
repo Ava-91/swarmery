@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -215,6 +216,114 @@ func TestCrashLeftoverRetryIntegration(t *testing.T) {
 	// checked out — git itself would refuse the `branch -D`.
 	if _, err := m.DeleteBranch(repo, branch); !errors.Is(err, ErrBranchCheckedOut) {
 		t.Fatalf("DeleteBranch on a live checkout = %v, want ErrBranchCheckedOut", err)
+	}
+}
+
+// TestOrphanedPathRetryIntegration replays the 2026-07-30 incident against real git,
+// because every link of that dead end was a real-git behaviour a stub can only
+// assert by assumption: `worktree remove` refuses a path git does not track,
+// `worktree add -b` mints the branch BEFORE it validates the target path, and git
+// says "already exists" for both a taken branch name and an occupied path.
+//
+// The state to recover: an external prune dropped the registration, the directory
+// survived with uncommitted work in it, and the run branch is still there.
+func TestOrphanedPathRetryIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs a real git binary; skipped in -short")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repo := t.TempDir()
+	git := ExecGit{}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(repo, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	mustWrite(t, filepath.Join(repo, "README.md"), "hello\n")
+	run("add", "README.md")
+	run("commit", "-q", "-m", "init")
+
+	m := &Manager{Git: git, Root: filepath.Join(t.TempDir(), "wts"), now: fixedClock}
+	taskID := "plan-70"
+	branch := "swarm/" + taskID
+
+	first, err := m.Acquire(repo, "proj", taskID)
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	// The incident, exactly: the directory is wiped and recreated by a process
+	// outside the daemon, so `worktree prune` legitimately drops the registration —
+	// and then files appear in it again (in the real case, one uncommitted test).
+	if err := os.RemoveAll(first.Path); err != nil {
+		t.Fatalf("simulate external wipe: %v", err)
+	}
+	run("worktree", "prune")
+	mustMkdir(t, filepath.Join(first.Path, ".serena"))
+	mustWrite(t, filepath.Join(first.Path, "uncommitted_test.go"), "package economics\n")
+
+	// Nothing holds the branch and it carries no commits, so reclaim frees the name…
+	ahead, err := m.ReclaimEmptyBranch(repo, branch)
+	if err != nil || ahead != 0 {
+		t.Fatalf("ReclaimEmptyBranch = (%d, %v), want (0, nil)", ahead, err)
+	}
+	// …and acquisition must now SUCCEED. Before the fix this returned
+	// ErrBranchExists — advice that could not work, since the retry recreated that
+	// branch itself and the actual blocker was the directory.
+	retry, err := m.Acquire(repo, "proj", taskID)
+	if err != nil {
+		t.Fatalf("retry Acquire = %v, want the orphaned path freed and a fresh worktree", err)
+	}
+	if !samePath(retry.Path, first.Path) {
+		t.Fatalf("retry path = %s, want the deterministic %s", retry.Path, first.Path)
+	}
+	if out, err := git.Run(retry.Path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
+		t.Fatalf("probe retry worktree: %v\n%s", err, out)
+	} else if strings.TrimSpace(out) != branch {
+		t.Fatalf("retry worktree is on %q, want %q", strings.TrimSpace(out), branch)
+	}
+
+	// The dead run's uncommitted work survived the recovery.
+	got, err := os.ReadFile(filepath.Join(quarantineOf(t, first.Path), "uncommitted_test.go"))
+	if err != nil || string(got) != "package economics\n" {
+		t.Fatalf("quarantined file = %q (err %v), want the work preserved", got, err)
+	}
+
+	// No branch accretion: exactly one swarm/ ref, the live one.
+	if out := run("for-each-ref", "--format=%(refname:short)", "refs/heads/swarm/"); strings.TrimSpace(out) != branch {
+		t.Fatalf("swarm refs = %q, want only %q", strings.TrimSpace(out), branch)
+	}
+
+	// The opposite case must stay loud: a branch holding commits, with the path free,
+	// is still ErrBranchExists — the operator's decision, never auto-destroyed.
+	wtGit := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(retry.Path, args...)
+		if err != nil {
+			t.Fatalf("git -C worktree %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	mustWrite(t, filepath.Join(retry.Path, "work.txt"), "real work\n")
+	wtGit("add", "work.txt")
+	wtGit("commit", "-q", "-m", "work that must not be discarded")
+	if err := m.Remove(repo, retry, true); err != nil {
+		t.Fatalf("Remove(keepBranch): %v", err)
+	}
+	if _, err := m.Acquire(repo, "proj", taskID); !errors.Is(err, ErrBranchExists) {
+		t.Fatalf("Acquire over a branch with commits = %v, want ErrBranchExists", err)
+	}
+	if out := run("rev-list", "--count", "main..refs/heads/"+branch); strings.TrimSpace(out) != "1" {
+		t.Fatalf("commits on %s = %s, want the 1 commit intact", branch, strings.TrimSpace(out))
 	}
 }
 

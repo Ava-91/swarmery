@@ -44,6 +44,8 @@ const (
 	codeBranchRefused    = "branch-refused"
 	codeBranchBusy       = "branch-busy"
 	codeDetachedHead     = "detached-head"
+	codeBranchExists     = "branch-exists"
+	codePathOccupied     = "path-occupied"
 
 	// Plan-run-only admission gates.
 	codePhaseRunning = "phase-running"
@@ -100,6 +102,17 @@ func worktreeConflict(err error) (code, msg string, ok bool) {
 	case errors.Is(err, worktree.ErrDetachedHead):
 		return codeDetachedHead,
 			"the repo is on a detached HEAD, so the run branch cannot be measured against a base — check out a branch first", true
+	// ErrBranchExists and ErrPathOccupied were BOTH unmapped, so an acquire that hit
+	// either surfaced as an opaque 500 carrying git's raw sentence — which is how a
+	// plan spent four retries acting on a diagnosis that named the wrong blocker
+	// (2026-07-30). They are separated here for the same reason the sentinels are:
+	// one is resolved by merging or deleting a branch, the other by freeing a path.
+	case errors.Is(err, worktree.ErrBranchExists):
+		return codeBranchExists,
+			"the run branch already exists and holds commits — merge them or delete the branch, then retry", true
+	case errors.Is(err, worktree.ErrPathOccupied):
+		return codePathOccupied,
+			"the run's worktree path is taken by a directory git does not track — free that path, then retry", true
 	}
 	return "", "", false
 }
