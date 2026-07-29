@@ -28,9 +28,9 @@ func TestCountCheckboxes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			done, tot := countCheckboxes(c.in)
+			done, tot := CountCheckboxes(c.in)
 			if done != c.wantDone || tot != c.wantTot {
-				t.Errorf("countCheckboxes = %d/%d, want %d/%d", done, tot, c.wantDone, c.wantTot)
+				t.Errorf("CountCheckboxes = %d/%d, want %d/%d", done, tot, c.wantDone, c.wantTot)
 			}
 		})
 	}

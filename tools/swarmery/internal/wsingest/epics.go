@@ -115,9 +115,17 @@ func parseDocStatus(text string) string {
 	return ""
 }
 
-// countCheckboxes counts acceptance-criteria checkboxes in a doc, returning
+// CountCheckboxes counts acceptance-criteria checkboxes in a doc, returning
 // (done, total). Pure; unit-tested. A doc with none yields (0, 0).
-func countCheckboxes(text string) (done, total int) {
+//
+// Exported because it defines what epic_phases.checkboxes_done MEANS, and this
+// scanner is not the only reader that needs that number at an exact instant:
+// phaserun's exit stamp closes its measurement interval from the doc, because the
+// column is written only here, on a debounce, with nothing triggering a scan at run
+// end. Anyone needing "how many criteria are ticked right now" must call this
+// rather than re-parse the format — a second parser would drift and the two counts
+// would disagree about the same file.
+func CountCheckboxes(text string) (done, total int) {
 	for _, line := range strings.Split(text, "\n") {
 		m := checkboxRe.FindStringSubmatch(line)
 		if m == nil {
@@ -324,7 +332,7 @@ func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 				phases[i].name = title
 			}
 		}
-		phases[i].checkboxesDone, phases[i].checkboxesTotal = countCheckboxes(string(body))
+		phases[i].checkboxesDone, phases[i].checkboxesTotal = CountCheckboxes(string(body))
 		phases[i].docStatus = parseDocStatus(string(body))
 		phases[i].completionReport = parseCompletionReport(string(body))
 		if fi, err := os.Stat(abs); err == nil {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
@@ -374,16 +375,36 @@ func phaseAfter(t *testing.T, db *sql.DB, id int64) sql.NullInt64 {
 	return after
 }
 
+// phaseDocPath reads a phase's doc_path — the file the run's exit stamp counts.
+func phaseDocPath(t *testing.T, db *sql.DB, id int64) string {
+	t.Helper()
+	var p string
+	if err := db.QueryRow(`SELECT doc_path FROM epic_phases WHERE id=?`, id).Scan(&p); err != nil {
+		t.Fatalf("phase doc_path: %v", err)
+	}
+	return p
+}
+
+func mustWriteDoc(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write doc %s: %v", path, err)
+	}
+}
+
 // TestStamp_ClosesCheckboxInterval: the exit stamp pins the ticked count as it was
-// when the run ended. checkboxes_done keeps moving afterwards (the wsingest rescan
-// and TickPhaseChecklist both write it) — the stamped edge must not follow it, or
-// another writer's ticks get attributed to this run.
+// when the run ended. Both the doc and checkboxes_done keep moving afterwards (the
+// wsingest rescan and TickPhaseChecklist write the column, a human or the next run
+// writes the doc) — the stamped edge must not follow either, or another writer's
+// ticks get attributed to this run.
 func TestStamp_ClosesCheckboxInterval(t *testing.T) {
 	db, _, p1, _ := fixture(t)
-	mustExec(t, db, `UPDATE epic_phases SET checkboxes_total=8, checkboxes_done=1 WHERE id=?`, p1)
-	// The run itself ticks two more boxes before it exits.
+	doc := phaseDocPath(t, db, p1)
+	// The run itself ticks one of the doc's two boxes before it exits, and the
+	// rescan happens to have caught up by then.
 	r := &stubRunner{runFn: func(spec RunSpec) (*Run, error) {
-		mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=3 WHERE id=?`, p1)
+		mustWriteDoc(t, doc, "# Phase 1 — Schema\n\n- [x] a\n- [ ] b\n")
+		mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=1 WHERE id=?`, p1)
 		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
 	}}
 	s := newTestService(db, r, &stubWt{})
@@ -392,18 +413,92 @@ func TestStamp_ClosesCheckboxInterval(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	before, _ := phaseOutcome(t, db, p1)
-	if !before.Valid || before.Int64 != 1 {
-		t.Errorf("run_checkboxes_before = %v, want 1", before)
+	if !before.Valid || before.Int64 != 0 {
+		t.Errorf("run_checkboxes_before = %v, want 0", before)
 	}
 	after := phaseAfter(t, db, p1)
-	if !after.Valid || after.Int64 != 3 {
-		t.Fatalf("run_checkboxes_after = %v, want 3 — the count at exit", after)
+	if !after.Valid || after.Int64 != 1 {
+		t.Fatalf("run_checkboxes_after = %v, want 1 — the count at exit", after)
 	}
 
-	// A later writer moves the live count; the closed interval must not budge.
-	mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=8 WHERE id=?`, p1)
-	if got := phaseAfter(t, db, p1); !got.Valid || got.Int64 != 3 {
-		t.Errorf("run_checkboxes_after = %v after a later tick, want a frozen 3", got)
+	// Later writers move the live count AND the doc; the closed interval must not budge.
+	mustWriteDoc(t, doc, "# Phase 1 — Schema\n\n- [x] a\n- [x] b\n")
+	mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=2 WHERE id=?`, p1)
+	if got := phaseAfter(t, db, p1); !got.Valid || got.Int64 != 1 {
+		t.Errorf("run_checkboxes_after = %v after a later tick, want a frozen 1", got)
+	}
+}
+
+// TestStamp_CountsTheDocNotTheLaggingColumn is the race the stamp used to lose.
+// checkboxes_done is owned by wsingest, which rescans on a 500 ms debounce and is
+// triggered by nothing at run end; when the executor's LAST tick lands inside that
+// window the column still holds the pre-tick count at the instant the run exits.
+// Stamping the column then closes the interval at that stale value — and
+// phasediag.OutcomeFromRow prefers the stamped edge over the live count forever, so
+// a phase whose work actually landed is chipped 'no progress' permanently.
+//
+// The stamp must count the DOC, the artifact the executor actually wrote.
+func TestStamp_CountsTheDocNotTheLaggingColumn(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	doc := phaseDocPath(t, db, p1)
+	// The run ticks every criterion in the doc; the debounced rescan has not fired,
+	// so checkboxes_done is still 0 when the process exits.
+	r := &stubRunner{runFn: func(spec RunSpec) (*Run, error) {
+		mustWriteDoc(t, doc, "# Phase 1 — Schema\n\n- [x] a\n- [x] b\n")
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(db, r, &stubWt{})
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var (
+		live   int
+		total  int
+		state  string
+		before sql.NullInt64
+		after  sql.NullInt64
+	)
+	if err := db.QueryRow(`SELECT run_state, checkboxes_total, checkboxes_done,
+		run_checkboxes_before, run_checkboxes_after FROM epic_phases WHERE id=?`, p1).
+		Scan(&state, &total, &live, &before, &after); err != nil {
+		t.Fatalf("phase row: %v", err)
+	}
+	if live != 0 {
+		t.Fatalf("setup: checkboxes_done = %d, want the stale 0 this test is about", live)
+	}
+	if !after.Valid || after.Int64 != 2 {
+		t.Errorf("run_checkboxes_after = %v, want 2 — the ticked count in the doc, not the lagging column", after)
+	}
+	// The permanent damage the stale edge causes, asserted through the single
+	// derivation both the chip and the modal go through.
+	if got := phasediag.OutcomeFromRow(state, total, live, before, after); got != phasediag.OutcomeCompleted {
+		t.Errorf("derived outcome = %q, want %q — the run ticked every criterion",
+			got, phasediag.OutcomeCompleted)
+	}
+}
+
+// TestStamp_UnreadableDocFallsBackToTheLiveColumn: the doc can be gone by the time
+// a run exits (a workspace move, a plan rescan mid-run). The interval must still be
+// closed — an open right edge would leave the outcome reading the live count forever
+// — so the stamp degrades to checkboxes_done rather than skipping the write.
+func TestStamp_UnreadableDocFallsBackToTheLiveColumn(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	doc := phaseDocPath(t, db, p1)
+	r := &stubRunner{runFn: func(spec RunSpec) (*Run, error) {
+		if err := os.Remove(doc); err != nil {
+			t.Errorf("remove doc: %v", err)
+		}
+		mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=2 WHERE id=?`, p1)
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(db, r, &stubWt{})
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := phaseAfter(t, db, p1); !got.Valid || got.Int64 != 2 {
+		t.Errorf("run_checkboxes_after = %v, want the live count 2 — the interval must still close", got)
 	}
 }
 
@@ -453,7 +548,7 @@ func TestStamp_RowVanished(t *testing.T) {
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	s.stamp(p1, "done", "") // must not panic
+	s.stamp(p1, "", "done", "") // must not panic
 	if !strings.Contains(buf.String(), "row vanished mid-run") {
 		t.Errorf("stamp against a deleted row logged %q, want a 'row vanished mid-run' error", buf.String())
 	}

@@ -28,6 +28,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
 // Sentinel errors mapped to HTTP statuses by the api layer.
@@ -295,42 +296,78 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, p
 		// Cancel() beat the exit — whatever the child reported, the outcome is a
 		// user cancellation.
 		log.Printf("phaserun: phase=%d uuid=%s cancelled", phaseID, spec.SessionUUID)
-		s.stamp(phaseID, "failed", "cancelled")
+		s.stamp(phaseID, info.DocPath, "failed", "cancelled")
 	case err != nil:
 		log.Printf("error: phaserun: phase=%d uuid=%s could not start: %v", phaseID, spec.SessionUUID, err)
-		s.stamp(phaseID, "failed", err.Error())
+		s.stamp(phaseID, info.DocPath, "failed", err.Error())
 	case res.TimedOut:
 		log.Printf("warning: phaserun: phase=%d uuid=%s timed out", phaseID, spec.SessionUUID)
-		s.stamp(phaseID, "failed", "timeout")
+		s.stamp(phaseID, info.DocPath, "failed", "timeout")
 	case res.ExitCode != 0:
 		log.Printf("warning: phaserun: phase=%d uuid=%s exited %d: %s", phaseID, spec.SessionUUID, res.ExitCode, res.Stderr)
 		msg := res.Stderr
 		if msg == "" {
 			msg = fmt.Sprintf("exit %d", res.ExitCode)
 		}
-		s.stamp(phaseID, "failed", msg)
+		s.stamp(phaseID, info.DocPath, "failed", msg)
 	default:
 		log.Printf("phaserun: phase=%d uuid=%s completed in %s", phaseID, spec.SessionUUID, res.Duration)
-		s.stamp(phaseID, "done", "")
+		s.stamp(phaseID, info.DocPath, "done", "")
 	}
+}
+
+// tickedInDoc counts the acceptance criteria ticked in the phase doc as it stands
+// on disk right now, through the SAME parser that defines
+// epic_phases.checkboxes_done (wsingest.CountCheckboxes) — never a second copy of
+// the format, which would drift and make the two counts disagree about one file.
+// ok=false when there is no readable doc.
+func tickedInDoc(docPath string) (int, bool) {
+	if docPath == "" {
+		return 0, false
+	}
+	body, err := os.ReadFile(docPath)
+	if err != nil {
+		return 0, false
+	}
+	done, _ := wsingest.CountCheckboxes(string(body))
+	return done, true
 }
 
 // stamp writes the terminal run state; runError "" ⇒ NULL. run_ended_at is set on
 // every terminal transition so the UI can show a duration, and
 // run_checkboxes_after closes the measurement interval opened by
-// run_checkboxes_before at spawn — same self-referencing trick, so the right edge
-// is pinned at the same instant the run ends rather than left to drift with every
-// later writer of checkboxes_done.
-func (s *Service) stamp(phaseID int64, state, runError string) {
+// run_checkboxes_before at spawn, so the right edge is pinned at the instant the
+// run ends rather than drifting with every later writer of checkboxes_done.
+//
+// The right edge is counted from the DOC, not from checkboxes_done. That column is
+// owned by internal/wsingest, which rescans on a 500 ms debounce and is triggered by
+// nothing at run end: an executor whose final tick lands inside that window exits
+// while the column still holds the pre-tick count, and the interval closes on it.
+// phasediag.OutcomeFromRow then prefers the stamped edge over the live count
+// FOREVER, so a phase whose work actually landed is chipped 'noop' permanently and
+// silently. Reading the artifact the executor wrote has no such window.
+//
+// COALESCE keeps the fallback explicit: a doc that cannot be read (workspace moved,
+// plan rescan mid-run) still closes the interval on the live count, because leaving
+// run_checkboxes_after NULL would hand the outcome back to the column that keeps
+// moving.
+func (s *Service) stamp(phaseID int64, docPath, state, runError string) {
 	var re any
 	if runError != "" {
 		re = runError
 	}
+	var after any // NULL ⇒ COALESCE falls back to checkboxes_done
+	if n, ok := tickedInDoc(docPath); ok {
+		after = n
+	} else {
+		log.Printf("warning: phaserun: stamp phase=%d: phase doc %q unreadable, closing the run interval on the live count instead",
+			phaseID, docPath)
+	}
 	res, err := s.DB.Exec(`
 		UPDATE epic_phases
 		   SET run_state=?, run_error=?, run_ended_at=?,
-		       run_checkboxes_after=checkboxes_done
-		 WHERE id=?`, state, re, s.ts(), phaseID)
+		       run_checkboxes_after=COALESCE(?, checkboxes_done)
+		 WHERE id=?`, state, re, s.ts(), after, phaseID)
 	if err != nil {
 		log.Printf("error: phaserun: stamp phase=%d state=%s: %v", phaseID, state, err)
 		return
