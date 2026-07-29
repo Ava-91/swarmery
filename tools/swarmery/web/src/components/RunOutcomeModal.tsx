@@ -81,6 +81,7 @@ export function RunOutcomeModal({
 }): JSX.Element {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [actionErr, setActionErr] = useState<string | null>(null);
 
   // One fetch path for both the mount load and the post-delete refetch: the
@@ -108,20 +109,30 @@ export function RunOutcomeModal({
     };
   }, [load]);
 
-  // Esc closes, except while a branch delete is in flight.
+  // Esc closes, except while a branch delete is in flight. While the delete is
+  // ARMED it disarms instead of closing — Esc is the universal "back out", and
+  // closing the whole modal on it would leave the user unsure whether the branch
+  // survived.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && !busy) onClose();
+      if (e.key !== 'Escape' || busy) return;
+      if (confirmingDelete) {
+        setConfirmingDelete(false);
+        return;
+      }
+      onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [busy, onClose]);
+  }, [busy, confirmingDelete, onClose]);
 
   const diag = phase.kind === 'ready' ? phase.diag : null;
   const chip = OUTCOME_CHIP[diag?.runOutcome ?? 'idle'];
   // The branch is only reclaimable when the daemon actually proved it dirty —
-  // offering the delete otherwise would invite destroying an unrelated branch.
-  const dirtyBranch = diag?.blockers.some((b) => b.kind === 'branch-dirty') ?? false;
+  // offering the delete otherwise would invite destroying an unrelated branch. The
+  // blocker itself (not a client-side reconstruction of the name) is what the
+  // confirmation quotes.
+  const dirty = diag?.blockers.find((b) => b.kind === 'branch-dirty') ?? null;
 
   const endedMs =
     diag !== null && diag.runEndedAt !== null ? Date.parse(diag.runEndedAt) : Number.NaN;
@@ -132,12 +143,65 @@ export function RunOutcomeModal({
 
   function deleteBranch(): void {
     setBusy(true);
+    setConfirmingDelete(false);
     setActionErr(null);
     deletePhaseRunBranch(taskId, phaseId)
       .then(() => load())
       .catch((e: unknown) => setActionErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));
   }
+
+  // The delete reaches `git branch -D`: the commits go, and nothing else holds
+  // them. Two steps, in-modal (never window.confirm — a browser modal blocks the
+  // extension-driven flows this repo uses), and the armed step names the branch and
+  // the exact number of commits it is about to destroy. Same shape as KillButton's
+  // confirm: an armed line + Confirm/Cancel replacing the trigger in place.
+  const deleteSlot = ((): JSX.Element | null => {
+    if (dirty === null) return null;
+    const commits = dirty.commitsAhead ?? 0;
+    const branch = dirty.branch ?? 'the run branch';
+    if (!confirmingDelete) {
+      return (
+        <button
+          type="button"
+          disabled={busy || writesDisabled}
+          title={
+            writesDisabled ? writesDisabledReason : 'delete the run branch so a retry can recreate it'
+          }
+          onClick={() => setConfirmingDelete(true)}
+          className="rounded-lg border border-red/40 bg-red/5 px-3.5 py-1.5 font-mono text-[11.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? 'deleting…' : 'Delete branch'}
+        </button>
+      );
+    }
+    return (
+      <span className="flex flex-wrap items-center justify-end gap-2">
+        <span className="font-mono text-[10.5px] text-ink-dim">
+          Delete {branch}?{' '}
+          {commits > 0
+            ? `${String(commits)} commit${commits === 1 ? '' : 's'} will be lost.`
+            : 'Its commits will be lost.'}
+        </span>
+        <button
+          type="button"
+          disabled={busy || writesDisabled}
+          onClick={deleteBranch}
+          className="rounded-lg border border-red/40 bg-red/10 px-3.5 py-1.5 font-mono text-[11.5px] font-semibold text-red transition-colors hover:bg-red/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? 'deleting…' : 'Delete permanently'}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setConfirmingDelete(false)}
+          className="font-mono text-[11.5px] text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  })();
 
   return (
     <div
@@ -259,18 +323,8 @@ export function RunOutcomeModal({
           </div>
         )}
 
-        <div className="mt-4 flex justify-end gap-2">
-          {dirtyBranch && (
-            <button
-              type="button"
-              disabled={busy || writesDisabled}
-              title={writesDisabled ? writesDisabledReason : 'delete the run branch so a retry can recreate it'}
-              onClick={deleteBranch}
-              className="rounded-lg border border-red/40 bg-red/5 px-3.5 py-1.5 font-mono text-[11.5px] text-red transition-colors hover:bg-red/10 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? 'deleting…' : 'Delete branch'}
-            </button>
-          )}
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+          {deleteSlot}
           <button
             type="button"
             disabled={busy || writesDisabled}

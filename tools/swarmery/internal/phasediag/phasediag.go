@@ -24,10 +24,19 @@ const (
 
 // Blocker is one reason the phase did not progress, or one thing standing between
 // the user and a successful retry. Summary is rendered verbatim by the UI.
+//
+// Branch/CommitsAhead carry the branch-dirty facts as DATA, not only as prose. The
+// UI offers a `git branch -D` off this blocker, and a confirmation for a destructive
+// action must name what it destroys from the same source that proved it — not by
+// parsing Summary, and not by rebuilding "swarm/phase-<id>" client-side, which would
+// go on naming a branch after the server's naming rule moved. Empty/0 on every other
+// kind.
 type Blocker struct {
-	Kind    string `json:"kind"`
-	Summary string `json:"summary"`
-	Detail  string `json:"detail"`
+	Kind         string `json:"kind"`
+	Summary      string `json:"summary"`
+	Detail       string `json:"detail"`
+	Branch       string `json:"branch,omitempty"`
+	CommitsAhead int    `json:"commitsAhead,omitempty"`
 }
 
 // AgentMessage is the executor's own last word, for the cases the daemon cannot
@@ -227,6 +236,9 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 				// The base note goes LAST: the subjects are the answer to "what is on
 				// this branch", newest first, and the qualifier belongs after them.
 				Detail: strings.Join(append(subjects, againstBase(base)), "\n"),
+				// The same two facts as data, for the delete confirmation.
+				Branch:       branch,
+				CommitsAhead: ahead,
 			})
 		}
 	}

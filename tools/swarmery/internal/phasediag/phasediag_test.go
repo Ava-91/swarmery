@@ -523,6 +523,12 @@ func TestDiagnoseOwnBranchStatesAreMutuallyExclusive(t *testing.T) {
 	if last := lines[len(lines)-1]; last != "measured against the currently checked-out branch dev" {
 		t.Fatalf("detail must end by naming the base it compared against, got %q", last)
 	}
+	// The UI's delete confirmation names what a `branch -D` would destroy off these
+	// two fields, so they must carry the facts as data — not leave the client to
+	// parse Summary or rebuild "swarm/phase-<id>" on its own.
+	if b.Branch != branch || b.CommitsAhead != 3 {
+		t.Fatalf("branch/commitsAhead = %q/%d, want %q/3", b.Branch, b.CommitsAhead, branch)
+	}
 }
 
 func TestDiagnoseNoCriteria(t *testing.T) {

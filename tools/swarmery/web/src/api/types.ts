@@ -2137,6 +2137,12 @@ export interface PhaseBlocker {
   kind: 'dep-incomplete' | 'dep-unmerged' | 'branch-blocks-retry' | 'branch-dirty' | 'no-criteria';
   summary: string;
   detail: string;
+  /** branch-dirty only: the branch a delete would destroy and how many commits go
+   *  with it. Carried as data so the delete confirmation names both from the source
+   *  that proved them, rather than parsing `summary` or rebuilding the branch name
+   *  client-side. Omitted on every other kind (Go `omitempty`). */
+  branch?: string;
+  commitsAhead?: number;
 }
 
 /** The executor's own last word — mirrors phasediag.AgentMessage. */

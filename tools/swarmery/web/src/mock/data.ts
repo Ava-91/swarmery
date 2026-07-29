@@ -2159,6 +2159,8 @@ export const mockApi = {
               summary: 'this phase’s run branch already holds commits',
               detail:
                 'swarm/phase-4 · 2 commits ahead\n  feat: scaffold rollup query\n  wip: graph edges',
+              branch: 'swarm/phase-4',
+              commitsAhead: 2,
             },
           ]
         : [];
