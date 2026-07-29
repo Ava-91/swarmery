@@ -287,9 +287,22 @@ func (h *Handler) deleteOrphanBranch(w http.ResponseWriter, r *http.Request) {
 	// Guard 2: the id must match no phase row AT ALL. Scoped to the whole table on
 	// purpose — ids are global across epics, so an epic-scoped check would let this
 	// route delete another plan's live run branch.
+	//
+	// The capture is converted to int64 rather than bound as the string it arrives
+	// as. SQLite's INTEGER affinity would coerce '5' to 5 and the guard would work
+	// either way, but a guard on a destructive route should not rest on an implicit
+	// conversion: bound explicitly, "does this id have a row" cannot become "no row
+	// matched because the types differed", which fails OPEN and deletes the branch.
+	branchID, convErr := strconv.ParseInt(m[1], 10, 64)
+	if convErr != nil {
+		// Unreachable through orphanBranchPattern (^swarm/phase-([0-9]+)$), but an
+		// id too large for int64 would land here rather than sliding past the guard.
+		writeConflict(w, codeBranchRefused, "not a swarm/phase-<id> run branch")
+		return
+	}
 	var one int
 	switch err := h.DB.QueryRow(
-		`SELECT 1 FROM epic_phases WHERE id = ?`, m[1]).Scan(&one); {
+		`SELECT 1 FROM epic_phases WHERE id = ?`, branchID).Scan(&one); {
 	case err == nil:
 		writeConflict(w, codeBranchLivePhase,
 			"that branch belongs to a live phase — delete it from that phase instead")

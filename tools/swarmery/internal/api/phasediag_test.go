@@ -925,3 +925,20 @@ func TestDeleteOrphanBranch_AlreadyGone_DeletedFalse(t *testing.T) {
 		t.Error("deleted = true for a branch that was not there")
 	}
 }
+
+// A branch id too large for int64 must be REFUSED, not slide past guard 2. The
+// regexp accepts any digit run, and an unparseable id bound as a string would make
+// `id = ?` match no row — the guard would fail OPEN and delete the branch.
+func TestDeleteOrphanBranch_RefusesOversizedID(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-99999999999999999999999"))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if wt.deleted != "" {
+		t.Errorf("deleted %q for an id that cannot be checked against the table", wt.deleted)
+	}
+}
