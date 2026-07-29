@@ -1129,6 +1129,12 @@ func TestDeleteRunBranch(t *testing.T) {
 // dirty-branch banner over a branch that is still (or was never) there.
 func TestDeleteRunBranch_MissingBranchReportsNotExisted(t *testing.T) {
 	db, _, p1, _ := fixture(t)
+	// The stamp (0043) is what makes DeleteRunBranch attempt a delete at all — an
+	// unstamped phase refuses with ErrNoRunBranch instead (covered by
+	// TestDeleteRunBranchWithoutStampRefuses). Here the branch IS recorded and is
+	// simply gone from git, which is the idempotent path under test.
+	stamped := "swarm/phase-" + itoa64(p1)
+	mustExec(t, db, `UPDATE epic_phases SET run_branch=? WHERE id=?`, stamped, p1)
 	wt := &stubWt{branchMissing: true} // worktree.DeleteBranch: (false, nil)
 	s := newTestService(db, &stubRunner{}, wt)
 
@@ -1136,8 +1142,8 @@ func TestDeleteRunBranch_MissingBranchReportsNotExisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteRunBranch on a missing branch = %v, want nil (idempotent)", err)
 	}
-	if branch != "swarm/phase-"+itoa64(p1) {
-		t.Errorf("branch = %q", branch)
+	if branch != stamped {
+		t.Errorf("branch = %q, want %q", branch, stamped)
 	}
 	if existed {
 		t.Error("existed = true for a branch that was never there")
