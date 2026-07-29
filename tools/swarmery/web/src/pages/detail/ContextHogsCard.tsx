@@ -78,7 +78,7 @@ export function ContextHogsCard({ sessionId }: { sessionId: number }): JSX.Eleme
                 <tbody>
                   {rows.map((t) => (
                     <tr key={t.name} className="font-mono text-[11px] text-ink-2">
-                      <td className="max-w-[160px] truncate py-0.5 pr-2" title={t.name}>
+                      <td className="max-w-[160px] truncate py-0.5 pr-2" data-tip-mono data-tip={t.name}>
                         {t.name}
                       </td>
                       <td className="py-0.5 text-right tabular-nums">{t.calls}</td>
@@ -107,7 +107,7 @@ export function ContextHogsCard({ sessionId }: { sessionId: number }): JSX.Eleme
                     {data.turns.map((t) => (
                       <div
                         key={t.seq}
-                        title={`turn ${t.seq}: ${fmtTokens(t.cacheWrite)}`}
+                        data-tip={`turn ${t.seq}: ${fmtTokens(t.cacheWrite)}`}
                         className="min-w-[2px] flex-1 rounded-t-[1px] bg-amber/50"
                         style={{ height: `${Math.max(6, (t.cacheWrite / maxWrite) * 100)}%` }}
                       />

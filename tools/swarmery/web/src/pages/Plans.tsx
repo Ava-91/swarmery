@@ -162,7 +162,7 @@ function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.E
       className={`inline-flex shrink-0 items-center gap-1 font-mono text-[9.5px] ${
         stalled ? 'text-amber' : 'text-brand'
       }`}
-      title={
+      data-tip={
         stalled
           ? 'no phase-doc edits for a while — the executor may be stuck'
           : 'the executor is actively editing this phase doc'
@@ -238,7 +238,7 @@ function RunOutcomeChip({
   return (
     <button
       type="button"
-      title={title}
+      data-tip={title}
       onClick={(e) => {
         e.stopPropagation();
         onOpen();
@@ -715,7 +715,7 @@ function EpicDetail({
           <button
             type="button"
             onClick={() => onOpenPlan('plan')}
-            title="open plan details"
+            data-tip="open plan details"
             className="min-w-0 truncate text-left text-[15px] font-semibold text-ink transition-colors hover:text-brand"
           >
             {epic.title}
@@ -756,7 +756,7 @@ function EpicDetail({
           <button
             type="button"
             onClick={() => onOpenPlan('summary')}
-            title="what was shipped — per-phase executed work"
+            data-tip="what was shipped — per-phase executed work"
             className="rounded-md border border-green/40 px-2 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/10"
           >
             ✓ summary
@@ -901,7 +901,7 @@ function PhaseList({
                           ? 'border-green/40 text-green'
                           : 'border-line text-ink-faint'
                       }`}
-                      title={resolvedSeqs.has(seq) ? 'dependency resolved' : 'dependency pending'}
+                      data-tip={resolvedSeqs.has(seq) ? 'dependency resolved' : 'dependency pending'}
                     >
                       ← #{seq}
                     </span>
@@ -919,7 +919,7 @@ function PhaseList({
                 {activated && (
                   <span
                     className="rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
-                    title={p.boardTaskExternalId ?? undefined}
+                    data-tip={p.boardTaskExternalId ?? undefined}
                   >
                     activated{p.boardColumn !== null ? ` · ${p.boardColumn}` : ''}
                   </span>
@@ -933,7 +933,7 @@ function PhaseList({
                   <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     <span
                       className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
-                      title="headless run in progress"
+                      data-tip="headless run in progress"
                     >
                       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
                       Running
@@ -965,7 +965,7 @@ function PhaseList({
                     {p.runOutcome === 'completed' && (
                       <span
                         className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-                        title="the run ticked every acceptance criterion"
+                        data-tip="the run ticked every acceptance criterion"
                       >
                         Run done
                       </span>
@@ -982,7 +982,7 @@ function PhaseList({
                       onClick={() => {
                         onOpenPhase(p.seq, 'summary');
                       }}
-                      title="what was shipped — completed criteria, Completion Report, execution record"
+                      data-tip="what was shipped — completed criteria, Completion Report, execution record"
                       className="font-mono text-[9.5px] text-green underline-offset-2 transition-colors hover:underline"
                     >
                       ✓ summary
@@ -993,7 +993,7 @@ function PhaseList({
                     {p.runOutcome === 'completed' && (
                       <span
                         className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-                        title="the run ticked every acceptance criterion"
+                        data-tip="the run ticked every acceptance criterion"
                       >
                         Run done
                       </span>
@@ -1008,7 +1008,7 @@ function PhaseList({
                     <button
                       type="button"
                       disabled={runDisabled}
-                      title={runTitle}
+                      data-tip={runTitle}
                       onClick={(e) => {
                         e.stopPropagation();
                         onRun(p.id);
@@ -1117,7 +1117,7 @@ function BackToPhases({ onBack }: { onBack: () => void }): JSX.Element {
     <button
       type="button"
       onClick={onBack}
-      title="back to the phase list (Esc)"
+      data-tip="back to the phase list (Esc)"
       className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-surface2 px-2 py-1 font-mono text-[10.5px] text-ink transition-colors hover:bg-surface2/70 hover:text-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
     >
       <span aria-hidden="true">←</span> all phases
@@ -1164,7 +1164,7 @@ function PlanRunControls({
       <span className="flex items-center gap-1.5">
         <span
           className="inline-flex items-center gap-1 rounded-md border border-brand/40 bg-brand/10 px-2 py-1 font-mono text-[10.5px] text-brand"
-          title={`the whole plan is running${run.agent !== null ? ` — agent ${run.agent}` : ''} (mode: ${run.mode})`}
+          data-tip={`the whole plan is running${run.agent !== null ? ` — agent ${run.agent}` : ''} (mode: ${run.mode})`}
         >
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
           Running plan
@@ -1208,7 +1208,7 @@ function PlanRunControls({
         {failed && (
           <span
             className="rounded-md border border-red/40 bg-red/10 px-2 py-1 font-mono text-[10.5px] text-red"
-            title={run?.runError ?? 'plan run failed'}
+            data-tip={run?.runError ?? 'plan run failed'}
           >
             Run failed
           </span>
@@ -1216,7 +1216,7 @@ function PlanRunControls({
         <button
           type="button"
           disabled={disabled}
-          title={title}
+          data-tip={title}
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           className={`rounded-md border px-2 py-1 font-mono text-[10.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
@@ -1304,7 +1304,7 @@ function PlanRunDialog({
               type="button"
               role="radio"
               aria-checked={mode === m.id}
-              title={m.hint}
+              data-tip={m.hint}
               onClick={() => setMode(m.id)}
               className={`rounded-md border px-2 py-1 font-mono text-[10.5px] transition-colors ${
                 mode === m.id
@@ -1460,7 +1460,7 @@ function ChecksList({
               disabled={busyLine === c.line}
               aria-pressed={c.done}
               onClick={() => onToggle(c)}
-              title={c.done ? 'un-tick this criterion in the doc' : 'tick this criterion in the doc'}
+              data-tip={c.done ? 'un-tick this criterion in the doc' : 'tick this criterion in the doc'}
               className="flex w-full items-start gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-surface2/50 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
             >
               {mark}
@@ -1590,7 +1590,7 @@ function RunStateChip({
     return (
       <span
         className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
-        title="headless run in progress"
+        data-tip="headless run in progress"
       >
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
         Running
@@ -1600,7 +1600,7 @@ function RunStateChip({
     return (
       <span
         className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-        title="the run ticked every acceptance criterion"
+        data-tip="the run ticked every acceptance criterion"
       >
         Run done
       </span>
@@ -1706,7 +1706,7 @@ function PhaseDetailPanel({
                 <button
                   type="button"
                   disabled={runDisabled}
-                  title={runTitle}
+                  data-tip={runTitle}
                   onClick={onRetry}
                   className={`rounded-md border px-2 py-1 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${runButtonCls(phase.runOutcome)}`}
                 >
@@ -1735,7 +1735,7 @@ function PhaseDetailPanel({
                 className={`rounded border px-1 py-px font-mono text-[9px] ${
                   resolvedSeqs.has(seq) ? 'border-green/40 text-green' : 'border-line text-ink-faint'
                 }`}
-                title={resolvedSeqs.has(seq) ? 'dependency resolved' : 'dependency pending'}
+                data-tip={resolvedSeqs.has(seq) ? 'dependency resolved' : 'dependency pending'}
               >
                 ← #{seq}
               </span>

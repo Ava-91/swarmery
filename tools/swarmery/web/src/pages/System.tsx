@@ -99,7 +99,7 @@ function SummaryHeader({
                   key={severity}
                   type="button"
                   aria-pressed={active}
-                  title={`filter lists by worst active lint finding: ${severity}`}
+                  data-tip={`filter lists by worst active lint finding: ${severity}`}
                   onClick={() => onLint(active ? null : severity)}
                   className={`rounded-full border px-2 py-px font-mono text-[10px] whitespace-nowrap transition-colors ${LINT_TONES[severity]} ${
                     active ? 'border-current bg-surface2' : 'border-current/50 hover:border-current'
@@ -174,7 +174,7 @@ function ItemRow({
       type="button"
       onClick={onSelect}
       aria-current={selected ? 'true' : undefined}
-      title={item.dead ? DEAD_TOOLTIP : `open ${item.name}`}
+      data-tip={item.dead ? DEAD_TOOLTIP : `open ${item.name}`}
       className={`block w-full border-b border-line-soft px-3.5 py-2.5 text-left transition-colors last:border-b-0 ${
         selected ? 'bg-surface2' : 'hover:bg-surface'
       } ${deadClass}`}

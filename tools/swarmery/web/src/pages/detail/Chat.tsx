@@ -83,7 +83,7 @@ function ToolGroup({ summary, events }: { summary: string; events: readonly Even
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        title={open ? 'Collapse activity' : 'Expand activity'}
+        data-tip={open ? 'Collapse activity' : 'Expand activity'}
         className={`flex items-center gap-1.5 rounded-md px-1 py-0.5 font-mono text-[11px] transition-colors hover:text-brand ${open ? 'text-ink-2' : 'text-ink-faint'}`}
       >
         <span aria-hidden="true">⚙</span>

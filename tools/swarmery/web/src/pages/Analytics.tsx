@@ -324,7 +324,7 @@ function TipStatCard({
         {tip !== undefined && (
           <span
             className="cursor-help text-ink-faint/70"
-            title={tip}
+            data-tip={tip}
             aria-label={`${label}: ${tip}`}
             tabIndex={0}
           >
@@ -488,7 +488,7 @@ function CommandCenter({
               </span>
               <span
                 className="rounded-[4px] bg-amber/15 px-1 py-px font-mono text-[8.5px] uppercase tracking-[0.08em] text-amber cursor-help"
-                title={`Estimate only — ${productivity.humanHoursSaved.formula} (Fusion's constant). Not a measured figure.`}
+                data-tip={`Estimate only — ${productivity.humanHoursSaved.formula} (Fusion's constant). Not a measured figure.`}
                 aria-label={`Human-hours saved is an estimate: ${productivity.humanHoursSaved.formula}`}
                 tabIndex={0}
               >
@@ -984,7 +984,7 @@ function MatrixPanel({
                 key={c.key}
                 className="max-w-[64px] px-1 pb-1 text-left align-bottom font-normal text-ink-faint"
               >
-                <div className="truncate" title={c.name}>
+                <div className="truncate" data-tip={c.name}>
                   {c.name}
                 </div>
               </th>
@@ -994,7 +994,7 @@ function MatrixPanel({
         <tbody>
           {rowMembers.map((r) => (
             <tr key={r.key}>
-              <td className="sticky left-0 z-10 max-w-[130px] truncate bg-bg pr-2 text-ink-3" title={r.name}>
+              <td className="sticky left-0 z-10 max-w-[130px] truncate bg-bg pr-2 text-ink-3" data-tip={r.name}>
                 {r.name}
               </td>
               {colMembers.map((c) => {
@@ -1004,7 +1004,7 @@ function MatrixPanel({
                     key={c.key}
                     className={`h-7 rounded-[3px] text-center text-ink-2 ${isCost ? 'w-14' : 'w-9'}`}
                     style={{ background: n > 0 ? heatShade(max > 0 ? n / max : 0) : chart.empty }}
-                    title={`${r.name} × ${c.name}: ${fmtCell(n)}${isCost ? '' : ' runs'}`}
+                    data-tip={`${r.name} × ${c.name}: ${fmtCell(n)}${isCost ? '' : ' runs'}`}
                   >
                     {n > 0 ? fmtCell(n) : ''}
                   </td>
@@ -1465,7 +1465,7 @@ export function Analytics(): JSX.Element {
                 setTransposed((t) => !t);
               }}
               className="rounded-md border border-line px-2 py-1 font-mono text-[10.5px] text-ink-dim hover:text-ink"
-              title="swap rows and columns"
+              data-tip="swap rows and columns"
             >
               ⇄ transpose
             </button>

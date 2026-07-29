@@ -48,7 +48,7 @@ export function KillButton({ session }: { session: Session }): JSX.Element | nul
     return (
       <span
         className="rounded border border-ink-dim/20 px-2 py-0.5 font-mono text-[10.5px] font-medium text-ink-dim"
-        title="Process already exited — nothing to kill"
+        data-tip="Process already exited — nothing to kill"
       >
         exited
       </span>

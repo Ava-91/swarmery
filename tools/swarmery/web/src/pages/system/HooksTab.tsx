@@ -149,7 +149,7 @@ function HookRow({
             aria-checked={hook.enabled}
             aria-label={`${hook.enabled ? 'disable' : 'enable'} hook ${hook.event} ${hook.matcher ?? '*'}`}
             disabled={!writable || busy}
-            title={
+            data-tip={
               managed
                 ? 'swarmery installer hook — manage it via `swarmery hooks`'
                 : writable
@@ -175,7 +175,7 @@ function HookRow({
             {managed && (
               <span
                 className="rounded-full border border-brand/40 px-2 py-px font-mono text-[10px] whitespace-nowrap text-brand"
-                title="installer-owned entry — managed by swarmery"
+                data-tip="installer-owned entry — managed by swarmery"
               >
                 managed · swarmery
               </span>
@@ -183,7 +183,7 @@ function HookRow({
             {hook.timeout === null && (
               <span
                 className="rounded-full border border-amber/45 px-2 py-px font-mono text-[10px] whitespace-nowrap text-amber"
-                title="lint hook_no_timeout: no timeout set — a hung command blocks the session"
+                data-tip="lint hook_no_timeout: no timeout set — a hung command blocks the session"
               >
                 ▲ no timeout
               </span>

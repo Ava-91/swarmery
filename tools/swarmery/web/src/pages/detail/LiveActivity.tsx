@@ -107,7 +107,7 @@ export function LiveActivity({ detail }: { detail: SessionDetail }): JSX.Element
     return (
       <div
         className="my-2 flex items-center gap-2 font-mono text-[11px] text-ink-faint"
-        title="the OS process is alive (procwatch, 30s resolution); nothing written to the transcript during this stretch — typical for long builds/tests"
+        data-tip="the OS process is alive (procwatch, 30s resolution); nothing written to the transcript during this stretch — typical for long builds/tests"
       >
         <span
           className="h-[7px] w-[7px] shrink-0 animate-blink-dot rounded-full bg-green"

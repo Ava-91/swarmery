@@ -238,7 +238,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }): JSX.Elemen
           {scope !== null && (
             <span
               className="max-w-[30%] shrink-0 truncate rounded-[6px] border border-line-strong bg-surface2 px-1.5 py-0.5 font-mono text-[10.5px] text-ink-dim"
-              title={`results scoped to ${scopeName ?? scope}`}
+              data-tip={`results scoped to ${scopeName ?? scope}`}
             >
               {scopeName ?? scope}
             </span>

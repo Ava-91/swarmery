@@ -207,7 +207,7 @@ function BranchRow({
         {systemLink !== null && (
           <Link
             to={systemLink}
-            title="open in System"
+            data-tip="open in System"
             className="shrink-0 font-mono text-[10px] text-ink-faint transition-colors hover:text-ink"
           >
             ↗

@@ -23,7 +23,7 @@ function StatusChip({ row }: { row: ProjectPluginRow }): JSX.Element | null {
   if (row.status === 'ok' || row.status === 'unknown') return null;
   return (
     <span
-      title={row.detail}
+      data-tip={row.detail}
       className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] ${STATUS_STYLES[row.status]}`}
     >
       {row.status}
@@ -71,7 +71,7 @@ function RepairButton({
       type="button"
       disabled={disabled || busy}
       onClick={run}
-      title={
+      data-tip={
         err ??
         warning ??
         (disabled
@@ -102,7 +102,7 @@ function ToggleButton({
     return (
       <span
         className="font-mono text-[10px] text-ink-faint"
-        title="core is managed via attach/detach"
+        data-tip="core is managed via attach/detach"
       >
         via attach/detach
       </span>
@@ -115,7 +115,7 @@ function ToggleButton({
       onClick={onToggle}
       aria-pressed={row.enabled}
       aria-label={`${row.name}: ${row.enabled ? 'enabled' : 'disabled'}`}
-      title={disabled ? 'read-only — daemon started without SWARMERY_ONBOARD_ROOTS' : undefined}
+      data-tip={disabled ? 'read-only — daemon started without SWARMERY_ONBOARD_ROOTS' : undefined}
       className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
         row.enabled
           ? 'border-brand/40 bg-brand/10 text-brand hover:bg-brand/20'

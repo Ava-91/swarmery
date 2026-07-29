@@ -155,7 +155,7 @@ function UsageBlock({
       {rows.map((row) => (
         <div
           key={row.name}
-          title={row.title}
+          data-tip={row.title}
           className="border-b border-line-soft py-1.5 last:border-b-0"
         >
           <div className="flex items-baseline gap-2 font-mono text-[11px]">

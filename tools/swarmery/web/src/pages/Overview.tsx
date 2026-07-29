@@ -343,7 +343,7 @@ function DayTimeline({
                     : void navigate('/sessions')
                 }
                 className="flex h-[19px] w-full overflow-hidden rounded focus-visible:outline-2 focus-visible:outline-brand"
-                title={`open ${ln.name}`}
+                data-tip={`open ${ln.name}`}
               >
                 {ln.segs.map((sg, i) => (
                   <span
@@ -428,7 +428,7 @@ function Interrupts({
                 ) : (
                   <button
                     type="button"
-                    title="auto-approve this tool from now on"
+                    data-tip="auto-approve this tool from now on"
                     onClick={() => {
                       setPending((p) => new Set(p).add(t.key));
                       onStopAsking(t.key);
@@ -885,7 +885,7 @@ function ErrorDrilldown({
               >
                 <div className="flex items-baseline gap-2 font-mono text-[11.5px]">
                   <span className="shrink-0 text-red">{g.count}×</span>
-                  <span className="min-w-0 flex-1 truncate text-ink-3" title={g.example}>
+                  <span className="min-w-0 flex-1 truncate text-ink-3" data-tip={g.example}>
                     {g.example}
                   </span>
                   <span className="shrink-0 text-ink-faint">{fmtAgo(g.last_ts)}</span>
@@ -931,7 +931,7 @@ function TriageRail({
           type="button"
           onClick={() => onSelect(null, null)}
           className="flex w-full items-baseline justify-between text-left"
-          title="show all error groups"
+          data-tip="show all error groups"
         >
           <span className="font-mono text-[11px] text-ink-dim">
             errors across {rows.length} {rows.length === 1 ? 'project' : 'projects'}
@@ -949,7 +949,7 @@ function TriageRail({
               type="button"
               onClick={() => onSelect(row.slug, row.name)}
               className="mt-[11px] block w-full text-left"
-              title={`show ${row.slug} error groups`}
+              data-tip={`show ${row.slug} error groups`}
             >
               <div className="flex justify-between font-mono text-[11px]">
                 <ProjectName name={row.name} slug={row.slug} className="truncate" />

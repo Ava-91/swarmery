@@ -37,7 +37,7 @@ function LiveStateChip({ session }: { session: SessionDetail }): JSX.Element | n
     return (
       <span
         className="inline-flex items-center gap-1.5 rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[10px] text-green"
-        title="transcript activity within the stuck window — the session is working"
+        data-tip="transcript activity within the stuck window — the session is working"
       >
         <span className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full bg-green" />
         working · {fmtAgo(session.endedAt ?? session.startedAt)}
@@ -47,7 +47,7 @@ function LiveStateChip({ session }: { session: SessionDetail }): JSX.Element | n
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[10px] text-amber"
-      title="no transcript activity past the stuck window — the session may have died silently"
+      data-tip="no transcript activity past the stuck window — the session may have died silently"
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber" />
       quiet · {fmtSpan(session.endedAt ?? session.startedAt, null)}
@@ -144,7 +144,7 @@ function TitleEditor({
             begin();
           }
         }}
-        title="click to rename"
+        data-tip="click to rename"
         className={`cursor-text rounded-[6px] transition-colors hover:text-ink ${TITLE_CLASS} ${title === null ? 'text-ink-faint italic' : ''}`}
       >
         {title ?? '(untitled session)'}
@@ -153,7 +153,7 @@ function TitleEditor({
         type="button"
         onClick={begin}
         aria-label="rename session"
-        title="rename session"
+        data-tip="rename session"
         className="mt-[7px] shrink-0 rounded-md border border-line px-1.5 py-0.5 font-mono text-[16px] leading-none text-ink-dim opacity-60 transition-all hover:border-line-strong hover:text-ink hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
       >
         ✎

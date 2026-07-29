@@ -101,7 +101,7 @@ export function SummaryChips({ events }: { events: Event[] }): JSX.Element | nul
             <Link
               key={`${name}-${String(i)}`}
               to={`/system?tab=agents&find=${encodeURIComponent(type)}`}
-              title={title ?? `open ${type} in System`}
+              data-tip={title ?? `open ${type} in System`}
               className="max-w-[360px] truncate rounded-full border border-blue/30 bg-blue/10 px-[9px] py-0.5 font-mono text-[11px] text-blue transition-colors hover:border-blue/60 hover:bg-blue/15"
             >
               <span aria-hidden="true">⬡ </span>
@@ -117,7 +117,7 @@ export function SummaryChips({ events }: { events: Event[] }): JSX.Element | nul
             <Link
               key={name}
               to={`/system?tab=skills&find=${encodeURIComponent(name)}`}
-              title={`open ${name} in System`}
+              data-tip={`open ${name} in System`}
               className="rounded-full border border-amber/30 bg-amber/10 px-[9px] py-0.5 font-mono text-[11px] text-amber transition-colors hover:border-amber/60 hover:bg-amber/15"
             >
               <span aria-hidden="true">◈ </span>

@@ -63,7 +63,7 @@ function RosterCard({
       <div className="flex flex-wrap items-center gap-2">
         <span
           className={`inline-block h-[8px] w-[8px] shrink-0 rounded-full ${health.dot}`}
-          title={`${health.label} · ${Math.round(agent.failedShare * 100)}% failed-run share`}
+          data-tip={`${health.label} · ${Math.round(agent.failedShare * 100)}% failed-run share`}
         />
         <span className="text-[13.5px] font-semibold text-ink">{agent.name}</span>
         {agent.model !== null && (
@@ -71,7 +71,7 @@ function RosterCard({
         )}
         <span
           className="ml-auto max-w-[140px] truncate rounded-[6px] border border-line-strong px-1.5 py-[1px] font-mono text-[9.5px] text-ink-dim"
-          title={agent.scope === 'project' ? (agent.projectSlug ?? undefined) : undefined}
+          data-tip={agent.scope === 'project' ? (agent.projectSlug ?? undefined) : undefined}
         >
           {scopeBadge}
         </span>

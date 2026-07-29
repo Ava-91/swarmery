@@ -38,7 +38,7 @@ function PinToggle({ project, onChanged }: { project: Project; onChanged: () => 
       disabled={busy}
       aria-pressed={project.pinned}
       aria-label={project.pinned ? `unpin ${project.name ?? project.slug}` : `pin ${project.name ?? project.slug}`}
-      title={project.pinned ? 'unpin' : 'pin to top'}
+      data-tip={project.pinned ? 'unpin' : 'pin to top'}
       onClick={() => {
         setBusy(true);
         patchProject(project.id, { pinned: !project.pinned })
@@ -115,7 +115,7 @@ function ProjectRow({
           <span className="whitespace-nowrap text-ink-faint">{fmtAgo(project.lastActivity)}</span>
         )}
       </div>
-      <div className="mt-1 truncate font-mono text-[10.5px] text-ink-faint" title={project.path}>
+      <div className="mt-1 truncate font-mono text-[10.5px] text-ink-faint" data-tip-mono data-tip={project.path}>
         {project.path}
       </div>
     </Card>
@@ -173,17 +173,17 @@ function SystemSection({
 function TrendArrow({ curr, prev }: { curr: number | null; prev: number | null }): JSX.Element {
   if (curr === null || prev === null || curr === prev) {
     return (
-      <span className="text-ink-faint" title="no week-over-week comparison">
+      <span className="text-ink-faint" data-tip="no week-over-week comparison">
         →
       </span>
     );
   }
   return curr > prev ? (
-    <span className="text-brand" title="up vs previous week">
+    <span className="text-brand" data-tip="up vs previous week">
       ↑
     </span>
   ) : (
-    <span className="text-green" title="down vs previous week">
+    <span className="text-green" data-tip="down vs previous week">
       ↓
     </span>
   );
@@ -225,7 +225,7 @@ function HealthTable({ rows }: { rows: ProjectHealth[] }): JSX.Element {
                   <ProjectName name={r.name} slug={r.slug} />
                 </Link>
                 {r.pinned && (
-                  <span className="ml-1.5 text-brand" title="pinned" aria-label="pinned">
+                  <span className="ml-1.5 text-brand" data-tip="pinned" aria-label="pinned">
                     ◆
                   </span>
                 )}

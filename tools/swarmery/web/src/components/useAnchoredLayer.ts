@@ -75,7 +75,14 @@ export function useAnchoredLayer(placement: LayerPlacement = 'side'): {
       const fitsAbove = anchor.top - GAP - h >= EDGE;
       top = fitsBelow || !fitsAbove ? anchor.bottom + GAP : anchor.top - GAP - h;
       top = clamp(top, h, vh);
-      left = clamp(anchor.left + anchor.width / 2 - w / 2, w, vw);
+      // Centre on the anchor while the anchor is the smaller of the two — a
+      // 15px explainer chip, a button. Once the anchor is WIDER than the layer,
+      // centring drifts the layer away from what the user is pointing at: a
+      // full-width truncated path row would put its tip in the middle of the
+      // page, unattached to the text it belongs to. Align to the anchor's
+      // leading edge there, which is where that content starts.
+      const start = anchor.width > w ? anchor.left : anchor.left + anchor.width / 2 - w / 2;
+      left = clamp(start, w, vw);
     } else {
       const fitsLeft = anchor.left - GAP - w >= EDGE;
       left = clamp(fitsLeft ? anchor.left - w - GAP : anchor.right + GAP, w, vw);

@@ -33,7 +33,7 @@ export function OutcomePicker({
             type="button"
             aria-pressed={selected}
             aria-label={o.label}
-            title={selected ? `clear ${o.label}` : o.label}
+            data-tip={selected ? `clear ${o.label}` : o.label}
             onClick={() => onChange(selected ? null : o.v)}
             className={`rounded-full border px-[9px] py-0.5 font-mono text-[11px] transition-colors ${
               selected ? o.on : 'border-line-strong text-ink-dim hover:text-ink'

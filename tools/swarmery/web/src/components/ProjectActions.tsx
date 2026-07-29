@@ -173,7 +173,7 @@ export function ProjectActions({
             type="button"
             onClick={() => setShowTags((v) => !v)}
             aria-expanded={showTags}
-            title="edit project tags"
+            data-tip="edit project tags"
             className="rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[10.5px] text-ink-2 transition-colors hover:bg-surface2"
           >
             tags
@@ -187,7 +187,7 @@ export function ProjectActions({
               <button
                 type="button"
                 onClick={() => setShowAttach(true)}
-                title="re-enable swarmery in .claude/settings.json"
+                data-tip="re-enable swarmery in .claude/settings.json"
                 className="rounded-lg border border-green/40 bg-green/10 px-2.5 py-1 font-mono text-[10.5px] text-green transition-colors hover:bg-green/20"
               >
                 attach
@@ -197,7 +197,7 @@ export function ProjectActions({
                 type="button"
                 onClick={() => setShowDetach(true)}
                 disabled={blocked !== null}
-                title={blocked ?? 'remove swarmery from .claude/settings.json'}
+                data-tip={blocked ?? 'remove swarmery from .claude/settings.json'}
                 className="rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[10.5px] text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 detach
@@ -207,7 +207,7 @@ export function ProjectActions({
           <button
             type="button"
             onClick={() => setConfirm('archive')}
-            title="hide from the projects list (reversible)"
+            data-tip="hide from the projects list (reversible)"
             className="rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[10.5px] text-ink-2 transition-colors hover:bg-surface2"
           >
             archive

@@ -27,7 +27,7 @@ export function ScopeBadge({
     return (
       <span
         className="rounded-full border border-blue/40 px-2 py-px font-mono text-[10px] whitespace-nowrap text-blue"
-        title={projectSlug ?? undefined}
+        data-tip-mono data-tip={projectSlug ?? undefined}
       >
         project
         {label !== null ? (
@@ -87,7 +87,7 @@ export function LintDot({
   return (
     <span
       className={`shrink-0 font-mono text-[11px] leading-none ${LINT_TONES[severity]}`}
-      title={message ?? `worst active lint finding: ${severity}`}
+      data-tip={message ?? `worst active lint finding: ${severity}`}
       aria-label={`lint ${severity}`}
     >
       {severity === 'info' ? '●' : '▲'}

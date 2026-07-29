@@ -80,7 +80,7 @@ function StatusDot({ status }: { status: RoutineRun['status'] | null }): JSX.Ele
             : 'bg-line-strong';
   const label = status ?? 'never run';
   return (
-    <span className="inline-flex items-center gap-1.5" title={label}>
+    <span className="inline-flex items-center gap-1.5" data-tip={label}>
       <span className={`h-2 w-2 rounded-full ${tone}`} aria-hidden="true" />
       <span className="font-mono text-[10.5px] text-ink-faint">{label}</span>
     </span>
@@ -199,11 +199,11 @@ function RoutineRow({
                 <span className="text-ink-faint">global</span>
               )}
               <span>·</span>
-              <span title={routine.cronExpr || 'no schedule'}>{describeCron(routine.cronExpr)}</span>
+              <span data-tip-mono data-tip={routine.cronExpr || 'no schedule'}>{describeCron(routine.cronExpr)}</span>
               {routine.hasWebhook && (
                 <>
                   <span>·</span>
-                  <span title="webhook trigger enabled">⚓ webhook</span>
+                  <span data-tip="webhook trigger enabled">⚓ webhook</span>
                 </>
               )}
             </span>
@@ -217,7 +217,7 @@ function RoutineRow({
           {routine.nextRunAt ? `next ${fmtAgo(routine.nextRunAt)}` : 'no next run'}
         </span>
 
-        <label className="flex cursor-pointer items-center gap-1.5" title="enable / disable">
+        <label className="flex cursor-pointer items-center gap-1.5" data-tip="enable / disable">
           <input
             type="checkbox"
             checked={routine.enabled}

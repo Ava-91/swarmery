@@ -102,14 +102,14 @@ export function TaskCard({
       <div className="flex items-start gap-2">
         <span
           aria-hidden="true"
-          title={`${task.priority} priority`}
+          data-tip={`${task.priority} priority`}
           className={`mt-[5px] h-[7px] w-[7px] shrink-0 rounded-full ${PRIORITY_DOT[task.priority]}`}
         />
         <span className="min-w-0 flex-1 text-[12.5px] leading-snug text-ink">{task.title}</span>
         {task.dispatchError !== null && (
           <span
             aria-label={`dispatch error: ${task.dispatchError}`}
-            title={task.dispatchError}
+            data-tip={task.dispatchError}
             className="shrink-0 text-[12px] leading-none text-red"
           >
             ⚠
@@ -128,7 +128,7 @@ export function TaskCard({
         )}
         {task.playbook !== null && (
           <span
-            title={`playbook: ${task.playbook}`}
+            data-tip={`playbook: ${task.playbook}`}
             className="rounded border border-brand/40 bg-brand/5 px-1 py-[1px] font-mono text-[9px] text-brand"
           >
             ▤ {task.playbook}
@@ -144,7 +144,7 @@ export function TaskCard({
           <a
             href={`/sessions?scope=${task.projectSlug ?? ''}`}
             onClick={(e) => e.stopPropagation()}
-            title={`branch ${task.branch}`}
+            data-tip={`branch ${task.branch}`}
             aria-label={`sessions for ${task.branch}`}
             className="font-mono text-[9px] text-ink-faint transition-colors hover:text-ink"
           >

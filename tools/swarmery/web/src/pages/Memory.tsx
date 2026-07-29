@@ -253,7 +253,7 @@ function MemoryEditor({
   return (
     <div className="flex min-h-0 flex-col rounded-xl border border-line bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-dim" title={path}>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-dim" data-tip-mono data-tip={path}>
           {path}
         </span>
         {!writable && (

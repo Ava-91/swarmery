@@ -70,7 +70,7 @@ export function RunNowButton({
         type="button"
         onClick={onClick}
         className="rounded-lg border border-brand/40 bg-brand/10 px-3 py-1.5 text-[12px] font-semibold text-brand transition-colors hover:bg-brand/20"
-        title={`prefill a new board task with @${agentName}:`}
+        data-tip={`prefill a new board task with @${agentName}:`}
       >
         ▸ Run now
       </button>
