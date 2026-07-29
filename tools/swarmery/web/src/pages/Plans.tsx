@@ -1781,8 +1781,11 @@ function PhaseDetailPanel({
             <span className={`rounded border px-1.5 py-px font-mono text-[9px] ${chip.cls}`}>
               {chip.label}
             </span>
-            {status === 'in_progress' && (
-              <PhaseActivity docUpdatedAt={phase.docUpdatedAt} running={running} />
+            {/* Only the idle half. While a run is live, RunStateChip's own pulsing
+                `Running · <elapsed>` already carries the liveness signal, and a second
+                pulsing dot beside it reads as noise rather than as a second fact. */}
+            {status === 'in_progress' && !running && (
+              <PhaseActivity docUpdatedAt={phase.docUpdatedAt} running={false} />
             )}
             <RunStateChip phase={phase} onOpenOutcome={onOpenOutcome} />
             <span className="font-mono text-[10px] text-ink-faint">
