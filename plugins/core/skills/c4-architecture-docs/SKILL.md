@@ -2,7 +2,7 @@
 name: c4-architecture-docs
 version: "1.0.0"
 owner: "swarmery-core"
-description: "Use this skill to document the architecture of a big issue / epic / feature with the C4 model (c4model.com) -- producing system context, container, component, and dynamic diagrams as Mermaid .mmd plus a narrative doc. Trigger phrases: 'C4 model', 'architecture diagram', 'system context / container / component diagram', 'document the architecture of this epic', 'draw the containers for this feature'. Don't use it for: rendering an existing .mmd to HTML (use the project's Mermaid viewer/renderer, or the `mmdc` CLI); FigJam whiteboard diagrams (use figma:figma-generate-diagram); a pure decision record with no diagrams (use the ADR template — `.claude/templates/adr-template.md`, falling back to core's `templates/adr-template.md`)."
+description: "Document an epic/feature architecture with the C4 model -- system context/container/component/dynamic diagrams as Mermaid .mmd plus a narrative doc. NOT for rendering an existing .mmd (use mermaid-viewer)."
 color: cyan
 ---
 

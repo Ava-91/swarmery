@@ -1,6 +1,6 @@
 ---
 name: code-quality
-description: "Use this skill for QUANTITATIVE structural metrics on TypeScript or Python source -- function length, cyclomatic complexity, nesting depth, duplication, code smells -- producing a scored report. NOT for conventions, naming, or `any`-type checks (use code-standards), API contract alignment (use api-contract), or deployment config (use deployment)."
+description: "QUANTITATIVE structural metrics on TS/Python -- function length, cyclomatic complexity, nesting, duplication, code smells -- scored report. NOT for conventions/`any` checks (use code-standards) or API alignment (use api-contract)."
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob, Bash

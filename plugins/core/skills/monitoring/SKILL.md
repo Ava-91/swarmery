@@ -1,6 +1,6 @@
 ---
 name: monitoring
-description: "Use this skill for Prometheus metrics, Grafana dashboards, alert rules, and ServiceMonitor wiring ONLY -- including instrumenting an endpoint with Prometheus counters or histograms. NOT for logs or traces: structured logging, OpenTelemetry spans, and log-trace correlation belong to observability. NOT for Helm liveness/readiness probes (the project's deployment workflow / infra-pack skills when enabled)."
+description: "Prometheus metrics, Grafana dashboards, alert rules, ServiceMonitor wiring, and endpoint instrumentation. NOT for logs/traces (belong to observability) and NOT for Helm health probes."
 version: "1.0.0"
 owner: "swarmery-core"
 ---

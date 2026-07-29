@@ -11,7 +11,9 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type { SessionDetail, SessionOutcome, SessionStatus, WSMessage } from '../api/types';
 import { MOCK, fetchSession, patchSessionOutcome, renameSession, sendSessionMessage } from '../api';
 import { fmtAgo, fmtCost, fmtSpan, fmtTokens } from '../lib/format';
+import { sessionState, useNowMs } from '../lib/sessionState';
 import { useLiveUpdates } from '../lib/ws';
+import { ExplainPair } from '../components/Explain';
 import { OutcomePicker } from '../components/OutcomePicker';
 import { TaskChip } from '../components/TaskChip';
 import { ProjectName } from '../components/ProjectName';
@@ -22,6 +24,36 @@ import { Chat, type PendingSend } from './detail/Chat';
 import { CommandInput } from './detail/CommandInput';
 import { SummaryChips } from './detail/SummaryChips';
 import { DetailRail } from './detail/DetailRail';
+
+/** Header liveness chip — the same tri-state the sessions list speaks (green
+ * pulsing dot = the session produced transcript activity recently; amber =
+ * quiet past the stuck window). Inside the detail page the list's dot was
+ * missing, so an open detail view couldn't tell "working" from "silent". */
+function LiveStateChip({ session }: { session: SessionDetail }): JSX.Element | null {
+  const now = useNowMs(15_000);
+  const state = sessionState(session, now);
+  if (state === 'done') return null;
+  if (state === 'running') {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[10px] text-green"
+        title="transcript activity within the stuck window — the session is working"
+      >
+        <span className="inline-block h-1.5 w-1.5 animate-pulse-dot rounded-full bg-green" />
+        working · {fmtAgo(session.endedAt ?? session.startedAt)}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[10px] text-amber"
+      title="no transcript activity past the stuck window — the session may have died silently"
+    >
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber" />
+      quiet · {fmtSpan(session.endedAt ?? session.startedAt, null)}
+    </span>
+  );
+}
 
 const STATUS_TONES: Record<SessionStatus, string> = {
   active: 'text-green',
@@ -147,7 +179,11 @@ function mockPending(): PendingSend[] {
 }
 
 export function SessionDetailPage(): JSX.Element {
-  const { id } = useParams<{ id: string }>();
+  // `slug` is present only on the project mount (/p/:slug/sessions/:id) — the
+  // back link has to return to the list in the SAME mode, otherwise the header
+  // and sidebar flip out of the project workspace.
+  const { id, slug } = useParams<{ id: string; slug?: string }>();
+  const sessionsHref = slug != null ? `/p/${slug}/sessions` : '/sessions';
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Optimistic echo of messages sent via the composer — shown immediately as
@@ -423,7 +459,7 @@ export function SessionDetailPage(): JSX.Element {
   if (error !== null) {
     return (
       <>
-        <BackLink />
+        <BackLink to={sessionsHref} />
         <ErrorBox message={error} onRetry={load} />
       </>
     );
@@ -431,7 +467,7 @@ export function SessionDetailPage(): JSX.Element {
   if (detail === null || facts === null) {
     return (
       <>
-        <BackLink />
+        <BackLink to={sessionsHref} />
         <Loading label="session…" />
       </>
     );
@@ -444,7 +480,7 @@ export function SessionDetailPage(): JSX.Element {
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-line px-4 pt-4 pb-4 desk:px-10 desk:pt-6">
         <div className="flex items-center gap-2 font-mono text-[11px] text-ink-faint">
-          <Link to="/sessions" className="shrink-0 transition-colors hover:text-ink">
+          <Link to={sessionsHref} className="shrink-0 transition-colors hover:text-ink">
             ← sessions
           </Link>
           <span aria-hidden="true">/</span>
@@ -457,6 +493,7 @@ export function SessionDetailPage(): JSX.Element {
           <div className="min-w-0 flex-1">
             <TitleEditor title={detail.title} onRename={rename} />
             <div className="mt-2 flex flex-wrap gap-x-3.5 gap-y-[5px] font-mono text-[11px] text-ink-dim">
+              <LiveStateChip session={detail} />
               <Kv label="status" value={detail.status} tone={STATUS_TONES[detail.status]} />
               {detail.model !== null && <Kv label="model" value={detail.model} />}
               <Kv
@@ -474,7 +511,9 @@ export function SessionDetailPage(): JSX.Element {
                   confidence={detail.taskConfidence}
                 />
               )}
-              <OutcomePicker value={detail.outcome ?? null} onChange={setOutcome} />
+              <ExplainPair id="session-outcome">
+                <OutcomePicker value={detail.outcome ?? null} onChange={setOutcome} />
+              </ExplainPair>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-[22px]">
@@ -552,6 +591,8 @@ export function SessionDetailPage(): JSX.Element {
 
         <div className="hidden min-h-0 wide:block wide:overflow-y-auto wide:py-6">
           <DetailRail
+            sessionId={detail.id}
+            handoff={detail.handoff}
             turns={detail.turns}
             events={detail.events}
             fileChanges={detail.fileChanges}
@@ -582,10 +623,10 @@ function HeadStat({
   );
 }
 
-function BackLink(): JSX.Element {
+function BackLink({ to }: { to: string }): JSX.Element {
   return (
     <Link
-      to="/sessions"
+      to={to}
       className="mb-2 block pt-0.5 font-mono text-[11px] text-ink-faint hover:text-ink"
     >
       ← sessions

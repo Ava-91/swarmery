@@ -1,6 +1,6 @@
 ---
 name: monorepo-coordination
-description: "Coordinate changes that span two or more repos of a multi-repo workspace, or two or more apps/packages of a monorepo (read project.json → repos / monorepo for the project's shape). Produces merge-order plans, MR/PR templates, CI probes for operator gates, and post-merge validation checklists. Not for changes confined to a single repo or package, even large ones."
+description: "Coordinate changes spanning 2+ repos of a multi-repo workspace or 2+ apps/packages of a monorepo -- merge-order plans, MR/PR templates, post-merge checklists. NOT for single-repo changes, even large ones."
 version: "1.0.0"
 owner: "swarmery-core"
 ---

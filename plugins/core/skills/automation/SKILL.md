@@ -1,6 +1,6 @@
 ---
 name: automation
-description: "Convert a repeatable operational runbook for the project's infrastructure (pod restarts, cache flushes, scaling) into a parameterized, idempotent script with safety gates, or design a chaos experiment to test system resilience. Do not use for CI/CD pipeline changes, deployment-manifest authoring, application code changes, or ad-hoc debugging."
+description: "Convert an operational runbook (pod restarts, cache flushes, scaling) into a parameterized idempotent script with safety gates, or design a chaos experiment. NOT for CI/CD or deployment manifests (use deployment)."
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Bash

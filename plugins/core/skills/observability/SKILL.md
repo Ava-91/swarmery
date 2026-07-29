@@ -1,6 +1,6 @@
 ---
 name: observability
-description: "Use this skill for structured logging and OpenTelemetry distributed tracing ONLY -- including log-trace-metric correlation in the project's service code. NOT for metrics or dashboards: Prometheus counters/histograms, Grafana dashboards, and alert rules belong to monitoring. NOT for Helm health probes (the project's deployment workflow / infra-pack skills when enabled)."
+description: "Structured logging and OpenTelemetry distributed tracing, incl. log-trace-metric correlation. NOT for metrics/dashboards/alerts (belong to monitoring) and NOT for Helm health probes."
 version: "1.0.0"
 owner: "swarmery-core"
 ---

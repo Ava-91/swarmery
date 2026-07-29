@@ -213,6 +213,16 @@ export interface Session {
   resumeInFlight?: boolean;
   /** RFC3339 start time of that resume run — drives a live "Working (Ns)" timer. */
   resumeStartedAt?: string | null;
+  /**
+   * Latest daemon-generated handoff brief for this fat session (migration
+   * 0039), or null when none exists. The card shows a "Handoff" chip; the
+   * detail rail fetches the markdown body via GET /api/sessions/{id}/handoff.
+   */
+  handoff?: {
+    path: string;
+    createdAt: string;
+    contextTokens: number;
+  } | null;
 }
 
 /** Go: turnDTO */
@@ -295,6 +305,45 @@ export type SessionsResponse = SessionsPage;
 /** GET /api/sessions/{id} — id is the numeric row id or the session UUID. */
 export type SessionDetailResponse = SessionDetail;
 
+/** GET /api/sessions/{id}/handoff — the latest daemon-generated brief's body. */
+export interface SessionHandoffResponse {
+  markdown: string;
+  path: string;
+  createdAt: string;
+}
+
+/** One tool's share of a session's context growth (context-hogs analyzer). */
+export interface ContextHogTool {
+  name: string;
+  calls: number;
+  /** Σ len(raw tool-result content JSON)/4 for this tool — an ESTIMATE. */
+  estTokens: number;
+}
+
+/** One assistant API message's cache-write cost — the growth curve. */
+export interface ContextTurnGrowth {
+  seq: number;
+  cacheWrite: number;
+}
+
+/**
+ * GET /api/sessions/{id}/context-hogs — per-tool context attribution, parsed
+ * on demand from the session transcript. Token figures are estimates
+ * (~4 bytes/token from tool-result sizes), not real accounting.
+ */
+export interface ContextHogsReport {
+  /** Sorted by estTokens DESC, top 20. */
+  tools: ContextHogTool[];
+  /** Growth curve in file/seq order. */
+  turns: ContextTurnGrowth[];
+  /** Σ all tool-result estimates. */
+  totalEst: number;
+  /** tool_results whose tool_use id had no matching name. */
+  uninspected: number;
+  /** lines that failed to parse and were skipped. */
+  malformed: number;
+}
+
 // --- Future contracts (parallel wave — frozen NOW, implemented later) --------
 
 /** GET /api/stats/today — implemented by Agent C (metrics branch). */
@@ -329,6 +378,12 @@ export interface HealthResponse {
    * hooks backend lands and the first hook checks in.
    */
   hooks_last_seen?: string | null;
+  /**
+   * Unresolved plugin_* finding counts — enabled plugins Claude Code cannot
+   * actually load. Additive optional: absent when talking to a daemon older
+   * than the drift scanner.
+   */
+  pluginDrift?: { error: number; warn: number };
 }
 
 /** GET /api/docs — list item. */
@@ -1469,6 +1524,24 @@ export interface SystemInsights {
   promotionCandidates: SystemPromotionCandidate[];
   staleOverrides: SystemStaleOverride[];
   dead: SystemDeadComponent[];
+  /**
+   * Active plugin_* findings across every project — the only cross-project view
+   * of plugin drift. Additive optional: absent on a daemon older than the
+   * drift scanner.
+   */
+  pluginDrift?: SystemPluginDrift[];
+}
+
+/** One active plugin_* finding, resolved to the project it belongs to. */
+export interface SystemPluginDrift {
+  /** "<name>@<marketplace>", or "detector" for the machine-wide blindness row. */
+  pluginId: string;
+  rule: string;
+  severity: string;
+  message: string;
+  /** null when the finding is machine-wide or the path matches no project row. */
+  projectSlug: string | null;
+  projectPath: string;
 }
 
 /**
@@ -1798,19 +1871,53 @@ export interface ProjectMeta {
 // --- Project plugin toggles ---------------------------------------------------
 
 /** One row of GET /api/projects/{id}/plugins (marketplace catalog × project state). */
+/**
+ * Drift verdict from the daemon's plugin_* findings. 'unknown' means the plugin
+ * is disabled here, so nothing was checked and nothing is claimed — it is not a
+ * synonym for 'ok'.
+ */
+export type PluginDriftStatus = 'ok' | 'missing' | 'behind' | 'orphaned' | 'unknown';
+
 export interface ProjectPluginRow {
   name: string;
   description: string;
   enabled: boolean;
   /** core: toggled via attach/detach, never through the plugins endpoint. */
   locked: boolean;
+  status: PluginDriftStatus;
+  /** Human explanation for a non-ok status; absent when status is ok/unknown. */
+  detail?: string;
 }
 
 export interface ProjectPluginsResponse {
   marketplaceVersion: string;
+  /** The marketplace these rows come from — the repair call needs name@marketplace. */
+  marketplaceName: string;
   /** Mirrors the PUT fence: SWARMERY_ONBOARD_ROOTS set + path inside the allow-list. */
   canWrite: boolean;
   plugins: ProjectPluginRow[];
+}
+
+/** POST /api/projects/{id}/plugins/{name}/repair */
+export interface PluginRepairResponse {
+  id: string;
+  action: 'install' | 'update';
+  /**
+   * Which scope the CLI was actually asked for. 'user' means the project's
+   * .claude is a symlinked overlay, where a project-scope write is impossible —
+   * the daemon installed at user scope and reverted the global enable.
+   */
+  scope: 'project' | 'user';
+  output: string;
+  status: PluginDriftStatus;
+  /** Always true: a repaired plugin loads only in the next Claude Code session. */
+  restart: boolean;
+  /**
+   * Set when the repair succeeded but left something the operator must act on
+   * (currently: the global enable could not be reverted, so the pack is on for
+   * every project until the key is removed by hand).
+   */
+  warning?: string;
 }
 
 /** PUT /api/projects/{id}/plugins/{name} result. */
@@ -2033,6 +2140,47 @@ export interface RoutineInput {
 /** Direct phase-run lifecycle (interactive planning v2 phase 5). */
 export type PhaseRunState = 'idle' | 'running' | 'done' | 'failed';
 
+/** What a run ACHIEVED, derived server-side — mirrors internal/phasediag.OutcomeFromRow.
+ *  Distinct from PhaseRunState, which only says how the process ended. */
+export type PhaseRunOutcome = 'idle' | 'running' | 'completed' | 'partial' | 'noop' | 'failed';
+
+/** One reason a phase did not progress — mirrors phasediag.Blocker. */
+export interface PhaseBlocker {
+  kind: 'dep-incomplete' | 'dep-unmerged' | 'branch-blocks-retry' | 'branch-dirty' | 'no-criteria';
+  summary: string;
+  detail: string;
+  /** branch-dirty only: the branch a delete would destroy and how many commits go
+   *  with it. Carried as data so the delete confirmation names both from the source
+   *  that proved them, rather than parsing `summary` or rebuilding the branch name
+   *  client-side. Omitted on every other kind (Go `omitempty`). */
+  branch?: string;
+  commitsAhead?: number;
+}
+
+/** The executor's own last word — mirrors phasediag.AgentMessage. */
+export interface PhaseAgentMessage {
+  sessionUuid: string;
+  text: string;
+  truncated: boolean;
+}
+
+/** On-demand phase-run diagnosis — mirrors phasediag.Diagnosis. */
+export interface PhaseDiagnosis {
+  phaseId: number;
+  seq: number;
+  name: string;
+  runOutcome: PhaseRunOutcome;
+  criteriaTotal: number;
+  /** null when the run predates measurement — render "not measured", never 0. */
+  criteriaBefore: number | null;
+  criteriaAfter: number;
+  runStartedAt: string | null;
+  runEndedAt: string | null;
+  runError: string | null;
+  blockers: PhaseBlocker[];
+  agentMessage: PhaseAgentMessage | null;
+}
+
 /** One epic phase — mirrors epicPhaseDTO in internal/api/epics.go. */
 export interface EpicPhase {
   id: number;
@@ -2067,6 +2215,15 @@ export interface EpicPhase {
   runStartedAt: string | null;
   /** Failure detail (stderr tail / timeout / cancelled) when runState==='failed'. */
   runError: string | null;
+  /** Derived: what the run ACHIEVED, as opposed to how the process ended. A
+   * `runState: 'done'` run that ticked nothing is `noop`, not `completed` — the
+   * green chip keys on THIS, never on runState. */
+  runOutcome: PhaseRunOutcome;
+  /** End of the last run (null while running / never run). */
+  runEndedAt: string | null;
+  /** Ticked-criteria count snapshotted at the run's start. NULL means UNMEASURED
+   * (rows predating the snapshot), never zero — never render a 0 → N delta from it. */
+  runCheckboxesBefore: number | null;
 }
 
 /** Checkbox rollup across an epic's phases. */
@@ -2093,6 +2250,25 @@ export interface Epic {
   hasSummary: boolean;
   phases: EpicPhase[];
   rollup: EpicRollup;
+  /** Whole-plan run state (one agent handed the whole plan, driving core's
+   * run-plan skill). Null until the plan has ever been run. Distinct from the
+   * per-phase EpicPhase.runState — a plan run never stamps individual phases. */
+  planRun: PlanRun | null;
+}
+
+/** How a plan run executes its phases. `auto` leaves the run-plan skill's own
+ * DAG triage authoritative; the other two force the one call it cannot derive
+ * from the manifest. */
+export type PlanRunMode = 'auto' | 'subagents' | 'inline';
+
+/** The plan_runs row for one epic. */
+export interface PlanRun {
+  agent: string | null;
+  mode: PlanRunMode;
+  runState: 'idle' | 'running' | 'done' | 'failed';
+  runSessionUuid: string | null;
+  runStartedAt: string | null;
+  runError: string | null;
 }
 
 /** GET/PUT/PATCH /api/epics/{taskId}/docs response body. */

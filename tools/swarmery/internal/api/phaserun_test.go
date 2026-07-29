@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
@@ -45,12 +46,24 @@ func (phaseStubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acqui
 }
 func (phaseStubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error { return nil }
 
+// No leftover branch in the api tests: reclaim always reports "nothing to do",
+// so Start proceeds straight to Acquire.
+func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
+func (phaseStubWt) DeleteBranch(repoRoot, branch string) error              { return nil }
+
 // attachPhaseRun wires a stub-backed phaserun service (package var, reset on
 // cleanup). sync=true runs the spawn inline so a POST response implies the run
 // finished (deterministic end-state assertions).
 func attachPhaseRun(t *testing.T, db *sql.DB, r phaserun.Runner, sync bool) *phaserun.Service {
 	t.Helper()
-	svc := phaserun.NewService(db, r, phaseStubWt{})
+	return attachPhaseRunWt(t, db, r, sync, phaseStubWt{})
+}
+
+// attachPhaseRunWt is attachPhaseRun with an explicit worktree manager, for the
+// branch-lifecycle paths (dirty reclaim, DeleteRunBranch).
+func attachPhaseRunWt(t *testing.T, db *sql.DB, r phaserun.Runner, sync bool, wt dispatch.WorktreeManager) *phaserun.Service {
+	t.Helper()
+	svc := phaserun.NewService(db, r, wt)
 	svc.UUID = func() string { return "phase-uuid-1" }
 	if sync {
 		svc.Go = func(fn func()) { fn() }

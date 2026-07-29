@@ -89,6 +89,29 @@ func ReadPluginState(projectPath string, roots []string) (*PluginState, error) {
 	return st, nil
 }
 
+// ReadEnabledPlugins returns every plugin id ("<name>@<marketplace>") that
+// <projectPath>/.claude/settings.json switches on, across all marketplaces.
+// A missing or malformed file returns (nil, nil) — same tolerance as
+// ReadPluginState: an unreadable project must never fail a scan.
+func ReadEnabledPlugins(projectPath string) ([]string, error) {
+	raw, err := os.ReadFile(filepath.Join(projectPath, ".claude", "settings.json"))
+	if err != nil {
+		return nil, nil //nolint:nilerr // absent settings = nothing enabled here
+	}
+	var s settingsShape
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, nil //nolint:nilerr // malformed settings = treat as not managed
+	}
+	ids := make([]string, 0, len(s.EnabledPlugins))
+	for key, on := range s.EnabledPlugins {
+		if on && strings.Contains(key, "@") {
+			ids = append(ids, key)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
 // Component is one project-local registry entry (agent, skill, command or hook).
 type Component struct {
 	Name string `json:"name"`

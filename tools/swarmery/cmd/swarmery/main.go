@@ -35,6 +35,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/evals"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/handoff"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookcfg"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookshim"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
@@ -45,7 +46,9 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/routines"
@@ -734,6 +737,10 @@ func cmdServe(args []string) error {
 		"webhook body template: generic (raw JSON) | ntfy (text body + Title/Priority/Tags headers) | telegram (Bot API sendMessage JSON) (env: SWARMERY_NOTIFY_TEMPLATE)")
 	notifyTelegramChat := fs.String("notify-telegram-chat", os.Getenv("SWARMERY_NOTIFY_TELEGRAM_CHAT"),
 		"Telegram chat_id, required with --notify-template=telegram (env: SWARMERY_NOTIFY_TELEGRAM_CHAT)")
+	claudeBin := fs.String("claude-bin", envOr("SWARMERY_CLAUDE_BIN", ""),
+		"path to the claude CLI used for plugin drift detection (default: PATH, then ~/.local/bin, /opt/homebrew/bin, /usr/local/bin)")
+	driftInterval := fs.Duration("plugin-drift-interval", plugindrift.DefaultInterval,
+		"plugin drift scan interval (0 disables the scanner)")
 	cfg := pipelineFlags(fs)
 	wsCfg := wsingestFlags(fs)
 	sysCfg := sysscanFlags(fs)
@@ -874,6 +881,51 @@ func cmdServe(args []string) error {
 	go pw.Run(context.Background())
 	log.Printf("swarmery procwatch ticker started (interval 30s)")
 
+	// plugin drift — enabled-but-not-installed / version-behind / orphaned
+	// plugins, persisted into config_lint_findings under the plugin_* rules.
+	if *driftInterval > 0 {
+		bin, berr := plugindrift.ResolveBin(*claudeBin)
+		dt := &plugindrift.Ticker{
+			DB:       db,
+			Detector: &plugindrift.Detector{ClaudeDir: sysCfg.ClaudeDir, Runner: plugindrift.ExecRunner{Bin: bin}},
+			Interval: *driftInterval,
+		}
+		if berr != nil {
+			// Record the blindness instead of scanning with a broken binary:
+			// a silent no-op here would render as "no drift" in every surface.
+			plugindrift.RecordUnavailable(db, berr)
+			log.Printf("swarmery plugin-drift scanner DISABLED: %v", berr)
+		} else {
+			// Repair shares the resolved binary — attached only here, so the
+			// endpoint answers 503 rather than shelling out to something absent.
+			api.AttachPluginRepairer(plugindrift.ExecRunner{Bin: bin})
+			// SessionStart answers from the last persisted pass (2s hook budget
+			// rules out scanning inline) and kicks a refresh through this.
+			api.AttachDriftRefresher(func() { dt.Once(context.Background()) })
+			// One webhook per NEWLY inserted error finding. The lifecycle does the
+			// deduplication: a standing problem refreshes its row in place, so it
+			// is announced once rather than every five minutes.
+			dt.OnNewError = func(target, rule, message string) {
+				if notifier == nil {
+					return
+				}
+				id, projectPath, ok := plugindrift.ParseTarget(target)
+				if !ok {
+					id, projectPath = target, ""
+				}
+				notifier.Emit(notify.Event{
+					Type:    notify.EventPluginDrift,
+					TS:      time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+					Project: projectPath,
+					Title:   "plugin unavailable: " + id,
+					Body:    message,
+				})
+			}
+			go dt.Run(context.Background())
+			log.Printf("swarmery plugin-drift scanner started (interval %s, claude %s)", *driftInterval, bin)
+		}
+	}
+
 	// retro phase 3: the advisor rule engine — deterministic recommendations
 	// (R1..R6) refreshed once at startup and every 24h, plus on demand via
 	// POST /api/retro/advise. Works purely off the DB, so it runs with or
@@ -907,6 +959,54 @@ func cmdServe(args []string) error {
 		}
 	}()
 	log.Printf("swarmery advisor started (interval 24h)")
+
+	// fat-session handoff (migration 0039): when a live session's context crosses
+	// handoff.Threshold, generate ~/.swarmery/handoffs/<uuid>.md from the DB via a
+	// pinned cheap-model headless run so the user can /clear and resume cheaply.
+	// Off switch: SWARMERY_HANDOFF=off. Model pin: SWARMERY_HANDOFF_MODEL (default
+	// claude-sonnet-5, the same house-rule full-ID pin as trajjudge). Best-effort
+	// off the DB — failures are logged, never fatal; each generation publishes
+	// NoteSessionUpdated so open dashboards pick up the new brief.
+	if strings.EqualFold(os.Getenv("SWARMERY_HANDOFF"), "off") {
+		log.Printf("swarmery handoff disabled (SWARMERY_HANDOFF=off)")
+	} else {
+		handoffModel := os.Getenv("SWARMERY_HANDOFF_MODEL")
+		if handoffModel == "" {
+			handoffModel = "claude-sonnet-5"
+		}
+		go func() {
+			runHandoff := func() {
+				cands, dropped, err := handoff.Candidates(db, time.Now())
+				if err != nil {
+					log.Printf("error: handoff.Candidates: %v", err)
+					return
+				}
+				if dropped > 0 {
+					log.Printf("handoff: %d fat session(s) over the per-tick cap of %d, deferred to next tick", dropped, handoff.MaxPerTick)
+				}
+				runner := handoff.ClaudeRunner{Model: handoffModel}
+				for _, c := range cands {
+					path, err := handoff.Generate(db, runner, c.SessionID, time.Now())
+					if err != nil {
+						log.Printf("error: handoff: session %d: %v", c.SessionID, err)
+						continue
+					}
+					log.Printf("handoff: session %d ctx=%dk → %s", c.SessionID, c.ContextTokens/1000, path)
+					bus.Publish(ingest.Notification{Type: ingest.NoteSessionUpdated, SessionID: c.SessionID})
+				}
+			}
+			// Startup delay so the daemon is fully up and ingest has caught up
+			// before the first paid batch; then every 30 min.
+			time.Sleep(2 * time.Minute)
+			runHandoff()
+			ticker := time.NewTicker(30 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runHandoff()
+			}
+		}()
+		log.Printf("swarmery handoff started (interval 30m, model %s)", handoffModel)
+	}
 
 	// phase 2: approvals — long-poll registry + expiry sweeper + heartbeat.
 	svc := approvals.New(db, bus, approvals.Options{
@@ -1066,12 +1166,32 @@ func cmdServe(args []string) error {
 		log.Printf("warning: phaserun heal on startup: %v", err)
 	}
 	api.AttachPhaseRun(phaserunSvc)
+	// The diagnosis endpoint reads git directly (branch ancestry) through the same
+	// boundary the worktree manager uses.
+	api.AttachPhaseDiag(wtMgr.Git)
+
+	// Plan runs: hand a WHOLE plan to one agent — one headless session in one
+	// worktree, driving core's run-plan skill (state on plan_runs). Same
+	// worktree.Manager as dispatch/verify/phaserun; same startup heal posture.
+	planrunSvc := planrun.NewService(db, planrun.ClaudeRunner{}, wtMgr)
+	// Read-only git seam, through the same boundary the worktree manager uses: it
+	// NAMES the base a dirty-branch refusal counted commits against, and answers
+	// whether a run branch existed before DeleteRunBranch removed it. Without it
+	// both answers degrade to "unknown" rather than being guessed.
+	planrunSvc.Git = wtMgr.Git
+	if err := planrunSvc.HealStale(); err != nil {
+		log.Printf("warning: planrun heal on startup: %v", err)
+	}
+	api.AttachPlanRun(planrunSvc)
 
 	buildStart := time.Now()
 	handler, err := api.NewServer(db, !*noIngest)
 	if err != nil {
 		return err
 	}
+	// Wire the projects root into the on-demand transcript-parsing endpoints
+	// (GET /api/sessions/{id}/context-hogs resolves uuid→transcript under it).
+	api.AttachProjectsRoot(cfg.ProjectsRoot)
 	bootLog.Info(logbuf.Phasef("api.build", time.Since(buildStart)))
 	addr := net.JoinHostPort(*bind, strconv.Itoa(*port))
 	log.Printf("swarmery serving on http://%s (db: %s)", addr, *dbPath)

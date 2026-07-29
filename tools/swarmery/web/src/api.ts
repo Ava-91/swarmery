@@ -38,11 +38,13 @@ import type {
   OnboardResponse,
   Playbook,
   PermissionEscalation,
+  PhaseDiagnosis,
   PermissionPresetInput,
   PermissionPresetView,
   PermissionRequest,
   PermissionRequestStatus,
   PlanDoc,
+  PlanRunMode,
   PlanningStart,
   PlanningStatus,
   ProjectDetail,
@@ -50,6 +52,7 @@ import type {
   ProjectMetaPatch,
   ProjectOverviewResp,
   ProjectPluginsResponse,
+  PluginRepairResponse,
   ProjectPluginToggleResponse,
   ProjectsHealthResponse,
   ProjectsResponse,
@@ -65,7 +68,9 @@ import type {
   RoutineInput,
   RoutineRun,
   SearchResponse,
+  ContextHogsReport,
   SessionDetailResponse,
+  SessionHandoffResponse,
   SessionOutcome,
   SessionsResponse,
   StatsOverview,
@@ -257,6 +262,42 @@ export async function toggleProjectPlugin(
   return (await res.json()) as ProjectPluginToggleResponse;
 }
 
+/**
+ * POST /api/projects/{id}/plugins/{name}/repair — runs `claude plugin
+ * install|update <id> --scope project` on the daemon side. The action is chosen
+ * by the daemon from the current drift status, so the client cannot ask for an
+ * install where an update is what is needed. Takes effect in the NEXT Claude
+ * Code session, which is why the response always sets restart.
+ *
+ * Projects whose .claude is a symlinked overlay cannot take a project-scope
+ * write at all; the daemon installs at user scope instead and says so in
+ * `scope`. Check `warning` on success — it is set when that fallback could not
+ * revert the global enable it caused.
+ */
+export async function repairProjectPlugin(
+  id: number,
+  pluginId: string,
+): Promise<PluginRepairResponse> {
+  if (MOCK)
+    return {
+      id: pluginId,
+      action: 'install',
+      scope: 'project',
+      output: 'mock',
+      status: 'ok',
+      restart: true,
+    };
+  const res = await fetch(
+    `/api/projects/${String(id)}/plugins/${encodeURIComponent(pluginId)}/repair`,
+    { method: 'POST' },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string; output?: string };
+    throw new Error(data.error ?? data.output ?? `repair failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as PluginRepairResponse;
+}
+
 /** GET /api/projects/onboard/config — defaults + enabled state for the modal. */
 export function fetchOnboardConfig(): Promise<OnboardConfig> {
   return get('/api/projects/onboard/config');
@@ -313,6 +354,16 @@ export function fetchSessions(
 export function fetchSession(id: number | string): Promise<SessionDetailResponse> {
   if (MOCK) return mockApi.session(id);
   return get(`/api/sessions/${encodeURIComponent(id)}`);
+}
+
+export function fetchSessionHandoff(id: number | string): Promise<SessionHandoffResponse> {
+  if (MOCK) return mockApi.sessionHandoff(id);
+  return get(`/api/sessions/${encodeURIComponent(id)}/handoff`);
+}
+
+export function fetchSessionContextHogs(id: number | string): Promise<ContextHogsReport> {
+  if (MOCK) return mockApi.sessionContextHogs(id);
+  return get(`/api/sessions/${encodeURIComponent(id)}/context-hogs`);
 }
 
 export function fetchStatsToday(): Promise<StatsToday> {
@@ -1346,6 +1397,16 @@ export async function epicLifecycle(
 }
 
 /**
+ * A phase-run rejection that carries structured escape-hatch data. The
+ * branch-holds-commits 409 names the branch (and how far ahead it is) so the UI
+ * can offer "delete it and retry" instead of asking the user to parse prose.
+ */
+export type PhaseRunBranchError = Error & {
+  branch?: string | undefined;
+  commitsAhead?: number | undefined;
+};
+
+/**
  * POST /api/epics/{taskId}/phases/{phaseId}/run — execute one plan phase
  * headlessly in an isolated worktree (no board task). 202 {status, sessionUuid};
  * 409 carries the gate reason (already running / unmet deps / no doc) in the
@@ -1360,10 +1421,56 @@ export async function runEpicPhase(
     method: 'POST',
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `phase run failed (${String(res.status)})`);
+    // The branch-holds-commits 409 carries structured escape-hatch data
+    // (`branch`, `commitsAhead`) the caller turns into a "delete the branch"
+    // affordance — it rides along on the Error rather than being flattened
+    // into the message, which would force the UI to parse prose.
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      branch?: string;
+      commitsAhead?: number;
+    };
+    const err: PhaseRunBranchError = new Error(
+      body.error ?? `phase run failed (${String(res.status)})`,
+    );
+    if (body.branch !== undefined) {
+      err.branch = body.branch;
+      err.commitsAhead = body.commitsAhead;
+    }
+    throw err;
   }
   return (await res.json()) as { status: string; sessionUuid: string };
+}
+
+/**
+ * GET /api/epics/{taskId}/phases/{phaseId}/diagnosis — why a phase run did (or
+ * did not) achieve anything: the derived outcome, the criteria delta, the
+ * deterministic blockers and the executor's last word. READ-ONLY, so it stays
+ * available even while a plan run owns the docs.
+ */
+export function fetchPhaseDiagnosis(taskId: number, phaseId: number): Promise<PhaseDiagnosis> {
+  if (MOCK) return mockApi.phaseDiagnosis(taskId, phaseId);
+  return get(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/diagnosis`);
+}
+
+/**
+ * DELETE /api/epics/{taskId}/phases/{phaseId}/branch — reclaim the previous
+ * run's branch so the phase can be retried. 200 {deleted, branch}; 409 while a
+ * run is active or the branch is checked out.
+ */
+export async function deletePhaseRunBranch(
+  taskId: number,
+  phaseId: number,
+): Promise<{ deleted: boolean; branch: string }> {
+  if (MOCK) return { deleted: true, branch: 'swarm/phase-mock' };
+  const res = await fetch(`/api/epics/${String(taskId)}/phases/${String(phaseId)}/branch`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `branch delete failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { deleted: boolean; branch: string };
 }
 
 /** POST /api/epics/{taskId}/phases/{phaseId}/run/cancel — 202 / 409 when idle. */
@@ -1378,6 +1485,52 @@ export async function cancelEpicPhaseRun(
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `phase run cancel failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { status: string };
+}
+
+/**
+ * POST /api/epics/{taskId}/run — hand the WHOLE plan to one agent: a headless
+ * session in an isolated worktree that drives core's run-plan skill. 202
+ * {status, sessionUuid, agent, mode}; 409 carries the gate reason (already
+ * running / a phase run holds the docs / plan not active / already complete) in
+ * the error body — surfaced verbatim.
+ */
+export async function runEpicPlan(
+  taskId: number,
+  opts: { agent?: string; mode?: PlanRunMode } = {},
+): Promise<{ status: string; sessionUuid: string; agent: string; mode: PlanRunMode }> {
+  if (MOCK)
+    return {
+      status: 'running',
+      sessionUuid: 'mock-plan-run-uuid',
+      agent: opts.agent ?? 'tech-lead',
+      mode: opts.mode ?? 'auto',
+    };
+  const res = await fetch(`/api/epics/${String(taskId)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: opts.agent ?? '', mode: opts.mode ?? 'auto' }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `plan run failed (${String(res.status)})`);
+  }
+  return (await res.json()) as {
+    status: string;
+    sessionUuid: string;
+    agent: string;
+    mode: PlanRunMode;
+  };
+}
+
+/** POST /api/epics/{taskId}/run/cancel — 202 / 409 when idle. */
+export async function cancelEpicPlanRun(taskId: number): Promise<{ status: string }> {
+  if (MOCK) return { status: 'cancelling' };
+  const res = await fetch(`/api/epics/${String(taskId)}/run/cancel`, { method: 'POST' });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `plan run cancel failed (${String(res.status)})`);
   }
   return (await res.json()) as { status: string };
 }

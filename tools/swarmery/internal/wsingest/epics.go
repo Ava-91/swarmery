@@ -46,7 +46,7 @@ var (
 type epicPhase struct {
 	seq              int
 	name             string
-	docPath          string // absolute path to the phase/step doc ("" when unresolved)
+	docPath          string // absolute path to the phase/step doc (may not exist on disk yet)
 	dependsOn        []int  // seq numbers this phase depends on
 	checkboxesDone   int
 	checkboxesTotal  int
@@ -115,9 +115,17 @@ func parseDocStatus(text string) string {
 	return ""
 }
 
-// countCheckboxes counts acceptance-criteria checkboxes in a doc, returning
+// CountCheckboxes counts acceptance-criteria checkboxes in a doc, returning
 // (done, total). Pure; unit-tested. A doc with none yields (0, 0).
-func countCheckboxes(text string) (done, total int) {
+//
+// Exported because it defines what epic_phases.checkboxes_done MEANS, and this
+// scanner is not the only reader that needs that number at an exact instant:
+// phaserun's exit stamp closes its measurement interval from the doc, because the
+// column is written only here, on a debounce, with nothing triggering a scan at run
+// end. Anyone needing "how many criteria are ticked right now" must call this
+// rather than re-parse the format — a second parser would drift and the two counts
+// would disagree about the same file.
+func CountCheckboxes(text string) (done, total int) {
 	for _, line := range strings.Split(text, "\n") {
 		m := checkboxRe.FindStringSubmatch(line)
 		if m == nil {
@@ -282,10 +290,17 @@ func listPhaseDocs(planDir string) []string {
 // their doc files (checkbox counts folded in), or — when there is no table —
 // one phase per phase-*.md/step-*.md file, seq by filename sort. Every docPath
 // is resolved to an absolute path under planDir; a row pointing at a missing
-// file keeps its table metadata with zero checkboxes. Pure w.r.t. the DB
-// (touches only the filesystem); the workhorse behind applyEpics and the
-// table-driven tests.
-func parsePlan(planDir string) []epicPhase {
+// file keeps its table metadata (and that path) with zero checkboxes, and warns.
+//
+// The path is kept EVEN WHEN THE FILE IS ABSENT because doc_path is the natural
+// key of an epic_phases row: blanking it to "" made every unresolved row in a plan
+// collide on (task, ""), so a plan whose docs were not written yet indexed as one
+// mislabelled phase instead of all of them. A doc can also be deleted between
+// scans, so every reader already has to tolerate a path that no longer resolves.
+//
+// Pure w.r.t. the DB (touches only the filesystem); the workhorse behind
+// applyEpics and the table-driven tests.
+func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 	readme, _ := os.ReadFile(filepath.Join(planDir, "README.md")) // "" when absent
 	phases := parsePlanTable(string(readme))
 
@@ -305,7 +320,10 @@ func parsePlan(planDir string) []epicPhase {
 		phases[i].docPath = abs
 		body, err := os.ReadFile(abs)
 		if err != nil {
-			phases[i].docPath = "" // unresolved — keep table metadata, no counts
+			// Unresolved: keep the table metadata AND the path (the row's identity),
+			// just no counts. Loud, because a plan naming a doc that isn't there is a
+			// real authoring problem, not a shape to absorb silently.
+			warn("epics plan %s: phase doc %s named by the sequencing table is missing", planDir, doc)
 			continue
 		}
 		// Prefer the doc's own H1 as the display name over a terse table label.
@@ -314,7 +332,7 @@ func parsePlan(planDir string) []epicPhase {
 				phases[i].name = title
 			}
 		}
-		phases[i].checkboxesDone, phases[i].checkboxesTotal = countCheckboxes(string(body))
+		phases[i].checkboxesDone, phases[i].checkboxesTotal = CountCheckboxes(string(body))
 		phases[i].docStatus = parseDocStatus(string(body))
 		phases[i].completionReport = parseCompletionReport(string(body))
 		if fi, err := os.Stat(abs); err == nil {
@@ -383,14 +401,22 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 		return
 	}
 
-	phases := parsePlan(planDir)
+	phases := parsePlan(planDir, warn)
+
+	// README presence gates the prune: a plan dir caught mid-`git checkout` (or
+	// mid-archive-move) has neither README nor docs, and must not be read as
+	// "the plan now has no phases". See applyEpics.
+	readmePresent := false
+	if _, err := os.Stat(filepath.Join(planDir, "README.md")); err == nil {
+		readmePresent = true
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
 		warn("epics task#%d: begin: %v", taskID, err)
 		return
 	}
-	if err := applyEpics(tx, taskID, phases); err != nil {
+	if err := applyEpics(tx, taskID, phases, readmePresent); err != nil {
 		tx.Rollback()
 		warn("epics task#%d (%s): %v", taskID, planDir, err)
 		return
@@ -418,40 +444,29 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 	}
 }
 
-// applyEpics replaces the task's epic_phases rows. Activation state
-// (activated_at + activated_board_task_id) is preserved across a rescan by
-// re-reading it per doc_path BEFORE the delete, then restoring it on reinsert —
-// a checkbox flip must not un-activate a phase whose board task already exists.
-func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
-	// Snapshot prior activation state keyed by doc_path.
-	type act struct {
-		at   sql.NullString
-		task sql.NullInt64
-	}
-	prior := map[string]act{}
-	rows, err := tx.Query(
-		`SELECT doc_path, activated_at, activated_board_task_id FROM epic_phases WHERE workspace_task_id = ?`,
-		taskID)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var dp string
-		var a act
-		if err := rows.Scan(&dp, &a.at, &a.task); err != nil {
-			rows.Close()
-			return err
-		}
-		prior[dp] = a
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(`DELETE FROM epic_phases WHERE workspace_task_id = ?`, taskID); err != nil {
-		return err
-	}
+// applyEpics folds the parsed plan into the task's epic_phases rows by UPSERTING
+// on the natural key UNIQUE(workspace_task_id, doc_path).
+//
+// The plan doc is authoritative for STRUCTURE only — seq, name, depends_on,
+// checkbox counts, doc status, completion report. It owns nothing else. Everything
+// the daemon writes about a phase (activated_at / activated_board_task_id and the
+// whole run_* family) is deliberately absent from the DO UPDATE SET list, so it
+// survives a rescan untouched.
+//
+// This must never go back to delete + re-insert: the phase executor's own job is
+// to edit its phase doc and tick its checkbox, which changes the plan hash and
+// triggers exactly this path. A delete would wipe the run state the run is being
+// measured by, and the new row id would orphan the swarm/phase-<id> branch the run
+// just committed to — a run only kept its state if it achieved nothing.
+//
+// doc_path IS the identity: RENAMING a phase doc is therefore a delete + insert,
+// which mints a new row id and orphans the swarm/phase-<id> branch of any run that
+// phase already had. That is a known, accepted edge — a rename is a rare, human,
+// out-of-band edit, and the alternative (matching on seq or name, both of which the
+// plan doc legitimately rewrites) would silently merge genuinely different phases.
+//
+// readmePresent gates the prune — see the guard below.
+func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool) error {
 	for _, p := range phases {
 		depJSON, err := json.Marshal(p.dependsOn)
 		if err != nil {
@@ -459,16 +474,6 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
 		}
 		if p.dependsOn == nil {
 			depJSON = []byte("[]")
-		}
-		var activatedAt any
-		var activatedTask any
-		if a, ok := prior[p.docPath]; ok {
-			if a.at.Valid {
-				activatedAt = a.at.String
-			}
-			if a.task.Valid {
-				activatedTask = a.task.Int64
-			}
 		}
 		var docStatus any
 		if p.docStatus != "" {
@@ -486,13 +491,61 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase) error {
 			INSERT INTO epic_phases
 				(workspace_task_id, seq, name, doc_path, depends_on,
 				 checkboxes_total, checkboxes_done, doc_status, doc_updated_at,
-				 completion_report, activated_at, activated_board_task_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 completion_report)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(workspace_task_id, doc_path) DO UPDATE SET
+				seq               = excluded.seq,
+				name              = excluded.name,
+				depends_on        = excluded.depends_on,
+				checkboxes_total  = excluded.checkboxes_total,
+				checkboxes_done   = excluded.checkboxes_done,
+				doc_status        = excluded.doc_status,
+				doc_updated_at    = excluded.doc_updated_at,
+				completion_report = excluded.completion_report`,
 			taskID, p.seq, p.name, p.docPath, string(depJSON),
 			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
-			completionReport, activatedAt, activatedTask); err != nil {
+			completionReport); err != nil {
 			return err
 		}
+	}
+
+	// A plan dir with no README is not a plan with no phases — it is a plan we
+	// caught mid-move: a `git checkout` swapping branches, or an `agent-work.sh
+	// archive` relocating the task dir, both transiently empty plan/. planHash
+	// happily hashes an empty dir, so without this guard that instant of emptiness
+	// prunes every phase of the epic and destroys the whole run_* family
+	// irreversibly — the one remaining way a rescan could still lose run state.
+	// A plan whose README IS present but lists no phases is a real edit and prunes
+	// normally below.
+	if !readmePresent {
+		var existing int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM epic_phases WHERE workspace_task_id = ?`, taskID).
+			Scan(&existing); err != nil {
+			return err
+		}
+		if existing > 0 {
+			return nil
+		}
+	}
+
+	// A phase doc removed from the plan README must not linger. Delete by
+	// exclusion AFTER the upserts — never before, or the surviving rows lose
+	// their identity (and their run state) on every rescan. With no phases at
+	// all the guard collapses to an unconditional delete, which is correct.
+	keep := make([]any, 0, len(phases)+1)
+	keep = append(keep, taskID)
+	ph := make([]string, 0, len(phases))
+	for _, p := range phases {
+		ph = append(ph, "?")
+		keep = append(keep, p.docPath)
+	}
+	q := `DELETE FROM epic_phases WHERE workspace_task_id = ?`
+	if len(ph) > 0 {
+		q += ` AND doc_path NOT IN (` + strings.Join(ph, ",") + `)`
+	}
+	if _, err := tx.Exec(q, keep...); err != nil {
+		return err
 	}
 	return nil
 }

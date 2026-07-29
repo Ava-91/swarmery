@@ -1,6 +1,6 @@
 ---
 name: jira-tasks
-description: "Read-only Jira access for the project's tracker — answer 'what am I assigned', list open tickets, check <PROJECT-KEY>-<n> status, pull the jira backlog, or link a workspace task to a ticket. Triggers: my tickets, open tickets, what am I assigned, jira backlog, link task to ticket, ticket status, recently updated tickets, tickets by label. NOT for creating, transitioning, commenting on, or logging work against tickets — those are write ops the user must explicitly request each time, never as a side effect. NOT for Confluence (pages, spaces, comments)."
+description: "Read-only Jira for the project's tracker: my tickets, open tickets, ticket status, jira backlog, link a workspace task to a ticket. NOT for write ops (create/transition/comment/log-work) and NOT for Confluence."
 version: "1.0.0"
 owner: "swarmery-core"
 ---

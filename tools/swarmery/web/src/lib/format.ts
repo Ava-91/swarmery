@@ -70,6 +70,19 @@ export function fmtSpan(startIso: string, endIso: string | null): string {
   return `${h} h ${(min % 60).toString().padStart(2, '0')} min`;
 }
 
+/** Compact elapsed time since `fromIso` as of `now` → "42s" / "7m 03s" / "2h 14m".
+ * Denser than fmtSpan (no spaces around the unit) because it rides inside the
+ * run chips, and it takes `now` explicitly so a ticking clock drives re-renders.
+ * Lives here rather than in Plans.tsx so RunOutcomeModal can reuse it without
+ * importing a page (which would close an import cycle). */
+export function fmtElapsed(fromIso: string, now: number): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
+  if (s < 60) return `${String(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${String(m)}m ${String(s % 60)}s`;
+  return `${String(Math.floor(m / 60))}h ${String(m % 60)}m`;
+}
+
 /** ISO timestamp → "9 s ago" / "4 min ago" / "3 h ago". */
 export function fmtAgo(iso: string): string {
   const t = new Date(iso).getTime();

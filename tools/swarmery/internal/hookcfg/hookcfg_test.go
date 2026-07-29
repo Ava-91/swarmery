@@ -82,6 +82,7 @@ func TestInstallCreatesSettings(t *testing.T) {
 	for _, want := range []string{
 		wantBin + " hook permission-request",
 		wantBin + " hook stop",
+		wantBin + " hook session-start",
 		`"matcher": "*"`,
 		`"timeout": 130`,
 	} {
@@ -244,6 +245,83 @@ func TestStaleDetectionAndRefresh(t *testing.T) {
 	}
 	if c := strings.Count(raw, "hook permission-request"); c != 1 {
 		t.Errorf("permission-request entries = %d, want exactly 1", c)
+	}
+}
+
+// TestSessionStartEntryShape: the drift-warning hook is installed with no
+// matcher and no timeout — it runs on every session start and the shim caps
+// itself at 2s, well inside Claude Code's own budget.
+func TestSessionStartEntryShape(t *testing.T) {
+	sys, project := testSystem(t)
+	if err := sys.Install(project, 0); err != nil {
+		t.Fatal(err)
+	}
+	var root struct {
+		Hooks struct {
+			SessionStart []struct {
+				Matcher *string `json:"matcher"`
+				Hooks   []struct {
+					Type    string `json:"type"`
+					Command string `json:"command"`
+					Timeout *int   `json:"timeout"`
+				} `json:"hooks"`
+			} `json:"SessionStart"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(readFile(t, SettingsPath(project)), &root); err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Hooks.SessionStart) != 1 || len(root.Hooks.SessionStart[0].Hooks) != 1 {
+		t.Fatalf("want exactly one SessionStart group with one hook, got %+v", root.Hooks.SessionStart)
+	}
+	group := root.Hooks.SessionStart[0]
+	if group.Matcher != nil {
+		t.Errorf("matcher = %q, want the key absent", *group.Matcher)
+	}
+	entry := group.Hooks[0]
+	if entry.Type != "command" || entry.Command != sys.InstalledBin()+" hook session-start" {
+		t.Errorf("entry = %+v, want a session-start command", entry)
+	}
+	if entry.Timeout != nil {
+		t.Errorf("timeout = %d, want the key absent", *entry.Timeout)
+	}
+}
+
+// TestPreDriftInstallIsStale: an install written before SessionStart joined
+// managedEvents must report stale (not installed) and heal on refresh —
+// otherwise every project silently keeps missing the drift warning.
+func TestPreDriftInstallIsStale(t *testing.T) {
+	sys, project := testSystem(t)
+	if err := sys.Install(project, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Roll back to the two-event shape by dropping the SessionStart array.
+	path := SettingsPath(project)
+	var root map[string]any
+	if err := json.Unmarshal(readFile(t, path), &root); err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ := root["hooks"].(map[string]any)
+	delete(hooks, "SessionStart")
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := sys.Inspect(project, 0); got != StateStale {
+		t.Errorf("Inspect on a pre-drift install = %q, want stale", got)
+	}
+	if err := sys.Install(project, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := sys.Inspect(project, 0); got != StateInstalled {
+		t.Errorf("Inspect after refresh = %q, want installed", got)
+	}
+	if c := strings.Count(string(readFile(t, path)), "hook session-start"); c != 1 {
+		t.Errorf("session-start entries = %d, want exactly 1", c)
 	}
 }
 

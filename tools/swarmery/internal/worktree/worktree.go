@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,25 @@ var (
 	ErrRepoRootRefused = errors.New("worktree: refusing to use a path inside the repo root")
 	// ErrNotARepo: repoRoot is not a git repository / git could not operate on it.
 	ErrNotARepo = errors.New("worktree: repoRoot is not a git repository")
+	// ErrBranchCheckedOut: the branch is checked out in a live worktree. Reclaiming it
+	// would yank a running task's checkout, so the caller must resolve it.
+	ErrBranchCheckedOut = errors.New("worktree: branch is checked out in a worktree")
+	// ErrBranchIsHead: refusing to reclaim the repo's currently checked-out branch. A
+	// guard, not an expected condition — swarm/<taskID> is never the base branch.
+	ErrBranchIsHead = errors.New("worktree: refusing to reclaim the repo's HEAD branch")
+	// ErrRefusedBranch: the branch is outside the swarm/ namespace this package
+	// owns. Reclaim and delete both end in `git branch -D`; refusing anything we did
+	// not create closes the class at the boundary instead of trusting every caller
+	// to build the name correctly (a `dev` fully contained in the current HEAD counts
+	// as zero commits ahead and would otherwise be deleted).
+	ErrRefusedBranch = errors.New("worktree: refusing to operate on a branch outside swarm/")
+	// ErrDetachedHead: the repo has no checked-out branch, so there is no base to
+	// measure a run branch against. Acquire tolerates this (it only needs a start
+	// SHA, and resolveStartPoint falls back to HEAD's); reclaim must not, because
+	// its answer authorizes a `branch -D`. A detached HEAD sitting ON the run
+	// branch's own tip makes that fallback report 0 commits ahead, and the branch —
+	// the only ref holding those commits — is then deleted. No base, no count.
+	ErrDetachedHead = errors.New("worktree: refusing to reclaim a branch while the repo is on a detached HEAD")
 )
 
 // staleLockAge is how old a .git/worktrees/*/index.lock must be before the
@@ -68,8 +88,21 @@ func (m *Manager) resolveRoot() (string, error) {
 	return filepath.Join(home, DefaultRoot), nil
 }
 
+// swarmPrefix namespaces every branch this package creates. It is also the
+// boundary guard: reclaim and delete refuse anything outside it (ErrRefusedBranch).
+const swarmPrefix = "swarm/"
+
 // branchName is the deterministic branch for a task.
-func branchName(taskID string) string { return "swarm/" + taskID }
+func branchName(taskID string) string { return swarmPrefix + taskID }
+
+// taskIDForBranch is branchName's exact inverse: "" when branch is not one of
+// ours, so callers get the namespace check and the id in one step.
+func taskIDForBranch(branch string) string {
+	if !strings.HasPrefix(branch, swarmPrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(branch, swarmPrefix)
+}
 
 // Acquire creates (or safely reuses) a worktree for taskID pinned to an
 // explicit start point. It enforces invariants 1–6 (see the phase doc):
@@ -194,6 +227,190 @@ func (m *Manager) Remove(repoRoot string, a Acquired, keepBranch bool) error {
 		if _, err := m.Git.Run(repoRoot, "branch", "-D", a.Branch); err != nil {
 			return fmt.Errorf("worktree: delete branch %s: %w", a.Branch, err)
 		}
+	}
+	return nil
+}
+
+// branchExists probes refs/heads/<branch>, distinguishing "the ref is not there"
+// from "git could not answer".
+//
+// `rev-parse --verify --quiet` exits non-zero with NO output when a ref simply
+// does not exist, and prints a diagnostic ("fatal: not a git repository", a lock
+// error, a permission error) when git itself is unhappy. `show-ref --verify
+// --quiet` cannot tell the two apart, and collapsing both to "missing" made
+// DeleteBranch return nil for a delete that never happened — DeleteRunBranch then
+// logged success and the UI cleared a dirty-branch banner on a no-op.
+func (m *Manager) branchExists(repoRoot, branch string) (bool, error) {
+	out, err := m.Git.Run(repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err == nil {
+		return true, nil
+	}
+	if strings.TrimSpace(out) == "" {
+		return false, nil // the ref is absent — nothing to do, not an error
+	}
+	return false, fmt.Errorf("worktree: probe branch %s: %w: %s", branch, err, strings.TrimSpace(out))
+}
+
+// checkBranchReclaimable reports whether branch exists and is safe to delete:
+// it must live in the swarm/ namespace, must not be the repo's HEAD branch, and
+// must not be checked out in a worktree. A missing branch is (false, nil) —
+// nothing to do, not an error; a probe git could not answer is an error.
+//
+// reuseOwn relaxes the last check for the ONE checkout that is not a conflict:
+// the worktree this manager itself would hand the branch's own task
+// (<Root>/<projectSlug>/<taskID>, see ownsWorktreePath). A daemon crash leaves
+// exactly that — registered, on its own branch, un-prunable because the directory
+// survives — and Acquire recovers it by warm reuse (invariant 4). Reporting it as
+// ErrBranchCheckedOut made phaserun.Start bail before it ever reached that
+// Acquire, so no phase could be retried after a restart. With reuseOwn the branch
+// is reported as nothing-to-reclaim (false, nil): there is no name to free, and
+// no `branch -D` is attempted — git refuses that on a live checkout anyway.
+func (m *Manager) checkBranchReclaimable(repoRoot, branch string, reuseOwn bool) (bool, error) {
+	taskID := taskIDForBranch(branch)
+	if taskID == "" {
+		return false, fmt.Errorf("%w: %s is not a %s<taskID> run branch", ErrRefusedBranch, branch, swarmPrefix)
+	}
+	exists, err := m.branchExists(repoRoot, branch)
+	if err != nil || !exists {
+		return false, err
+	}
+	if head, err := m.Git.Run(repoRoot, "symbolic-ref", "--short", "HEAD"); err == nil {
+		if strings.TrimSpace(head) == branch {
+			return false, fmt.Errorf("%w: %s", ErrBranchIsHead, branch)
+		}
+	}
+	// A stale registration must not look like a live checkout — prune first (the
+	// same best-effort posture Acquire uses).
+	_, _ = m.Git.Run(repoRoot, "worktree", "prune")
+	list, err := m.Git.Run(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("worktree: list worktrees: %w", err)
+	}
+	if path, ok := parseWorktreeList(list).pathForBranch(branch); ok {
+		if reuseOwn && m.ownsWorktreePath(path, taskID) {
+			return false, nil // our own leftover — Acquire warm-reuses it
+		}
+		return false, fmt.Errorf("%w: %s is on %s", ErrBranchCheckedOut, path, branch)
+	}
+	return true, nil
+}
+
+// ownsWorktreePath reports whether p is the worktree THIS manager creates for
+// taskID: <Root>/<projectSlug>/<taskID>, the same shape Acquire computes.
+//
+// The projectSlug component is deliberately not pinned. Only Acquire knows which
+// slug a given caller will pass, and threading it down would change
+// ReclaimEmptyBranch/DeleteBranch — hence dispatch.WorktreeManager — for no
+// safety: a leftover under a DIFFERENT slug is one Acquire will reject as
+// ErrBranchBusy a moment later (its pathForBranch check compares against the slug
+// it was actually given), so tolerating it here loses nothing and still fails
+// loudly. Anything outside Root, or whose leaf is another task, stays a conflict.
+func (m *Manager) ownsWorktreePath(p, taskID string) bool {
+	root, err := m.resolveRoot()
+	if err != nil {
+		return false
+	}
+	p = filepath.Clean(p)
+	if filepath.Base(p) != taskID {
+		return false
+	}
+	return samePath(filepath.Dir(filepath.Dir(p)), root)
+}
+
+// reclaimBase resolves the tip a reclaim measures against: the repo's CHECKED-OUT
+// branch, via symbolic-ref and nothing else.
+//
+// It deliberately does NOT call resolveStartPoint, whose HEAD fallback is
+// acquire-oriented — the right answer for pinning a new worktree, the wrong one for
+// authorizing a delete. A repo detached at swarm/<taskID>'s own tip resolves that
+// fallback to the branch's own SHA, `rev-list --count <thatSHA>..refs/heads/<branch>`
+// answers 0 ("empty"), and the only ref holding those commits is force-deleted.
+// phasediag.baseBranch already refuses to guess a base on a detached HEAD and drops
+// every branch-derived blocker; the destructive path must be at least as careful as
+// the read-only one, so it refuses too (ErrDetachedHead). No base, no count, no delete.
+func (m *Manager) reclaimBase(repoRoot string) (string, error) {
+	def, err := m.Git.Run(repoRoot, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrDetachedHead, strings.TrimSpace(def))
+	}
+	def = strings.TrimSpace(def)
+	if def == "" {
+		return "", fmt.Errorf("%w: symbolic-ref answered with an empty branch name", ErrDetachedHead)
+	}
+	sha, err := m.Git.Run(repoRoot, "rev-parse", "refs/heads/"+def)
+	if err != nil {
+		return "", fmt.Errorf("worktree: resolve tip of %s: %w", def, err)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
+// ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead of the
+// repo's base branch, so a re-run can re-acquire the deterministic name swarm/<taskID>
+// instead of dying on ErrBranchBusy. The base is the repo's checked-out branch
+// (reclaimBase) — the same signal Acquire pins to whenever there IS one, and an
+// ErrDetachedHead refusal when there is not.
+//
+// Returns the number of commits ahead when the branch HAS work: the branch is left
+// untouched and the caller must not destroy it. Returns 0 when the branch was deleted,
+// never existed, or is still checked out in THIS task's own worktree — the crash
+// leftover Acquire recovers by warm reuse, where there is nothing to reclaim and the
+// commits (if any) are continued rather than reported as blocking.
+func (m *Manager) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
+	exists, err := m.checkBranchReclaimable(repoRoot, branch, true /* reuseOwn */)
+	if err != nil {
+		return 0, err
+	}
+	if !exists {
+		return 0, nil // nothing to reclaim
+	}
+	base, err := m.reclaimBase(repoRoot)
+	if err != nil {
+		return 0, err
+	}
+	out, err := m.Git.Run(repoRoot, "rev-list", "--count", base+"..refs/heads/"+branch)
+	if err != nil {
+		return 0, fmt.Errorf("worktree: count commits on %s: %w", branch, err)
+	}
+	ahead, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("worktree: unparseable commit count %q for %s: %w", strings.TrimSpace(out), branch, err)
+	}
+	// A negative count is not a count. Atoi accepts "-1" happily and `ahead > 0` is
+	// false for it, so without this guard nonsense output authorizes a `branch -D`
+	// — the single outcome an unusable count must never buy.
+	if ahead < 0 {
+		return 0, fmt.Errorf("worktree: negative commit count %d for %s", ahead, branch)
+	}
+	if ahead > 0 {
+		// The branch carries work — never destroyed implicitly; the caller decides.
+		return ahead, nil
+	}
+	if _, err := m.Git.Run(repoRoot, "branch", "-D", branch); err != nil {
+		return 0, fmt.Errorf("worktree: delete branch %s: %w", branch, err)
+	}
+	return 0, nil
+}
+
+// DeleteBranch force-deletes branch (git branch -D), refusing while it is checked
+// out in ANY worktree (including one of ours) or is the repo's HEAD branch, and
+// refusing anything outside the swarm/ namespace. Unlike ReclaimEmptyBranch this
+// DOES discard commits — it exists only for an explicit user decision.
+//
+// reuseOwn is deliberately false: this call ends in a `git branch -D`, which git
+// itself refuses on a live checkout, so tolerating our own leftover would only
+// trade a sentinel naming the holding worktree for a raw git failure. The user's
+// way out is to retry the phase (Acquire warm-reuses and the run's teardown
+// removes the worktree) or remove that worktree by hand.
+func (m *Manager) DeleteBranch(repoRoot, branch string) error {
+	exists, err := m.checkBranchReclaimable(repoRoot, branch, false /* reuseOwn */)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil // already gone — deleting is idempotent
+	}
+	if _, err := m.Git.Run(repoRoot, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("worktree: delete branch %s: %w", branch, err)
 	}
 	return nil
 }
