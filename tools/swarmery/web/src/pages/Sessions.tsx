@@ -14,6 +14,7 @@ import { liveActionText } from '../lib/payload';
 import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
 import { applySessionMessage, useLiveUpdates } from '../lib/ws';
+import { ExplainPair } from '../components/Explain';
 import { PageSearchInput } from '../components/PageSearchInput';
 import { SessionCard } from '../components/SessionCard';
 import { Empty, ErrorBox, GroupHeader, Loading } from '../components/ui';
@@ -244,8 +245,15 @@ export function Sessions(): JSX.Element {
 
   return (
     <div className="px-4 pt-6 pb-20 desk:px-10 desk:pt-[34px] desk:pb-28">
+      {/* Stop vs Kill is explained once here, not beside each row's button:
+          SessionCard's action slot renders for every live row and for every
+          finished row with a known PID, so a per-row explainer would stamp a
+          "?" down the whole list for a distinction read exactly once. */}
+      {/* The h1 stays block-level and the pair does the flexing: an inline-flex
+          heading shrink-wraps, and a heading that wraps then parks its trigger
+          in the vertical middle of the right margin, touching neither line. */}
       <h1 className="font-display text-[26px] font-medium tracking-[-0.01em] desk:text-[30px]">
-        Sessions
+        <ExplainPair id="kill-vs-stop">Sessions</ExplainPair>
       </h1>
       <div className="mt-1.5 font-mono text-[11px] text-ink-dim">
         {sorted.length} match · newest first

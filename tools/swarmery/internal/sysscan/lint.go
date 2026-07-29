@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/findings"
 )
 
 // Linter-owned rule names (design §3.5). parse_error is scanner-owned.
@@ -140,56 +142,19 @@ func (s *Scanner) Lint() (LintStats, error) {
 	}
 
 	for _, rule := range linterRules {
-		findings := byRule[rule]
-		keep := make(map[string]bool, len(findings))
-		for _, f := range findings {
-			if err := s.upsertFinding(f.target, rule, f.severity, f.message); err != nil {
-				return st, fmt.Errorf("lint %s %s: %w", rule, f.target, err)
-			}
-			keep[f.target] = true
+		lf := byRule[rule]
+		items := make([]findings.Item, 0, len(lf))
+		for _, f := range lf {
+			items = append(items, findings.Item{Target: f.target, Severity: f.severity, Message: f.message})
 		}
-		st.PerRule[rule] = len(findings)
-		resolved, err := s.resolveStaleFindings(rule, keep)
+		detected, resolved, err := findings.Sync(s.db, rule, items)
 		if err != nil {
-			return st, fmt.Errorf("lint %s resolve: %w", rule, err)
+			return st, fmt.Errorf("lint %s: %w", rule, err)
 		}
+		st.PerRule[rule] = detected
 		st.Resolved += resolved
 	}
 	return st, nil
-}
-
-// resolveStaleFindings closes every active finding of one rule whose target
-// was not re-detected this pass.
-func (s *Scanner) resolveStaleFindings(rule string, keep map[string]bool) (int, error) {
-	rows, err := s.db.Query(
-		`SELECT id, target FROM config_lint_findings WHERE rule = ? AND resolved_at IS NULL`, rule)
-	if err != nil {
-		return 0, err
-	}
-	var stale []int64
-	for rows.Next() {
-		var id int64
-		var target string
-		if err := rows.Scan(&id, &target); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		if !keep[target] {
-			stale = append(stale, id)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	now := nowRFC3339()
-	for _, id := range stale {
-		if _, err := s.db.Exec(
-			`UPDATE config_lint_findings SET resolved_at = ? WHERE id = ?`, now, id); err != nil {
-			return 0, err
-		}
-	}
-	return len(stale), nil
 }
 
 // lintAgentContent covers the two content rules — agent_no_boundaries and

@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import type { HealthResponse } from '../api/types';
 import { fetchHealth } from '../api';
+import { PluginDriftBadge } from './PluginDriftBadge';
 
 const POLL_MS = 60_000;
 
@@ -50,6 +51,7 @@ export function HealthFooter(): JSX.Element | null {
       {unreachable
         ? 'daemon unreachable'
         : `daemon healthy${health !== null ? ` · ${shortVersion(health.version)}` : ''}`}
+      <PluginDriftBadge health={health} />
     </div>
   );
 }

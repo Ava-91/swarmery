@@ -48,6 +48,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/routines"
@@ -736,6 +737,10 @@ func cmdServe(args []string) error {
 		"webhook body template: generic (raw JSON) | ntfy (text body + Title/Priority/Tags headers) | telegram (Bot API sendMessage JSON) (env: SWARMERY_NOTIFY_TEMPLATE)")
 	notifyTelegramChat := fs.String("notify-telegram-chat", os.Getenv("SWARMERY_NOTIFY_TELEGRAM_CHAT"),
 		"Telegram chat_id, required with --notify-template=telegram (env: SWARMERY_NOTIFY_TELEGRAM_CHAT)")
+	claudeBin := fs.String("claude-bin", envOr("SWARMERY_CLAUDE_BIN", ""),
+		"path to the claude CLI used for plugin drift detection (default: PATH, then ~/.local/bin, /opt/homebrew/bin, /usr/local/bin)")
+	driftInterval := fs.Duration("plugin-drift-interval", plugindrift.DefaultInterval,
+		"plugin drift scan interval (0 disables the scanner)")
 	cfg := pipelineFlags(fs)
 	wsCfg := wsingestFlags(fs)
 	sysCfg := sysscanFlags(fs)
@@ -875,6 +880,51 @@ func cmdServe(args []string) error {
 	}
 	go pw.Run(context.Background())
 	log.Printf("swarmery procwatch ticker started (interval 30s)")
+
+	// plugin drift — enabled-but-not-installed / version-behind / orphaned
+	// plugins, persisted into config_lint_findings under the plugin_* rules.
+	if *driftInterval > 0 {
+		bin, berr := plugindrift.ResolveBin(*claudeBin)
+		dt := &plugindrift.Ticker{
+			DB:       db,
+			Detector: &plugindrift.Detector{ClaudeDir: sysCfg.ClaudeDir, Runner: plugindrift.ExecRunner{Bin: bin}},
+			Interval: *driftInterval,
+		}
+		if berr != nil {
+			// Record the blindness instead of scanning with a broken binary:
+			// a silent no-op here would render as "no drift" in every surface.
+			plugindrift.RecordUnavailable(db, berr)
+			log.Printf("swarmery plugin-drift scanner DISABLED: %v", berr)
+		} else {
+			// Repair shares the resolved binary — attached only here, so the
+			// endpoint answers 503 rather than shelling out to something absent.
+			api.AttachPluginRepairer(plugindrift.ExecRunner{Bin: bin})
+			// SessionStart answers from the last persisted pass (2s hook budget
+			// rules out scanning inline) and kicks a refresh through this.
+			api.AttachDriftRefresher(func() { dt.Once(context.Background()) })
+			// One webhook per NEWLY inserted error finding. The lifecycle does the
+			// deduplication: a standing problem refreshes its row in place, so it
+			// is announced once rather than every five minutes.
+			dt.OnNewError = func(target, rule, message string) {
+				if notifier == nil {
+					return
+				}
+				id, projectPath, ok := plugindrift.ParseTarget(target)
+				if !ok {
+					id, projectPath = target, ""
+				}
+				notifier.Emit(notify.Event{
+					Type:    notify.EventPluginDrift,
+					TS:      time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+					Project: projectPath,
+					Title:   "plugin unavailable: " + id,
+					Body:    message,
+				})
+			}
+			go dt.Run(context.Background())
+			log.Printf("swarmery plugin-drift scanner started (interval %s, claude %s)", *driftInterval, bin)
+		}
+	}
 
 	// retro phase 3: the advisor rule engine — deterministic recommendations
 	// (R1..R6) refreshed once at startup and every 24h, plus on demand via

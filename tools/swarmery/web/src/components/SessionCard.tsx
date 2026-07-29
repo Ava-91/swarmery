@@ -2,6 +2,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Session } from '../api/types';
 import { fmtSpan, fmtTime } from '../lib/format';
 import { sessionState, useNowMs, type SessionState } from '../lib/sessionState';
+import { ExplainPair } from './Explain';
 import { KillButton, killSlotKind } from './KillButton';
 import { OUTCOME_GLYPH } from './OutcomePicker';
 import { ProjectName } from './ProjectName';
@@ -22,31 +23,48 @@ function ContextBadge({ session }: { session: Session }): JSX.Element | null {
   if (ctx == null || ctx < CONTEXT_WARN) return null;
   const danger = ctx >= CONTEXT_DANGER;
   const k = Math.round(ctx / 1000);
+  // The native title= is gone: its text now lives in the glossary as
+  // fat-session's `short` + `actions`, and two tooltips on one element (native
+  // and ours, with different wording) is worse than either alone.
+  //
+  // ExplainPair, not a bare fragment: both layouts render this chip into a flex
+  // row that already holds neighbours — the stacked card's header row puts
+  // ProcBadge straight after it, the desktop grid's title row puts the outcome
+  // glyph straight before it, and dev's HandoffChip lands adjacent in both. A
+  // loose trigger would sit exactly as far from the chip it explains as from
+  // the next one along.
   return (
-    <span
-      title={`Context window ~${k}k tokens (last turn). Large contexts are re-read on every continuation — the main cost driver. Consider /compact or splitting the work.`}
-      className={`shrink-0 rounded-full border px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap ${
-        danger ? 'border-red/40 bg-red/10 text-red' : 'border-amber/40 bg-amber/10 text-amber'
-      }`}
-    >
-      {k}k ctx
-    </span>
+    <ExplainPair id="fat-session">
+      <span
+        className={`shrink-0 rounded-full border px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap ${
+          danger ? 'border-red/40 bg-red/10 text-red' : 'border-amber/40 bg-amber/10 text-amber'
+        }`}
+      >
+        {k}k ctx
+      </span>
+    </ExplainPair>
   );
 }
 
 /** A chip flagging that the daemon generated a continuation handoff brief for
- * this fat session (migration 0039). Violet to distinguish it from the amber/red
+ * this fat session (migration 0039). Purple to distinguish it from the amber/red
  * context warning it sits beside — clicking through to the session opens the
- * rail's Handoff section with the full brief + a copy-paste resume command. */
+ * rail's Handoff section with the full brief + a copy-paste resume command.
+ *
+ * `purple`, not Tailwind's `violet-*`: the palette defaults do not flip with
+ * :root[data-mode='light'], where violet-400 lands at 2.73:1 on the light
+ * surface. --color-purple is re-tuned per palette to clear AA (index.css).
+ *
+ * The native title= is gone — the explainer carries the same wording plus the
+ * thresholds and the resume steps. */
 function HandoffChip({ session }: { session: Session }): JSX.Element | null {
   if (session.handoff == null) return null;
   return (
-    <span
-      title="A continuation handoff brief is ready — open the session to read it and copy the resume command."
-      className="shrink-0 rounded-full border border-violet-500/40 bg-violet-500/15 px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap text-violet-400"
-    >
-      Handoff
-    </span>
+    <ExplainPair id="handoff">
+      <span className="shrink-0 rounded-full border border-purple/40 bg-purple/15 px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap text-purple">
+        Handoff
+      </span>
+    </ExplainPair>
   );
 }
 

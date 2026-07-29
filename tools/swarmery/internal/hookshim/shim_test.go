@@ -197,3 +197,68 @@ func TestDenyIgnoresUpdatedInput(t *testing.T) {
 		t.Errorf("exit=%d stdout=%q, want deny without updatedInput", code, stdout)
 	}
 }
+
+// ── SessionStart additionalContext injection (plugin drift) ──────────────────
+
+const sessionStartStdin = `{"session_id":"sid-1","cwd":"/Volumes/Work/swarmery","hook_event_name":"SessionStart"}`
+
+// A 200 carrying additionalContext becomes exactly one line of SessionStart
+// hook JSON on stdout — that line is what Claude Code prepends to the session.
+func TestSessionStartInjectsAdditionalContext(t *testing.T) {
+	srv, got := daemonStub(t, 200, `{"additionalContext":"core@swarmery is NOT loaded"}`)
+	stdout, _, code := runShim(t, EventSessionStart, srv.URL, sessionStartStdin)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	want := `{"hookSpecificOutput":{"additionalContext":"core@swarmery is NOT loaded","hookEventName":"SessionStart"}}` + "\n"
+	if stdout != want {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+	if strings.Count(stdout, "\n") != 1 {
+		t.Errorf("stdout must be exactly one line, got %q", stdout)
+	}
+	if !strings.Contains(string(*got), `"pid"`) {
+		t.Errorf("the shim must still inject the PPID, sent %q", string(*got))
+	}
+}
+
+// 204 is the normal answer for a healthy project: print nothing at all.
+func TestSessionStart204PrintsNothing(t *testing.T) {
+	srv, _ := daemonStub(t, 204, "")
+	stdout, _, code := runShim(t, EventSessionStart, srv.URL, sessionStartStdin)
+	if code != 0 || stdout != "" {
+		t.Errorf("exit=%d stdout=%q, want 0 and silence", code, stdout)
+	}
+}
+
+// A 200 with an empty context is silence too — never an empty injected block.
+func TestSessionStartEmptyContextPrintsNothing(t *testing.T) {
+	srv, _ := daemonStub(t, 200, `{"additionalContext":""}`)
+	stdout, _, code := runShim(t, EventSessionStart, srv.URL, sessionStartStdin)
+	if code != 0 || stdout != "" {
+		t.Errorf("exit=%d stdout=%q, want 0 and silence", code, stdout)
+	}
+}
+
+func TestSessionStartBadBodyPrintsNothing(t *testing.T) {
+	srv, _ := daemonStub(t, 200, `not json`)
+	stdout, _, code := runShim(t, EventSessionStart, srv.URL, sessionStartStdin)
+	if code != 0 || stdout != "" {
+		t.Errorf("exit=%d stdout=%q, want 0 and silence", code, stdout)
+	}
+}
+
+// Fail-open is the law: a dead daemon must not break every session start.
+func TestSessionStartDaemonDownPrintsNothing(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // nothing is listening there now
+
+	stdout, _, code := runShim(t, EventSessionStart, "http://"+addr, sessionStartStdin)
+	if code != 0 || stdout != "" {
+		t.Errorf("exit=%d stdout=%q, want 0 and silence", code, stdout)
+	}
+}

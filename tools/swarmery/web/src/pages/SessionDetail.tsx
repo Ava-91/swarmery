@@ -13,6 +13,7 @@ import { MOCK, fetchSession, patchSessionOutcome, renameSession, sendSessionMess
 import { fmtAgo, fmtCost, fmtSpan, fmtTokens } from '../lib/format';
 import { sessionState, useNowMs } from '../lib/sessionState';
 import { useLiveUpdates } from '../lib/ws';
+import { ExplainPair } from '../components/Explain';
 import { OutcomePicker } from '../components/OutcomePicker';
 import { TaskChip } from '../components/TaskChip';
 import { ProjectName } from '../components/ProjectName';
@@ -510,7 +511,9 @@ export function SessionDetailPage(): JSX.Element {
                   confidence={detail.taskConfidence}
                 />
               )}
-              <OutcomePicker value={detail.outcome ?? null} onChange={setOutcome} />
+              <ExplainPair id="session-outcome">
+                <OutcomePicker value={detail.outcome ?? null} onChange={setOutcome} />
+              </ExplainPair>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-[22px]">

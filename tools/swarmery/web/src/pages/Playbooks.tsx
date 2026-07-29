@@ -13,28 +13,8 @@ import { duplicatePlaybook, fetchPlaybooks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { VerifyChip } from '../workspace/PlaybookPicker';
 import { Empty, ErrorBox, Loading } from '../components/ui';
-
-// How playbooks actually work, step by step — rendered under the list/detail
-// split so the page doubles as the feature's documentation (same pattern as
-// Planning Mode's HOW_IT_WORKS).
-const HOW_IT_WORKS: { title: string; body: string }[] = [
-  {
-    title: 'Pick a recipe on the board',
-    body: 'Every board task can select a playbook in its drawer (or at quick-entry). No selection means the standard recipe — a single implementation pass, identical to pre-playbook dispatch.',
-  },
-  {
-    title: 'Stages run sequentially',
-    body: 'The dispatcher runs each stage as its own headless pass in the task’s one worktree. {task_prompt} injects the task text, and {previous_stage_output} hands one stage’s full reply to the next — that’s how plan-first feeds its plan into implement, and review-heavy critiques the diff it just produced.',
-  },
-  {
-    title: 'The verify knob sets the bar',
-    body: 'Each playbook declares strict, normal, or off. Strict keeps the trajectory verifier’s default-FAIL wording (review-heavy uses it), normal is the usual bar, off skips verification entirely — no verdict is stamped.',
-  },
-  {
-    title: 'Make it your own',
-    body: 'Built-ins ship inside the daemon and are read-only. “Duplicate to project” copies the markdown into <project>/.claude/playbooks/ where its prompts become editable; a project file with the same name overrides the built-in. Frontmatter takes name, description, verify, and an optional model override.',
-  },
-];
+import { Explain, ExplainPair } from '../components/Explain';
+import { HowItWorks } from '../components/HowItWorks';
 
 export function Playbooks(): JSX.Element {
   const { project, projectId, loading: projLoading } = useProjectWorkspace();
@@ -78,10 +58,13 @@ export function Playbooks(): JSX.Element {
   return (
     <div className="flex min-h-0 flex-1 flex-col px-4 py-5 desk:px-6">
       <header className="mb-4">
-        <h1 className="text-[15px] font-semibold text-ink">Playbooks</h1>
+        <h1 className="text-[15px] font-semibold text-ink">
+          <ExplainPair id="playbook-stages">Playbooks</ExplainPair>
+        </h1>
         <p className="mt-0.5 text-[12px] text-ink-dim">
           Selectable execution recipes. A task picks one on the board; the dispatcher runs its stages
-          sequentially in one worktree. Built-ins are read-only — duplicate one to edit its prompts.
+          sequentially in one worktree. <Explain id="worktree" /> Built-ins are read-only — duplicate
+          one to edit its prompts.
         </p>
       </header>
 
@@ -108,22 +91,7 @@ export function Playbooks(): JSX.Element {
         </div>
       )}
 
-      <ol className="mt-6 grid gap-3 border-t border-line pt-5 sm:grid-cols-2">
-        {HOW_IT_WORKS.map((step, i) => (
-          <li key={step.title} className="flex gap-2.5">
-            <span
-              aria-hidden="true"
-              className="mt-[1px] inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line font-mono text-[10px] text-ink-dim"
-            >
-              {i + 1}
-            </span>
-            <div className="min-w-0">
-              <div className="text-[12.5px] font-semibold text-ink">{step.title}</div>
-              <p className="mt-0.5 text-[12px] leading-relaxed text-ink-dim">{step.body}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
+      <HowItWorks id="playbook-stages" className="mt-6" />
     </div>
   );
 }

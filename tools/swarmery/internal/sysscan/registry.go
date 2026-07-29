@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/findings"
 )
 
 // NOTE on upserts: UNIQUE(name, scope, project_id) does not fire ON CONFLICT
@@ -335,31 +337,13 @@ func (s *Scanner) saveVersion(table, fkCol, itemTable string, itemID int64, hash
 // upsertFinding records one unresolved lint finding per (target, rule) —
 // rescans refresh the message instead of piling up duplicate rows.
 func (s *Scanner) upsertFinding(target, rule, severity, message string) error {
-	var id int64
-	err := s.db.QueryRow(
-		`SELECT id FROM config_lint_findings WHERE target = ? AND rule = ? AND resolved_at IS NULL`,
-		target, rule).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		_, err = s.db.Exec(
-			`INSERT INTO config_lint_findings (target, rule, severity, message, detected_at)
-			 VALUES (?, ?, ?, ?, ?)`, target, rule, severity, message, nowRFC3339())
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`UPDATE config_lint_findings SET severity = ?, message = ? WHERE id = ?`,
-		severity, message, id)
-	return err
+	return findings.Upsert(s.db, target, rule, severity, message)
 }
 
 // resolveFinding closes the open finding for (target, rule), if any. It only
 // ever touches the scanner's own rule rows (step-04's linter owns the rest).
 func (s *Scanner) resolveFinding(target, rule string) error {
-	_, err := s.db.Exec(
-		`UPDATE config_lint_findings SET resolved_at = ? WHERE target = ? AND rule = ? AND resolved_at IS NULL`,
-		nowRFC3339(), target, rule)
-	return err
+	return findings.Resolve(s.db, target, rule)
 }
 
 // sweepDeleted soft-deletes rows whose backing file vanished: deleted=1, the

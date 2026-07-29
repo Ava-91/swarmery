@@ -12,6 +12,41 @@ Per project, three equivalent ways:
 
 Changes take effect in the **next Claude Code session**: on startup Claude Code installs enabled packs from the marketplace into its plugin cache. Every pack requires `core`. Disabling a pack removes its key (same end state detach leaves).
 
+## How a plugin reaches your session
+
+Enabling a pack does not copy any file into your project. The path from this repo to a running session has four steps, and knowing them explains almost every "my change did not take effect" report.
+
+1. **The marketplace manifest** — `.claude-plugin/marketplace.json` in this repo lists every plugin and the directory it is published from. Each plugin's own version lives in `plugins/<pack>/.claude-plugin/plugin.json`.
+2. **Your project opts in** — `enabledPlugins` in the project's `.claude/settings.json` names the packs it wants, as `"<pack>@swarmery": true`.
+3. **Claude Code installs into its cache** — on session startup, enabled packs are fetched from the marketplace into `~/.claude/plugins/cache`.
+4. **The session loads from the cache** — never from a local checkout.
+
+**Step 4 is the one that surprises people.** Editing `plugins/core/agents/<agent>.md` in a clone of this repo changes nothing about a running session, because the session is reading its own cached copy.
+
+### Getting your changes into a session
+
+| You want | Do this |
+|---|---|
+| Test an uncommitted plugin change, right now | `claude --plugin-dir plugins/core` — repeatable, one `--plugin-dir` per pack. This is the way to run work that is not committed and released, and it affects only that session. |
+| Ship a change to every consumer | Bump the plugin's `version` in `plugins/<pack>/.claude-plugin/plugin.json`, push, then run `/plugin update` in each consumer. |
+| Refresh your own machine's cache after committing locally | `scripts/sync-cache.sh` rsyncs each `plugins/<pack>/` over the matching installed version directories under `~/.claude/plugins/cache/swarmery/` (packs that are not installed are skipped; `.claude-plugin/` is excluded). Designed to run from a `post-commit` hook, but it rewrites the shared cache for **every** project on the machine — prefer `--plugin-dir` when you only want to try something out. |
+
+**Bump the semver.** Consumers adopt a plugin by version. A change pushed without a version bump is a change no consumer will ever pull, and the failure is silent — `/plugin update` simply reports nothing to do.
+
+### When enabled and installed disagree
+
+`enabledPlugins` records intent; the cache records reality. They come apart in ordinary ways:
+
+- a pack was enabled in `settings.json` but no session has started since, so it was never fetched;
+- a pack was renamed or removed from the marketplace while a consumer still lists it;
+- a project was copied from another project along with its `settings.json`.
+
+The symptom is an agent or command that "should exist" and does not. Check what is actually installed under `~/.claude/plugins/cache` before debugging the pack itself.
+
+### Overriding instead of forking
+
+A component in a project's own `.claude/` **wins** over a plugin component with the same name. That is the supported way to change a pack's behaviour for one project — not editing the cache, and not forking the pack. When a second project needs the same change, promote it upward instead; see [EXTENDING.md](EXTENDING.md).
+
 ---
 
 ## core — the mandatory baseline

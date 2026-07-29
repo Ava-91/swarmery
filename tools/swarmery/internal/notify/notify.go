@@ -24,11 +24,18 @@ const (
 	EventApprovalExpired   = "approval_expired"
 	EventSessionCompleted  = "session_completed"
 	EventSessionError      = "session_error"
+	// EventPluginDrift fires when a plugin a project enables is newly found NOT
+	// loadable. Deduplication is a property of the findings lifecycle: the
+	// callback behind it fires only on a newly INSERTed row, and a rule that
+	// keeps firing refreshes its row in place — so a standing problem is
+	// announced once, not every scan tick.
+	EventPluginDrift = "plugin_drift"
 )
 
 // KnownEvents lists every valid --notify-events entry.
 var KnownEvents = []string{
 	EventApprovalRequested, EventApprovalExpired, EventSessionCompleted, EventSessionError,
+	EventPluginDrift,
 }
 
 // Body templates (--notify-template).

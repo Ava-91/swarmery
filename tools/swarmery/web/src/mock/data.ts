@@ -539,8 +539,64 @@ bash scripts/scan-flavor.sh                                    # target: 0 occur
 
 Without those files the script falls back to a small example pattern — replace it with your own. Consumers should run this as a CI ratchet: the count must never increase.`;
 
+// Trimmed stand-in for tools/swarmery/docs/concepts.md. Every <Explain> popover
+// deep-links to /docs/concepts#<anchor>, so without an entry here "Read more →"
+// dead-ends in an ErrorBox under VITE_MOCK=1 — the mode scripts/screenshot.mjs
+// drives. Headings must keep slugifying to the registry's doc.anchor values.
+const conceptsMd = `# Concepts
+
+What the dashboard's vocabulary means, and what to do about each thing. \`?\` marks reference
+material; \`!\` marks a state asking you to do something.
+
+## Handoff
+
+The daemon pre-wrote a continuation brief because this session crossed 150k tokens of context. A
+parachute, not an alarm: read it, copy the resume command, start fresh.
+
+## Context footprint
+
+How full the window was on the newest assistant turn. Amber at 150k, red at 300k.
+
+## Orphaned / dead
+
+Nothing is advancing this session. Reattach if its terminal is still open; otherwise close the row
+out with whichever control it offers.
+
+## Stop vs Kill
+
+Both send SIGTERM and escalate. What differs is the status recorded: completed is revertible,
+killed is terminal.
+
+## Attach / Detach
+
+Attach wires a project into swarmery; detach unwires it. Both preview every file they would change
+before writing anything.
+
+## Session outcome
+
+Your verdict on a finished session — success, fail, or abandoned. Set by hand, never inferred.
+
+## Playbooks
+
+An ordered chain of stages, each run as its own headless pass, all sharing the task's one worktree.
+
+## Verify level
+
+How hard the trajectory verifier judges a stage: strict, normal, or off. "off" means nobody looked.
+
+## Task worktree
+
+One git worktree per board task, on its own swarm/<task-id> branch.
+
+## Planning Mode
+
+A headless planner interviews you one question at a time and writes a phased plan into the private
+workspace.
+`;
+
 export const mockDocs: DocDetail[] = [
   { slug: 'onboarding', title: 'Onboarding', file: 'ONBOARDING.md', markdown: onboardingMd },
+  { slug: 'concepts', title: 'Concepts', file: 'concepts.md', markdown: conceptsMd },
   { slug: 'extending', title: 'Extending', file: 'EXTENDING.md', markdown: extendingMd },
   { slug: 'neutrality', title: 'Neutrality', file: 'NEUTRALITY.md', markdown: neutralityMd },
 ];
@@ -1737,6 +1793,7 @@ export const mockApi = {
     await delay(120);
     return {
       marketplaceVersion: '1.13.0',
+      marketplaceName: 'swarmery',
       canWrite: true,
       plugins: [
         {
@@ -1744,13 +1801,23 @@ export const mockApi = {
           description: 'Vendor-neutral agent-development core.',
           enabled: true,
           locked: true,
+          // The incident this feature exists for: enabled here, installed elsewhere.
+          status: 'missing',
+          detail: 'enabled here, but installed only for /Volumes/Work/other/project',
         },
-        { name: 'uav-pack', description: 'UAV/drone domain pack.', enabled: false, locked: false },
+        {
+          name: 'uav-pack',
+          description: 'UAV/drone domain pack.',
+          enabled: false,
+          locked: false,
+          status: 'unknown',
+        },
         {
           name: 'lsp-pack',
           description: 'Semantic code-navigation pack: Serena LSP MCP server.',
           enabled: true,
           locked: false,
+          status: 'ok',
         },
       ],
     };

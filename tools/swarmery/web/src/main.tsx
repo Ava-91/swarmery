@@ -1,6 +1,13 @@
 import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createBrowserRouter, Outlet, RouterProvider } from 'react-router-dom';
+import {
+  createBrowserRouter,
+  isRouteErrorResponse,
+  Link,
+  Outlet,
+  RouterProvider,
+  useRouteError,
+} from 'react-router-dom';
 import { App } from './App';
 import { PageSearchProvider } from './lib/pageSearch';
 import { ProjectColorProvider } from './lib/projectColors';
@@ -88,9 +95,35 @@ function ws(node: JSX.Element): JSX.Element {
   return <Suspense fallback={<Loading label="workspace…" />}>{node}</Suspense>;
 }
 
+/** Route-level error boundary. Without one, react-router replaces the whole SPA
+ * with its default error screen — recoverable only by pressing Back — for any
+ * unmatched path. That is reachable from ordinary content: lib/markdown.tsx
+ * renders model-written text (chat, handoff briefs, plan docs, memory), and a
+ * model can emit a link to a path this app does not route. Keep the shell. */
+function RouteError(): JSX.Element {
+  const error = useRouteError();
+  const status = isRouteErrorResponse(error) ? error.status : null;
+  return (
+    <div className="px-6 py-16 text-center">
+      <div className="font-mono text-[11px] tracking-[0.14em] text-ink-faint uppercase">
+        {status === 404 ? 'not found' : 'something broke'}
+      </div>
+      <p className="mt-2 text-[13px] text-ink-dim">
+        {status === 404
+          ? 'That link does not point anywhere in this dashboard.'
+          : 'This view failed to render.'}
+      </p>
+      <Link to="/" className="mt-4 inline-block font-mono text-[11px] text-brand hover:underline">
+        ← back to the overview
+      </Link>
+    </div>
+  );
+}
+
 const router = createBrowserRouter([
   {
     element: <RootProviders />,
+    errorElement: <RouteError />,
     children: [
       {
         path: '/',

@@ -52,6 +52,7 @@ import type {
   ProjectMetaPatch,
   ProjectOverviewResp,
   ProjectPluginsResponse,
+  PluginRepairResponse,
   ProjectPluginToggleResponse,
   ProjectsHealthResponse,
   ProjectsResponse,
@@ -259,6 +260,29 @@ export async function toggleProjectPlugin(
     throw new Error(data.error ?? `toggle failed: ${String(res.status)}`);
   }
   return (await res.json()) as ProjectPluginToggleResponse;
+}
+
+/**
+ * POST /api/projects/{id}/plugins/{name}/repair — runs `claude plugin
+ * install|update <id> --scope project` on the daemon side. The action is chosen
+ * by the daemon from the current drift status, so the client cannot ask for an
+ * install where an update is what is needed. Takes effect in the NEXT Claude
+ * Code session, which is why the response always sets restart.
+ */
+export async function repairProjectPlugin(
+  id: number,
+  pluginId: string,
+): Promise<PluginRepairResponse> {
+  if (MOCK) return { id: pluginId, action: 'install', output: 'mock', status: 'ok', restart: true };
+  const res = await fetch(
+    `/api/projects/${String(id)}/plugins/${encodeURIComponent(pluginId)}/repair`,
+    { method: 'POST' },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string; output?: string };
+    throw new Error(data.error ?? data.output ?? `repair failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as PluginRepairResponse;
 }
 
 /** GET /api/projects/onboard/config — defaults + enabled state for the modal. */
