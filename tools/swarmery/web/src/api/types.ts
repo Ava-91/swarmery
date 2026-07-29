@@ -160,6 +160,25 @@ export interface AttachResponse {
 /** sessions.outcome (migration 0014) — manual verdict; null = not judged. */
 export type SessionOutcome = 'success' | 'fail' | 'abandoned';
 
+/**
+ * Go: sessionPlanDTO — the plan run that spawned a session, resolved server-side
+ * from the run branch the daemon stamps (`swarm/plan-<taskId>` for the plan-run
+ * controller, `swarm/phase-<phaseId>` for one phase of it). Null on ordinary
+ * interactive sessions.
+ */
+export interface SessionPlanGroup {
+  /** Workspace task holding the plan — the group key AND the Plans-page target. */
+  taskId: number;
+  /** Plan title, for the group header. */
+  title: string;
+  role: 'controller' | 'phase';
+  /** epic_phases.id — set only when role === 'phase'. */
+  phaseId: number | null;
+  /** 1-based order within the plan; drives in-group ordering and the `#N` label. */
+  phaseSeq: number | null;
+  phaseName: string | null;
+}
+
 /** Go: sessionDTO */
 export interface Session {
   id: number;
@@ -223,6 +242,12 @@ export interface Session {
     createdAt: string;
     contextTokens: number;
   } | null;
+  /**
+   * The plan run that spawned this session (additive optional): the plan-run
+   * controller itself or one of its phases. Null/absent for an ordinary
+   * interactive session. Drives the Sessions page's group-by-plan view.
+   */
+  planGroup?: SessionPlanGroup | null;
 }
 
 /** Go: turnDTO */

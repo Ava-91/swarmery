@@ -154,6 +154,11 @@ type sessionDTO struct {
 	// shows a "Handoff" chip and the detail rail fetches the markdown via
 	// GET /api/sessions/{id}/handoff.
 	Handoff *handoffDTO `json:"handoff"`
+	// PlanGroup names the plan run that spawned this session — the plan-run
+	// controller itself, or one phase of it. Resolved from the run branch the
+	// daemon stamps (sessions.git_branch), falling back to the run worktree in
+	// sessions.cwd for subagents. Null for an ordinary interactive session.
+	PlanGroup *sessionPlanDTO `json:"planGroup"`
 }
 
 // handoffDTO is the latest handoffs row projected onto a session, without the
@@ -398,15 +403,17 @@ func (h *Handler) recentSessions(projectID int64) ([]projectRecentSessionDTO, er
 
 // sessionSelect is the shared session projection: entity columns plus the
 // per-session token/cost aggregates (parity contract) computed in ONE
-// aggregate JOIN — never per-row subqueries (no N+1).
-const sessionSelect = `
+// aggregate JOIN — never per-row subqueries (no N+1). The owning plan run
+// (session_plan_group.go) joins in on the same terms: three rowid lookups per
+// row, resolved here so the list endpoint needs no follow-up query.
+var sessionSelect = `
 	SELECT s.id, s.project_id, p.slug, p.name, s.session_uuid, s.model, s.git_branch, s.cwd,
 	       s.status, s.started_at, s.ended_at, COALESCE(s.custom_title, s.title), s.source,
 	       agg.tokens, agg.cost_usd, ctx.context_tokens,
 	       tl.task_id, tl.external_id, tl.link_source, tl.confidence,
 	       s.proc_state, s.pid, s.outcome,
 	       why.text,
-	       ho.path, ho.created_at, ho.context_tokens
+	       ho.path, ho.created_at, ho.context_tokens` + sessionPlanGroupCols + `
 	FROM sessions s
 	JOIN projects p ON p.id = s.project_id
 	LEFT JOIN (
@@ -454,7 +461,7 @@ const sessionSelect = `
 		SELECT session_id, path, created_at, context_tokens,
 		       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at DESC, id DESC) AS rn
 		FROM handoffs
-	) ho ON ho.session_id = s.id AND ho.rn = 1`
+	) ho ON ho.session_id = s.id AND ho.rn = 1` + sessionPlanGroupJoins
 
 // sessionsPageDTO is the GET /api/sessions envelope (ops-hygiene wave):
 // keyset pagination over (started_at DESC, id DESC). nextCursor is null on
@@ -697,15 +704,20 @@ func scanSession(scan func(...any) error, s *sessionDTO) error {
 	var whyRaw sql.NullString
 	var hoPath, hoCreatedAt sql.NullString
 	var hoContextTokens sql.NullInt64
-	if err := scan(&s.ID, &s.ProjectID, &s.ProjectSlug, &s.ProjectName, &s.SessionUUID, &s.Model,
+	// Plan-group tail (sessionPlanGroupCols), scanned as one unit so the column
+	// order lives next to the projection that produced it.
+	var group sessionPlanGroupScan
+	dest := append([]any{&s.ID, &s.ProjectID, &s.ProjectSlug, &s.ProjectName, &s.SessionUUID, &s.Model,
 		&s.GitBranch, &s.CWD, &s.Status, &s.StartedAt, &s.EndedAt, &s.Title, &s.Source,
 		&s.Tokens, &s.CostUSD, &s.ContextTokens,
 		&s.TaskID, &s.TaskExternalID, &s.TaskLinkSource, &s.TaskConfidence,
 		&s.ProcState, &s.ProcPID, &s.Outcome,
 		&whyRaw,
-		&hoPath, &hoCreatedAt, &hoContextTokens); err != nil {
+		&hoPath, &hoCreatedAt, &hoContextTokens}, group.dest()...)
+	if err := scan(dest...); err != nil {
 		return err
 	}
+	s.PlanGroup = group.dto()
 	if whyRaw.Valid {
 		if w := summarizeWhy(whyRaw.String); w != "" {
 			s.Why = &w

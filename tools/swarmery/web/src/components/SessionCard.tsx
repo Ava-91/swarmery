@@ -162,6 +162,7 @@ export function SessionCard({
   now = null,
   flat = false,
   hideProject = false,
+  label = null,
 }: {
   session: Session;
   /** Live "now: <last action>" line, fed by event_appended WS messages. */
@@ -171,6 +172,11 @@ export function SessionCard({
   /** Drop the project cell — redundant when the list is already scoped to one
    * project (project-mode /p/:slug/sessions). */
   hideProject?: boolean;
+  /** Replaces the session title as the row's headline. The grouped Sessions
+   * view passes `#<seq> <phase name>`, because every phase run of one plan
+   * carries the same truncated prompt and the title tells them apart from
+   * nothing. */
+  label?: string | null;
 }): JSX.Element {
   const navigate = useNavigate();
   // Preserve the mode when opening a session: in project mode (/p/:slug/…) stay
@@ -182,6 +188,7 @@ export function SessionCard({
   const goToDetail = (): void => {
     navigate(slug != null ? `/p/${slug}/sessions/${session.id}` : `/sessions/${session.id}`);
   };
+  const headline = label ?? session.title;
 
   /* Action slot: stuck rows with a confirmed-alive process keep the hard
    * Kill; any other live tone offers the graceful Stop (no PID needed);
@@ -225,7 +232,7 @@ export function SessionCard({
         <RowChip tone={tone} suffix={chipSuffix(session, tone)} />
       </div>
       <div className="mt-px mb-[3px] truncate text-[13.5px] font-semibold">
-        {session.title ?? session.sessionUuid}
+        {headline ?? session.sessionUuid}
       </div>
       <div className="truncate font-mono text-[11px] text-ink-dim">{meta(session)}</div>
       {session.taskExternalId != null && (
@@ -305,10 +312,10 @@ export function SessionCard({
           <span className="flex min-w-0 items-baseline gap-1.5">
             <span
               className={`min-w-0 truncate text-[14px] font-semibold ${
-                session.title === null ? 'font-normal text-ink-faint italic' : 'text-ink'
+                headline == null ? 'font-normal text-ink-faint italic' : 'text-ink'
               }`}
             >
-              {session.title ?? '(untitled session)'}
+              {headline ?? '(untitled session)'}
             </span>
             {session.outcome != null && (
               <span
