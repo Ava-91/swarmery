@@ -205,6 +205,8 @@ func (h *Handler) deletePhaseRunBranch(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusConflict, "branch is checked out in a worktree")
 	case errors.Is(err, phaserun.ErrNoPath):
 		writeClientErr(w, http.StatusConflict, "project has no known path")
+	case errors.Is(err, phaserun.ErrNoRunBranch):
+		writeClientErr(w, http.StatusConflict, "this phase has no recorded run branch")
 	case err != nil:
 		writeErr(w, err)
 	default:

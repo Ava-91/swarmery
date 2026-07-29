@@ -95,6 +95,18 @@ func fixturePhaseIDs(t *testing.T, db *sql.DB, taskID int64) (int64, int64) {
 	return ids[0], ids[1]
 }
 
+// stampRunBranch records the branch a run used (migration 0043), which is what
+// DeleteRunBranch reads. Fixture phases have never run, so anything exercising the
+// branch endpoint has to say which branch it is talking about — the service refuses to
+// re-derive one from the row id.
+func stampRunBranch(t *testing.T, db *sql.DB, phaseID int64, branch string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`UPDATE epic_phases SET run_state='done', run_branch=? WHERE id=?`, branch, phaseID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func postPhase(t *testing.T, url string) *http.Response {
 	t.Helper()
 	resp, err := http.Post(url, "application/json", nil)

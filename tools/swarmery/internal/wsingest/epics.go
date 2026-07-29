@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -459,14 +460,29 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 // measured by, and the new row id would orphan the swarm/phase-<id> branch the run
 // just committed to — a run only kept its state if it achieved nothing.
 //
-// doc_path IS the identity: RENAMING a phase doc is therefore a delete + insert,
-// which mints a new row id and orphans the swarm/phase-<id> branch of any run that
-// phase already had. That is a known, accepted edge — a rename is a rare, human,
-// out-of-band edit, and the alternative (matching on seq or name, both of which the
-// plan doc legitimately rewrites) would silently merge genuinely different phases.
+// doc_path IS the identity, and a RENAMED phase doc is therefore a delete + insert.
+// Matching on seq or name INSTEAD would silently merge genuinely different phases —
+// the plan doc legitimately rewrites both — so identity stays doc_path. What changed
+// is the assumption that used to make the consequence acceptable ("a rename is a rare,
+// human, out-of-band edit"): plan regeneration renames the whole doc set machine-side,
+// mid-run, and the delete took the run_* family and the run's branch with it.
+//
+// So the state moves instead of the key: carryAcrossRenames performs a one-shot
+// hand-over from a vanished doc's row to the row that replaced it, inside this same
+// transaction where both sets are visible and the match can be required to be 1:1.
+// That is strictly weaker than making seq an identity — an ambiguous match carries
+// nothing — and it is the only place where both halves are knowable at once.
 //
 // readmePresent gates the prune — see the guard below.
 func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool) error {
+	// Snapshot BEFORE the upserts: afterwards the inserts are indistinguishable from
+	// rows that were already there, and "which doc paths existed a moment ago" is
+	// exactly what identifies a rename.
+	before, err := snapshotPhases(tx, taskID)
+	if err != nil {
+		return err
+	}
+
 	for _, p := range phases {
 		depJSON, err := json.Marshal(p.dependsOn)
 		if err != nil {
@@ -529,11 +545,18 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 		}
 	}
 
+	// Hand daemon-owned state from renamed-away docs to the rows that replaced them,
+	// BEFORE the prune removes the evidence.
+	carried, err := carryAcrossRenames(tx, taskID, phases, before)
+	if err != nil {
+		return err
+	}
+
 	// A phase doc removed from the plan README must not linger. Delete by
 	// exclusion AFTER the upserts — never before, or the surviving rows lose
 	// their identity (and their run state) on every rescan. With no phases at
 	// all the guard collapses to an unconditional delete, which is correct.
-	keep := make([]any, 0, len(phases)+1)
+	keep := make([]any, 0, len(phases)+len(carried)+1)
 	keep = append(keep, taskID)
 	ph := make([]string, 0, len(phases))
 	for _, p := range phases {
@@ -544,8 +567,181 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 	if len(ph) > 0 {
 		q += ` AND doc_path NOT IN (` + strings.Join(ph, ",") + `)`
 	}
+	// A run in flight is never deleted. Its row is the only handle the daemon and the
+	// UI have on that process — no row, no Cancel, no session link, and the executor
+	// keeps running unreachable. A carried-over source IS deleted even while running:
+	// its state now lives on the replacement row, and keeping both would leave two rows
+	// claiming the same run.
+	if len(carried) > 0 {
+		cph := make([]string, 0, len(carried))
+		for _, docPath := range carried {
+			cph = append(cph, "?")
+			keep = append(keep, docPath)
+		}
+		q += ` AND (run_state <> 'running' OR doc_path IN (` + strings.Join(cph, ",") + `))`
+	} else {
+		q += ` AND run_state <> 'running'`
+	}
+
+	// Whatever the guard spares must be visible: an orphaned running row is a real
+	// inconsistency (its doc is gone), just a recoverable one, and silence here is how
+	// it would be mistaken for a healthy phase.
+	if err := logKeptRunningOrphans(tx, taskID, phases, carried); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(q, keep...); err != nil {
 		return err
 	}
 	return nil
+}
+
+// phaseState is the daemon-owned half of an epic_phases row — everything the plan doc
+// does NOT author. The plan doc owns structure (seq, name, depends_on, checkbox counts,
+// doc status, completion report); these columns are written by dispatch and by the run
+// services, and a rescan must never be able to invent or destroy them.
+type phaseState struct {
+	id                   int64
+	seq                  int
+	docPath              string
+	runState             string
+	runSessionUUID       sql.NullString
+	runStartedAt         sql.NullString
+	runEndedAt           sql.NullString
+	runError             sql.NullString
+	runBranch            sql.NullString
+	runCheckboxesBefore  sql.NullInt64
+	runCheckboxesAfter   sql.NullInt64
+	activatedAt          sql.NullString
+	activatedBoardTaskID sql.NullInt64
+}
+
+// carriesState reports whether the row holds anything a rescan must not lose.
+func (p phaseState) carriesState() bool {
+	return p.runState != "idle" || p.runSessionUUID.Valid || p.activatedBoardTaskID.Valid
+}
+
+// snapshotPhases reads every phase row of the task with its daemon-owned columns.
+// ALL rows, not only the stateful ones: the stateless ones are what distinguish a
+// renamed doc (its path vanished) from a genuinely new phase (its path is new).
+func snapshotPhases(tx *sql.Tx, taskID int64) ([]phaseState, error) {
+	rows, err := tx.Query(`
+		SELECT id, seq, doc_path, run_state, run_session_uuid, run_started_at,
+		       run_ended_at, run_error, run_branch, run_checkboxes_before,
+		       run_checkboxes_after, activated_at, activated_board_task_id
+		  FROM epic_phases
+		 WHERE workspace_task_id = ?`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []phaseState
+	for rows.Next() {
+		var p phaseState
+		if err := rows.Scan(&p.id, &p.seq, &p.docPath, &p.runState, &p.runSessionUUID,
+			&p.runStartedAt, &p.runEndedAt, &p.runError, &p.runBranch,
+			&p.runCheckboxesBefore, &p.runCheckboxesAfter, &p.activatedAt,
+			&p.activatedBoardTaskID); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// carryAcrossRenames moves daemon-owned state from rows whose doc path disappeared onto
+// the rows freshly inserted for this task, matching on seq. It returns the doc paths of
+// the sources it drained, so the prune can delete them unconditionally.
+//
+// The match is required to be 1:1 — exactly one vanished row and exactly one brand-new
+// row for that seq. Anything else (two phases collapsed onto one seq, a renumbered plan)
+// carries nothing and says so: merging two genuinely different phases is a worse outcome
+// than losing a chip, which is the same reasoning that keeps seq out of the identity key.
+func carryAcrossRenames(tx *sql.Tx, taskID int64, phases []epicPhase, before []phaseState) ([]string, error) {
+	if len(before) == 0 || len(phases) == 0 {
+		return nil, nil
+	}
+	beforePaths := make(map[string]bool, len(before))
+	for _, p := range before {
+		beforePaths[p.docPath] = true
+	}
+	nowPaths := make(map[string]bool, len(phases))
+	for _, p := range phases {
+		nowPaths[p.docPath] = true
+	}
+
+	// Vanished rows that hold state, and rows inserted by the upserts above, both
+	// bucketed by seq.
+	vanished := map[int][]phaseState{}
+	for _, p := range before {
+		if !nowPaths[p.docPath] && p.carriesState() {
+			vanished[p.seq] = append(vanished[p.seq], p)
+		}
+	}
+	if len(vanished) == 0 {
+		return nil, nil
+	}
+	inserted := map[int][]epicPhase{}
+	for _, p := range phases {
+		if !beforePaths[p.docPath] {
+			inserted[p.seq] = append(inserted[p.seq], p)
+		}
+	}
+
+	var drained []string
+	for seq, olds := range vanished {
+		news := inserted[seq]
+		if len(olds) != 1 || len(news) != 1 {
+			log.Printf("warn: wsingest: task=%d phase seq=%d — %d vanished row(s) with run state and %d new doc(s); state NOT carried (ambiguous match)",
+				taskID, seq, len(olds), len(news))
+			continue
+		}
+		old, dst := olds[0], news[0]
+		if _, err := tx.Exec(`
+			UPDATE epic_phases
+			   SET run_state=?, run_session_uuid=?, run_started_at=?, run_ended_at=?,
+			       run_error=?, run_branch=?, run_checkboxes_before=?,
+			       run_checkboxes_after=?, activated_at=?, activated_board_task_id=?
+			 WHERE workspace_task_id = ? AND doc_path = ?`,
+			old.runState, old.runSessionUUID, old.runStartedAt, old.runEndedAt,
+			old.runError, old.runBranch, old.runCheckboxesBefore, old.runCheckboxesAfter,
+			old.activatedAt, old.activatedBoardTaskID, taskID, dst.docPath); err != nil {
+			return nil, err
+		}
+		drained = append(drained, old.docPath)
+		log.Printf("wsingest: task=%d phase seq=%d carried run state across rename %s → %s (run_state=%s)",
+			taskID, seq, filepath.Base(old.docPath), filepath.Base(dst.docPath), old.runState)
+	}
+	return drained, nil
+}
+
+// logKeptRunningOrphans reports the rows the prune's running-guard is about to spare:
+// a run whose phase doc vanished with no replacement to carry it to.
+func logKeptRunningOrphans(tx *sql.Tx, taskID int64, phases []epicPhase, carried []string) error {
+	keepPaths := make(map[string]bool, len(phases)+len(carried))
+	for _, p := range phases {
+		keepPaths[p.docPath] = true
+	}
+	for _, docPath := range carried {
+		keepPaths[docPath] = true
+	}
+	rows, err := tx.Query(
+		`SELECT id, doc_path FROM epic_phases WHERE workspace_task_id = ? AND run_state = 'running'`, taskID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id      int64
+			docPath string
+		)
+		if err := rows.Scan(&id, &docPath); err != nil {
+			return err
+		}
+		if !keepPaths[docPath] {
+			log.Printf("warn: wsingest: task=%d phase %d is running but its doc %s vanished from the plan — row kept",
+				taskID, id, docPath)
+		}
+	}
+	return rows.Err()
 }
