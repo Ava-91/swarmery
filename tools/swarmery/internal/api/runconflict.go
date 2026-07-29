@@ -45,6 +45,13 @@ const (
 	codeBranchBusy       = "branch-busy"
 	codeDetachedHead     = "detached-head"
 
+	// codeBranchLivePhase: the orphan-cleanup route was handed a branch that IS a
+	// live phase row's run branch. That route exists to delete work stranded under
+	// an id generation that no longer has a row; pointing it at a live phase would
+	// destroy a run's branch behind that run's own back, which the phase-scoped
+	// route refuses by construction (it derives the name, it cannot be told one).
+	codeBranchLivePhase = "branch-live-phase"
+
 	// Plan-run-only admission gates.
 	codePhaseRunning = "phase-running"
 	codePlanInactive = "plan-not-active"

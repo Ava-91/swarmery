@@ -354,6 +354,38 @@ func (m *Manager) ownsWorktreePath(p, taskID string) bool {
 	return samePath(filepath.Dir(filepath.Dir(p)), root)
 }
 
+// OwnCheckoutOf reports the worktree path holding branch when that worktree is
+// one THIS manager created for the branch's own task (<Root>/<slug>/<taskID>),
+// and ok=false otherwise — no such checkout, a foreign one, or git unreadable.
+//
+// It exists for the READ-ONLY diagnosis side. A branch with commits means two very
+// different things: a crash leftover checked out at the run's own path retries
+// fine (Acquire warm-reuses it) and cannot be deleted (`git branch -D` refuses a
+// live checkout), whereas the same branch anywhere else genuinely blocks a retry.
+// Telling the user to "merge or delete it" is wrong advice for the first case, and
+// the distinction already lives here in ownsWorktreePath — so diagnosis borrows it
+// instead of re-deriving this package's path layout somewhere else, where the two
+// copies would drift the first time the layout changes.
+//
+// Read-only and best-effort by construction: it prunes nothing, deletes nothing,
+// and any git failure is reported as "not ours" so a diagnosis can never fail
+// because git was unhappy.
+func (m *Manager) OwnCheckoutOf(repoRoot, branch string) (string, bool) {
+	taskID := taskIDForBranch(branch)
+	if taskID == "" {
+		return "", false
+	}
+	list, err := m.Git.Run(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false
+	}
+	path, ok := parseWorktreeList(list).pathForBranch(branch)
+	if !ok || !m.ownsWorktreePath(path, taskID) {
+		return "", false
+	}
+	return path, true
+}
+
 // reclaimBase resolves the tip a reclaim measures against: the repo's CHECKED-OUT
 // branch, via symbolic-ref and nothing else.
 //

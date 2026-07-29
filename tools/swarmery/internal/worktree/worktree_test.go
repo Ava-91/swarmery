@@ -1069,3 +1069,50 @@ func TestAcquireNonRepo(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotARepo", err)
 	}
 }
+
+// ---- OwnCheckoutOf: the read-only ownership probe diagnosis borrows ---------
+
+func TestOwnCheckoutOf(t *testing.T) {
+	// Our own crash leftover: registered at <Root>/<slug>/<taskID> on its branch.
+	g, m, own := ownLeftoverStub(t, "proj", "phase-714")
+	path, ok := m.OwnCheckoutOf("/tmp/repo", "swarm/phase-714")
+	if !ok || !samePath(path, own) {
+		t.Errorf("OwnCheckoutOf = (%q,%v), want (%q,true)", path, ok, own)
+	}
+	// Read-only: it must not prune, delete or add anything — a diagnosis probe
+	// that mutated the repo would be a very unpleasant surprise.
+	for _, bad := range []string{"branch -D", "worktree prune", "worktree add", "worktree remove"} {
+		if g.called(bad) {
+			t.Errorf("OwnCheckoutOf issued %q (calls: %v)", bad, g.calls)
+		}
+	}
+
+	// A checkout OUTSIDE Root is not ours.
+	g2 := baseStub()
+	g2.on("worktree list --porcelain",
+		"worktree /elsewhere/phase-714\nbranch refs/heads/swarm/phase-714\n\n", nil)
+	m2 := &Manager{Git: g2, Root: filepath.Join(t.TempDir(), "wts")}
+	if _, ok := m2.OwnCheckoutOf("/tmp/repo", "swarm/phase-714"); ok {
+		t.Error("a foreign checkout was reported as ours")
+	}
+
+	// No checkout at all, a branch outside swarm/, and an unreadable git all
+	// answer "not ours" rather than erroring — the probe has no error channel by
+	// design, so every unknown must degrade to false.
+	g3, m3, _ := ownLeftoverStub(t, "proj", "phase-714")
+	if _, ok := m3.OwnCheckoutOf("/tmp/repo", "swarm/phase-999"); ok {
+		t.Error("an unheld branch was reported as ours")
+	}
+	if _, ok := m3.OwnCheckoutOf("/tmp/repo", "dev"); ok {
+		t.Error("a branch outside swarm/ was reported as ours")
+	}
+	if len(g3.calls) == 0 {
+		t.Error("expected the list probe to have run")
+	}
+	g4 := baseStub()
+	g4.on("worktree list --porcelain", "fatal: not a git repository", errors.New("exit 128"))
+	m4 := &Manager{Git: g4, Root: filepath.Join(t.TempDir(), "wts")}
+	if _, ok := m4.OwnCheckoutOf("/tmp/repo", "swarm/phase-714"); ok {
+		t.Error("an unreadable git was reported as ours")
+	}
+}

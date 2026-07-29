@@ -2229,6 +2229,9 @@ export type RunConflictCode =
   | 'branch-refused'
   | 'branch-busy'
   | 'detached-head'
+  /** orphan-cleanup route only: the named branch's id IS a live phase row, so it is
+   *  some phase's run branch rather than stranded work. */
+  | 'branch-live-phase'
   // Plan-run-only admission gates.
   | 'phase-running'
   | 'plan-not-active'
@@ -2237,7 +2240,20 @@ export type RunConflictCode =
 
 /** One reason a phase did not progress — mirrors phasediag.Blocker. */
 export interface PhaseBlocker {
-  kind: 'dep-incomplete' | 'dep-unmerged' | 'branch-blocks-retry' | 'branch-dirty' | 'no-criteria';
+  kind:
+    | 'dep-incomplete'
+    | 'dep-unmerged'
+    | 'branch-blocks-retry'
+    | 'branch-dirty'
+    /** the branch holds commits but its own run's worktree is still checked out on
+     *  it — a retry continues that work, and a delete 409s, so this kind offers NO
+     *  delete action (phasediag.KindOwnWorktree). */
+    | 'own-worktree'
+    | 'no-criteria'
+    /** a swarm/phase-<id> branch whose id matches no phase row: work stranded under
+     *  a previous id generation. A legitimate delete target, but only through the
+     *  orphan-cleanup route — this phase cannot derive its name (phasediag.KindOrphanBranch). */
+    | 'orphan-branch';
   summary: string;
   detail: string;
   /** branch-dirty only: the branch a delete would destroy and how many commits go

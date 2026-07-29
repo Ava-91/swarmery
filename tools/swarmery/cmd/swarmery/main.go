@@ -1216,7 +1216,7 @@ func cmdServe(args []string) error {
 	api.AttachPhaseRun(phaserunSvc)
 	// The diagnosis endpoint reads git directly (branch ancestry) through the same
 	// boundary the worktree manager uses.
-	api.AttachPhaseDiag(wtMgr.Git)
+	api.AttachPhaseDiag(wtMgr.Git, wtMgr)
 
 	// Plan runs: hand a WHOLE plan to one agent — one headless session in one
 	// worktree, driving core's run-plan skill (state on plan_runs). Same

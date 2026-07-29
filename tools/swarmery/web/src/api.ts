@@ -1522,6 +1522,35 @@ export async function deletePhaseRunBranch(
   return (await res.json()) as { deleted: boolean; branch: string };
 }
 
+/**
+ * DELETE /api/epics/{taskId}/orphan-branch?branch= — delete a swarm/phase-<id>
+ * branch whose id matches no phase row (work stranded under a previous id
+ * generation). 200 {deleted, branch}; 409 for a branch outside the
+ * swarm/phase-<id> namespace or one that belongs to a live phase row.
+ *
+ * A SIBLING of deletePhaseRunBranch, not a parameterisation of it: that route
+ * derives the branch from the phase id and must stay incapable of naming an
+ * arbitrary one. An orphan has no row to derive from, hence the explicit name.
+ */
+export async function deleteOrphanBranch(
+  taskId: number,
+  branch: string,
+): Promise<{ deleted: boolean; branch: string }> {
+  if (MOCK) return { deleted: true, branch };
+  const res = await fetch(
+    `/api/epics/${String(taskId)}/orphan-branch?branch=${encodeURIComponent(branch)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      code?: RunConflictCode;
+    };
+    throw runConflictError(body, `orphan branch delete failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { deleted: boolean; branch: string };
+}
+
 /** POST /api/epics/{taskId}/phases/{phaseId}/run/cancel — 202 / 409 when idle. */
 export async function cancelEpicPhaseRun(
   taskId: number,
