@@ -233,7 +233,7 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	}
 
 	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
-	// run's swarm/plan-<taskID> is still there and Acquire would fail ErrBranchBusy
+	// run's swarm/plan-<taskID> is still there and Acquire would fail ErrBranchExists
 	// — the dead end that made a plan's SECOND run fail for ever. Reclaim it first
 	// when it is empty; refuse loudly when it holds work. The literal below must
 	// match worktree.branchName ("swarm/" + taskID) — the same deterministic name

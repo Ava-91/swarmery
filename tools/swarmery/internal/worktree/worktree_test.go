@@ -241,8 +241,41 @@ func TestAcquireBranchExistsButNotCheckedOut(t *testing.T) {
 	g.on("worktree add", "fatal: a branch named 'swarm/T-x' already exists", errors.New("exit 128"))
 	m := newMgr(t, g)
 	_, err := m.Acquire("/tmp/repo", "proj", "T-x")
-	if !errors.Is(err, ErrBranchBusy) {
-		t.Fatalf("err = %v, want ErrBranchBusy (branch exists on add)", err)
+	if !errors.Is(err, ErrBranchExists) {
+		t.Fatalf("err = %v, want ErrBranchExists (branch exists on add)", err)
+	}
+	// The message must not send the reader looking for a worktree: the list probe
+	// just proved none holds this branch.
+	if strings.Contains(err.Error(), "another worktree") {
+		t.Errorf("err = %q, must not claim another worktree holds the branch", err)
+	}
+}
+
+// The two conflicts have different remedies — release a checkout vs merge-or-delete a
+// leftover — so they must never satisfy each other's errors.Is. Collapsing them is the
+// bug this pair of sentinels exists to prevent.
+func TestBranchConflictSentinelsAreDistinct(t *testing.T) {
+	if errors.Is(ErrBranchExists, ErrBranchBusy) {
+		t.Error("ErrBranchExists matches ErrBranchBusy — a mere name collision would read as a live conflict")
+	}
+	if errors.Is(ErrBranchBusy, ErrBranchExists) {
+		t.Error("ErrBranchBusy matches ErrBranchExists — a live checkout would read as a deletable leftover")
+	}
+}
+
+// The busy path must stay busy: a branch checked out elsewhere is not a leftover, and
+// telling the operator to delete it would destroy a running task's checkout.
+func TestAcquireBusyIsNotReportedAsExists(t *testing.T) {
+	g := baseStub()
+	g.on("worktree list --porcelain",
+		"worktree /some/other/place\nbranch refs/heads/swarm/T-busy\n\n", nil)
+	m := newMgr(t, g)
+	_, err := m.Acquire("/tmp/repo", "proj", "T-busy")
+	if errors.Is(err, ErrBranchExists) {
+		t.Fatalf("err = %v, want ErrBranchBusy only", err)
+	}
+	if !strings.Contains(err.Error(), "/some/other/place") {
+		t.Errorf("err = %q, want it to name the holding worktree", err)
 	}
 }
 
