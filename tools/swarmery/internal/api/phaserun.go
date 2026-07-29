@@ -116,11 +116,15 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	// The leftover run branch holds commits a retry would collide with. Commit
 	// SUBJECTS are deliberately absent here — the UI already fetches /diagnosis,
 	// whose branch-dirty blocker carries them, and git ownership stays in phasediag.
+	// `base` names what the count was measured against (empty when it could not be
+	// named): "2 commits ahead" is only actionable once the user knows ahead of what.
+	// Same four fields runPlan emits, so both run surfaces parse as one shape.
 	case errors.As(err, &dirtyErr):
 		writeJSONStatus(w, http.StatusConflict, map[string]any{
 			"error":        dirtyErr.Error(),
 			"branch":       dirtyErr.Branch,
 			"commitsAhead": dirtyErr.CommitsAhead,
+			"base":         dirtyErr.Base,
 		})
 	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
 	// errors.Is still matches through the wrap. Without this arm a checked-out run

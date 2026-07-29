@@ -1397,13 +1397,21 @@ export async function epicLifecycle(
 }
 
 /**
- * A phase-run rejection that carries structured escape-hatch data. The
+ * A run rejection that carries structured escape-hatch data. The
  * branch-holds-commits 409 names the branch (and how far ahead it is) so the UI
  * can offer "delete it and retry" instead of asking the user to parse prose.
+ *
+ * Both run surfaces throw this: the phase run and the whole-plan run answer with
+ * the same four fields, so one type covers both. `base` names the branch
+ * commitsAhead was measured against — without it "2 commits ahead" is not a fact
+ * the user can act on, since the same branch can be 2 ahead of `dev` and 0 ahead
+ * of a feature branch that already carries them. Absent when the daemon could not
+ * name a base (no git seam, detached HEAD) — never guessed.
  */
 export type PhaseRunBranchError = Error & {
   branch?: string | undefined;
   commitsAhead?: number | undefined;
+  base?: string | undefined;
 };
 
 /**
@@ -1429,6 +1437,7 @@ export async function runEpicPhase(
       error?: string;
       branch?: string;
       commitsAhead?: number;
+      base?: string;
     };
     const err: PhaseRunBranchError = new Error(
       body.error ?? `phase run failed (${String(res.status)})`,
@@ -1436,6 +1445,7 @@ export async function runEpicPhase(
     if (body.branch !== undefined) {
       err.branch = body.branch;
       err.commitsAhead = body.commitsAhead;
+      err.base = body.base;
     }
     throw err;
   }
@@ -1495,6 +1505,11 @@ export async function cancelEpicPhaseRun(
  * {status, sessionUuid, agent, mode}; 409 carries the gate reason (already
  * running / a phase run holds the docs / plan not active / already complete) in
  * the error body — surfaced verbatim.
+ *
+ * The branch-holds-commits 409 is the one rejection that is not just a message:
+ * it carries `branch` / `commitsAhead` / `base`, so it throws the same enriched
+ * PhaseRunBranchError the phase run throws. Flattening it to `new Error(message)`
+ * is what left the operator staring at a raw string with no way to act.
  */
 export async function runEpicPlan(
   taskId: number,
@@ -1513,8 +1528,21 @@ export async function runEpicPlan(
     body: JSON.stringify({ agent: opts.agent ?? '', mode: opts.mode ?? 'auto' }),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `plan run failed (${String(res.status)})`);
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      branch?: string;
+      commitsAhead?: number;
+      base?: string;
+    };
+    const err: PhaseRunBranchError = new Error(
+      body.error ?? `plan run failed (${String(res.status)})`,
+    );
+    if (body.branch !== undefined) {
+      err.branch = body.branch;
+      err.commitsAhead = body.commitsAhead;
+      err.base = body.base;
+    }
+    throw err;
   }
   return (await res.json()) as {
     status: string;
@@ -1522,6 +1550,26 @@ export async function runEpicPlan(
     agent: string;
     mode: PlanRunMode;
   };
+}
+
+/**
+ * DELETE /api/epics/{taskId}/branch — destroy the plan's run branch INCLUDING
+ * its commits, the explicit decision behind the branch-dirty 409. 200
+ * {deleted, branch} where `deleted` reports whether the branch was actually
+ * there (the delete is idempotent, so a no-op must not be claimed as a
+ * deletion); 409 while a run owns it, it is checked out, or it is outside the
+ * swarm/ namespace the daemon may delete.
+ */
+export async function deletePlanRunBranch(
+  taskId: number,
+): Promise<{ deleted: boolean; branch: string }> {
+  if (MOCK) return { deleted: true, branch: 'swarm/plan-mock' };
+  const res = await fetch(`/api/epics/${String(taskId)}/branch`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `branch delete failed (${String(res.status)})`);
+  }
+  return (await res.json()) as { deleted: boolean; branch: string };
 }
 
 /** POST /api/epics/{taskId}/run/cancel — 202 / 409 when idle. */

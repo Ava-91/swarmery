@@ -66,6 +66,7 @@ import { Markdown } from '../lib/markdown';
 import { fmtElapsed } from '../lib/format';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { RunOutcomeModal } from '../components/RunOutcomeModal';
+import { PlanBranchDirtyModal, type PlanBranchDirty } from '../components/PlanBranchDirtyModal';
 
 /** A board column that counts as "resolved" for the dependency gate. */
 function isResolvedColumn(col: BoardColumn | null): boolean {
@@ -458,6 +459,16 @@ export function Plans(): JSX.Element {
   // 409 body (a phase run holds the docs, plan not active, already complete)
   // says which one bit.
   const [planRunBusy, setPlanRunBusy] = useState(false);
+  // The branch-holds-commits 409, once it has happened. That refusal is not a
+  // message to read — it is a decision (merge the commits or destroy them), so it
+  // gets a modal instead of the error strip. The agent/mode of the refused call
+  // ride along so "Run plan again" replays it exactly rather than re-deriving it.
+  const [planDirty, setPlanDirty] = useState<{
+    dirty: PlanBranchDirty;
+    taskId: number;
+    agent: string;
+    mode: PlanRunMode;
+  } | null>(null);
 
   const startPlanRun = useCallback(
     (taskId: number, agent: string, mode: PlanRunMode): void => {
@@ -465,7 +476,22 @@ export function Plans(): JSX.Element {
       setRunMsg(null);
       runEpicPlan(taskId, { agent, mode })
         .then(() => reload())
-        .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+        .catch((e: unknown) => {
+          setRunMsg(e instanceof Error ? e.message : String(e));
+          const branchErr = e as Error & { branch?: string; commitsAhead?: number; base?: string };
+          if (e instanceof Error && typeof branchErr.branch === 'string')
+            setPlanDirty({
+              dirty: {
+                branch: branchErr.branch,
+                commitsAhead: branchErr.commitsAhead ?? 0,
+                base: branchErr.base ?? '',
+                message: e.message,
+              },
+              taskId,
+              agent,
+              mode,
+            });
+        })
         .finally(() => setPlanRunBusy(false));
     },
     [reload],
@@ -641,6 +667,18 @@ export function Plans(): JSX.Element {
           }
           onClose={() => setOutcomeFor(null)}
           onRetry={() => startRun(activeEpic.taskId, outcomeFor)}
+        />
+      )}
+
+      {/* The plan run refused to start because its branch still holds commits.
+          Not an error strip: the user has to choose between merging that work and
+          destroying it, and the modal is where both choices live. */}
+      {planDirty !== null && (
+        <PlanBranchDirtyModal
+          taskId={planDirty.taskId}
+          dirty={planDirty.dirty}
+          onClose={() => setPlanDirty(null)}
+          onRetry={() => startPlanRun(planDirty.taskId, planDirty.agent, planDirty.mode)}
         />
       )}
     </div>
