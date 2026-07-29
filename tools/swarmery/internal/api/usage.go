@@ -1,35 +1,77 @@
 package api
 
-// Usage popover (fusion phase 14): Claude subscription windows with a pace
-// indicator, adapted from Fusion's Command-Center usage widget.
+// Usage modal (fusion phase 14 → live quotas): GET /api/usage serves a PROVIDER
+// ARRAY — the live Claude subscription reading first, the telemetry estimate
+// second.
 //
-// OAuth SPIKE OUTCOME — telemetry estimate only (source:"estimate").
-// Reaching Anthropic's real subscription-usage endpoint requires harvesting the
-// subscription OAuth bearer from the credential store (~/.claude/.credentials
-// or the macOS Keychain) and replaying it against an undocumented, unstable
-// endpoint — credential exfiltration + a fragile private-API dependency, out of
-// policy. So this endpoint self-estimates from OUR indexed telemetry and marks
-// every window `source:"estimate"`; the UI badges it plainly and never presents
-// it as exact. The `source` field is kept so a future in-policy OAuth
-// integration can flip windows to `"oauth"` without a contract change.
+// # Policy note — the 2026-06 OAuth spike is reversed
+//
+// This file used to open with a spike note declaring the OAuth path
+// "credential exfiltration + a fragile private-API dependency, out of policy",
+// and self-estimated every window from our own indexed telemetry. That decision
+// is reversed. The reasoning is recorded in full in the internal/usage package
+// doc (tools/swarmery/internal/usage/types.go); in short: the daemon reads the
+// operator's OWN credential on the operator's OWN machine and sends it ONLY to
+// Anthropic — the exact call `claude /usage` makes — never persisting, logging,
+// or serializing it. See that package doc before touching this path.
+//
+// Providers:
+//
+//   - "Claude" (source:"oauth") — usage.Client.Fetch. Never returns an error;
+//     every failure mode (opted out, not logged in, auth rejected, rate limited,
+//     malformed payload) degrades to a visible per-provider error card, so one
+//     broken provider can never break the endpoint.
+//   - "Telemetry estimate" (source:"estimate") — the previous behaviour, demoted
+//     to a SECOND card and emitted ONLY when SWARMERY_USAGE_LIMITS is set. It is
+//     a self-estimate and must never masquerade as the real reading.
+//
+// The old top-level `configured` flag is gone: the frontend and the daemon ship
+// together (go:embed), so there is no compatibility window to preserve, and the
+// estimate card's presence now carries the same information.
 //
 // Configuration: SWARMERY_USAGE_LIMITS is a JSON object of window quotas, e.g.
-//   {"session5h":{"label":"5-hour session","tokens":50000000,"windowHours":5},
-//    "weekly":{"label":"Weekly","tokens":300000000,"windowHours":168}}
-// Unset/blank → the endpoint returns an empty window list with configured:false
-// (the popover shows a "set SWARMERY_USAGE_LIMITS to track quota" hint rather
-// than fabricating limits). `used` = indexed input+output tokens in the rolling
-// window across ALL projects (archived included — quota is billed regardless).
+//
+//	{"session5h":{"label":"5-hour session","tokens":50000000,"windowHours":5},
+//	 "weekly":{"label":"Weekly","tokens":300000000,"windowHours":168}}
+//
+// Unset/blank → no estimate card at all. `used` = indexed input+output tokens in
+// the rolling window across ALL projects (archived included — quota is billed
+// regardless).
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
 )
+
+// claudeFetchTimeout bounds the whole live-provider fetch. Fusion budgets 75s
+// only because of its node-pty fallback (usage.ts:2346); without that fallback,
+// 3 retries plus backoff fit comfortably inside 20s.
+const claudeFetchTimeout = 20 * time.Second
+
+// estimateProviderName is the second card's label. Deliberately explicit: the
+// operator must never mistake the estimate for the real subscription reading.
+const estimateProviderName = "Telemetry estimate"
+
+// usageClient is the package-level live-quota client. The refreshed-token cache
+// lives on it, so it must outlive a single request. Tests swap this for a client
+// wired to a stub endpoint through usage.Client's seams.
+var usageClient = &usage.Client{}
+
+// errBadUsageLimits marks a malformed SWARMERY_USAGE_LIMITS so the handler can
+// answer with the specific 500 body this endpoint has always returned, rather
+// than the generic error shape.
+var errBadUsageLimits = errors.New("invalid SWARMERY_USAGE_LIMITS JSON")
 
 // usageWindowConfig is one configured quota window from SWARMERY_USAGE_LIMITS.
 type usageWindowConfig struct {
@@ -38,25 +80,12 @@ type usageWindowConfig struct {
 	WindowHours float64 `json:"windowHours"` // rolling window length
 }
 
-// usageWindowDTO is one rendered window. usedPct/pace are fractions; the UI
-// renders them as percentages. resetsAt is when the current rolling window's
-// oldest edge rolls off (now + windowHours in this simple rolling model).
-type usageWindowDTO struct {
-	Key      string  `json:"key"`
-	Label    string  `json:"label"`
-	Used     int64   `json:"used"`
-	Limit    int64   `json:"limit"`
-	UsedPct  float64 `json:"usedPct"`  // used/limit, clamped 0..1+ (may exceed 1)
-	Pace     float64 `json:"pace"`     // usedPct/elapsedPct - 1 (positive = over pace)
-	ResetsAt string  `json:"resetsAt"` // RFC3339
-	Source   string  `json:"source"`   // "estimate" (see spike note) | "oauth"
-}
-
-type usageDTO struct {
-	Configured bool             `json:"configured"`
-	Source     string           `json:"source"` // "estimate"
-	GeneratedAt string          `json:"generatedAt"`
-	Windows    []usageWindowDTO `json:"windows"`
+// usageResp is the /api/usage body. The window/provider shapes are owned by
+// internal/usage and serialized verbatim — this package does not redefine or
+// re-map their JSON tags.
+type usageResp struct {
+	GeneratedAt string           `json:"generatedAt"`
+	Providers   []usage.Provider `json:"providers"`
 }
 
 // parseUsageLimits parses the SWARMERY_USAGE_LIMITS JSON. Blank → (nil, nil):
@@ -79,33 +108,12 @@ func parseUsageLimits(raw string) (map[string]usageWindowConfig, error) {
 	return cfg, nil
 }
 
-// pace is Fusion's "N% over/under pace" figure: how the consumption rate so far
-// compares to a linear burn of the quota across the window.
-//
-//	pace = usedPct / elapsedPct - 1
-//
-// where usedPct = used/limit and elapsedPct = elapsed/windowLength. Positive =
-// burning faster than linear (over pace); negative = under. A full or past
-// window (elapsedPct >= 1) has no forward pace signal → 0. A zero limit → 0.
-// Pure; unit-tested against fixed clock fixtures.
-func pace(used, limit int64, elapsed, window time.Duration) float64 {
-	if limit <= 0 || window <= 0 {
-		return 0
-	}
-	elapsedPct := elapsed.Hours() / window.Hours()
-	if elapsedPct <= 0 || elapsedPct >= 1 {
-		return 0
-	}
-	usedPct := float64(used) / float64(limit)
-	return usedPct/elapsedPct - 1
-}
-
 // usageWindowElapsed models where "now" sits inside the current rolling window.
 // For a simple rolling window anchored at the local calendar boundary of its
 // length, elapsed is (now - windowStart). We anchor session windows to the
 // hour and the weekly window to the local week to give a meaningful "resets in"
 // countdown without needing Anthropic's real reset schedule (this is an
-// estimate — the popover says so). Pure; unit-tested.
+// estimate — the card says so). Pure; unit-tested.
 func usageWindowElapsed(now time.Time, windowHours float64) (elapsed, window time.Duration, resetsAt time.Time) {
 	window = time.Duration(windowHours * float64(time.Hour))
 	// Anchor the rolling window to a deterministic grid so "resets in" is stable
@@ -122,10 +130,10 @@ func usageWindowElapsed(now time.Time, windowHours float64) (elapsed, window tim
 	return elapsed, window, resetsAt
 }
 
-// usageCacheEntry is the 60s-cached computed response.
+// usageCacheEntry is the cached computed response.
 type usageCacheEntry struct {
 	at   time.Time
-	body usageDTO
+	body usageResp
 }
 
 var (
@@ -133,14 +141,33 @@ var (
 	usageCache   *usageCacheEntry
 )
 
-const usageCacheTTL = 60 * time.Second
+// usageCacheTTL matches Fusion's CACHE_TTL_MS (usage.ts:107). It is deliberately
+// short: this now costs a live Anthropic round-trip per miss.
+const usageCacheTTL = 30 * time.Second
 
-// resetUsageCache clears the process-wide 60s usage cache. Used by tests to make
+// resetUsageCache clears the process-wide usage cache. Used by tests to make
 // assertions independent of a prior computed body (the ?fresh=1 query bypasses
 // the cache read but still repopulates it).
 func resetUsageCache() {
 	usageCacheMu.Lock()
 	usageCache = nil
+	usageCacheMu.Unlock()
+}
+
+// cachedUsage returns the cached body when it is still within the TTL.
+func cachedUsage() (usageResp, bool) {
+	usageCacheMu.Lock()
+	defer usageCacheMu.Unlock()
+	if usageCache != nil && time.Since(usageCache.at) < usageCacheTTL {
+		return usageCache.body, true
+	}
+	return usageResp{}, false
+}
+
+// storeUsage replaces the cached body.
+func storeUsage(body usageResp, at time.Time) {
+	usageCacheMu.Lock()
+	usageCache = &usageCacheEntry{at: at, body: body}
 	usageCacheMu.Unlock()
 }
 
@@ -157,34 +184,24 @@ func (h *Handler) usedTokensSince(startUTC string) (int64, error) {
 	return n, err
 }
 
-// GET /api/usage — subscription-window usage with pace. See the file header for
-// the OAuth spike outcome (estimate-only). Cached 60s; the Refresh button in
-// the popover appends ?fresh=1 to bypass the cache.
-func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("fresh") != "1" {
-		usageCacheMu.Lock()
-		if usageCache != nil && time.Since(usageCache.at) < usageCacheTTL {
-			body := usageCache.body
-			usageCacheMu.Unlock()
-			writeJSON(w, body, nil)
-			return
-		}
-		usageCacheMu.Unlock()
-	}
-
+// estimateProvider builds the secondary telemetry-estimate card from
+// SWARMERY_USAGE_LIMITS and our own indexed token counts.
+//
+// ok=false (with a nil error) means SWARMERY_USAGE_LIMITS is unset or empty —
+// no estimate card is emitted at all. A malformed value is errBadUsageLimits; a
+// failed token query is returned as-is so the handler can 500.
+//
+// Pace is computed by usage.CalculatePace so both cards share ONE definition.
+// This is a deliberate behavioural change from the old ratio helper — see the
+// pace-semantics table in usage_test.go.
+func (h *Handler) estimateProvider(now time.Time) (usage.Provider, bool, error) {
 	cfg, err := parseUsageLimits(os.Getenv("SWARMERY_USAGE_LIMITS"))
 	if err != nil {
-		http.Error(w, `{"error":"invalid SWARMERY_USAGE_LIMITS JSON"}`, http.StatusInternalServerError)
-		return
+		return usage.Provider{}, false, fmt.Errorf("%w: %v", errBadUsageLimits, err)
 	}
-
-	now := time.Now()
-	out := usageDTO{
-		Source:      "estimate",
-		GeneratedAt: now.UTC().Format(time.RFC3339),
-		Windows:     []usageWindowDTO{},
+	if len(cfg) == 0 {
+		return usage.Provider{}, false, nil
 	}
-	out.Configured = len(cfg) > 0
 
 	// Deterministic order: shortest window first (session before weekly).
 	keys := make([]string, 0, len(cfg))
@@ -198,6 +215,13 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 		return keys[i] < keys[j]
 	})
 
+	p := usage.Provider{
+		Name:    estimateProviderName,
+		Status:  usage.StatusOK,
+		Source:  usage.SourceEstimate,
+		Windows: make([]usage.Window, 0, len(keys)),
+	}
+
 	const bound = "2006-01-02T15:04:05"
 	for _, k := range keys {
 		c := cfg[k]
@@ -205,32 +229,79 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 		windowStart := now.Add(-elapsed)
 		used, err := h.usedTokensSince(windowStart.UTC().Format(bound))
 		if err != nil {
-			writeErr(w, err)
-			return
+			return usage.Provider{}, false, err
 		}
 		label := c.Label
 		if label == "" {
 			label = k
 		}
-		usedPct := 0.0
+		// Clamped to 0..100 to match the oauth provider's windows; the raw
+		// over-quota signal survives in Used/Limit.
+		percentUsed := 0.0
 		if c.Tokens > 0 {
-			usedPct = float64(used) / float64(c.Tokens)
+			percentUsed = math.Min(100, math.Max(0, float64(used)/float64(c.Tokens)*100))
 		}
-		out.Windows = append(out.Windows, usageWindowDTO{
-			Key:      k,
-			Label:    label,
-			Used:     used,
-			Limit:    c.Tokens,
-			UsedPct:  usedPct,
-			Pace:     pace(used, c.Tokens, elapsed, window),
-			ResetsAt: resetsAt.UTC().Format(time.RFC3339),
-			Source:   "estimate",
-		})
+		resetMs := resetsAt.Sub(now).Milliseconds()
+		w := usage.Window{
+			Key:         k,
+			Label:       label,
+			PercentUsed: percentUsed,
+			PercentLeft: 100 - percentUsed,
+			ResetMs:     resetMs,
+			ResetAt:     resetsAt.UTC().Format(time.RFC3339),
+			WindowMs:    window.Milliseconds(),
+			Pace:        usage.CalculatePace(percentUsed, resetMs, window.Milliseconds()),
+			Source:      usage.SourceEstimate,
+			Used:        used,
+			Limit:       c.Tokens,
+		}
+		if resetMs > 0 {
+			w.ResetText = "resets in " + usage.FormatDuration(time.Duration(resetMs)*time.Millisecond)
+		}
+		p.Windows = append(p.Windows, w)
+	}
+	return p, true, nil
+}
+
+// GET /api/usage — the live Claude provider plus the optional telemetry-estimate
+// provider. See the file header for the policy note. Cached 30s; the Refresh
+// button in the modal appends ?fresh=1 to bypass the cache.
+//
+// The response body NEVER carries credential material — asserted by
+// TestUsageResponseCarriesNoSecrets.
+func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("fresh") != "1" {
+		if body, ok := cachedUsage(); ok {
+			writeJSON(w, body, nil)
+			return
+		}
 	}
 
-	usageCacheMu.Lock()
-	usageCache = &usageCacheEntry{at: now, body: out}
-	usageCacheMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), claudeFetchTimeout)
+	defer cancel()
 
+	now := time.Now()
+	out := usageResp{
+		GeneratedAt: now.UTC().Format(time.RFC3339),
+		Providers:   make([]usage.Provider, 0, 2),
+	}
+
+	// The live card always appears, whatever its status — an error card is the
+	// honest answer, an absent card would be a silent failure.
+	out.Providers = append(out.Providers, usageClient.Fetch(ctx))
+
+	est, ok, err := h.estimateProvider(now)
+	switch {
+	case errors.Is(err, errBadUsageLimits):
+		http.Error(w, `{"error":"invalid SWARMERY_USAGE_LIMITS JSON"}`, http.StatusInternalServerError)
+		return
+	case err != nil:
+		writeErr(w, err)
+		return
+	case ok:
+		out.Providers = append(out.Providers, est)
+	}
+
+	storeUsage(out, now)
 	writeJSON(w, out, nil)
 }

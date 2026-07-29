@@ -1,12 +1,15 @@
 // Header popover: Claude subscription-usage windows with a pace indicator
-// (fusion phase 14), adapted from Fusion's Command-Center usage widget. Data is
-// a telemetry ESTIMATE (see internal/api/usage.go — the OAuth path is out of
-// policy), so every window is plainly badged "estimate" and never presented as
-// exact. Same hairline visual language as the other header controls.
+// (fusion phase 14), adapted from Fusion's Command-Center usage widget.
+//
+// SUPERSEDED — this component is carried forward only so the app compiles
+// against the provider-array contract; the Usage modal replaces it and this file
+// is deleted with it. It flattens every provider's windows into one list and
+// renders none of the per-provider status/error/plan detail the new contract
+// carries. Do not invest here.
 //
 // Per window: a progress bar, a used-% / remaining toggle, a "resets in …"
-// countdown, and a pace line (red when over pace). A Refresh button bypasses the
-// daemon's 60s cache; while open, the popover auto-refreshes every 60s.
+// countdown, and a pace line (red when burning ahead of pace). A Refresh button
+// bypasses the daemon's 30s cache; while open, it auto-refreshes every 60s.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchUsage } from '../api';
@@ -16,7 +19,8 @@ import { fmtTokens } from '../lib/format';
 const AUTO_REFRESH_MS = 60_000;
 
 /** Forward duration to a reset instant → "2h 12m" / "13m" / "now". */
-function fmtResetsIn(iso: string, now: number): string {
+function fmtResetsIn(iso: string | undefined, now: number): string {
+  if (iso === undefined) return 'unknown';
   const ms = new Date(iso).getTime() - now;
   if (!Number.isFinite(ms) || ms <= 0) return 'now';
   const totalMin = Math.floor(ms / 60_000);
@@ -30,11 +34,10 @@ function fmtResetsIn(iso: string, now: number): string {
   return `${String(m)}m`;
 }
 
-/** Pace fraction → human label. Positive = over (burning fast), negative = under. */
-function paceLabel(pace: number): { text: string; over: boolean } {
-  const pct = Math.round(Math.abs(pace) * 100);
-  if (pct === 0) return { text: 'on pace', over: false };
-  return { text: `${String(pct)}% ${pace > 0 ? 'over' : 'under'} pace`, over: pace > 0 };
+/** Pace object → human label. `ahead` = burning faster than linear (the warning state). */
+function paceLabel(pace: UsageWindow['pace']): { text: string; over: boolean } {
+  if (pace === undefined) return { text: 'no pace data', over: false };
+  return { text: pace.message, over: pace.status === 'ahead' };
 }
 
 function WindowRow({
@@ -46,18 +49,23 @@ function WindowRow({
   now: number;
   showRemaining: boolean;
 }): JSX.Element {
-  const pct = Math.min(1, Math.max(0, w.usedPct));
-  const over = w.usedPct >= 1;
+  const pct = Math.min(1, Math.max(0, w.percentUsed / 100));
+  const over = w.percentUsed >= 100;
   const pace = paceLabel(w.pace);
-  const remaining = Math.max(0, w.limit - w.used);
+  // Token counts exist on the estimate provider only; oauth windows report a
+  // percentage and nothing else, so they fall back to "% left".
+  const remaining =
+    w.used !== undefined && w.limit !== undefined ? Math.max(0, w.limit - w.used) : undefined;
   return (
     <div className="rounded-[9px] border border-line px-2.5 py-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-mono text-[11.5px] text-ink">{w.label}</span>
         <span className="font-mono text-[10.5px] tabular-nums text-ink-dim">
           {showRemaining
-            ? `${fmtTokens(remaining)} left`
-            : `${(w.usedPct * 100).toFixed(0)}% used`}
+            ? remaining !== undefined
+              ? `${fmtTokens(remaining)} left`
+              : `${w.percentLeft.toFixed(0)}% left`
+            : `${w.percentUsed.toFixed(0)}% used`}
         </span>
       </div>
       <div
@@ -65,7 +73,7 @@ function WindowRow({
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(w.usedPct * 100)}
+        aria-valuenow={Math.round(w.percentUsed)}
         aria-label={`${w.label} usage`}
       >
         <div
@@ -75,7 +83,9 @@ function WindowRow({
       </div>
       <div className="mt-1 flex items-baseline justify-between gap-2 font-mono text-[10px]">
         <span className={pace.over ? 'text-red' : 'text-ink-faint'}>{pace.text}</span>
-        <span className="text-ink-faint">resets in {fmtResetsIn(w.resetsAt, now)}</span>
+        <span className="text-ink-faint">
+          {w.resetText ?? `resets in ${fmtResetsIn(w.resetAt, now)}`}
+        </span>
       </div>
     </div>
   );
@@ -124,7 +134,9 @@ export function UsagePopover(): JSX.Element {
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
 
-  const anyOver = data?.windows.some((w) => w.pace > 0) ?? false;
+  // Phase 3 renders providers as separate cards; until then, flatten.
+  const windows: UsageWindow[] = data?.providers.flatMap((p) => p.windows) ?? [];
+  const anyOver = windows.some((w) => w.pace?.status === 'ahead');
 
   return (
     <div className="relative" ref={ref}>
@@ -161,14 +173,14 @@ export function UsagePopover(): JSX.Element {
 
           {error !== null && <div className="mt-2 text-[11px] text-red">{error}</div>}
 
-          {data !== null && !data.configured && (
+          {data !== null && windows.length === 0 && (
             <div className="mt-2 text-[11px] leading-snug text-ink-dim">
-              set <code className="text-ink-2">SWARMERY_USAGE_LIMITS</code> (JSON window quotas) to
-              track subscription usage. Until then no limits are known.
+              {data.providers.find((p) => p.error !== undefined)?.error ??
+                'no usage windows available.'}
             </div>
           )}
 
-          {data !== null && data.configured && (
+          {data !== null && windows.length > 0 && (
             <>
               <div className="mt-2 flex justify-end">
                 <button
@@ -180,7 +192,7 @@ export function UsagePopover(): JSX.Element {
                 </button>
               </div>
               <div className="mt-1.5 flex flex-col gap-2">
-                {data.windows.map((w) => (
+                {windows.map((w) => (
                   <WindowRow key={w.key} w={w} now={now} showRemaining={showRemaining} />
                 ))}
               </div>

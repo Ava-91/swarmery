@@ -483,8 +483,9 @@ export function fetchPlaybookStats(range: AnalyticsRange = {}): Promise<Playbook
   return get(`/api/stats/playbooks?${rangeQuery(range, {})}`);
 }
 
-/** Subscription-usage windows with pace (telemetry ESTIMATE). Unscoped — quota
- * is global. `fresh` bypasses the daemon's 60s cache (the popover Refresh btn). */
+/** Subscription-usage providers: the operator's LIVE Claude quota windows,
+ * plus a telemetry-estimate card when SWARMERY_USAGE_LIMITS is set. Unscoped —
+ * quota is global. `fresh` bypasses the daemon's 30s cache (the Refresh btn). */
 export function fetchUsage(fresh = false): Promise<UsageResp> {
   if (MOCK) return mockApi.usage();
   return get(`/api/usage${fresh ? '?fresh=1' : ''}`);
