@@ -525,7 +525,7 @@ func TestReclaimEmptyBranchDeletesEmptyLeftover(t *testing.T) {
 		"symbolic-ref --short HEAD",
 		"worktree prune",
 		"worktree list --porcelain",
-		// resolveStartPoint — the SAME base resolution Acquire uses.
+		// reclaimBase — symbolic-ref only, no detached-HEAD fallback.
 		"symbolic-ref --short HEAD",
 		"rev-parse refs/heads/main",
 		"rev-list --count aaaa1111..refs/heads/swarm/phase-714",

@@ -34,6 +34,13 @@ var (
 	// to build the name correctly (a `dev` fully contained in the current HEAD counts
 	// as zero commits ahead and would otherwise be deleted).
 	ErrRefusedBranch = errors.New("worktree: refusing to operate on a branch outside swarm/")
+	// ErrDetachedHead: the repo has no checked-out branch, so there is no base to
+	// measure a run branch against. Acquire tolerates this (it only needs a start
+	// SHA, and resolveStartPoint falls back to HEAD's); reclaim must not, because
+	// its answer authorizes a `branch -D`. A detached HEAD sitting ON the run
+	// branch's own tip makes that fallback report 0 commits ahead, and the branch —
+	// the only ref holding those commits — is then deleted. No base, no count.
+	ErrDetachedHead = errors.New("worktree: refusing to reclaim a branch while the repo is on a detached HEAD")
 )
 
 // staleLockAge is how old a .git/worktrees/*/index.lock must be before the
@@ -310,11 +317,38 @@ func (m *Manager) ownsWorktreePath(p, taskID string) bool {
 	return samePath(filepath.Dir(filepath.Dir(p)), root)
 }
 
+// reclaimBase resolves the tip a reclaim measures against: the repo's CHECKED-OUT
+// branch, via symbolic-ref and nothing else.
+//
+// It deliberately does NOT call resolveStartPoint, whose HEAD fallback is
+// acquire-oriented — the right answer for pinning a new worktree, the wrong one for
+// authorizing a delete. A repo detached at swarm/<taskID>'s own tip resolves that
+// fallback to the branch's own SHA, `rev-list --count <thatSHA>..refs/heads/<branch>`
+// answers 0 ("empty"), and the only ref holding those commits is force-deleted.
+// phasediag.baseBranch already refuses to guess a base on a detached HEAD and drops
+// every branch-derived blocker; the destructive path must be at least as careful as
+// the read-only one, so it refuses too (ErrDetachedHead). No base, no count, no delete.
+func (m *Manager) reclaimBase(repoRoot string) (string, error) {
+	def, err := m.Git.Run(repoRoot, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrDetachedHead, strings.TrimSpace(def))
+	}
+	def = strings.TrimSpace(def)
+	if def == "" {
+		return "", fmt.Errorf("%w: symbolic-ref answered with an empty branch name", ErrDetachedHead)
+	}
+	sha, err := m.Git.Run(repoRoot, "rev-parse", "refs/heads/"+def)
+	if err != nil {
+		return "", fmt.Errorf("worktree: resolve tip of %s: %w", def, err)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
 // ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead of the
 // repo's base branch, so a re-run can re-acquire the deterministic name swarm/<taskID>
-// instead of dying on ErrBranchBusy. The base is resolved internally by
-// resolveStartPoint — the same call Acquire makes — so reclaim and acquisition can
-// never disagree about what "base" means.
+// instead of dying on ErrBranchBusy. The base is the repo's checked-out branch
+// (reclaimBase) — the same signal Acquire pins to whenever there IS one, and an
+// ErrDetachedHead refusal when there is not.
 //
 // Returns the number of commits ahead when the branch HAS work: the branch is left
 // untouched and the caller must not destroy it. Returns 0 when the branch was deleted,
@@ -329,7 +363,7 @@ func (m *Manager) ReclaimEmptyBranch(repoRoot, branch string) (int, error) {
 	if !exists {
 		return 0, nil // nothing to reclaim
 	}
-	base, err := m.resolveStartPoint(repoRoot)
+	base, err := m.reclaimBase(repoRoot)
 	if err != nil {
 		return 0, err
 	}

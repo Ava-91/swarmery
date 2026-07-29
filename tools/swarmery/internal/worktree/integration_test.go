@@ -287,3 +287,69 @@ func TestExecGitRealError(t *testing.T) {
 		t.Error("rev-parse HEAD in an empty dir should error")
 	}
 }
+
+// TestReclaimRefusesDetachedHeadIntegration pins the one shape in which reclaim
+// could destroy commits that exist nowhere else. With the repo on a DETACHED HEAD
+// there is no base branch to measure against; resolving the base through the
+// acquire-oriented fallback (rev-parse HEAD) answers with the detached SHA, and
+// when that SHA IS the run branch's own tip the count comes back 0 — "empty" —
+// so the branch is force-deleted and its commits become unreachable.
+//
+// Reclaim must refuse instead: no base, no count, no delete.
+func TestReclaimRefusesDetachedHeadIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs a real git binary; skipped in -short")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repo := t.TempDir()
+	git := ExecGit{}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(repo, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	mustWrite(t, filepath.Join(repo, "README.md"), "hello\n")
+	run("add", "README.md")
+	run("commit", "-q", "-m", "init")
+
+	// A run branch carrying one commit that lives on no other ref.
+	branch := "swarm/phase-9"
+	run("checkout", "-q", "-b", branch)
+	mustWrite(t, filepath.Join(repo, "work.txt"), "real work\n")
+	run("add", "work.txt")
+	run("commit", "-q", "-m", "the only copy of this work")
+	tip := strings.TrimSpace(run("rev-parse", "refs/heads/"+branch))
+
+	// The repo is left detached at that very tip (a rebase/bisect/checkout --detach
+	// the user walked away from).
+	run("checkout", "-q", "--detach", branch)
+	if _, err := git.Run(repo, "symbolic-ref", "--short", "HEAD"); err == nil {
+		t.Fatal("setup: HEAD is not detached")
+	}
+
+	m := &Manager{Git: git, Root: filepath.Join(t.TempDir(), "wts")}
+	ahead, err := m.ReclaimEmptyBranch(repo, branch)
+	// Errorf, not Fatalf: the wrong error and the destroyed branch are two separate
+	// facts, and the second one is the whole point of this test.
+	if !errors.Is(err, ErrDetachedHead) {
+		t.Errorf("ReclaimEmptyBranch on a detached HEAD = (%d, %v), want ErrDetachedHead", ahead, err)
+	}
+	if ahead != 0 {
+		t.Errorf("ahead = %d, want 0 alongside the refusal", ahead)
+	}
+	// The commit must still be reachable from its branch.
+	if out, err := git.Run(repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		t.Fatalf("branch %s was DELETED — its commit %s is now unreachable", branch, tip)
+	} else if strings.TrimSpace(out) != tip {
+		t.Fatalf("%s = %s, want the preserved tip %s", branch, strings.TrimSpace(out), tip)
+	}
+}
