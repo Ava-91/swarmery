@@ -282,6 +282,9 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// the service.
 	mux.HandleFunc("POST /api/epics/{taskId}/run", requireLocalOrigin(h.runPlan))
 	mux.HandleFunc("POST /api/epics/{taskId}/run/cancel", requireLocalOrigin(h.cancelPlanRun))
+	// The escape hatch for the branch-dirty 409 POST /run returns — the plan-level
+	// twin of the phase branch delete above.
+	mux.HandleFunc("DELETE /api/epics/{taskId}/branch", requireLocalOrigin(h.deletePlanRunBranch))
 
 	// fusion phase 13: playbooks — selectable execution recipes. GET lists the
 	// registry (built-ins overlaid by a project's own files); the duplicate POST
