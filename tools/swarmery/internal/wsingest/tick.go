@@ -19,7 +19,7 @@ import (
 // TickPhaseChecklist checks every unchecked acceptance-criteria checkbox in the
 // doc of the phase whose activated board task is boardTaskID. Returns how many
 // boxes it ticked. A task not minted from a phase, or a doc with no unchecked
-// boxes, is a (0, nil) no-op. Line matching mirrors countCheckboxes exactly, so
+// boxes, is a (0, nil) no-op. Line matching mirrors CountCheckboxes exactly, so
 // a tick never changes the total.
 func TickPhaseChecklist(db *sql.DB, boardTaskID int64) (int, error) {
 	var docPath string

@@ -15,6 +15,8 @@ import type {
   FileChange,
   HealthResponse,
   PermissionRequest,
+  PhaseBlocker,
+  PhaseDiagnosis,
   PlanDoc,
   Playbook,
   PlanningQuestion,
@@ -1335,7 +1337,18 @@ const mockEpicPhase = (
   dependsOn: number[],
   done: number,
   total: number,
-  run?: Partial<Pick<EpicPhase, 'runState' | 'runSessionUuid' | 'runStartedAt' | 'runError'>>,
+  run?: Partial<
+    Pick<
+      EpicPhase,
+      | 'runState'
+      | 'runSessionUuid'
+      | 'runStartedAt'
+      | 'runError'
+      | 'runOutcome'
+      | 'runEndedAt'
+      | 'runCheckboxesBefore'
+    >
+  >,
 ): EpicPhase => ({
   id,
   seq,
@@ -1361,11 +1374,16 @@ const mockEpicPhase = (
   runSessionUuid: null,
   runStartedAt: null,
   runError: null,
+  runOutcome: 'idle',
+  runEndedAt: null,
+  runCheckboxesBefore: null,
   ...run,
 });
 
-// Phase-run states cover all four chips: 1 run-done, 2 running (elapsed ticks),
-// 3 failed (error tooltip + retry Run), 4 idle behind an unmet dep (gated Run).
+// Phase-run OUTCOMES cover the chip set: 1 completed (green Run done), 2 running
+// (elapsed ticks), 3 failed (error tooltip + Retry run), 4 noop — a process that
+// exited 0 having ticked nothing, the amber `ran · no progress` chip that opens
+// the diagnosis modal.
 // The PART-DONE epic (7010) has no Summary tab in the plan rail; the COMPLETE
 // epic (7011, every phase fully ticked) demos the done-plan surfaces: phase
 // rows swap Run for ✓ summary and the plan rail grows the Summary tab
@@ -1387,19 +1405,35 @@ const mockEpics: Epic[] = [
         runState: 'done',
         runSessionUuid: 'mock-run-done-uuid',
         runStartedAt: iso(-2 * 86400),
+        runEndedAt: iso(-2 * 86400 + 900),
+        runOutcome: 'completed',
+        runCheckboxesBefore: 0,
       }),
       mockEpicPhase(2, 2, 'Dispatcher', [1], 3, 6, {
         runState: 'running',
         runSessionUuid: 'mock-run-live-uuid',
         runStartedAt: iso(-380),
+        runOutcome: 'running',
       }),
       mockEpicPhase(3, 3, 'Board UI', [1], 2, 8, {
         runState: 'failed',
         runSessionUuid: 'mock-run-failed-uuid',
         runStartedAt: iso(-3600),
+        runEndedAt: iso(-3400),
         runError: 'exit 1: npm run build failed — TS2339 in Board.tsx',
+        runOutcome: 'failed',
+        runCheckboxesBefore: 2,
       }),
-      mockEpicPhase(4, 4, 'Epics rollup + graph', [2, 3], 0, 6),
+      // A `runState: 'done'` process that ticked NOTHING — the exact shape the
+      // green "Run done" chip used to lie about. Renders `ran · no progress`.
+      mockEpicPhase(4, 4, 'Epics rollup + graph', [2, 3], 0, 6, {
+        runState: 'done',
+        runSessionUuid: 'mock-run-noop-uuid',
+        runStartedAt: iso(-5400),
+        runEndedAt: iso(-5100),
+        runOutcome: 'noop',
+        runCheckboxesBefore: 0,
+      }),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
   },
@@ -1426,11 +1460,17 @@ const mockEpics: Epic[] = [
         runState: 'done',
         runSessionUuid: 'mock-run-shipped-a',
         runStartedAt: iso(-8 * 86400),
+        runEndedAt: iso(-8 * 86400 + 1200),
+        runOutcome: 'completed',
+        runCheckboxesBefore: 0,
       }),
       mockEpicPhase(12, 2, 'Plans page lifecycle controls', [1], 6, 6, {
         runState: 'done',
         runSessionUuid: 'mock-run-shipped-b',
         runStartedAt: iso(-7 * 86400),
+        runEndedAt: iso(-7 * 86400 + 1500),
+        runOutcome: 'completed',
+        runCheckboxesBefore: 1,
       }),
     ],
     rollup: { done: 10, total: 10, pct: 100 },
@@ -2096,6 +2136,55 @@ export const mockApi = {
     return mockEpics
       .filter((e) => projectId === undefined || e.projectId === projectId)
       .map((e) => ({ ...e, phases: e.phases.map((p) => ({ ...p })) }));
+  },
+
+  /** Phase-run diagnosis. Derived from the seeded phase so the modal renders the
+   * same story the row's chip tells — incl. the null `criteriaBefore` path on
+   * phases whose baseline was never measured. */
+  async phaseDiagnosis(taskId: number, phaseId: number): Promise<PhaseDiagnosis> {
+    await delay(70);
+    const epic = mockEpics.find((e) => e.taskId === taskId);
+    const phase = epic?.phases.find((p) => p.id === phaseId);
+    if (phase === undefined) throw new Error('phase not found');
+    const blockers: PhaseBlocker[] =
+      phase.runOutcome === 'noop'
+        ? [
+            {
+              kind: 'dep-unmerged',
+              summary: 'phase 2 is ticked but its branch was never merged',
+              detail: 'swarm/phase-2 · 3 commits ahead of dev',
+            },
+            {
+              kind: 'branch-dirty',
+              summary: 'this phase’s run branch already holds commits',
+              detail:
+                'swarm/phase-4 · 2 commits ahead\n  feat: scaffold rollup query\n  wip: graph edges',
+              branch: 'swarm/phase-4',
+              commitsAhead: 2,
+            },
+          ]
+        : [];
+    return {
+      phaseId: phase.id,
+      seq: phase.seq,
+      name: phase.name,
+      runOutcome: phase.runOutcome,
+      criteriaTotal: phase.checkboxesTotal,
+      criteriaBefore: phase.runCheckboxesBefore,
+      criteriaAfter: phase.checkboxesDone,
+      runStartedAt: phase.runStartedAt,
+      runEndedAt: phase.runEndedAt,
+      runError: phase.runError,
+      blockers,
+      agentMessage:
+        phase.runSessionUuid === null
+          ? null
+          : {
+              sessionUuid: phase.runSessionUuid,
+              text: 'I could not start on this phase: the dependency it builds on is marked done but its work is not on the base branch, so the files it references do not exist yet',
+              truncated: true,
+            },
+    };
   },
 
   async planDoc(taskId: number, path: string): Promise<PlanDoc> {

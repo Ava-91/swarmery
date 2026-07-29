@@ -1166,11 +1166,19 @@ func cmdServe(args []string) error {
 		log.Printf("warning: phaserun heal on startup: %v", err)
 	}
 	api.AttachPhaseRun(phaserunSvc)
+	// The diagnosis endpoint reads git directly (branch ancestry) through the same
+	// boundary the worktree manager uses.
+	api.AttachPhaseDiag(wtMgr.Git)
 
 	// Plan runs: hand a WHOLE plan to one agent — one headless session in one
 	// worktree, driving core's run-plan skill (state on plan_runs). Same
 	// worktree.Manager as dispatch/verify/phaserun; same startup heal posture.
 	planrunSvc := planrun.NewService(db, planrun.ClaudeRunner{}, wtMgr)
+	// Read-only git seam, through the same boundary the worktree manager uses: it
+	// NAMES the base a dirty-branch refusal counted commits against, and answers
+	// whether a run branch existed before DeleteRunBranch removed it. Without it
+	// both answers degrade to "unknown" rather than being guessed.
+	planrunSvc.Git = wtMgr.Git
 	if err := planrunSvc.HealStale(); err != nil {
 		log.Printf("warning: planrun heal on startup: %v", err)
 	}

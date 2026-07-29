@@ -269,6 +269,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// AttachPhaseRun wires the service.
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run", requireLocalOrigin(h.runPhase))
 	mux.HandleFunc("POST /api/epics/{taskId}/phases/{phaseId}/run/cancel", requireLocalOrigin(h.cancelPhaseRun))
+	// Why a run achieved nothing (derived outcome + deterministic blockers), and
+	// the escape hatch for the branch-dirty 409 the run endpoint returns.
+	mux.HandleFunc("GET /api/epics/{taskId}/phases/{phaseId}/diagnosis", h.phaseDiagnosis)
+	mux.HandleFunc("DELETE /api/epics/{taskId}/phases/{phaseId}/branch", requireLocalOrigin(h.deletePhaseRunBranch))
 	// Plan runs: hand the WHOLE plan to one agent (one headless session driving
 	// core's run-plan skill), state on plan_runs. 503 until AttachPlanRun wires
 	// the service.

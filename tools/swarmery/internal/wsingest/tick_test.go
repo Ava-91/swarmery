@@ -26,8 +26,8 @@ func TestTickAllCheckboxes(t *testing.T) {
 				t.Errorf("tickAllCheckboxes(%q) = %q, %d; want %q, %d", c.in, got, n, c.want, c.wantN)
 			}
 			// A tick must never change the total the scanner counts.
-			_, totBefore := countCheckboxes(c.in)
-			doneAfter, totAfter := countCheckboxes(got)
+			_, totBefore := CountCheckboxes(c.in)
+			doneAfter, totAfter := CountCheckboxes(got)
 			if totAfter != totBefore || doneAfter != totAfter {
 				t.Errorf("after tick: %d/%d done, want %d/%d", doneAfter, totAfter, totBefore, totBefore)
 			}

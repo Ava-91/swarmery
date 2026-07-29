@@ -2,12 +2,15 @@ package api
 
 // Phase-run endpoints (interactive planning v2 phase 5): execute a plan phase
 // directly from its phase doc — a headless claude run in an isolated worktree
-// via internal/phaserun, state on epic_phases (run_state & co, migration 0034).
+// via internal/phaserun, state on epic_phases (run_state & co, migrations 0034 +
+// 0041 run_checkboxes_before/run_ended_at + 0042 run_checkboxes_after).
 // No `tasks` row and no board involvement; checkbox progress keeps flowing
 // through wsingest as the executor edits the docs.
 //
-//	POST /api/epics/{taskId}/phases/{phaseId}/run        → 202 {status, sessionUuid}
-//	POST /api/epics/{taskId}/phases/{phaseId}/run/cancel → 202 {status}
+//	POST   /api/epics/{taskId}/phases/{phaseId}/run        → 202 {status, sessionUuid}
+//	POST   /api/epics/{taskId}/phases/{phaseId}/run/cancel → 202 {status}
+//	GET    /api/epics/{taskId}/phases/{phaseId}/diagnosis  → 200 phasediag.Diagnosis
+//	DELETE /api/epics/{taskId}/phases/{phaseId}/branch     → 200 {deleted, branch}
 //
 // The service is attached once at daemon startup (AttachPhaseRun) — the same
 // package-var idiom as AttachPlanning/AttachDispatch — so httptest handlers
@@ -21,12 +24,23 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // phaserunSvc is attached once at daemon startup (nil ⇒ phase-run endpoints
 // 503 and no notify wiring).
 var phaserunSvc *phaserun.Service
+
+// phasediagGit is the git boundary for on-demand phase diagnosis, attached once at
+// daemon startup (nil ⇒ the endpoint still answers, with branch-derived blockers
+// omitted — phasediag.Diagnose degrades by contract). Same package-var idiom as
+// phaserunSvc, so httptest handlers built with &Handler{DB: db} stay hermetic.
+var phasediagGit worktree.Git
+
+// AttachPhaseDiag wires the git boundary used by the diagnosis endpoint.
+func AttachPhaseDiag(g worktree.Git) { phasediagGit = g }
 
 // AttachPhaseRun wires the phase-run service into the api layer and gives it
 // the api-owned plan_updated emitter (keyed by workspace task id — the same
@@ -84,6 +98,7 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	}
 	uuid, err := phaserunSvc.Start(phaseID)
 	var depsErr *phaserun.DepsUnmetError
+	var dirtyErr *phaserun.BranchDirtyError
 	switch {
 	case errors.Is(err, phaserun.ErrPhaseNotFound):
 		writeClientErr(w, http.StatusNotFound, "phase not found")
@@ -98,6 +113,27 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusConflict, "phase doc is unreadable")
 	case errors.Is(err, phaserun.ErrNoPath):
 		writeClientErr(w, http.StatusConflict, "project has no known path to run in")
+	// The leftover run branch holds commits a retry would collide with. Commit
+	// SUBJECTS are deliberately absent here — the UI already fetches /diagnosis,
+	// whose branch-dirty blocker carries them, and git ownership stays in phasediag.
+	case errors.As(err, &dirtyErr):
+		writeJSONStatus(w, http.StatusConflict, map[string]any{
+			"error":        dirtyErr.Error(),
+			"branch":       dirtyErr.Branch,
+			"commitsAhead": dirtyErr.CommitsAhead,
+		})
+	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
+	// errors.Is still matches through the wrap. Without this arm a checked-out run
+	// branch surfaces as a raw 500 and the UI can show the user nothing actionable.
+	case errors.Is(err, worktree.ErrBranchCheckedOut):
+		writeClientErr(w, http.StatusConflict, "the run branch is checked out in another worktree")
+	// Same category, same wrap: with no checked-out branch there is no base to
+	// measure the leftover run branch against, so reclaim refuses rather than guess
+	// one — and a guessed base is what a `git branch -D` must never run on. The user
+	// resolves it by checking out a branch, which a raw 500 would never say.
+	case errors.Is(err, worktree.ErrDetachedHead):
+		writeClientErr(w, http.StatusConflict,
+			"the repo is on a detached HEAD, so the run branch cannot be measured against a base — check out a branch first")
 	case err != nil:
 		writeErr(w, err)
 	default:
@@ -125,4 +161,53 @@ func (h *Handler) cancelPhaseRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "cancelling"})
+}
+
+// phaseDiagnosis — GET /api/epics/{taskId}/phases/{phaseId}/diagnosis.
+// 200 phasediag.Diagnosis; 404 unknown phase or a phase that does not belong to
+// that epic. A read endpoint, so no requireLocalOrigin (matching the other GETs).
+func (h *Handler) phaseDiagnosis(w http.ResponseWriter, r *http.Request) {
+	phaseID, ok := h.parsePhaseRunParams(w, r)
+	if !ok {
+		return
+	}
+	d, err := phasediag.Diagnose(h.DB, phasediagGit, phaseID)
+	switch {
+	case errors.Is(err, phasediag.ErrPhaseNotFound):
+		writeClientErr(w, http.StatusNotFound, "phase not found")
+	case err != nil:
+		writeErr(w, err)
+	default:
+		writeJSON(w, d, nil)
+	}
+}
+
+// deletePhaseRunBranch — DELETE /api/epics/{taskId}/phases/{phaseId}/branch.
+// requireLocalOrigin. The explicit user decision behind a 409 branchDirty: force-
+// deletes swarm/phase-<id> INCLUDING its commits. 200 {deleted, branch}; 409 while a
+// run is in flight or the branch is checked out; 503 not attached.
+func (h *Handler) deletePhaseRunBranch(w http.ResponseWriter, r *http.Request) {
+	if phaserunSvc == nil {
+		writeClientErr(w, http.StatusServiceUnavailable, "phase runs not attached")
+		return
+	}
+	phaseID, ok := h.parsePhaseRunParams(w, r)
+	if !ok {
+		return
+	}
+	branch, err := phaserunSvc.DeleteRunBranch(phaseID)
+	switch {
+	case errors.Is(err, phaserun.ErrPhaseNotFound):
+		writeClientErr(w, http.StatusNotFound, "phase not found")
+	case errors.Is(err, phaserun.ErrRunning):
+		writeClientErr(w, http.StatusConflict, "a run is active for this phase")
+	case errors.Is(err, worktree.ErrBranchCheckedOut):
+		writeClientErr(w, http.StatusConflict, "branch is checked out in a worktree")
+	case errors.Is(err, phaserun.ErrNoPath):
+		writeClientErr(w, http.StatusConflict, "project has no known path")
+	case err != nil:
+		writeErr(w, err)
+	default:
+		writeJSON(w, map[string]any{"deleted": true, "branch": branch}, nil)
+	}
 }

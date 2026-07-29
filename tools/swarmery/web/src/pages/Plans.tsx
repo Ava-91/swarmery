@@ -45,7 +45,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import type { BoardColumn, Epic, EpicPhase, WSMessage } from '../api/types';
+import type { BoardColumn, Epic, EpicPhase, PhaseRunOutcome, WSMessage } from '../api/types';
 import {
   cancelEpicPhaseRun,
   cancelEpicPlanRun,
@@ -63,7 +63,9 @@ import type { PlanRunMode } from '../api/types';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useLiveUpdates } from '../lib/ws';
 import { Markdown } from '../lib/markdown';
+import { fmtElapsed } from '../lib/format';
 import { Empty, ErrorBox, Loading } from '../components/ui';
+import { RunOutcomeModal } from '../components/RunOutcomeModal';
 
 /** A board column that counts as "resolved" for the dependency gate. */
 function isResolvedColumn(col: BoardColumn | null): boolean {
@@ -90,15 +92,20 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
 
 /** Which seq numbers are "resolved" — their board task is done/archived OR
  * every checkbox in their doc is ticked (file-driven completion without
- * board activation) OR a headless run finished. Renders depends-on badges
- * and feeds the phase-status derivation. */
+ * board activation) OR a headless run actually COMPLETED the phase. Renders
+ * depends-on badges and feeds the phase-status derivation.
+ *
+ * `runOutcome === 'completed'`, never `runState === 'done'`: a process that
+ * exited 0 having ticked nothing is `noop`, and treating that as resolved is
+ * the client-side twin of the dependency-gate bug the daemon removed — it let
+ * a 0/7 phase mark its dependents runnable. */
 function computeResolvedSeqs(phases: EpicPhase[]): Set<number> {
   const s = new Set<number>();
   for (const p of phases) {
     if (
       isResolvedColumn(p.boardColumn) ||
       (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
-      p.runState === 'done'
+      p.runOutcome === 'completed'
     )
       s.add(p.seq);
   }
@@ -167,21 +174,81 @@ function PhaseActivity({ docUpdatedAt }: { docUpdatedAt: string | null }): JSX.E
   );
 }
 
-/** Elapsed since a phase run started — the chip on a running phase. */
-function fmtElapsed(fromIso: string, now: number): string {
-  const s = Math.max(0, Math.floor((now - Date.parse(fromIso)) / 1000));
-  if (s < 60) return `${String(s)}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${String(m)}m ${String(s % 60)}s`;
-  return `${String(Math.floor(m / 60))}h ${String(m % 60)}m`;
-}
-
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
   done: { label: 'done', cls: 'border-green/40 text-green' },
   in_progress: { label: 'in progress', cls: 'border-brand/40 text-brand' },
   blocked: { label: 'blocked', cls: 'border-red/40 text-red' },
   pending: { label: 'pending', cls: 'border-line text-ink-faint' },
 };
+
+/** Terminal run outcomes that did NOT complete the phase. Each renders as a
+ * chip BUTTON opening the diagnosis modal, because "why?" is the only useful
+ * next question — the old markup showed a green "Run done" here whenever the
+ * process exited 0, which is precisely the claim these outcomes refute. */
+type UnresolvedOutcome = 'noop' | 'partial' | 'failed';
+
+function isUnresolvedOutcome(o: PhaseRunOutcome): o is UnresolvedOutcome {
+  return o === 'noop' || o === 'partial' || o === 'failed';
+}
+
+/** Chip copy + styling per unresolved outcome. `amber` is the app's semantic
+ * needs-a-human color (same token as workspace/TaskCard.tsx's inconclusive). */
+const OUTCOME_CHIP: Record<UnresolvedOutcome, { cls: string; title: string }> = {
+  noop: {
+    cls: 'border-amber/40 bg-amber/10 text-amber',
+    title: 'the run finished but ticked no acceptance criteria — click for why',
+  },
+  partial: {
+    cls: 'border-amber/40 bg-amber/10 text-amber',
+    title: 'the run ticked some criteria but did not finish the phase — click for why',
+  },
+  failed: {
+    cls: 'border-red/40 bg-red/10 text-red',
+    title: 'the run failed — click for why',
+  },
+};
+
+/** Run/Retry button styling — keyed on the OUTCOME, so a retry after a
+ * ticked-nothing run reads amber like its chip instead of neutral brand. */
+function runButtonCls(outcome: PhaseRunOutcome): string {
+  if (outcome === 'failed') return 'border-red/40 text-red hover:bg-red/10';
+  if (outcome === 'noop' || outcome === 'partial')
+    return 'border-amber/40 text-amber hover:bg-amber/10';
+  return 'border-brand/40 text-brand hover:bg-brand/10';
+}
+
+function outcomeChipLabel(p: EpicPhase, outcome: UnresolvedOutcome): string {
+  if (outcome === 'failed') return 'failed';
+  if (outcome === 'partial') return `ran · ${String(p.checkboxesDone)}/${String(p.checkboxesTotal)}`;
+  return 'ran · no progress';
+}
+
+/** The clickable outcome chip. READ-ONLY — it stays enabled while a plan run
+ * owns the docs, because a diagnosis is exactly what a user wants then. */
+function RunOutcomeChip({
+  phase,
+  outcome,
+  onOpen,
+}: {
+  phase: EpicPhase;
+  outcome: UnresolvedOutcome;
+  onOpen: () => void;
+}): JSX.Element {
+  const { cls, title } = OUTCOME_CHIP[outcome];
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+      className={`rounded border px-1.5 py-px font-mono text-[9.5px] transition-colors hover:brightness-125 ${cls}`}
+    >
+      {outcomeChipLabel(phase, outcome)}
+    </button>
+  );
+}
 
 // Plan status badge — the theme has no `yellow` token; `amber` is the app's
 // semantic waiting/approval color, so paused uses it.
@@ -316,9 +383,11 @@ export function Plans(): JSX.Element {
     });
   }, [filtered]);
 
-  // The detail panel describes ONE epic's phase/plan — switching plans closes it.
+  // The detail panel describes ONE epic's phase/plan — switching plans closes it,
+  // and the run-diagnosis modal with it (its phase id belongs to the old plan).
   useEffect(() => {
     setDetailTarget(null);
+    setOutcomeFor(null);
   }, [selected]);
 
   const activeEpic = useMemo(
@@ -350,6 +419,9 @@ export function Plans(): JSX.Element {
   // already running) surfaces in the inline error strip in EpicDetail.
   const [runBusy, setRunBusy] = useState<number | null>(null); // phase id
   const [runMsg, setRunMsg] = useState<string | null>(null);
+  // Which phase's run diagnosis is open (phase id) — the modal is read-only, so
+  // it can be open over any state, including a live plan run.
+  const [outcomeFor, setOutcomeFor] = useState<number | null>(null);
 
   const startRun = useCallback(
     (taskId: number, phaseId: number): void => {
@@ -357,7 +429,14 @@ export function Plans(): JSX.Element {
       setRunMsg(null);
       runEpicPhase(taskId, phaseId)
         .then(() => reload())
-        .catch((e: unknown) => setRunMsg(e instanceof Error ? e.message : String(e)))
+        .catch((e: unknown) => {
+          setRunMsg(e instanceof Error ? e.message : String(e));
+          // The branch-holds-commits 409 carries `branch` — that is not a
+          // message to read, it is a blocker with an action, so land the user
+          // on the diagnosis (which offers Delete branch) instead of a toast.
+          if (e instanceof Error && typeof (e as Error & { branch?: string }).branch === 'string')
+            setOutcomeFor(phaseId);
+        })
         .finally(() => setRunBusy(null));
     },
     [reload],
@@ -535,10 +614,35 @@ export function Plans(): JSX.Element {
               planRunBusy={planRunBusy}
               onRunPlan={(agent, mode) => startPlanRun(activeEpic.taskId, agent, mode)}
               onCancelPlanRun={() => cancelPlanRun(activeEpic.taskId)}
+              onOpenOutcome={setOutcomeFor}
             />
           )}
         </div>
       </div>
+
+      {/* Why a run did not move the phase. Read-only, so it opens over any
+          state — including a live plan run, where only its write actions
+          (Delete branch / Retry run) stand down. */}
+      {outcomeFor !== null && activeEpic !== null && (
+        <RunOutcomeModal
+          taskId={activeEpic.taskId}
+          phaseId={outcomeFor}
+          writesDisabled={
+            activeEpic.planRun?.runState === 'running' ||
+            activeEpic.status !== 'active' ||
+            runBusy !== null
+          }
+          writesDisabledReason={
+            activeEpic.planRun?.runState === 'running'
+              ? 'a whole-plan run is executing this plan'
+              : activeEpic.status !== 'active'
+                ? 'plan is not active'
+                : 'a phase run is already starting'
+          }
+          onClose={() => setOutcomeFor(null)}
+          onRetry={() => startRun(activeEpic.taskId, outcomeFor)}
+        />
+      )}
     </div>
   );
 }
@@ -559,6 +663,7 @@ function EpicDetail({
   planRunBusy,
   onRunPlan,
   onCancelPlanRun,
+  onOpenOutcome,
 }: {
   epic: Epic;
   detail: DetailSel | null;
@@ -576,6 +681,8 @@ function EpicDetail({
   planRunBusy: boolean;
   onRunPlan: (agent: string, mode: PlanRunMode) => void;
   onCancelPlanRun: () => void;
+  /** Open the run-diagnosis modal for a phase id. */
+  onOpenOutcome: (phaseId: number) => void;
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
   const complete = planComplete(epic, resolvedSeqs);
@@ -684,6 +791,7 @@ function EpicDetail({
               planRunning={planRunning}
               onRetry={() => onRun(detail.phase.id)}
               onCancelRun={() => onCancelRun(detail.phase.id)}
+              onOpenOutcome={() => onOpenOutcome(detail.phase.id)}
               onDocChanged={onDocChanged}
             />
           ) : (
@@ -705,6 +813,7 @@ function EpicDetail({
           onOpenPhase={onOpenPhase}
           onRun={onRun}
           onCancelRun={onCancelRun}
+          onOpenOutcome={onOpenOutcome}
         />
       )}
     </div>
@@ -722,6 +831,7 @@ function PhaseList({
   onOpenPhase,
   onRun,
   onCancelRun,
+  onOpenOutcome,
 }: {
   epic: Epic;
   resolvedSeqs: Set<number>;
@@ -732,6 +842,7 @@ function PhaseList({
   onOpenPhase: (seq: number, tab: PhaseDetailTab) => void;
   onRun: (phaseId: number) => void;
   onCancelRun: (phaseId: number) => void;
+  onOpenOutcome: (phaseId: number) => void;
 }): JSX.Element {
   return (
     <ol className="space-y-2">
@@ -851,21 +962,20 @@ function PhaseList({
                   </span>
                 ) : status === 'done' ? (
                   <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                    {p.runState === 'done' && (
+                    {p.runOutcome === 'completed' && (
                       <span
                         className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-                        title="headless run finished"
+                        title="the run ticked every acceptance criterion"
                       >
                         Run done
                       </span>
                     )}
-                    {p.runState === 'failed' && (
-                      <span
-                        className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
-                        title={p.runError ?? 'run failed'}
-                      >
-                        Failed
-                      </span>
+                    {isUnresolvedOutcome(p.runOutcome) && (
+                      <RunOutcomeChip
+                        phase={p}
+                        outcome={p.runOutcome}
+                        onOpen={() => onOpenOutcome(p.id)}
+                      />
                     )}
                     <button
                       type="button"
@@ -878,22 +988,22 @@ function PhaseList({
                       ✓ summary
                     </button>
                   </span>
-                ) : p.runState === 'done' ? (
-                  <span
-                    className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-                    title="headless run finished"
-                  >
-                    Run done
-                  </span>
                 ) : (
                   <span className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                    {p.runState === 'failed' && (
+                    {p.runOutcome === 'completed' && (
                       <span
-                        className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
-                        title={p.runError ?? 'run failed'}
+                        className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+                        title="the run ticked every acceptance criterion"
                       >
-                        Failed
+                        Run done
                       </span>
+                    )}
+                    {isUnresolvedOutcome(p.runOutcome) && (
+                      <RunOutcomeChip
+                        phase={p}
+                        outcome={p.runOutcome}
+                        onOpen={() => onOpenOutcome(p.id)}
+                      />
                     )}
                     <button
                       type="button"
@@ -903,13 +1013,13 @@ function PhaseList({
                         e.stopPropagation();
                         onRun(p.id);
                       }}
-                      className={`rounded-md border px-1.5 py-px font-mono text-[9.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
-                        p.runState === 'failed'
-                          ? 'border-red/40 text-red hover:bg-red/10'
-                          : 'border-brand/40 text-brand hover:bg-brand/10'
-                      }`}
+                      className={`rounded-md border px-1.5 py-px font-mono text-[9.5px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${runButtonCls(p.runOutcome)}`}
                     >
-                      {runBusy === p.id ? '…' : p.runState === 'failed' ? 'Retry run' : 'Run phase'}
+                      {runBusy === p.id
+                        ? '…'
+                        : isUnresolvedOutcome(p.runOutcome)
+                          ? 'Retry run'
+                          : 'Run phase'}
                     </button>
                   </span>
                 )}
@@ -1465,40 +1575,39 @@ function DocEditor({
   );
 }
 
-/** Run-state chip for the phase rail header (running / done / failed). */
-function RunStateChip({ phase }: { phase: EpicPhase }): JSX.Element | null {
-  switch (phase.runState) {
-    case 'running':
-      return (
-        <span
-          className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
-          title="headless run in progress"
-        >
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
-          Running
-        </span>
-      );
-    case 'done':
-      return (
-        <span
-          className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
-          title="headless run finished"
-        >
-          Run done
-        </span>
-      );
-    case 'failed':
-      return (
-        <span
-          className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red"
-          title={phase.runError ?? 'run failed'}
-        >
-          Run failed
-        </span>
-      );
-    default:
-      return null;
-  }
+/** Run chip for the phase rail header. Switches on the run's OUTCOME, not its
+ * process state, so the panel tells the same four-way story the list does — a
+ * `runState: 'done'` process that ticked nothing reads `ran · no progress`,
+ * clickable, instead of a green "Run done" the phase never earned. */
+function RunStateChip({
+  phase,
+  onOpenOutcome,
+}: {
+  phase: EpicPhase;
+  onOpenOutcome: () => void;
+}): JSX.Element | null {
+  if (phase.runOutcome === 'running')
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded border border-brand/40 bg-brand/10 px-1.5 py-px font-mono text-[9.5px] text-brand"
+        title="headless run in progress"
+      >
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
+        Running
+      </span>
+    );
+  if (phase.runOutcome === 'completed')
+    return (
+      <span
+        className="rounded border border-green/40 bg-green/10 px-1.5 py-px font-mono text-[9.5px] text-green"
+        title="the run ticked every acceptance criterion"
+      >
+        Run done
+      </span>
+    );
+  if (isUnresolvedOutcome(phase.runOutcome))
+    return <RunOutcomeChip phase={phase} outcome={phase.runOutcome} onOpen={onOpenOutcome} />;
+  return null;
 }
 
 /** Phase details panel, tabbed: Phase (run state, interactive acceptance
@@ -1513,6 +1622,7 @@ function PhaseDetailPanel({
   planRunning,
   onRetry,
   onCancelRun,
+  onOpenOutcome,
   onDocChanged,
 }: {
   epic: Epic;
@@ -1524,6 +1634,8 @@ function PhaseDetailPanel({
   planRunning: boolean;
   onRetry: () => void;
   onCancelRun: () => void;
+  /** Open the run-diagnosis modal for this phase. */
+  onOpenOutcome: () => void;
   onDocChanged: () => void;
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
@@ -1596,13 +1708,13 @@ function PhaseDetailPanel({
                   disabled={runDisabled}
                   title={runTitle}
                   onClick={onRetry}
-                  className={`rounded-md border px-2 py-1 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${
-                    phase.runState === 'failed'
-                      ? 'border-red/40 text-red hover:bg-red/10'
-                      : 'border-brand/40 text-brand hover:bg-brand/10'
-                  }`}
+                  className={`rounded-md border px-2 py-1 font-mono text-[10px] transition-colors disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint ${runButtonCls(phase.runOutcome)}`}
                 >
-                  {runBusy === phase.id ? '…' : phase.runState === 'failed' ? 'Retry run' : 'Run phase'}
+                  {runBusy === phase.id
+                    ? '…'
+                    : isUnresolvedOutcome(phase.runOutcome)
+                      ? 'Retry run'
+                      : 'Run phase'}
                 </button>
               ) : null}
             </div>
@@ -1613,7 +1725,7 @@ function PhaseDetailPanel({
             >
               {PHASE_CHIP[status].label}
             </span>
-            <RunStateChip phase={phase} />
+            <RunStateChip phase={phase} onOpenOutcome={onOpenOutcome} />
             <span className="font-mono text-[10px] text-ink-faint">
               {phase.checkboxesDone}/{phase.checkboxesTotal || 0}
             </span>

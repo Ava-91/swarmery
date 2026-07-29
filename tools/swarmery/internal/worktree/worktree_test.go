@@ -475,6 +475,410 @@ func TestRemovePropagatesErrors(t *testing.T) {
 	}
 }
 
+// ---- ReclaimEmptyBranch / DeleteBranch -----------------------------------
+
+// wantCalls asserts the EXACT recorded git command sequence. Reclaim's safety
+// depends on the ORDER of its probes (existence → HEAD → prune → list → count →
+// delete), so asserting only the return value would let a reordering that skips
+// a guard pass.
+func wantCalls(t *testing.T, g *stubGit, want ...string) {
+	t.Helper()
+	if len(g.calls) != len(want) {
+		t.Fatalf("git calls =\n  %v\nwant\n  %v", g.calls, want)
+	}
+	for i := range want {
+		if g.calls[i] != want[i] {
+			t.Fatalf("git call[%d] = %q, want %q (full: %v)", i, g.calls[i], want[i], g.calls)
+		}
+	}
+}
+
+func TestReclaimEmptyBranchMissingBranchIsNoop(t *testing.T) {
+	g := baseStub()
+	// `rev-parse --verify --quiet` on an absent ref: non-zero exit, NO output.
+	g.on("rev-parse --verify --quiet", "", errors.New("exit 1"))
+	m := newMgr(t, g)
+	ahead, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714")
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch: %v", err)
+	}
+	if ahead != 0 {
+		t.Errorf("ahead = %d, want 0 for a missing branch", ahead)
+	}
+	// Nothing beyond the existence probe: no prune, no list, no delete.
+	wantCalls(t, g, "rev-parse --verify --quiet refs/heads/swarm/phase-714")
+}
+
+func TestReclaimEmptyBranchDeletesEmptyLeftover(t *testing.T) {
+	g := baseStub()
+	g.on("rev-list --count", "0\n", nil) // zero commits ahead of the base
+	m := newMgr(t, g)
+	ahead, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714")
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch: %v", err)
+	}
+	if ahead != 0 {
+		t.Errorf("ahead = %d, want 0", ahead)
+	}
+	wantCalls(t, g,
+		"rev-parse --verify --quiet refs/heads/swarm/phase-714",
+		"symbolic-ref --short HEAD",
+		"worktree prune",
+		"worktree list --porcelain",
+		// reclaimBase — symbolic-ref only, no detached-HEAD fallback.
+		"symbolic-ref --short HEAD",
+		"rev-parse refs/heads/main",
+		"rev-list --count aaaa1111..refs/heads/swarm/phase-714",
+		"branch -D swarm/phase-714",
+	)
+}
+
+func TestReclaimEmptyBranchKeepsBranchWithCommits(t *testing.T) {
+	g := baseStub()
+	g.on("rev-list --count", "3\n", nil)
+	m := newMgr(t, g)
+	ahead, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-715")
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch: %v", err)
+	}
+	if ahead != 3 {
+		t.Errorf("ahead = %d, want 3", ahead)
+	}
+	// Identical prelude, but the sequence STOPS at the count — a branch holding
+	// work is never destroyed implicitly.
+	wantCalls(t, g,
+		"rev-parse --verify --quiet refs/heads/swarm/phase-715",
+		"symbolic-ref --short HEAD",
+		"worktree prune",
+		"worktree list --porcelain",
+		"symbolic-ref --short HEAD",
+		"rev-parse refs/heads/main",
+		"rev-list --count aaaa1111..refs/heads/swarm/phase-715",
+	)
+}
+
+func TestReclaimEmptyBranchRefusesCheckedOutBranch(t *testing.T) {
+	g := baseStub()
+	g.on("worktree list --porcelain",
+		"worktree /wt/proj/phase-716\nbranch refs/heads/swarm/phase-716\n\n", nil)
+	m := newMgr(t, g)
+	_, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-716")
+	if !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
+	}
+	if !strings.Contains(err.Error(), "/wt/proj/phase-716") {
+		t.Errorf("err = %v, want it to name the holding worktree path", err)
+	}
+	if g.called("branch -D") {
+		t.Error("a checked-out branch must never be deleted")
+	}
+	if g.called("rev-list") {
+		t.Error("the guard must short-circuit before counting commits")
+	}
+}
+
+// The HEAD guard is reachable only for a swarm/ branch now that the namespace
+// guard runs first, so the repo is scripted as sitting ON the run branch — the
+// state a user lands in by checking a run branch out to inspect it.
+func TestReclaimEmptyBranchRefusesHeadBranch(t *testing.T) {
+	g := baseStub()
+	g.on("symbolic-ref --short HEAD", "swarm/phase-716\n", nil)
+	m := newMgr(t, g)
+	_, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-716")
+	if !errors.Is(err, ErrBranchIsHead) {
+		t.Fatalf("err = %v, want ErrBranchIsHead", err)
+	}
+	if g.called("branch -D") {
+		t.Error("the repo's HEAD branch must never be deleted")
+	}
+	wantCalls(t, g,
+		"rev-parse --verify --quiet refs/heads/swarm/phase-716",
+		"symbolic-ref --short HEAD",
+	)
+}
+
+// ---- I2: the swarm/ namespace guard --------------------------------------
+
+// A branch outside the swarm/ namespace is refused by BOTH reclaim paths before
+// any git command runs. Without it, ReclaimEmptyBranch("dev") on a repo whose
+// HEAD is a feature branch that already contains dev computes ahead == 0 and
+// deletes dev — the guard closes the class at the boundary rather than relying on
+// every caller to build the name correctly.
+func TestReclaimEmptyBranchRefusesForeignNamespace(t *testing.T) {
+	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarmish/x"} {
+		g := baseStub()
+		m := newMgr(t, g)
+		_, err := m.ReclaimEmptyBranch("/tmp/repo", branch)
+		if !errors.Is(err, ErrRefusedBranch) {
+			t.Errorf("ReclaimEmptyBranch(%q) err = %v, want ErrRefusedBranch", branch, err)
+		}
+		if !strings.Contains(err.Error(), branch) {
+			t.Errorf("err = %v, want it to name the branch %q", err, branch)
+		}
+		if len(g.calls) != 0 {
+			t.Errorf("ReclaimEmptyBranch(%q) issued git calls %v, want none", branch, g.calls)
+		}
+	}
+}
+
+func TestDeleteBranchRefusesForeignNamespace(t *testing.T) {
+	for _, branch := range []string{"dev", "main", "feature/x", "swarm/"} {
+		g := baseStub()
+		m := newMgr(t, g)
+		err := m.DeleteBranch("/tmp/repo", branch)
+		if !errors.Is(err, ErrRefusedBranch) {
+			t.Errorf("DeleteBranch(%q) err = %v, want ErrRefusedBranch", branch, err)
+		}
+		if len(g.calls) != 0 {
+			t.Errorf("DeleteBranch(%q) issued git calls %v, want none", branch, g.calls)
+		}
+	}
+}
+
+func TestReclaimEmptyBranchNonNumericCount(t *testing.T) {
+	g := baseStub()
+	g.on("rev-list --count", "not-a-number\n", nil)
+	m := newMgr(t, g)
+	_, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-717")
+	if err == nil {
+		t.Fatal("err = nil, want a parse error")
+	}
+	if !strings.Contains(err.Error(), "swarm/phase-717") {
+		t.Errorf("err = %v, want it to name the branch", err)
+	}
+	if g.called("branch -D") {
+		t.Error("an unparseable count must not authorize a delete")
+	}
+}
+
+func TestReclaimEmptyBranchPropagatesListFailure(t *testing.T) {
+	g := baseStub()
+	g.on("worktree list --porcelain", "", errors.New("could not lock"))
+	m := newMgr(t, g)
+	if _, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-1"); err == nil {
+		t.Fatal("err = nil, want the worktree-list failure surfaced")
+	}
+	if g.called("branch -D") {
+		t.Error("a failed list probe must not authorize a delete")
+	}
+}
+
+func TestDeleteBranchDeletesBranchWithCommits(t *testing.T) {
+	g := baseStub()
+	g.on("rev-list --count", "3\n", nil) // has work — DeleteBranch discards it anyway
+	m := newMgr(t, g)
+	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-715"); err != nil {
+		t.Fatalf("DeleteBranch: %v", err)
+	}
+	wantCalls(t, g,
+		"rev-parse --verify --quiet refs/heads/swarm/phase-715",
+		"symbolic-ref --short HEAD",
+		"worktree prune",
+		"worktree list --porcelain",
+		// No rev-list: the explicit decision has already been made.
+		"branch -D swarm/phase-715",
+	)
+}
+
+func TestDeleteBranchMissingIsIdempotent(t *testing.T) {
+	g := baseStub()
+	g.on("rev-parse --verify --quiet", "", errors.New("exit 1"))
+	m := newMgr(t, g)
+	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-999"); err != nil {
+		t.Fatalf("DeleteBranch on a missing branch = %v, want nil", err)
+	}
+	if g.called("branch -D") {
+		t.Error("nothing to delete, yet a delete was issued")
+	}
+}
+
+func TestDeleteBranchRefusesCheckedOut(t *testing.T) {
+	g := baseStub()
+	g.on("worktree list --porcelain",
+		"worktree /wt/proj/phase-716\nbranch refs/heads/swarm/phase-716\n\n", nil)
+	m := newMgr(t, g)
+	err := m.DeleteBranch("/tmp/repo", "swarm/phase-716")
+	if !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
+	}
+	if g.called("branch -D") {
+		t.Error("DeleteBranch deleted a branch that is checked out")
+	}
+}
+
+func TestDeleteBranchRefusesHead(t *testing.T) {
+	g := baseStub()
+	g.on("symbolic-ref --short HEAD", "swarm/phase-716\n", nil)
+	m := newMgr(t, g)
+	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-716"); !errors.Is(err, ErrBranchIsHead) {
+		t.Fatalf("err = %v, want ErrBranchIsHead", err)
+	}
+	if g.called("branch -D") {
+		t.Error("DeleteBranch deleted the repo's HEAD branch")
+	}
+}
+
+func TestDeleteBranchPropagatesGitError(t *testing.T) {
+	g := baseStub()
+	g.on("branch -D", "error: cannot delete", errors.New("exit 1"))
+	m := newMgr(t, g)
+	if err := m.DeleteBranch("/tmp/repo", "swarm/phase-1"); err == nil {
+		t.Error("DeleteBranch should propagate a git branch -D failure")
+	}
+}
+
+// ---- C1: a crash-leftover worktree at the run's OWN path -------------------
+
+// ownLeftoverStub scripts the exact state a daemon crash leaves behind: the run's
+// worktree is still REGISTERED at the deterministic path Acquire computes
+// (<Root>/<slug>/<taskID>), still checked out on its own branch. `git worktree
+// prune` cannot clear it because the directory still exists.
+func ownLeftoverStub(t *testing.T, slug, taskID string) (*stubGit, *Manager, string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "wts")
+	own := filepath.Join(root, slug, taskID)
+	g := baseStub()
+	g.on("worktree list --porcelain",
+		fmt.Sprintf("worktree %s\nbranch refs/heads/swarm/%s\n\n", own, taskID), nil)
+	return g, &Manager{Git: g, Root: root}, own
+}
+
+// The regression this fixes: checkBranchReclaimable saw the branch checked out
+// ANYWHERE — including at our own path — and returned ErrBranchCheckedOut, so
+// phaserun.Start bailed before reaching the Acquire that recovers this exact state
+// by warm reuse (invariant 4). Retrying a phase after a daemon crash was
+// impossible.
+func TestReclaimEmptyBranchToleratesOwnLeftoverWorktree(t *testing.T) {
+	g, m, own := ownLeftoverStub(t, "proj", "phase-714")
+
+	ahead, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714")
+	if err != nil {
+		t.Fatalf("ReclaimEmptyBranch on our own leftover worktree = %v, want nil", err)
+	}
+	if ahead != 0 {
+		t.Errorf("ahead = %d, want 0 — the checkout is ours, there is nothing to reclaim", ahead)
+	}
+	if g.called("branch -D") {
+		t.Fatalf("a branch checked out in a live worktree must never be deleted (calls: %v)", g.calls)
+	}
+	// Reclaim stops at the list — counting commits would be pointless work, and
+	// a non-zero count must NOT surface as BranchDirty: warm reuse continues the
+	// work rather than destroying it.
+	if g.called("rev-list") {
+		t.Errorf("reclaim counted commits for a branch it will not touch (calls: %v)", g.calls)
+	}
+
+	// …and Start's next step, Acquire, recovers the run by warm-reusing that very
+	// worktree.
+	a, err := m.Acquire("/tmp/repo", "proj", "phase-714")
+	if err != nil {
+		t.Fatalf("Acquire after reclaim = %v, want warm reuse", err)
+	}
+	if !samePath(a.Path, own) || a.Branch != "swarm/phase-714" {
+		t.Errorf("Acquire = {%s,%s}, want warm reuse of {%s,swarm/phase-714}", a.Path, a.Branch, own)
+	}
+	if g.called("worktree add") {
+		t.Error("warm reuse must not re-add the worktree")
+	}
+}
+
+// The branch checked out at a FOREIGN path is still a hard conflict — Acquire
+// would reject it as ErrBranchBusy, and `git branch -D` refuses it anyway.
+func TestReclaimEmptyBranchStillRefusesForeignWorktree(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wts")
+	g := baseStub()
+	g.on("worktree list --porcelain",
+		"worktree /elsewhere/phase-714\nbranch refs/heads/swarm/phase-714\n\n", nil)
+	m := &Manager{Git: g, Root: root}
+	_, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714")
+	if !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("err = %v, want ErrBranchCheckedOut for a foreign checkout", err)
+	}
+}
+
+// A worktree under our Root but for a DIFFERENT task id is not ours either.
+func TestReclaimEmptyBranchForeignTaskUnderRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wts")
+	g := baseStub()
+	g.on("worktree list --porcelain",
+		"worktree "+filepath.Join(root, "proj", "phase-999")+"\nbranch refs/heads/swarm/phase-714\n\n", nil)
+	m := &Manager{Git: g, Root: root}
+	if _, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714"); !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
+	}
+}
+
+// DeleteBranch deliberately does NOT get the own-path tolerance: it ends in a
+// `git branch -D`, which git itself refuses while the branch is checked out. A
+// sentinel naming the holding worktree is a better answer than a raw git failure
+// — and far better than the silent success I6 is about.
+func TestDeleteBranchRefusesOwnLeftoverWorktree(t *testing.T) {
+	g, m, own := ownLeftoverStub(t, "proj", "phase-714")
+	err := m.DeleteBranch("/tmp/repo", "swarm/phase-714")
+	if !errors.Is(err, ErrBranchCheckedOut) {
+		t.Fatalf("err = %v, want ErrBranchCheckedOut", err)
+	}
+	if !strings.Contains(err.Error(), own) {
+		t.Errorf("err = %v, want it to name the holding worktree %s", err, own)
+	}
+	if g.called("branch -D") {
+		t.Error("DeleteBranch issued a delete git would refuse")
+	}
+}
+
+// ---- I6: "missing" vs "git is unhappy" ------------------------------------
+
+// A probe that FAILS WITH OUTPUT (unreadable repo, locked ref, bad permissions)
+// is not proof the branch is gone. Reporting it as missing made DeleteBranch
+// return nil, DeleteRunBranch log "deleted run branch", and the UI clear a
+// dirty-branch banner on a no-op.
+func TestDeleteBranchSurfacesProbeFailure(t *testing.T) {
+	g := baseStub()
+	g.on("rev-parse --verify --quiet",
+		"fatal: not a git repository (or any of the parent directories): .git",
+		errors.New("exit 128"))
+	m := newMgr(t, g)
+	err := m.DeleteBranch("/tmp/repo", "swarm/phase-714")
+	if err == nil {
+		t.Fatal("DeleteBranch = nil on a broken probe, want an error — the branch is still there")
+	}
+	if !strings.Contains(err.Error(), "swarm/phase-714") {
+		t.Errorf("err = %v, want it to name the branch", err)
+	}
+	if g.called("branch -D") {
+		t.Error("a failed probe must not authorize a delete")
+	}
+}
+
+func TestReclaimEmptyBranchSurfacesProbeFailure(t *testing.T) {
+	g := baseStub()
+	g.on("rev-parse --verify --quiet", "fatal: not a git repository", errors.New("exit 128"))
+	m := newMgr(t, g)
+	if _, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-714"); err == nil {
+		t.Fatal("ReclaimEmptyBranch = nil on a broken probe, want an error")
+	}
+}
+
+// ---- M7: a negative commit count ------------------------------------------
+
+// strconv.Atoi("-1") succeeds and `ahead > 0` is false, so a negative count used
+// to authorize `branch -D` — the one outcome a nonsensical count must never buy.
+func TestReclaimEmptyBranchNegativeCount(t *testing.T) {
+	g := baseStub()
+	g.on("rev-list --count", "-1\n", nil)
+	m := newMgr(t, g)
+	_, err := m.ReclaimEmptyBranch("/tmp/repo", "swarm/phase-717")
+	if err == nil {
+		t.Fatal("err = nil for a negative commit count, want an error")
+	}
+	if !strings.Contains(err.Error(), "swarm/phase-717") {
+		t.Errorf("err = %v, want it to name the branch", err)
+	}
+	if g.called("branch -D") {
+		t.Error("a negative count must not authorize a delete")
+	}
+}
+
 func TestResolveRootDefaultsToHome(t *testing.T) {
 	// Empty Root resolves under $HOME/.swarmery/worktrees.
 	m := &Manager{Git: baseStub()}
