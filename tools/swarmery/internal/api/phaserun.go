@@ -85,8 +85,10 @@ func (h *Handler) parsePhaseRunParams(w http.ResponseWriter, r *http.Request) (p
 
 // runPhase — POST /api/epics/{taskId}/phases/{phaseId}/run. requireLocalOrigin.
 // 202 {status:"running", sessionUuid}; 404 unknown phase; 409 already running /
-// unmet deps (body names them) / unreadable doc / pathless project; 503 not
-// attached.
+// unmet deps (body names them) / unreadable doc / pathless project / any branch
+// sentinel; 503 not attached. EVERY 409 carries a `code` (see runconflict.go)
+// alongside its pre-existing fields, so the client discriminates on one stable
+// value instead of sniffing which fields happen to be present.
 func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	if phaserunSvc == nil {
 		writeClientErr(w, http.StatusServiceUnavailable, "phase runs not attached")
@@ -99,20 +101,24 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	uuid, err := phaserunSvc.Start(phaseID)
 	var depsErr *phaserun.DepsUnmetError
 	var dirtyErr *phaserun.BranchDirtyError
+	// Start wraps the reclaim/acquire failures (fmt.Errorf("reclaim run branch:
+	// %w", …)), so errors.Is still matches through the wrap. Resolved BEFORE the
+	// switch and placed above the generic arm — an arm below `case err != nil` is
+	// unreachable, which no body assertion would ever reveal.
+	wtCode, wtMsg, isWtConflict := worktreeConflict(err)
 	switch {
 	case errors.Is(err, phaserun.ErrPhaseNotFound):
 		writeClientErr(w, http.StatusNotFound, "phase not found")
 	case errors.Is(err, phaserun.ErrRunning):
-		writeClientErr(w, http.StatusConflict, "a run is already active for this phase")
+		writeConflict(w, codeAlreadyRunning, "a run is already active for this phase")
 	case errors.As(err, &depsErr):
-		writeJSONStatus(w, http.StatusConflict, map[string]any{
-			"error":     depsErr.Error(),
+		writeConflictFields(w, codeDepsUnmet, depsErr.Error(), map[string]any{
 			"unmetDeps": depsErr.Unmet,
 		})
 	case errors.Is(err, phaserun.ErrNoDoc):
-		writeClientErr(w, http.StatusConflict, "phase doc is unreadable")
+		writeConflict(w, codeDocUnreadable, "phase doc is unreadable")
 	case errors.Is(err, phaserun.ErrNoPath):
-		writeClientErr(w, http.StatusConflict, "project has no known path to run in")
+		writeConflict(w, codeNoProjectPath, "project has no known path to run in")
 	// The leftover run branch holds commits a retry would collide with. Commit
 	// SUBJECTS are deliberately absent here — the UI already fetches /diagnosis,
 	// whose branch-dirty blocker carries them, and git ownership stays in phasediag.
@@ -120,24 +126,13 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	// named): "2 commits ahead" is only actionable once the user knows ahead of what.
 	// Same four fields runPlan emits, so both run surfaces parse as one shape.
 	case errors.As(err, &dirtyErr):
-		writeJSONStatus(w, http.StatusConflict, map[string]any{
-			"error":        dirtyErr.Error(),
+		writeConflictFields(w, codeBranchDirty, dirtyErr.Error(), map[string]any{
 			"branch":       dirtyErr.Branch,
 			"commitsAhead": dirtyErr.CommitsAhead,
 			"base":         dirtyErr.Base,
 		})
-	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
-	// errors.Is still matches through the wrap. Without this arm a checked-out run
-	// branch surfaces as a raw 500 and the UI can show the user nothing actionable.
-	case errors.Is(err, worktree.ErrBranchCheckedOut):
-		writeClientErr(w, http.StatusConflict, "the run branch is checked out in another worktree")
-	// Same category, same wrap: with no checked-out branch there is no base to
-	// measure the leftover run branch against, so reclaim refuses rather than guess
-	// one — and a guessed base is what a `git branch -D` must never run on. The user
-	// resolves it by checking out a branch, which a raw 500 would never say.
-	case errors.Is(err, worktree.ErrDetachedHead):
-		writeClientErr(w, http.StatusConflict,
-			"the repo is on a detached HEAD, so the run branch cannot be measured against a base — check out a branch first")
+	case isWtConflict:
+		writeConflict(w, wtCode, wtMsg)
 	case err != nil:
 		writeErr(w, err)
 	default:
@@ -187,9 +182,14 @@ func (h *Handler) phaseDiagnosis(w http.ResponseWriter, r *http.Request) {
 }
 
 // deletePhaseRunBranch — DELETE /api/epics/{taskId}/phases/{phaseId}/branch.
-// requireLocalOrigin. The explicit user decision behind a 409 branchDirty: force-
-// deletes swarm/phase-<id> INCLUDING its commits. 200 {deleted, branch}; 409 while a
-// run is in flight or the branch is checked out; 503 not attached.
+// requireLocalOrigin. The explicit user decision behind a 409 branch-dirty: force-
+// deletes swarm/phase-<id> INCLUDING its commits. 200 {deleted, branch}; 409 (with a
+// `code`) while a run is in flight, the branch is checked out / is HEAD / is outside
+// the swarm namespace, or the project is pathless; 503 not attached.
+//
+// `deleted` is the service's `existed`, not a constant: worktree.DeleteBranch is
+// idempotent, so a delete of an already-gone branch used to answer
+// {deleted:true} and the modal cleared its dirty-branch banner on a no-op.
 func (h *Handler) deletePhaseRunBranch(w http.ResponseWriter, r *http.Request) {
 	if phaserunSvc == nil {
 		writeClientErr(w, http.StatusServiceUnavailable, "phase runs not attached")
@@ -199,21 +199,23 @@ func (h *Handler) deletePhaseRunBranch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	branch, err := phaserunSvc.DeleteRunBranch(phaseID)
+	branch, existed, err := phaserunSvc.DeleteRunBranch(phaseID)
+	// Resolved before the switch and matched above the generic arm — see runPhase.
+	wtCode, wtMsg, isWtConflict := worktreeConflict(err)
 	switch {
 	case errors.Is(err, phaserun.ErrPhaseNotFound):
 		writeClientErr(w, http.StatusNotFound, "phase not found")
 	case errors.Is(err, phaserun.ErrRunning):
-		writeClientErr(w, http.StatusConflict, "a run is active for this phase")
-	case errors.Is(err, worktree.ErrBranchCheckedOut):
-		writeClientErr(w, http.StatusConflict, "branch is checked out in a worktree")
+		writeConflict(w, codeAlreadyRunning, "a run is active for this phase")
 	case errors.Is(err, phaserun.ErrNoPath):
-		writeClientErr(w, http.StatusConflict, "project has no known path")
+		writeConflict(w, codeNoProjectPath, "project has no known path")
 	case errors.Is(err, phaserun.ErrNoRunBranch):
-		writeClientErr(w, http.StatusConflict, "this phase has no recorded run branch")
+		writeConflict(w, codeNoRunBranch, "this phase has no recorded run branch")
+	case isWtConflict:
+		writeConflict(w, wtCode, wtMsg)
 	case err != nil:
 		writeErr(w, err)
 	default:
-		writeJSON(w, map[string]any{"deleted": true, "branch": branch}, nil)
+		writeJSON(w, map[string]any{"deleted": existed, "branch": branch}, nil)
 	}
 }

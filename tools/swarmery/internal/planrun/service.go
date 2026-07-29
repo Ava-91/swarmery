@@ -411,8 +411,10 @@ func (s *Service) Cancel(taskID int64) bool {
 // existed reports whether the branch was actually there: worktree.DeleteBranch is
 // idempotent (a missing branch is a silent nil), so a caller with only an error to
 // read cannot tell a real deletion from a no-op and would claim "deleted" either
-// way. phaserun.DeleteRunBranch is scheduled to take this same shape; it is
-// adopted here from the start so the two run surfaces never disagree.
+// way. It now comes from the delete call itself — the probe that answers it runs
+// inside checkBranchReclaimable anyway, so the local rev-parse this method used to
+// issue first was a second answer to a question the boundary already knew, with a
+// window between the two in which they could disagree.
 func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, err error) {
 	info, err := s.loadPlan(taskID)
 	if err != nil {
@@ -430,34 +432,14 @@ func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, er
 	}
 	// Same deterministic name Start reclaims and Acquire derives (worktree.branchName).
 	branch = "swarm/plan-" + strconv.FormatInt(taskID, 10)
-	existed = s.branchExists(info.ProjectPath, branch)
-	if err := s.Wt.DeleteBranch(info.ProjectPath, branch); err != nil {
+	existed, err = s.Wt.DeleteBranch(info.ProjectPath, branch)
+	if err != nil {
 		return "", false, err
 	}
 	if existed {
 		log.Printf("planrun: deleted run branch %s (plan=%d)", branch, taskID)
 	}
 	return branch, existed, nil
-}
-
-// branchExists probes whether branch is present, through the SAME optional Git
-// seam baseBranch uses and with the same rev-parse contract worktree.branchExists
-// applies. It is a probe, not a gate: dispatch.WorktreeManager.DeleteBranch cannot
-// report existence yet (the follow-up that widens it will let this collapse into
-// the delete call), so the answer is read before the delete.
-//
-// Unverifiable — no Git seam wired, no project path, or git itself unhappy —
-// answers false. The bool is a CLAIM ("this branch was deleted") that a caller
-// turns into user-visible truth, and a claim that could not be checked must not be
-// made; the deletion itself still happened and is reported by err.
-func (s *Service) branchExists(repoRoot, branch string) bool {
-	if s.Git == nil || repoRoot == "" {
-		return false
-	}
-	// `rev-parse --verify --quiet` exits non-zero when the ref is absent; any error
-	// (absent or git unhappy) is "cannot claim it existed".
-	_, err := s.Git.Run(repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
-	return err == nil
 }
 
 // HealStale fails any plan_runs row left 'running' by a crashed/restarted

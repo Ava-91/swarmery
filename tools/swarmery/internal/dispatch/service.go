@@ -41,8 +41,10 @@ type WorktreeManager interface {
 	ReclaimEmptyBranch(repoRoot, branch string) (int, error)
 	// DeleteBranch force-deletes branch INCLUDING its commits, refusing while it
 	// is checked out or is the repo's HEAD branch. Only for an explicit user
-	// decision — never call it to make room for a re-run.
-	DeleteBranch(repoRoot, branch string) error
+	// decision — never call it to make room for a re-run. The bool reports
+	// whether a branch was actually there: deleting is idempotent, so a nil error
+	// alone would let a no-op be reported to the user as a deletion.
+	DeleteBranch(repoRoot, branch string) (existed bool, err error)
 }
 
 // Verifier is the auto-verification trigger seam (fusion phase 6). Declared HERE

@@ -465,35 +465,44 @@ func (s *Service) Cancel(phaseID int64) bool {
 // DeleteRunBranch force-deletes a phase's run branch, INCLUDING one that holds
 // commits — the explicit user decision behind a BranchDirtyError. Refuses while the
 // branch is checked out or a run is in flight for this phase.
-func (s *Service) DeleteRunBranch(phaseID int64) (string, error) {
+//
+// existed reports whether the branch was actually there: worktree.DeleteBranch is
+// idempotent (a missing branch is a silent nil), so a caller with only an error to
+// read cannot tell a real deletion from a no-op and would claim "deleted" either
+// way — the UI then clears its dirty-branch banner on nothing. Same shape as
+// planrun.DeleteRunBranch, so the two run surfaces never disagree.
+func (s *Service) DeleteRunBranch(phaseID int64) (branch string, existed bool, err error) {
 	info, err := s.loadPhase(phaseID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if info.ProjectPath == "" {
-		return "", ErrNoPath
+		return "", false, ErrNoPath
 	}
 	// A live run owns the branch; deleting it underneath would strand its commits.
 	s.mu.Lock()
 	_, busy := s.active[phaseID]
 	s.mu.Unlock()
 	if busy {
-		return "", ErrRunning
+		return "", false, ErrRunning
 	}
 	// The branch STAMPED at spawn (0043) — never re-derived from the row id. Deriving
 	// it here would name swarm/phase-<current id>, which after a doc rename is a branch
 	// that does not exist, while the one holding the run's commits survives untouched:
 	// a delete that reports success and destroys nothing. No fallback for the same
 	// reason — a fallback reinstates exactly that failure.
-	branch := info.RunBranch
+	branch = info.RunBranch
 	if branch == "" {
-		return "", ErrNoRunBranch
+		return "", false, ErrNoRunBranch
 	}
-	if err := s.Wt.DeleteBranch(info.ProjectPath, branch); err != nil {
-		return "", err
+	existed, err = s.Wt.DeleteBranch(info.ProjectPath, branch)
+	if err != nil {
+		return "", false, err
 	}
-	log.Printf("phaserun: deleted run branch %s (phase=%d)", branch, phaseID)
-	return branch, nil
+	if existed {
+		log.Printf("phaserun: deleted run branch %s (phase=%d)", branch, phaseID)
+	}
+	return branch, existed, nil
 }
 
 // HealStale fails any epic_phases row left 'running' by a crashed/restarted

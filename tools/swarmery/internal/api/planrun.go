@@ -25,7 +25,6 @@ import (
 	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrun"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // planrunSvc is attached once at daemon startup (nil ⇒ plan-run endpoints 503
@@ -66,7 +65,10 @@ func parsePlanRunTask(w http.ResponseWriter, r *http.Request) (int64, bool) {
 // runPlan — POST /api/epics/{taskId}/run. requireLocalOrigin.
 // 202 {status:"running", sessionUuid, agent}; 404 unknown plan; 409 already
 // running / a phase run is active / paused-archived / no phases / already
-// complete / unreadable README / pathless project; 503 not attached.
+// complete / unreadable README / pathless project / any branch sentinel; 503 not
+// attached. Every 409 carries the SAME `code` vocabulary the phase-run endpoint
+// uses (runconflict.go) — the two run surfaces must answer retry identically, and
+// a dirty plan branch used to arrive here as an opaque 500.
 func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 	if planrunSvc == nil {
 		writeClientErr(w, http.StatusServiceUnavailable, "plan runs not attached")
@@ -86,49 +88,47 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 
 	uuid, err := planrunSvc.Start(taskID, agent, string(mode))
 	var dirtyErr *planrun.BranchDirtyError
+	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
+	// errors.Is still matches through the wrap. Resolved before the switch and
+	// matched above the generic arm — an arm below `case err != nil` is dead code
+	// (see runconflict.go).
+	wtCode, wtMsg, isWtConflict := worktreeConflict(err)
 	switch {
 	case errors.Is(err, planrun.ErrPlanNotFound):
 		writeClientErr(w, http.StatusNotFound, "plan not found")
 	case errors.Is(err, planrun.ErrRunning):
-		writeClientErr(w, http.StatusConflict, "a run is already active for this plan")
+		writeConflict(w, codeAlreadyRunning, "a run is already active for this plan")
 	case errors.Is(err, planrun.ErrPhaseRunning):
-		writeClientErr(w, http.StatusConflict, "a phase run is active — cancel it before running the whole plan")
+		writeConflict(w, codePhaseRunning, "a phase run is active — cancel it before running the whole plan")
 	case errors.Is(err, planrun.ErrNotActive):
-		writeClientErr(w, http.StatusConflict, "plan is not active")
+		writeConflict(w, codePlanInactive, "plan is not active")
 	case errors.Is(err, planrun.ErrNoPhases):
-		writeClientErr(w, http.StatusConflict, "plan has no phases")
+		writeConflict(w, codeNoPhases, "plan has no phases")
 	case errors.Is(err, planrun.ErrComplete):
-		writeClientErr(w, http.StatusConflict, "every phase of this plan is already done")
+		writeConflict(w, codePlanComplete, "every phase of this plan is already done")
 	case errors.Is(err, planrun.ErrNoDoc):
-		writeClientErr(w, http.StatusConflict, "plan README is unreadable")
+		writeConflict(w, codeDocUnreadable, "plan README is unreadable")
 	case errors.Is(err, planrun.ErrNoPath):
-		writeClientErr(w, http.StatusConflict, "project has no known path to run in")
+		writeConflict(w, codeNoProjectPath, "project has no known path to run in")
 	// The previous run's branch still holds commits, so reclaiming its name would
-	// destroy them. Same body shape runPhase emits (error/branch/commitsAhead/base)
-	// — the two run surfaces answer retry identically, and the UI parses one shape.
-	// `base` is what turns "2 commits ahead" into a decision: ahead of `dev` is work
-	// to merge, ahead of a branch that already contains them is nothing at all.
-	// errors.As (not a type assertion): Start returns the value directly today, but
-	// a future wrap must not silently downgrade this back to a 500.
+	// destroy them. Same body shape runPhase emits (error/code/branch/commitsAhead/
+	// base) — the two run surfaces answer retry identically, and the UI parses one
+	// shape. `base` is what turns "2 commits ahead" into a decision: ahead of `dev`
+	// is work to merge, ahead of a branch that already contains them is nothing at
+	// all. errors.As (not a type assertion): Start returns the value directly today,
+	// but a future wrap must not silently downgrade this back to a 500.
 	case errors.As(err, &dirtyErr):
-		writeJSONStatus(w, http.StatusConflict, map[string]any{
-			"error":        dirtyErr.Error(),
+		writeConflictFields(w, codeBranchDirty, dirtyErr.Error(), map[string]any{
 			"branch":       dirtyErr.Branch,
 			"commitsAhead": dirtyErr.CommitsAhead,
 			"base":         dirtyErr.Base,
 		})
-	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
-	// errors.Is still matches through the wrap. Without this arm a checked-out run
-	// branch surfaces as a raw 500 and the UI can show the user nothing actionable.
-	case errors.Is(err, worktree.ErrBranchCheckedOut):
-		writeClientErr(w, http.StatusConflict, "the run branch is checked out in another worktree")
-	// Same category, same wrap: with no checked-out branch there is no base to
-	// measure the leftover run branch against, so reclaim refuses rather than guess
-	// one — and a guessed base is what a `git branch -D` must never run on. The user
-	// resolves it by checking out a branch, which a raw 500 would never say.
-	case errors.Is(err, worktree.ErrDetachedHead):
-		writeClientErr(w, http.StatusConflict,
-			"the repo is on a detached HEAD, so the run branch cannot be measured against a base — check out a branch first")
+	// Every branch sentinel at once, including the ones that used to reach the
+	// generic arm as opaque 500s: checked out elsewhere, is HEAD, outside swarm/,
+	// busy, or a detached HEAD that leaves no base to measure against. Each is a
+	// state the user can actually resolve, which a 500 would never say.
+	case isWtConflict:
+		writeConflict(w, wtCode, wtMsg)
 	case err != nil:
 		writeErr(w, err)
 	default:
@@ -176,7 +176,8 @@ func (h *Handler) cancelPlanRun(w http.ResponseWriter, r *http.Request) {
 // Every refusal DeleteRunBranch can raise is a state the user can resolve — the
 // branch is checked out somewhere, a run owns it, it is the repo's HEAD, or it is
 // outside the swarm/ namespace this daemon is allowed to `branch -D`. Those are
-// 409s with a message, never the raw 500 an unmatched error produces.
+// 409s carrying a `code` (see runconflict.go), never the raw 500 an unmatched
+// error produces.
 func (h *Handler) deletePlanRunBranch(w http.ResponseWriter, r *http.Request) {
 	if planrunSvc == nil {
 		writeClientErr(w, http.StatusServiceUnavailable, "plan runs not attached")
@@ -187,22 +188,22 @@ func (h *Handler) deletePlanRunBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	branch, existed, err := planrunSvc.DeleteRunBranch(taskID)
+	// Above the generic arm, as everywhere else — see runconflict.go.
+	wtCode, wtMsg, isWtConflict := worktreeConflict(err)
 	switch {
 	case errors.Is(err, planrun.ErrPlanNotFound):
 		writeClientErr(w, http.StatusNotFound, "plan not found")
 	case errors.Is(err, planrun.ErrRunning):
-		writeClientErr(w, http.StatusConflict, "a run is active for this plan")
+		writeConflict(w, codeAlreadyRunning, "a run is active for this plan")
 	case errors.Is(err, planrun.ErrNoPath):
-		writeClientErr(w, http.StatusConflict, "project has no known path")
-	case errors.Is(err, worktree.ErrBranchCheckedOut):
-		writeClientErr(w, http.StatusConflict, "branch is checked out in a worktree")
-	case errors.Is(err, worktree.ErrBranchIsHead):
-		writeClientErr(w, http.StatusConflict, "the run branch is the repo's checked-out branch")
-	case errors.Is(err, worktree.ErrRefusedBranch):
-		writeClientErr(w, http.StatusConflict, "refusing to delete a branch outside the swarm/ namespace")
+		writeConflict(w, codeNoProjectPath, "project has no known path")
+	case isWtConflict:
+		writeConflict(w, wtCode, wtMsg)
 	case err != nil:
 		writeErr(w, err)
 	default:
+		// `deleted` is the service's `existed` — deleting is idempotent, so a
+		// constant true would report a no-op as a deletion.
 		writeJSON(w, map[string]any{"deleted": existed, "branch": branch}, nil)
 	}
 }
