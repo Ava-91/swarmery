@@ -218,7 +218,7 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	}
 
 	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
-	// run's swarm/phase-<id> is still there and Acquire would fail ErrBranchBusy.
+	// run's swarm/phase-<id> is still there and Acquire would fail ErrBranchExists.
 	// Reclaim it first when it is empty; refuse loudly when it holds work. The
 	// literal below must match worktree.branchName ("swarm/" + taskID) — it is the
 	// same deterministic name Acquire derives from the taskID passed just after.
