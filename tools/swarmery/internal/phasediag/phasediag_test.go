@@ -872,6 +872,32 @@ func TestDiagnoseEmptyOrphanIsSilent(t *testing.T) {
 	}
 }
 
+// A branch whose id is not in canonical decimal form is not one of ours: worktree
+// mints names with strconv.FormatInt, so swarm/phase-007 can only be hand-made. It
+// matters because the blocker reports branchName(id), not the listed line — left in,
+// this would report swarm/phase-7 (a branch that need not exist) and its cleanup
+// button would name a branch the orphan route refuses by construction.
+func TestDiagnoseNonCanonicalBranchIsNotOrphaned(t *testing.T) {
+	f := newFixture(t)
+	id := f.addPhase(t, 1, "Phase 1", "[]", 4, 4)
+
+	git := newGit("dev").
+		branchMissing(branchName(id)).
+		branchList("swarm/phase-007").
+		branchExists("dev", "swarm/phase-007", 2, "wip").
+		branchExists("dev", "swarm/phase-7", 2, "wip")
+
+	d, err := Diagnose(f.db, git, nil, id)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	for _, b := range d.Blockers {
+		if b.Kind == KindOrphanBranch {
+			t.Errorf("non-canonical branch reported as an orphan: %+v", b)
+		}
+	}
+}
+
 // Ids are GLOBAL across epics, so the absence check must be against epic_phases
 // entirely. Scoped to one epic, every plan would report every other plan's live
 // run branches — noise that buries the one branch that really is lost work.

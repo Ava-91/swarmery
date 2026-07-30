@@ -352,6 +352,13 @@ func orphanBranches(db *sql.DB, git worktree.Git, repoRoot, base string) ([]Bloc
 		if convErr != nil {
 			continue // swarm/phase-<not a number> is not a run branch of ours
 		}
+		// Only the CANONICAL spelling is ours. The blocker below reports branchName(id)
+		// rather than the listed line, so a hand-made swarm/phase-007 would otherwise be
+		// reported as swarm/phase-7 — a branch that may not exist, whose cleanup button
+		// would then act on the wrong name (and which the orphan route now refuses).
+		if name != branchName(id) {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })

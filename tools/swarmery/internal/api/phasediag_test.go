@@ -783,8 +783,14 @@ func TestDeleteOrphanBranch_200(t *testing.T) {
 // This route takes a branch name from the client, so the namespace class has to be
 // closed here as well as at the worktree boundary.
 func TestDeleteOrphanBranch_RefusesForeignNamespace(t *testing.T) {
+	// The non-canonical ids (leading zeros, bare 0, a dash) are refused for a second
+	// reason: the route rebuilds the name it hands git from the parsed id, and only a
+	// canonical decimal id makes that rebuild an identity. swarm/phase-007 must not
+	// resolve to swarm/phase-7 — that is a different branch.
 	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarm/plan-71",
-		"swarm/phase-", "swarm/phase-abc", "swarm/phase-1/x"} {
+		"swarm/phase-", "swarm/phase-abc", "swarm/phase-1/x",
+		"swarm/phase-007", "swarm/phase-0", "swarm/phase--1", "swarm/phase-+1",
+		"swarm/phase-1 --force"} {
 		t.Run(branch, func(t *testing.T) {
 			srv, db, taskID, _ := epicFixture(t)
 			wt := &phaseWtStub{}
