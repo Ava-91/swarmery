@@ -614,6 +614,18 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resol
 		sentinel := s.classifyLastTurn(uuid)
 		switch sentinel.Kind {
 		case "done":
+			// A done sentinel is a CLAIM, not proof. PREMISE STALE / NO-OP / DUPLICATE
+			// (prompt.go doneSentinels) all mean "no work was needed" — the one path
+			// where an agent closes a task without producing anything, and the cheapest
+			// path available to it. On the live database 5 of 5 dispatched tasks took it
+			// (all PREMISE STALE), which is exactly why verify_verdict was NULL for all
+			// 74 tasks and verification_runs sat at 0 with the trigger enabled.
+			//
+			// BEFORE finishDone, not after: finishDone nulls tasks.worktree_path and
+			// verification memoizes on the worktree tree hash, so the reverse order
+			// grades nothing while looking correct. Pinned by
+			// TestDoneSentinelPokesVerifyBeforeWorktreeCleared.
+			s.pokeVerify(c.ID)
 			s.finishDone(c, sentinel.Line)
 			s.Poke() // a completed task may unblock dependents (FN-3895)
 			return

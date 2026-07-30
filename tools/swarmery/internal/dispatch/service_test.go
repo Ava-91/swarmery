@@ -909,3 +909,74 @@ func TestHealDeadProcessLeavesNonRunningAlone(t *testing.T) {
 		t.Errorf("status = %q, want done — a finished task is not stuck", st.String)
 	}
 }
+
+// ── done-sentinel verification (phase 2, close-the-run-loops) ──
+
+// probeVerifier records tasks.worktree_path AS IT WAS at the moment Poke fired.
+// The assertion needs that snapshot, not the final row: finishDone nulls the column
+// immediately after, so reading it later cannot distinguish the correct order from
+// the broken one.
+type probeVerifier struct {
+	db      *sql.DB
+	poked   []int64
+	wtAtPop []sql.NullString
+}
+
+func (p *probeVerifier) Poke(id int64) {
+	var wt sql.NullString
+	_ = p.db.QueryRow(`SELECT worktree_path FROM tasks WHERE id=?`, id).Scan(&wt)
+	p.poked = append(p.poked, id)
+	p.wtAtPop = append(p.wtAtPop, wt)
+}
+
+// TestDoneSentinelPokesVerifyBeforeWorktreeCleared pins the ORDER, not just the
+// call. Swap pokeVerify and finishDone in service.go and this test goes red: the
+// probe sees an already-nulled worktree_path and verification would have had
+// nothing to memoize on.
+func TestDoneSentinelPokesVerifyBeforeWorktreeCleared(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{run: func(spec RunSpec) (*Run, error) {
+		// PREMISE STALE is a doneSentinels entry (prompt.go): the exact reply all
+		// five real dispatched runs ended with.
+		ingestSession(t, db, spec.SessionUUID, "PREMISE STALE: already on HEAD")
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(t, db, r, &stubWt{})
+	pv := &probeVerifier{db: db}
+	s.Verifier = pv
+	id := insertTask(t, db, "T-premise", taskOpts{})
+
+	s.Schedule()
+
+	if len(pv.poked) != 1 || pv.poked[0] != id {
+		t.Fatalf("poked = %v, want exactly [%d] — a done sentinel must still be graded", pv.poked, id)
+	}
+	if !pv.wtAtPop[0].Valid || pv.wtAtPop[0].String == "" {
+		t.Fatal("worktree_path was already cleared when verification was poked: " +
+			"pokeVerify must run BEFORE finishDone, which nulls it")
+	}
+	// And the task still lands done — grading is added, not substituted.
+	if column(t, db, id) != "done" {
+		t.Errorf("board_column = %q, want done", column(t, db, id))
+	}
+}
+
+// A blocked sentinel is not a claim about finished work: finishBlocked parks the
+// task for a human and deliberately keeps the worktree. Nothing to grade.
+func TestBlockedSentinelDoesNotPokeVerify(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{run: func(spec RunSpec) (*Run, error) {
+		ingestSession(t, db, spec.SessionUUID, "BLOCKED: needs a decision")
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(t, db, r, &stubWt{})
+	pv := &probeVerifier{db: db}
+	s.Verifier = pv
+	insertTask(t, db, "T-blocked", taskOpts{})
+
+	s.Schedule()
+
+	if len(pv.poked) != 0 {
+		t.Errorf("poked = %v, want none — a blocked task produced no work to grade", pv.poked)
+	}
+}
