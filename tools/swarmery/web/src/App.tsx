@@ -26,7 +26,7 @@ import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
 import { ProjectDropdown } from './components/ProjectDropdown';
 import { ThemeToggle } from './components/ThemeToggle';
-import { UsagePopover } from './components/UsagePopover';
+import { UsageChip } from './components/usage/UsageChip';
 import { isoDay } from './lib/format';
 import { useHealth, shortVersion } from './lib/health';
 import { PluginDriftBadge } from './components/PluginDriftBadge';
@@ -272,7 +272,7 @@ function AppShell(): JSX.Element {
         <ModeToggle />
         <span className="ml-auto flex items-center gap-3">
         <ThemeToggle />
-        <UsagePopover />
+        <UsageChip />
         {!MOCK && <NewProjectButton />}
         <span
           className="flex items-center gap-1.5 font-mono text-[10.5px] text-ink-dim"

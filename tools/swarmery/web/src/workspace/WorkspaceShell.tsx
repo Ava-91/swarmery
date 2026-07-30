@@ -13,7 +13,7 @@ import { Link } from 'react-router-dom';
 import { MOCK } from '../api';
 import { ModeToggle } from '../components/ModeToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
-import { UsagePopover } from '../components/UsagePopover';
+import { UsageChip } from '../components/usage/UsageChip';
 import { useHealth, shortVersion } from '../lib/health';
 import { PluginDriftBadge } from '../components/PluginDriftBadge';
 import { ProjectWorkspaceLayout } from './ProjectWorkspaceLayout';
@@ -39,7 +39,7 @@ export function WorkspaceShell(): JSX.Element {
         <ModeToggle />
         <span className="ml-auto flex items-center gap-3">
           <ThemeToggle />
-          <UsagePopover />
+          <UsageChip />
           <span className="flex items-center gap-1.5 font-mono text-[10.5px] text-ink-dim">
             {MOCK ? (
               <>

@@ -13,6 +13,7 @@ cloud, no account, no telemetry.
 - **Approvals** — pending `AskUserQuestion` and permission requests with inline approve/deny and expiry timers.
 - **System** — the full Claude config graph (agents · skills · hooks · commands · overlays) across global and project scopes, with lint badges and version history.
 - **Retro** — agent-system retrospectives: per-agent health scorecards, a friction board, a lessons feed parsed from workspace retrospectives, and a heuristics-only advisor with a tracked recommendation lifecycle (`proposed → accepted → adopted → verified`). Full guide: [docs/retro.md](docs/retro.md).
+- **Usage** — the header's `◔` chip and its modal: the operator's live Claude subscription quota (5-hour session, weekly, per-model weekly) read from their own local `claude` login, with a pace marker against elapsed window time. Full guide: [docs/usage.md](docs/usage.md).
 - **Docs** — the framework docs (onboarding · extending · neutrality · retro) rendered in-app.
 
 Design reference: [swarmery-design.md](swarmery-design.md) ·

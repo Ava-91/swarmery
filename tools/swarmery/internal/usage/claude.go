@@ -147,7 +147,13 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 		return p
 	}
 
-	if !hasScope(creds.Scopes, requiredScope) {
+	// An absent or empty Scopes list is treated as permissive: the CLI does not
+	// always persist a scope list to ~/.claude/.credentials.json (observed with
+	// only accessToken/refreshToken/expiresAt present), so requiring one here
+	// would reject every genuinely logged-in operator. Only a POPULATED list
+	// that lacks requiredScope is rejected up front; the 401 → refresh → error
+	// path below remains the backstop for a token that is actually unauthorized.
+	if len(creds.Scopes) > 0 && !hasScope(creds.Scopes, requiredScope) {
 		p.Error = "Claude token missing user:profile scope — re-run `claude` login"
 		return p
 	}
@@ -265,6 +271,12 @@ func retryDelay(retryAfter string, attempt int) time.Duration {
 // The request shape mirrors what the CLI sends: JSON body (not form-encoded),
 // including `scope`; omitting either makes Anthropic answer 4xx even for a
 // valid refresh token.
+//
+// The scopes gate above is permissive for absent/empty Scopes, so a
+// scope-less refresh IS reachable for credentials the `claude` CLI wrote
+// without a `scopes` key; this payload legitimately omits `scope` here, and
+// our stub accepts it (TestFetchRefreshesWithoutScopes) — but whether the
+// LIVE Anthropic endpoint does is NOT yet verified. Do not hard-code a default.
 func (c *Client) refresh(ctx context.Context, creds *Creds) (string, bool) {
 	if creds.RefreshToken == "" {
 		return "", false
