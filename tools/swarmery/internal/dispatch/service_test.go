@@ -49,10 +49,10 @@ func (s *stubRunner) count() int {
 // swarm/<id> branch and records calls; Remove records calls. acquireErr forces
 // a failure.
 type stubWt struct {
-	mu          sync.Mutex
-	acquired    []string // task ids acquired
-	removed     []string // task ids (via branch) removed
-	acquireErr  error
+	mu         sync.Mutex
+	acquired   []string // task ids acquired
+	removed    []string // task ids (via branch) removed
+	acquireErr error
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -78,8 +78,8 @@ func (w *stubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) e
 
 // Branch reclamation is not part of the dispatch flow (dispatch tasks own their
 // branch for their whole lifetime) — inert here.
-func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error)   { return 0, nil }
-func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error)        { return false, nil }
+func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
+func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error)      { return false, nil }
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
@@ -806,4 +806,106 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatal("condition not met within deadline")
+}
+
+// ── HealDeadProcess: evidence-driven reclaim (phase 1, close-the-run-loops) ──
+
+// deadDispatchTask stamps a running task with a dispatch session whose proc_state
+// is `procState`, mirroring what procwatch writes once it has observed the process.
+func deadDispatchTask(t *testing.T, db *sql.DB, extID, source, procState string) int64 {
+	t.Helper()
+	uuid := "u-" + extID
+	if _, err := db.Exec(
+		`INSERT INTO sessions(project_id, session_uuid, status, started_at, proc_state)
+		 VALUES(1, ?, 'completed', '2026-07-24T00:00:00Z', NULLIF(?, ''))`, uuid, procState); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	res, err := db.Exec(`
+		INSERT INTO tasks(project_id, title, prompt, status, created_at, source, external_id,
+		                  board_column, dispatch_session_uuid)
+		VALUES(1, ?, 'do it', 'running', '2026-07-01T00:00:00Z', ?, ?, 'triage', ?)`,
+		"t-"+extID, source, extID, uuid)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func TestHealDeadProcessRequeuesQueueTaskOnEvidence(t *testing.T) {
+	db := testDB(t)
+	s := newTestService(t, db, &stubRunner{}, &stubWt{})
+	// 'triage' on purpose: this is where every stuck task in the live database sits,
+	// and HealStale's in_progress predicate never sees it.
+	id := deadDispatchTask(t, db, "T-dead", "queue", "dead")
+
+	if err := s.HealDeadProcess(); err != nil {
+		t.Fatal(err)
+	}
+	if got := column(t, db, id); got != "todo" {
+		t.Errorf("board_column = %q, want todo", got)
+	}
+	if e := taskField(t, db, id, "dispatch_error"); e.String != "dispatch process gone (procwatch: dead)" {
+		t.Errorf("dispatch_error = %q, want the procwatch reason", e.String)
+	}
+	if st := taskField(t, db, id, "status"); st.String != "queued" {
+		t.Errorf("status = %q, want queued", st.String)
+	}
+}
+
+// The regression this test exists for: a workspace row's status is a projection of
+// the workspace artifacts (internal/wsingest upserts DO UPDATE SET status), so a
+// write here is reverted on the next scan and reads as success in the data.
+func TestHealDeadProcessNeverTouchesWorkspaceTask(t *testing.T) {
+	db := testDB(t)
+	s := newTestService(t, db, &stubRunner{}, &stubWt{})
+	id := deadDispatchTask(t, db, "T-ws", "workspace", "dead")
+
+	if err := s.HealDeadProcess(); err != nil {
+		t.Fatal(err)
+	}
+	if got := column(t, db, id); got != "triage" {
+		t.Errorf("board_column = %q, want it untouched at triage — the daemon may not own a workspace row's state", got)
+	}
+	if st := taskField(t, db, id, "status"); st.String != "running" {
+		t.Errorf("status = %q, want it untouched at running", st.String)
+	}
+	if e := taskField(t, db, id, "dispatch_error"); e.Valid && e.String != "" {
+		t.Errorf("dispatch_error = %q, want untouched", e.String)
+	}
+}
+
+// Absence of a liveness signal is absence of evidence — never proof of death. Fusion's
+// first stuck-task detector ignored this and killed everything older than ~30 minutes.
+func TestHealDeadProcessIgnoresMissingAndLiveEvidence(t *testing.T) {
+	for _, procState := range []string{"", "running", "orphaned", "unknown"} {
+		t.Run("proc_state="+procState, func(t *testing.T) {
+			db := testDB(t)
+			s := newTestService(t, db, &stubRunner{}, &stubWt{})
+			id := deadDispatchTask(t, db, "T-"+procState, "queue", procState)
+
+			if err := s.HealDeadProcess(); err != nil {
+				t.Fatal(err)
+			}
+			if got := column(t, db, id); got != "triage" {
+				t.Errorf("board_column = %q, want untouched — %q is not evidence of death", got, procState)
+			}
+		})
+	}
+}
+
+func TestHealDeadProcessLeavesNonRunningAlone(t *testing.T) {
+	db := testDB(t)
+	s := newTestService(t, db, &stubRunner{}, &stubWt{})
+	id := deadDispatchTask(t, db, "T-done", "queue", "dead")
+	if _, err := db.Exec(`UPDATE tasks SET status='done' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.HealDeadProcess(); err != nil {
+		t.Fatal(err)
+	}
+	if st := taskField(t, db, id, "status"); st.String != "done" {
+		t.Errorf("status = %q, want done — a finished task is not stuck", st.String)
+	}
 }

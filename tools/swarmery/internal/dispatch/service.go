@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
@@ -866,6 +867,51 @@ func (s *Service) HealStale() error {
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("swarmery dispatch: healed %d stuck in_progress task(s) to todo", n)
+	}
+	return nil
+}
+
+// HealDeadProcess requeues a dispatcher-owned task whose process is PROVABLY gone.
+//
+// Deliberately narrower than HealStale in its evidence and wider in its reach.
+// HealStale runs once at boot and cannot tell a long-lived run from a dead one, so
+// it is restricted to in_progress and to that single moment. This one acts only on
+// evidence — procwatch observed the process itself and wrote proc_state='dead'
+// (internal/procwatch/ticker.go:82-85) — and can therefore also reclaim a task
+// parked in 'triage', which is where every stuck task in the live database actually
+// sits and which HealStale's predicate never sees.
+//
+// source='queue' is not a convenience filter. A workspace row's status is a
+// projection of the workspace artifacts and is rewritten by internal/wsingest on
+// the next scan, so writing it here would be a silent write-then-revert loop that
+// reads as success in the data. Deriving a verdict for those rows is
+// internal/staleness's job; acting on them is nobody's.
+//
+// NULL and 'unknown' proc_state are NOT evidence of death and must never match:
+// Fusion's first stuck-task detector was "structurally blind to EPHEMERAL EXECUTOR
+// agents" and killed everything running longer than ~30 minutes. Absence of a
+// liveness signal is absence of evidence.
+//
+// Does not Poke: healing is a state change, scheduling is the caller's decision —
+// the same split HealStale already keeps. Folding a Poke in here also made the
+// reclaim untestable, because the scheduler ran the reclaimed task to completion
+// before the assertion could observe the requeue.
+func (s *Service) HealDeadProcess() error {
+	res, err := s.DB.Exec(`
+		UPDATE tasks
+		   SET board_column='todo', status='queued',
+		       dispatch_error='dispatch process gone (procwatch: dead)',
+		       column_moved_at=?
+		 WHERE source='queue' AND status='running'
+		   AND dispatch_session_uuid IS NOT NULL
+		   AND EXISTS (SELECT 1 FROM sessions ds
+		                WHERE ds.session_uuid = tasks.dispatch_session_uuid
+		                  AND ds.proc_state = ?)`, s.ts(), procwatch.StateDead)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("swarmery dispatch: requeued %d task(s) whose dispatch process is gone", n)
 	}
 	return nil
 }
