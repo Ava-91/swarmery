@@ -3,7 +3,9 @@ package verify
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,9 +20,9 @@ import (
 type stubRunner struct {
 	mu    sync.Mutex
 	calls int
-	out   string      // canned stdout (parsed into a verdict)
-	run   *Run        // full canned Run (overrides out when set)
-	err   error       // canned start error
+	out   string // canned stdout (parsed into a verdict)
+	run   *Run   // full canned Run (overrides out when set)
+	err   error  // canned start error
 	outFn func(RunSpec) *Run
 }
 
@@ -46,11 +48,19 @@ func (s *stubRunner) count() int { s.mu.Lock(); defer s.mu.Unlock(); return s.ca
 // stubTrees returns a scripted tree hash (and can force an error to simulate the
 // worktree-vanished race).
 type stubTrees struct {
-	hash string
-	err  error
+	diffFiles int   // files reported by DiffFileCount
+	diffErr   error // when set, the diff size is UNREADABLE
+	hash      string
+	err       error
 }
 
 func (t stubTrees) TreeHash(string) (string, error) { return t.hash, t.err }
+
+// DiffFileCount is the scope-gate signal. diffFiles defaults to 0, which keeps every
+// pre-existing test under any bound — the gate must be invisible to them.
+func (t stubTrees) DiffFileCount(worktreePath, base string) (int, error) {
+	return t.diffFiles, t.diffErr
+}
 
 // ── harness ──
 
@@ -133,6 +143,15 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func detailOf(t *testing.T, db *sql.DB, id int64) string {
+	t.Helper()
+	var v sql.NullString
+	if err := db.QueryRow(`SELECT verify_detail FROM tasks WHERE id=?`, id).Scan(&v); err != nil {
+		t.Fatalf("read detail %d: %v", id, err)
+	}
+	return v.String
 }
 
 func verdictOf(t *testing.T, db *sql.DB, id int64) string {
@@ -610,4 +629,87 @@ func boardColumn(t *testing.T, db *sql.DB, id int64) string {
 		t.Fatalf("read board_column %d: %v", id, err)
 	}
 	return c
+}
+
+// ── scope gate (phase 5, close-the-run-loops) ──
+
+func TestScopeGateRefusesOversizedDiffWithoutSpawning(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-big", diffFiles: 200})
+	s.Cfg.MaxDiffFiles = 40
+	id := insertTask(t, db, taskOpts{})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 0 {
+		t.Errorf("runner calls = %d, want 0 — the point of the gate is NOT spending the session", r.count())
+	}
+	// INCONCLUSIVE, never FAIL: a large change is not a failing change, and a fail
+	// would spawn fix tasks against work nobody graded.
+	if got := verdictOf(t, db, id); got != "inconclusive" {
+		t.Errorf("verdict = %q, want inconclusive", got)
+	}
+	d := detailOf(t, db, id)
+	for _, want := range []string{"200", "40", "SWARMERY_VERIFY_MAX_DIFF_FILES"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("verify_detail = %q, want it to name %q", d, want)
+		}
+	}
+}
+
+func TestScopeGateAllowsDiffUnderTheBound(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-small", diffFiles: 39})
+	s.Cfg.MaxDiffFiles = 40
+	id := insertTask(t, db, taskOpts{})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 1 {
+		t.Errorf("runner calls = %d, want 1 — a change under the bound verifies normally", r.count())
+	}
+	if got := verdictOf(t, db, id); got != "pass" {
+		t.Errorf("verdict = %q, want pass", got)
+	}
+}
+
+func TestScopeGateDisabledByZero(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-huge", diffFiles: 100000})
+	s.Cfg.MaxDiffFiles = 0
+	id := insertTask(t, db, taskOpts{})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 1 {
+		t.Errorf("runner calls = %d, want 1 — 0 must disable the bound entirely", r.count())
+	}
+}
+
+// An unreadable diff is not evidence of a large one. Refusing on it would deny
+// verification for a repo state we simply could not measure — the same rule the
+// dispatcher's progress signal follows.
+func TestScopeGateSkippedWhenDiffUnreadable(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	s := newTestService(t, db, r,
+		stubTrees{hash: "tree-err", diffErr: errors.New("fatal: bad revision")})
+	s.Cfg.MaxDiffFiles = 40
+	id := insertTask(t, db, taskOpts{})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 1 {
+		t.Errorf("runner calls = %d, want 1 — an unmeasurable diff must not block verification", r.count())
+	}
+	if got := verdictOf(t, db, id); got != "pass" {
+		t.Errorf("verdict = %q, want pass", got)
+	}
 }

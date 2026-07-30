@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
@@ -45,6 +47,12 @@ type WorktreeManager interface {
 	// whether a branch was actually there: deleting is idempotent, so a nil error
 	// alone would let a no-op be reported to the user as a deletion.
 	DeleteBranch(repoRoot, branch string) (existed bool, err error)
+	// CommitsForTask returns the SHAs of commits carrying this task's
+	// Swarm-Task-Id trailer. It is the dispatcher's only progress signal: the
+	// count is what distinguishes a re-dispatch that advanced something from one
+	// that did not. An error must never be read as zero commits — see
+	// observedProgress, which keeps the two apart deliberately.
+	CommitsForTask(repoRoot, taskID string) ([]string, error)
 }
 
 // Verifier is the auto-verification trigger seam (fusion phase 6). Declared HERE
@@ -59,13 +67,13 @@ type Verifier interface {
 // Service owns the dispatch loop: candidate selection, admission gates, spawn,
 // exit/sentinel handling, event-driven Poke + poll fallback, and startup heal.
 type Service struct {
-	DB   *sql.DB
-	Cfg  Config
-	Run  Runner
-	Wt   WorktreeManager
-	UUID func() string       // session-uuid generator (test seam)
-	now  func() time.Time    // clock (test seam)
-	Go   func(func())        // async-spawn seam (nil ⇒ real `go`), mirrors improveGo
+	DB     *sql.DB
+	Cfg    Config
+	Run    Runner
+	Wt     WorktreeManager
+	UUID   func() string      // session-uuid generator (test seam)
+	now    func() time.Time   // clock (test seam)
+	Go     func(func())       // async-spawn seam (nil ⇒ real `go`), mirrors improveGo
 	Notify func(taskID int64) // emits task_updated (wired to api.publishTaskUpdated)
 	// Verifier, when attached, is poked on a no-sentinel in_review landing so
 	// auto-verification (fusion phase 6) grades the work while the worktree is
@@ -85,8 +93,8 @@ type Service struct {
 
 	scheduling atomic.Bool // re-entrance guard: overlapping Schedule passes skip
 
-	mu     sync.Mutex          // guards active
-	active map[int64]struct{}  // task ids with a live run (MaxConcurrent + same-task single-flight)
+	mu     sync.Mutex         // guards active
+	active map[int64]struct{} // task ids with a live run (MaxConcurrent + same-task single-flight)
 }
 
 // NewService builds a dispatcher. The caller wires DB, Cfg, Run (ClaudeRunner),
@@ -256,8 +264,11 @@ func (s *Service) Schedule() {
 		if liveWorktrees >= s.Cfg.MaxWorktrees {
 			break
 		}
-		// Gate: dependencies all resolved (done|archived).
-		if !c.depsSatisfied {
+		// Gate: dependencies all resolved (done|archived, verification not failed).
+		// The reason is surfaced, not swallowed — an operator seeing a card sit still
+		// with no explanation is what this gate used to produce.
+		if c.depBlocker != nil {
+			s.recordDepBlock(c.ID, *c.depBlocker)
 			continue
 		}
 		// Gate: file-scope overlap vs every active task in the SAME project.
@@ -291,7 +302,7 @@ type candidate struct {
 	CreatedAt    string
 	FileScope    []string
 	Dependencies []string
-	depsSatisfied bool
+	depBlocker   *DepBlocker // nil ⇒ every dependency clear
 }
 
 // candidates returns Todo board tasks (source='queue', both pause flags clear)
@@ -342,42 +353,97 @@ func (s *Service) candidates() ([]candidate, error) {
 		return cands[i].ID < cands[j].ID
 	})
 
-	// Resolve dependency satisfaction once (a dep is satisfied iff its task is in
-	// done|archived, keyed by external_id — the card id used in the trailer and
-	// dependency arrays).
+	// Resolve dependency satisfaction once, keeping the REASON: a dep is satisfied iff
+	// its task is in done|archived and its verification did not explicitly fail.
+	// Keyed by external_id — the card id used in the trailer and dependency arrays.
 	for i := range cands {
-		ok, err := s.depsSatisfied(cands[i].Dependencies)
+		blocker, err := s.depBlocker(cands[i].Dependencies)
 		if err != nil {
 			return nil, err
 		}
-		cands[i].depsSatisfied = ok
+		cands[i].depBlocker = blocker
 	}
 	return cands, nil
 }
 
-// depsSatisfied reports whether every dependency external_id refers to a task
-// currently in done|archived. Unknown ids are treated as UNSATISFIED (a
-// dangling dependency must not silently unblock — conservative).
-func (s *Service) depsSatisfied(deps []string) (bool, error) {
+// DepBlocker names WHY a dependency is not satisfied. A bool cannot be shown to an
+// operator, and "not dispatching, no reason given" is a state this codebase has
+// already paid for: four phase runs once launched on top of a 0/7 dependency because
+// the gate accepted a board column as proof of completion. Fusion's
+// getTaskMergeBlocker (packages/core/src/task-merge.ts:239) returns the reason for
+// exactly this purpose.
+type DepBlocker struct {
+	Dep    string // external_id of the blocking dependency
+	Reason string // "not found" | "not done (column=X)" | "verification failed"
+}
+
+func (b DepBlocker) String() string { return b.Dep + ": " + b.Reason }
+
+// depBlocker returns the first unsatisfied dependency, or nil when every dependency
+// is clear. Unknown ids block (a dangling dependency must not silently unblock).
+//
+// Rule order matters. The verdict check comes LAST and fires only on an explicit
+// 'fail':
+//
+// NULL, ”, 'pass' and 'inconclusive' all pass the gate. This is not leniency — it
+// is the invariant this codebase already keeps in internal/phasediag/outcome.go,
+// where a missing baseline yields a zero delta and never a negative verdict, and the
+// one Fusion keeps at packages/engine/src/reviewer.ts:50, where a provider error
+// never becomes a verdict. Unavailability of a measurement is not a bad measurement.
+//
+// The practical stake: verify_verdict is NULL for 100% of tasks in the live database.
+// A gate that blocked on NULL would make the board impassable on its first boot.
+func (s *Service) depBlocker(deps []string) (*DepBlocker, error) {
 	for _, dep := range deps {
 		dep = strings.TrimSpace(dep)
 		if dep == "" {
 			continue
 		}
-		var col string
+		var col, verdict string
 		err := s.DB.QueryRow(
-			`SELECT board_column FROM tasks WHERE external_id=? LIMIT 1`, dep).Scan(&col)
+			`SELECT board_column, COALESCE(verify_verdict,'') FROM tasks WHERE external_id=? LIMIT 1`,
+			dep).Scan(&col, &verdict)
 		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
+			return &DepBlocker{Dep: dep, Reason: "not found"}, nil
 		}
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if col != "done" && col != "archived" {
-			return false, nil
+			return &DepBlocker{Dep: dep, Reason: "not done (column=" + col + ")"}, nil
+		}
+		if verdict == verdictFail {
+			return &DepBlocker{Dep: dep, Reason: "verification failed"}, nil
 		}
 	}
-	return true, nil
+	return nil, nil
+}
+
+// verdictFail is the only verify_verdict value that blocks. Named so the contrast
+// with the values that do NOT block is explicit at the call site.
+const verdictFail = "fail"
+
+// depBlockPrefix marks a dispatch_error this gate wrote, so a later pass can
+// recognise and refresh its own message without clobbering an error some other part
+// of the dispatcher recorded.
+const depBlockPrefix = "blocked by dependency "
+
+// recordDepBlock surfaces the blocking reason on the task row.
+//
+// It only ever overwrites nothing or its OWN previous message. A real failure — a
+// runner crash, a worktree error, a parked no-progress marker — carries information
+// this gate does not have and must not be replaced by "waiting on a dependency",
+// which would read as benign. Every scheduling pass re-evaluates the same blocked
+// card, so without the prefix check the gate would overwrite such an error within
+// seconds of it being written.
+func (s *Service) recordDepBlock(id int64, b DepBlocker) {
+	msg := depBlockPrefix + b.String()
+	if _, err := s.DB.Exec(`
+		UPDATE tasks SET dispatch_error=?
+		 WHERE id=? AND (dispatch_error IS NULL OR dispatch_error='' OR dispatch_error LIKE ?)`,
+		msg, id, depBlockPrefix+"%"); err != nil {
+		log.Printf("error: dispatch: record dep block (task %d): %v", id, err)
+	}
 }
 
 // activeScope pairs an in-progress task's project with its declared file scope.
@@ -613,6 +679,18 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resol
 		sentinel := s.classifyLastTurn(uuid)
 		switch sentinel.Kind {
 		case "done":
+			// A done sentinel is a CLAIM, not proof. PREMISE STALE / NO-OP / DUPLICATE
+			// (prompt.go doneSentinels) all mean "no work was needed" — the one path
+			// where an agent closes a task without producing anything, and the cheapest
+			// path available to it. On the live database 5 of 5 dispatched tasks took it
+			// (all PREMISE STALE), which is exactly why verify_verdict was NULL for all
+			// 74 tasks and verification_runs sat at 0 with the trigger enabled.
+			//
+			// BEFORE finishDone, not after: finishDone nulls tasks.worktree_path and
+			// verification memoizes on the worktree tree hash, so the reverse order
+			// grades nothing while looking correct. Pinned by
+			// TestDoneSentinelPokesVerifyBeforeWorktreeCleared.
+			s.pokeVerify(c.ID)
 			s.finishDone(c, sentinel.Line)
 			s.Poke() // a completed task may unblock dependents (FN-3895)
 			return
@@ -870,6 +948,174 @@ func (s *Service) HealStale() error {
 	return nil
 }
 
+// HealDeadProcess requeues a dispatcher-owned task whose process is PROVABLY gone.
+//
+// Deliberately narrower than HealStale in its evidence and wider in its reach.
+// HealStale runs once at boot and cannot tell a long-lived run from a dead one, so
+// it is restricted to in_progress and to that single moment. This one acts only on
+// evidence — procwatch observed the process itself and wrote proc_state='dead'
+// (internal/procwatch/ticker.go:82-85) — and can therefore also reclaim a task
+// parked in 'triage', which is where every stuck task in the live database actually
+// sits and which HealStale's predicate never sees.
+//
+// source='queue' is not a convenience filter. A workspace row's status is a
+// projection of the workspace artifacts and is rewritten by internal/wsingest on
+// the next scan, so writing it here would be a silent write-then-revert loop that
+// reads as success in the data. Deriving a verdict for those rows is
+// internal/staleness's job; acting on them is nobody's.
+//
+// NULL and 'unknown' proc_state are NOT evidence of death and must never match:
+// Fusion's first stuck-task detector was "structurally blind to EPHEMERAL EXECUTOR
+// agents" and killed everything running longer than ~30 minutes. Absence of a
+// liveness signal is absence of evidence.
+//
+// Does not Poke: healing is a state change, scheduling is the caller's decision —
+// the same split HealStale already keeps. Folding a Poke in here also made the
+// reclaim untestable, because the scheduler ran the reclaimed task to completion
+// before the assertion could observe the requeue.
+func (s *Service) HealDeadProcess() error {
+	rows, err := s.DB.Query(`
+		SELECT t.id, t.external_id, p.path, t.retry_count, t.progress_high_water
+		  FROM tasks t JOIN projects p ON p.id = t.project_id
+		 WHERE t.source='queue' AND t.status='running'
+		   AND t.dispatch_session_uuid IS NOT NULL
+		   AND EXISTS (SELECT 1 FROM sessions ds
+		                WHERE ds.session_uuid = t.dispatch_session_uuid
+		                  AND ds.proc_state = ?)`, procwatch.StateDead)
+	if err != nil {
+		return err
+	}
+	type reclaim struct {
+		id         int64
+		externalID string
+		repoRoot   string
+		retryCount int
+		highWater  int
+	}
+	var pending []reclaim
+	for rows.Next() {
+		var r reclaim
+		var extID, path sql.NullString
+		if err := rows.Scan(&r.id, &extID, &path, &r.retryCount, &r.highWater); err != nil {
+			rows.Close()
+			return err
+		}
+		r.externalID, r.repoRoot = extID.String, path.String
+		pending = append(pending, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	var requeued, parked int
+	for _, r := range pending {
+		observed, ok := s.observedProgress(r.repoRoot, r.externalID)
+		switch {
+		case !ok:
+			// git could not answer. NOT zero progress: treating an unreadable repo as
+			// "nothing advanced" would burn the retry budget of a task that may be
+			// progressing fine, and the budget's whole purpose is to be spent on
+			// evidence. Leave the row exactly as it is and try again next tick.
+			log.Printf("dispatch: task %d: progress unreadable, deferring reclaim", r.id)
+			continue
+		case observed > r.highWater:
+			// Advanced since the last observation: record the new mark and give the
+			// task another run without charging it a retry.
+			if err := s.bumpProgress(r.id, observed); err != nil {
+				log.Printf("error: dispatch: bump progress (task %d): %v", r.id, err)
+				continue
+			}
+			if err := s.requeueDead(r.id); err != nil {
+				log.Printf("error: dispatch: requeue (task %d): %v", r.id, err)
+				continue
+			}
+			requeued++
+		case s.Cfg.MaxNoProgressRetries > 0 && r.retryCount+1 >= s.Cfg.MaxNoProgressRetries:
+			// Bound reached with nothing to show. Park rather than requeue — the same
+			// terminal shape verify.pauseExhausted uses, and visible to the operator
+			// through the existing pause surface. A fourth `status` value would need a
+			// consumer in the board's closed column set and in every UI filter; the
+			// cycle stopping and saying why is what terminal means here.
+			if err := s.parkNoProgress(r.id); err != nil {
+				log.Printf("error: dispatch: park no-progress (task %d): %v", r.id, err)
+				continue
+			}
+			parked++
+		default:
+			if err := s.chargeRetry(r.id); err != nil {
+				log.Printf("error: dispatch: charge retry (task %d): %v", r.id, err)
+				continue
+			}
+			if err := s.requeueDead(r.id); err != nil {
+				log.Printf("error: dispatch: requeue (task %d): %v", r.id, err)
+				continue
+			}
+			requeued++
+		}
+	}
+	if requeued > 0 || parked > 0 {
+		log.Printf("swarmery dispatch: dead-process heal — %d requeued, %d parked without progress",
+			requeued, parked)
+	}
+	return nil
+}
+
+// observedProgress counts commits carrying this task's trailer. The bool reports
+// whether the count is TRUSTWORTHY: a git failure, a missing worktree manager or a
+// blank repo path all yield (0, false), never (0, true). The distinction is the
+// point — a zero that means "could not look" must never be spent as evidence that
+// nothing happened.
+func (s *Service) observedProgress(repoRoot, externalID string) (int, bool) {
+	if s.Wt == nil || strings.TrimSpace(repoRoot) == "" || strings.TrimSpace(externalID) == "" {
+		return 0, false
+	}
+	shas, err := s.Wt.CommitsForTask(repoRoot, externalID)
+	if err != nil {
+		return 0, false
+	}
+	return len(shas), true
+}
+
+// bumpProgress records observed as a high-water mark. MAX(), never assignment: a
+// squash or branch reset lowers the observable count, and a mark that followed it
+// down would read as fresh progress next pass (Fusion requeue-loop.ts:32).
+func (s *Service) bumpProgress(id int64, observed int) error {
+	_, err := s.DB.Exec(
+		`UPDATE tasks SET progress_high_water = MAX(progress_high_water, ?) WHERE id=?`,
+		observed, id)
+	return err
+}
+
+func (s *Service) chargeRetry(id int64) error {
+	_, err := s.DB.Exec(`UPDATE tasks SET retry_count = retry_count + 1 WHERE id=?`, id)
+	return err
+}
+
+func (s *Service) requeueDead(id int64) error {
+	if _, err := s.DB.Exec(`
+		UPDATE tasks SET board_column='todo', status='queued',
+		                 dispatch_error='dispatch process gone (procwatch: dead)',
+		                 column_moved_at=?
+		 WHERE id=? AND source='queue'`, s.ts(), id); err != nil {
+		return err
+	}
+	s.notify(id)
+	return nil
+}
+
+func (s *Service) parkNoProgress(id int64) error {
+	marker := fmt.Sprintf("no progress after %d re-dispatch(es)", s.Cfg.MaxNoProgressRetries)
+	if _, err := s.DB.Exec(`
+		UPDATE tasks SET paused=1, dispatch_error=?, column_moved_at=?
+		 WHERE id=? AND source='queue'`, marker, s.ts(), id); err != nil {
+		return err
+	}
+	log.Printf("dispatch: task %d parked: %s", id, marker)
+	s.notify(id)
+	return nil
+}
+
 // ── pause flags ──
 
 // isPaused reports whether a scope row exists and is paused. Absent ⇒ not
@@ -941,13 +1187,13 @@ func (s *Service) SetPause(scope string, paused bool) error {
 
 // Status is the GET /api/dispatch snapshot.
 type Status struct {
-	Enabled       bool     `json:"enabled"`       // kill-switch state
-	GlobalPaused  bool     `json:"globalPaused"`  // durable global pause flag
+	Enabled       bool     `json:"enabled"`      // kill-switch state
+	GlobalPaused  bool     `json:"globalPaused"` // durable global pause flag
 	MaxConcurrent int      `json:"maxConcurrent"`
 	MaxWorktrees  int      `json:"maxWorktrees"`
-	ActiveRuns    int      `json:"activeRuns"`    // live runs in this process
-	FreeSlots     int      `json:"freeSlots"`     // maxConcurrent - activeRuns (>=0)
-	PausedScopes  []string `json:"pausedScopes"`  // every currently-paused scope
+	ActiveRuns    int      `json:"activeRuns"`   // live runs in this process
+	FreeSlots     int      `json:"freeSlots"`    // maxConcurrent - activeRuns (>=0)
+	PausedScopes  []string `json:"pausedScopes"` // every currently-paused scope
 }
 
 // Snapshot builds the status DTO.

@@ -134,6 +134,11 @@ func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error) {
 	return !w.branchMissing, nil
 }
 
+// CommitsForTask satisfies dispatch.WorktreeManager. This package's tests do not
+// exercise the dispatcher's progress high-water, so an empty history is the honest
+// stub: no commits observed, no error.
+func (w *stubWt) CommitsForTask(repoRoot, taskID string) ([]string, error) { return nil, nil }
+
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
 func (w *stubWt) reclaimedList() []string {

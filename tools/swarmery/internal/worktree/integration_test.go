@@ -462,3 +462,64 @@ func TestReclaimRefusesDetachedHeadIntegration(t *testing.T) {
 		t.Fatalf("%s = %s, want the preserved tip %s", branch, strings.TrimSpace(out), tip)
 	}
 }
+
+// TestDiffFileCountUsesMergeBaseIntegration pins the three-dot range against real
+// git. A two-dot range (base..HEAD) counts every file the BASE branch moved on since
+// the work forked — files this work never touched — and would trip a scope bound on
+// an innocent branch. Only real git can prove the two ranges differ.
+func TestDiffFileCountUsesMergeBaseIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs a real git binary; skipped in -short")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repo := t.TempDir()
+	git := ExecGit{}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(repo, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	mustWrite(t, filepath.Join(repo, "base.txt"), "base\n")
+	run("add", "base.txt")
+	run("commit", "-q", "-m", "init")
+
+	// Work branch touches ONE file.
+	run("checkout", "-q", "-b", "work")
+	mustWrite(t, filepath.Join(repo, "mine.txt"), "mine\n")
+	run("add", "mine.txt")
+	run("commit", "-q", "-m", "my one file")
+
+	// Meanwhile main moves on by three files this work never saw.
+	run("checkout", "-q", "main")
+	for _, f := range []string{"other1.txt", "other2.txt", "other3.txt"} {
+		mustWrite(t, filepath.Join(repo, f), "x\n")
+		run("add", f)
+	}
+	run("commit", "-q", "-m", "unrelated churn on main")
+	run("checkout", "-q", "work")
+
+	m := &Manager{Git: git, Root: filepath.Join(t.TempDir(), "wts")}
+	n, err := m.DiffFileCount(repo, "main")
+	if err != nil {
+		t.Fatalf("DiffFileCount: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("DiffFileCount = %d, want 1 — the work touched one file; a two-dot range "+
+			"would report 4 by counting main's own churn", n)
+	}
+
+	// A blank base is refused rather than silently meaning "everything".
+	if _, err := m.DiffFileCount(repo, "  "); err == nil {
+		t.Error("DiffFileCount with an empty base = nil error, want a refusal: " +
+			"an unmeasurable base must not be reported as a count")
+	}
+}
