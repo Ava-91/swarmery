@@ -103,6 +103,16 @@ func manifest(phases []Phase) string {
 // prompt converts those into explicit deferrals plus a stop-and-report rule,
 // rather than letting the run silently hang or improvise past a gate.
 //
+// The second run-context fact the skill cannot know: ENDING THE TURN ENDS THE
+// PROCESS. Interactively, dispatching background executors and replying "waiting
+// on them" is correct — a task notification re-invokes the controller when a child
+// finishes. Under `-p` there is no re-invocation: the reply terminates `claude`,
+// every child dies with it, and the exit code is 0, so the daemon records a clean
+// `done` over work that never landed. That is not hypothetical — plan 70 burned
+// 13m24s exactly this way on 2026-07-30 (both executor transcripts stop at the
+// parent's final second), and the green chip claimed success. Hence the
+// await-your-children rule below.
+//
 // text/template so paths and content interpolate without any prompt-side format
 // bug (idiom of planning/prompt.go, phaserun/prompt.go).
 var promptTemplate = template.Must(template.New("planrun").Parse(
@@ -117,6 +127,7 @@ Constraints this run adds on top of the skill, because THERE IS NO HUMAN in this
 - Commit per phase, in the worktree, with conventional commits. Do NOT push, do NOT open PRs, do NOT merge into the default branch, do NOT pull the base branch.
 - Any step the skill routes to the main session as a manual leg (browser checks, live-environment probes, anything interactive) is DEFERRED: note it in the ledger as DEFERRED with the reason and carry on with the automated part.
 - If you reach a decision that genuinely needs a human — an ASK gate you cannot defer, a destructive operation, or a phase whose premises contradict the code you find — STOP there and end your reply with: PLAN BLOCKED at phase <n>: <one-line reason>. Do not improvise a different design to get past it.
+- ENDING YOUR TURN ENDS THIS PROCESS, and every subagent still running dies with it — while the exit code stays 0, so the run is recorded as a clean success that landed nothing. Never dispatch executors and then reply that you are waiting on them: that reply IS the kill. Await every subagent you dispatch inside the same turn (poll it to completion), and only finish your reply once no dispatched work is still in flight and its results are written to disk. If you cannot await them, do the phase work inline instead.
 - Tick each acceptance criterion in its phase doc as you satisfy it, not in one batch at the end. Those ticks are the ONLY progress signal the operator can see while you run.
 - When every phase is finished, end with: PLAN DONE.
 
