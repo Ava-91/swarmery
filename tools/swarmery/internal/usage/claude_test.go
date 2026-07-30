@@ -515,6 +515,36 @@ func TestFetchExpiredTokenRefreshesUpFront(t *testing.T) {
 	}
 }
 
+// TestFetchRefreshesWithoutScopes pins the refresh path that the permissive
+// scopes gate (claude.go) newly made reachable: a credential with a nil
+// Scopes list and an already-expired ExpiresAt now proceeds past the gate
+// into the up-front refresh (see TestFetchExpiredTokenRefreshesUpFront).
+// It asserts both the outcome and the payload shape actually sent — the
+// refresh request must legitimately omit the "scope" field for a scope-less
+// credential (see the len(creds.Scopes) > 0 guard in refresh()).
+func TestFetchRefreshesWithoutScopes(t *testing.T) {
+	body := fixture(t, "usage-full.json")
+	s := newStub(t, serveJSON(body), nil)
+	creds := testCreds()
+	creds.Scopes = nil
+	creds.ExpiresAt = testNow.Add(-time.Hour).UnixMilli()
+	c, _ := newClient(s, creds)
+
+	p := c.Fetch(context.Background())
+	if p.Status != StatusOK {
+		t.Fatalf("status = %q (%s), want ok — a scope-less, expired credential must still refresh", p.Status, p.Error)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshCalls != 1 {
+		t.Errorf("refresh calls = %d, want 1 before the usage request", s.refreshCalls)
+	}
+	if _, sent := s.refreshBody["scope"]; sent {
+		t.Errorf("refresh body = %v, want no \"scope\" field for a scope-less credential", s.refreshBody)
+	}
+}
+
 func TestFetchExpiredTokenFailures(t *testing.T) {
 	t.Run("no refresh token", func(t *testing.T) {
 		s := newStub(t, serveJSON([]byte(`{}`)), nil)
@@ -573,7 +603,6 @@ func TestFetchCredentialOutcomes(t *testing.T) {
 		{"nil credential without an error", nil, nil, "No Claude credentials"},
 		{"credential without an access token", &Creds{Scopes: []string{requiredScope}}, nil, "No Claude credentials"},
 		{"missing user:profile scope", &Creds{AccessToken: fakeAccess, Scopes: []string{"user:inference"}}, nil, "user:profile"},
-		{"no scopes at all", &Creds{AccessToken: fakeAccess}, nil, "user:profile"},
 		{"opted out", nil, ErrDisabled, "SWARMERY_USAGE_OAUTH=0"},
 	}
 	for _, tc := range cases {
@@ -596,6 +625,39 @@ func TestFetchCredentialOutcomes(t *testing.T) {
 			defer s.mu.Unlock()
 			if s.usageCalls != 0 {
 				t.Errorf("usage requests = %d, want 0 without a usable credential", s.usageCalls)
+			}
+		})
+	}
+}
+
+// TestFetchAcceptsCredsWithoutScopes pins the permissive side of the scopes
+// gate: the CLI does not always persist a scopes list to
+// ~/.claude/.credentials.json, so an absent (nil) or empty Scopes slice must
+// not be rejected up front — the request must reach the HTTP call, unlike the
+// populated-but-wrong-scope case pinned in TestFetchCredentialOutcomes.
+func TestFetchAcceptsCredsWithoutScopes(t *testing.T) {
+	cases := []struct {
+		name   string
+		scopes []string
+	}{
+		{"nil scopes", nil},
+		{"empty scopes slice", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStub(t, serveJSON(fixture(t, "usage-full.json")), nil)
+			creds := testCreds()
+			creds.Scopes = tc.scopes
+			c, _ := newClient(s, creds)
+
+			p := c.Fetch(context.Background())
+			if p.Status != StatusOK {
+				t.Fatalf("status = %q (%s), want ok — an absent/empty Scopes list must be permissive", p.Status, p.Error)
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.usageCalls != 1 {
+				t.Errorf("usage requests = %d, want 1 — the request must reach the HTTP call", s.usageCalls)
 			}
 		})
 	}
