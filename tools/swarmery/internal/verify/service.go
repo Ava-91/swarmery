@@ -20,6 +20,12 @@ const tsFormat = "2006-01-02T15:04:05.000Z"
 // an interface OWNED by dispatch that verify.Service satisfies; see Poke).
 type Trees interface {
 	TreeHash(worktreePath string) (string, error)
+	// DiffFileCount reports how many files the worktree's work touches against
+	// base. It is the pre-flight scope signal: a change beyond a size a bounded
+	// read-only pass can conclude on is refused BEFORE a session is spent on it,
+	// rather than after the hard timeout kills it. An error must not be read as
+	// zero — see the scope gate, which skips the check instead of guessing.
+	DiffFileCount(worktreePath, base string) (int, error)
 }
 
 // Service owns verification: single-flight per task, tree-hash cache gate, the
@@ -185,6 +191,26 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 		return cerr
 	} else if ok {
 		return s.stampCached(taskID, runID, treeHash, cached)
+	}
+
+	// Step 2.5: scope gate. A change too large for a bounded read-only pass is
+	// refused BEFORE spawning — the alternative is a full RunTimeout burned on a run
+	// that ends INCONCLUSIVE anyway, which is the same answer at maximum cost. This
+	// is the only enforceable scope bound available here: verification does not run
+	// commands itself (runner.go spawns `claude` and the model chooses what to run),
+	// so nothing in Go can cap the commands — only whether the session happens.
+	//
+	// A git failure SKIPS the gate rather than blocking: an unreadable diff is not
+	// evidence of a huge one, and refusing on it would deny verification for a repo
+	// state we simply could not measure.
+	if s.Cfg.MaxDiffFiles > 0 {
+		if n, derr := s.Trees.DiffFileCount(tk.worktreePath, tk.branch); derr != nil {
+			log.Printf("verify: task %d: diff size unreadable, scope gate skipped: %v", taskID, derr)
+		} else if n > s.Cfg.MaxDiffFiles {
+			return s.stampInconclusive(taskID, runID, treeHash, fmt.Sprintf(
+				"diff spans %d files, above the %d-file bound for a bounded read-only pass: "+
+					"split the work or raise SWARMERY_VERIFY_MAX_DIFF_FILES", n, s.Cfg.MaxDiffFiles))
+		}
 	}
 
 	// Step 3: run the read-only verifier + parse the verdict.

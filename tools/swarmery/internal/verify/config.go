@@ -34,6 +34,16 @@ type Config struct {
 	Concurrency int
 	// RunTimeout is the hard per-run wall clock. SWARMERY_VERIFY_TIMEOUT_MIN.
 	RunTimeout time.Duration
+	// MaxDiffFiles refuses verification of a change spanning more files than a
+	// bounded read-only pass can conclude on, stamping INCONCLUSIVE with the count
+	// instead of spending a whole RunTimeout to reach the same answer.
+	// SWARMERY_VERIFY_MAX_DIFF_FILES; 0 disables the bound.
+	//
+	// Unlike the no-progress bound in dispatch this one IS env-overridable: the
+	// right value is a property of the repository being verified, not of the
+	// daemon, and the refusal message names the variable so an operator who hits
+	// the bound legitimately can raise it.
+	MaxDiffFiles int
 	// RetryBudget is the max fix tasks per ROOT task (Fusion default 3).
 	RetryBudget int
 	// StaleAfter is how long a `running` verification_runs row may live before the
@@ -48,6 +58,10 @@ const (
 	DefaultRunTimeout  = 15 * time.Minute
 	DefaultRetryBudget = 3
 	DefaultStaleAfter  = 2 * time.Hour
+	// DefaultMaxDiffFiles is sized so an ordinary feature branch passes untouched
+	// and only a sprawling change trips it. It is a refusal-to-spend bound, not a
+	// quality bar: the verdict it produces is INCONCLUSIVE, never FAIL.
+	DefaultMaxDiffFiles = 40
 )
 
 // ConfigFromEnv builds a Config from SWARMERY_* env, falling back to the
@@ -59,12 +73,21 @@ func ConfigFromEnv() Config {
 		RunTimeout:  DefaultRunTimeout,
 		RetryBudget: DefaultRetryBudget,
 		StaleAfter:  DefaultStaleAfter,
+
+		MaxDiffFiles: DefaultMaxDiffFiles,
 	}
 	if v := envPositiveInt("SWARMERY_VERIFY_CONCURRENCY"); v > 0 {
 		c.Concurrency = v
 	}
 	if v := envPositiveInt("SWARMERY_VERIFY_TIMEOUT_MIN"); v > 0 {
 		c.RunTimeout = time.Duration(v) * time.Minute
+	}
+	// -1 (or any negative) disables the bound explicitly; envPositiveInt cannot
+	// express that, so read the raw value for the disable case.
+	if raw := strings.TrimSpace(os.Getenv("SWARMERY_VERIFY_MAX_DIFF_FILES")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			c.MaxDiffFiles = v
+		}
 	}
 	return c
 }
