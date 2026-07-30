@@ -128,3 +128,31 @@ func sameDir(t *testing.T, a, b string) bool {
 	}
 	return ra == rb
 }
+
+// Same inheritance on the phase surface — the two run surfaces must not differ
+// about which settings a run gets.
+func TestStart_MultiRepoRunInheritsProjectSettings(t *testing.T) {
+	db, _, p1, _ := fixture(t)
+	projectRoot := filepath.Join(t.TempDir(), "Umbrella")
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkRepo(t, filepath.Join(projectRoot, "app"))
+	settings := filepath.Join(projectRoot, ".claude", "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"enabledPlugins":{"core@swarmery":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, db, `UPDATE projects SET path=? WHERE id=1`, projectRoot)
+	mustExec(t, db, "UPDATE epic_phases SET repo='`app`' WHERE id=?", p1)
+
+	r := &stubRunner{}
+	s := newTestService(db, r, &stubWt{})
+	s.RepoRoot = nil
+
+	if _, err := s.Start(p1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := r.lastSpec().SettingsFile; got != settings {
+		t.Fatalf("spec.SettingsFile = %q, want %q", got, settings)
+	}
+}

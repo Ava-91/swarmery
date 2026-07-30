@@ -364,10 +364,15 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	s.notify(taskID)
 
 	spec := RunSpec{
-		Prompt:      BuildPromptIn(info.PlanDir, string(readme), info.Phases, runMode, info.RepoRoot, info.ProjectPath),
-		SessionUUID: uuid,
-		Cwd:         acq.Path,
-		Agent:       agent,
+		Prompt:       BuildPromptIn(info.PlanDir, string(readme), info.Phases, runMode, info.RepoRoot, info.ProjectPath),
+		SessionUUID:  uuid,
+		Cwd:          acq.Path,
+		Agent:        agent,
+		SettingsFile: repopath.InheritedSettings(info.ProjectPath, info.RepoRoot, acq.Path),
+	}
+	if spec.SettingsFile != "" {
+		log.Printf("planrun: plan=%d inheriting project settings %s (worktree is a checkout of %s)",
+			taskID, spec.SettingsFile, info.RepoRoot)
 	}
 	s.spawn(func() { s.runAndHandle(ctx, cancel, info, acq, spec) })
 	return uuid, nil

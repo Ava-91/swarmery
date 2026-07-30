@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 )
 
 // Phase is one entry of the plan manifest handed to the executor: enough for it
@@ -175,7 +177,10 @@ func BuildPromptIn(planDir, readme string, phases []Phase, mode Mode, repoRoot, 
 // repository IS the project root (the single-repo case, where the note would only
 // add noise).
 func repoNote(repoRoot, projectPath string) string {
-	if repoRoot == "" || projectPath == "" || filepath.Clean(repoRoot) == filepath.Clean(projectPath) {
+	// repopath.SameDir, not a Clean comparison: the resolved root has been through
+	// EvalSymlinks and projects.path has not, so on a symlinked path a single-repo
+	// run would otherwise be handed a note telling it it is somewhere it is not.
+	if repoRoot == "" || projectPath == "" || repopath.SameDir(repoRoot, projectPath) {
 		return ""
 	}
 	name := filepath.Base(repoRoot)

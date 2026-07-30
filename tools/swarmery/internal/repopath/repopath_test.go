@@ -257,3 +257,73 @@ func sameDir(t *testing.T, a, b string) bool {
 	}
 	return ra == rb
 }
+
+func TestInheritedSettings(t *testing.T) {
+	base := t.TempDir()
+	project := mkDir(t, filepath.Join(base, "Umbrella"))
+	repo := mkRepo(t, filepath.Join(project, "app"), false)
+	settings := filepath.Join(project, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"enabledPlugins":{"core@swarmery":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := mkDir(t, filepath.Join(base, "wt"))
+
+	t.Run("multi-repo run inherits the project settings", func(t *testing.T) {
+		if got := InheritedSettings(project, repo, worktree); got != settings {
+			t.Fatalf("InheritedSettings = %q, want %q", got, settings)
+		}
+	})
+
+	// Changing this case would alter behaviour for every single-repo project in
+	// the registry, which is exactly what the run-root fallback exists to avoid.
+	t.Run("single-repo run inherits nothing", func(t *testing.T) {
+		if got := InheritedSettings(project, project, worktree); got != "" {
+			t.Fatalf("InheritedSettings = %q, want \"\"", got)
+		}
+	})
+
+	t.Run("a worktree with its own settings keeps them", func(t *testing.T) {
+		own := mkDir(t, filepath.Join(base, "wt-own", ".claude"))
+		if err := os.WriteFile(filepath.Join(own, "settings.json"), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := InheritedSettings(project, repo, filepath.Dir(own)); got != "" {
+			t.Fatalf("InheritedSettings = %q, want \"\" — the repo's own statement is more specific", got)
+		}
+	})
+
+	t.Run("no project settings file", func(t *testing.T) {
+		bare := mkDir(t, filepath.Join(base, "Bare"))
+		bareRepo := mkRepo(t, filepath.Join(bare, "app"), false)
+		if got := InheritedSettings(bare, bareRepo, worktree); got != "" {
+			t.Fatalf("InheritedSettings = %q, want \"\"", got)
+		}
+	})
+}
+
+// The bug this guards: Resolve returns an EvalSymlinks'd path while projects.path
+// is stored raw, so on macOS (/var → /private/var) a Clean comparison called a
+// single-repo project multi-repo and lent it settings it must not inherit.
+func TestSameDir_ResolvesSymlinks(t *testing.T) {
+	base := t.TempDir()
+	real := mkDir(t, filepath.Join(base, "real"))
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if !SameDir(real, link) {
+		t.Error("SameDir(real, symlink) = false, want true")
+	}
+	if !SameDir(real, real+"/.") {
+		t.Error("SameDir does not normalise a trailing element")
+	}
+	if SameDir(real, mkDir(t, filepath.Join(base, "other"))) {
+		t.Error("SameDir on two different dirs = true")
+	}
+	if SameDir("", real) || SameDir(real, "") {
+		t.Error("SameDir with an empty path = true")
+	}
+}

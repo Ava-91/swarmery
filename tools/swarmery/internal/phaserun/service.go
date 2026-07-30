@@ -358,7 +358,16 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	s.notify(info.WorkspaceTaskID)
 
 	prompt := BuildPromptIn(info.DocPath, filepath.Base(info.DocPath), string(doc), info.RepoRoot, info.ProjectPath)
-	spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path}
+	spec := RunSpec{
+		Prompt:       prompt,
+		SessionUUID:  uuid,
+		Cwd:          acq.Path,
+		SettingsFile: repopath.InheritedSettings(info.ProjectPath, info.RepoRoot, acq.Path),
+	}
+	if spec.SettingsFile != "" {
+		log.Printf("phaserun: phase=%d inheriting project settings %s (worktree is a checkout of %s)",
+			phaseID, spec.SettingsFile, info.RepoRoot)
+	}
 	s.spawn(func() { s.runAndHandle(ctx, cancel, phaseID, info, acq, spec) })
 	return uuid, nil
 }

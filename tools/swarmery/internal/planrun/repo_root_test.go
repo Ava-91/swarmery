@@ -216,3 +216,58 @@ func sameDir(t *testing.T, a, b string) bool {
 	}
 	return ra == rb
 }
+
+// A worktree cannot discover the project's .claude/: it lives under
+// ~/.swarmery/worktrees/…, and for a multi-repo project the project's settings
+// are not in the checkout either. Without them the run has no core@swarmery and
+// dies on "--agent 'tech-lead' not found" — which is exactly what plan 48 did
+// once the repo resolution was fixed (2026-07-30).
+func TestStart_MultiRepoRunInheritsProjectSettings(t *testing.T) {
+	db, taskID, _ := fixture(t)
+	projectRoot, _ := multiRepoFixture(t, db, taskID, "`app`")
+	settingsDir := filepath.Join(projectRoot, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(settingsDir, "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"enabledPlugins":{"core@swarmery":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &stubRunner{}
+	s := newTestService(db, r, &stubWt{})
+	s.RepoRoot = nil
+
+	if _, err := s.Start(taskID, "", ""); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := r.lastSpec().SettingsFile; got != settings {
+		t.Fatalf("spec.SettingsFile = %q, want %q", got, settings)
+	}
+}
+
+// The single-repo case is untouched: the checkout carries whatever the project
+// chose to commit, and lending it a second settings file would change behaviour
+// for every existing project.
+func TestStart_SingleRepoRunInheritsNoSettings(t *testing.T) {
+	db, taskID, _ := fixture(t)
+	projectRoot := mkRepo(t, filepath.Join(t.TempDir(), "solo"))
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".claude", "settings.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, db, `UPDATE projects SET path=? WHERE id=1`, projectRoot)
+
+	r := &stubRunner{}
+	s := newTestService(db, r, &stubWt{})
+	s.RepoRoot = nil
+
+	if _, err := s.Start(taskID, "", ""); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := r.lastSpec().SettingsFile; got != "" {
+		t.Fatalf("spec.SettingsFile = %q, want empty for a single-repo project", got)
+	}
+}

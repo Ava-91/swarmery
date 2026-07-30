@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 )
 
 // promptTemplate is the phase-run execution contract (interactive planning v2
@@ -61,7 +63,10 @@ func BuildPromptIn(docPath, docRelPath, docContent, repoRoot, projectPath string
 // repoNote renders the multi-repo orientation block, or "" when the run's
 // repository IS the project root (where the note would only add noise).
 func repoNote(repoRoot, projectPath string) string {
-	if repoRoot == "" || projectPath == "" || filepath.Clean(repoRoot) == filepath.Clean(projectPath) {
+	// repopath.SameDir, not a Clean comparison: the resolved root has been through
+	// EvalSymlinks and projects.path has not, so on a symlinked path a single-repo
+	// run would otherwise be handed a note telling it it is somewhere it is not.
+	if repoRoot == "" || projectPath == "" || repopath.SameDir(repoRoot, projectPath) {
 		return ""
 	}
 	name := filepath.Base(repoRoot)

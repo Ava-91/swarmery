@@ -222,3 +222,63 @@ func FileHints(jsonPath string) []string {
 	}
 	return out
 }
+
+// SameDir reports whether two paths name the same directory, comparing them
+// AFTER symlink resolution.
+//
+// filepath.Clean is not enough and the difference is not cosmetic: Resolve returns
+// an EvalSymlinks'd path while projects.path is stored raw, so on macOS (/var →
+// /private/var, and any project reached through a symlinked mount) a single-repo
+// project would compare as "run root ≠ project root" and get treated as multi-repo
+// — inheriting settings it should not and being told, wrongly, that its worktree is
+// a checkout inside the project. Falls back to Clean for paths that cannot be
+// resolved, which is the best available answer, not a guess about equality.
+func SameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	resolve := func(p string) string {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return real
+		}
+		return filepath.Clean(p)
+	}
+	return resolve(a) == resolve(b)
+}
+
+// InheritedSettings names the project settings file a run should be handed on
+// the command line, or "" when it needs none.
+//
+// A worktree is never the project directory: Claude Code discovers
+// .claude/settings.json by walking up from cwd, and a worktree lives under
+// ~/.swarmery/worktrees/…, so it inherits nothing from the project. That is
+// invisible while a project keeps its .claude/ committed INSIDE the repo the
+// worktree is cut from — the checkout carries it. It stops being invisible the
+// moment the run root is a sub-repo: project Skygor declares core@swarmery in
+// /Volumes/Work/Skygor/.claude/settings.json, the run happens in a checkout of
+// sk-next, and the plan run died with "--agent 'tech-lead' not found" because the
+// plugin that ships that agent was never enabled for the session (2026-07-30).
+//
+// Rules, in order:
+//   - repoRoot == projectPath ⇒ "". The run IS a checkout of the project repo;
+//     whatever it carries is what the project chose to commit, and lending it a
+//     second copy would change behaviour for every existing project.
+//   - the worktree already has .claude/settings.json ⇒ "". The repo made its own
+//     statement, and it is the more specific one — same precedence rule the phase
+//     doc gets over the plan README.
+//   - otherwise the project's settings file, when it exists.
+func InheritedSettings(projectPath, repoRoot, worktreePath string) string {
+	if projectPath == "" || repoRoot == "" || SameDir(projectPath, repoRoot) {
+		return ""
+	}
+	if worktreePath != "" {
+		if _, err := os.Stat(filepath.Join(worktreePath, ".claude", "settings.json")); err == nil {
+			return ""
+		}
+	}
+	settings := filepath.Join(projectPath, ".claude", "settings.json")
+	if _, err := os.Stat(settings); err != nil {
+		return ""
+	}
+	return settings
+}
