@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMain is a hard safety guard for the whole package: no test may read the
@@ -183,6 +184,130 @@ func TestLoadCredsSkipsUnusableFilesAndFallsThrough(t *testing.T) {
 	}
 	if got.AccessToken != fakeAccess {
 		t.Error("LoadCreds did not fall through the unparseable file")
+	}
+}
+
+// pinCredsClock freezes the expiry clock for one test.
+func pinCredsClock(t *testing.T, at time.Time) {
+	t.Helper()
+	prev := credsNow
+	credsNow = func() time.Time { return at }
+	t.Cleanup(func() { credsNow = prev })
+}
+
+// writeCredFileAt drops a credential file carrying a specific access token and
+// expiry, so a test can make one source stale and another fresh.
+func writeCredFileAt(t *testing.T, dir, token string, expiresAt time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	raw := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":%q,"refreshToken":%q,"expiresAt":%d}}`,
+		token, fakeRefresh, expiresAt.UnixMilli())
+	if err := os.WriteFile(filepath.Join(dir, credentialsFile), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write %s: %v", dir, err)
+	}
+}
+
+// TestLoadCredsStaleFileDoesNotShadowFreshKeychain is the regression: a leftover
+// expired ~/.claude/.credentials.json used to win on presence alone, so a fresh
+// `claude` login (which on macOS lands in the keychain) never took effect and
+// the usage card stayed stuck on "run `claude` to re-login".
+func TestLoadCredsStaleFileDoesNotShadowFreshKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain source is macOS-only")
+	}
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	pinCredsClock(t, now)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(configDirEnv, "")
+	writeCredFileAt(t, filepath.Join(home, ".claude"), "stale-file", now.Add(-28*24*time.Hour))
+	calls := stubKeychain(t, func(context.Context) *Creds {
+		return &Creds{AccessToken: "fresh-keychain", ExpiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	})
+
+	got, err := LoadCreds(context.Background())
+	if err != nil {
+		t.Fatalf("LoadCreds: %v", err)
+	}
+	if got.AccessToken != "fresh-keychain" {
+		t.Error("an expired file shadowed the fresh keychain credential")
+	}
+	if *calls != 1 {
+		t.Errorf("keychain consulted %d times, want 1 when the only file source is expired", *calls)
+	}
+}
+
+// TestLoadCredsFallsBackToLatestExpiry: when nothing is usable the daemon still
+// hands the refresh path its best shot — the candidate expiring latest — rather
+// than the first one it happened to find.
+func TestLoadCredsFallsBackToLatestExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	pinCredsClock(t, now)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(configDirEnv, "")
+	writeCredFileAt(t, filepath.Join(home, ".claude"), "ancient", now.Add(-30*24*time.Hour))
+	writeCredFileAt(t, filepath.Join(home, ".config", "claude"), "recent", now.Add(-1*time.Hour))
+	stubKeychain(t, func(context.Context) *Creds { return nil })
+
+	got, err := LoadCreds(context.Background())
+	if err != nil {
+		t.Fatalf("LoadCreds: %v", err)
+	}
+	if got.AccessToken != "recent" {
+		t.Errorf("fallback credential = the %q one, want the latest-expiring one", got.AccessToken)
+	}
+}
+
+// TestLoadCredsPrecedenceStillWinsAmongUsable: freshness only breaks ties
+// between UNUSABLE candidates. Two valid sources must still resolve by
+// precedence, not by which expires later.
+func TestLoadCredsPrecedenceStillWinsAmongUsable(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	pinCredsClock(t, now)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(configDirEnv, "")
+	writeCredFileAt(t, filepath.Join(home, ".claude"), "first-source", now.Add(1*time.Hour))
+	writeCredFileAt(t, filepath.Join(home, ".config", "claude"), "later-expiry", now.Add(90*24*time.Hour))
+	calls := stubKeychain(t, func(context.Context) *Creds { return nil })
+
+	got, err := LoadCreds(context.Background())
+	if err != nil {
+		t.Fatalf("LoadCreds: %v", err)
+	}
+	if got.AccessToken != "first-source" {
+		t.Errorf("resolved %q, want the higher-precedence usable source", got.AccessToken)
+	}
+	if *calls != 0 {
+		t.Errorf("keychain consulted %d times, want 0 when a usable file source hit", *calls)
+	}
+}
+
+func TestCredsExpired(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	pinCredsClock(t, now)
+	tests := []struct {
+		name      string
+		expiresAt int64
+		want      bool
+	}{
+		{"unknown expiry is usable", 0, false},
+		{"negative expiry is usable", -1, false},
+		{"comfortably valid", now.Add(time.Hour).UnixMilli(), false},
+		{"inside the grace window", now.Add(30 * time.Second).UnixMilli(), true},
+		{"exactly at the grace boundary", now.Add(tokenExpiryGrace).UnixMilli(), true},
+		{"long past", now.Add(-24 * time.Hour).UnixMilli(), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Creds{AccessToken: fakeAccess, ExpiresAt: tc.expiresAt}
+			if got := c.expired(); got != tc.want {
+				t.Errorf("expired() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
