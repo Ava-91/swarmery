@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PhaseDiagnosis, PhaseRunOutcome } from '../api/types';
-import { deletePhaseRunBranch, fetchPhaseDiagnosis } from '../api';
+import { deleteOrphanBranch, deletePhaseRunBranch, fetchPhaseDiagnosis } from '../api';
 import { fmtElapsed } from '../lib/format';
 
 type Phase =
@@ -132,7 +132,17 @@ export function RunOutcomeModal({
   // offering the delete otherwise would invite destroying an unrelated branch. The
   // blocker itself (not a client-side reconstruction of the name) is what the
   // confirmation quotes.
-  const dirty = diag?.blockers.find((b) => b.kind === 'branch-dirty') ?? null;
+  //
+  // Two kinds are legitimate delete targets, and they take DIFFERENT routes:
+  // branch-dirty is this phase's own branch (the phase-scoped route derives the
+  // name), while orphan-branch names a branch whose id has no row at all, which
+  // only the explicit orphan-cleanup route can reach. own-worktree is deliberately
+  // NOT here: a delete 409s for that state, so offering one would advise the single
+  // action that cannot work.
+  const dirty =
+    diag?.blockers.find((b) => b.kind === 'branch-dirty') ??
+    diag?.blockers.find((b) => b.kind === 'orphan-branch' && (b.branch ?? '') !== '') ??
+    null;
 
   const endedMs =
     diag !== null && diag.runEndedAt !== null ? Date.parse(diag.runEndedAt) : Number.NaN;
@@ -145,7 +155,14 @@ export function RunOutcomeModal({
     setBusy(true);
     setConfirmingDelete(false);
     setActionErr(null);
-    deletePhaseRunBranch(taskId, phaseId)
+    // Routed by the blocker's kind, and the branch the SERVER named is what gets
+    // deleted — never "swarm/phase-<this phase's id>" rebuilt client-side, which
+    // for an orphan would name a branch that has nothing to do with the work.
+    const req =
+      dirty?.kind === 'orphan-branch'
+        ? deleteOrphanBranch(taskId, dirty.branch ?? '')
+        : deletePhaseRunBranch(taskId, phaseId);
+    req
       .then(() => load())
       .catch((e: unknown) => setActionErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(false));

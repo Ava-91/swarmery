@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
@@ -48,8 +49,8 @@ func (phaseStubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool)
 
 // No leftover branch in the api tests: reclaim always reports "nothing to do",
 // so Start proceeds straight to Acquire.
-func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error)   { return 0, nil }
-func (phaseStubWt) DeleteBranch(repoRoot, branch string) (bool, error)        { return true, nil }
+func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
+func (phaseStubWt) DeleteBranch(repoRoot, branch string) (bool, error)      { return true, nil }
 
 // attachPhaseRun wires a stub-backed phaserun service (package var, reset on
 // cleanup). sync=true runs the spawn inline so a POST response implies the run
@@ -98,9 +99,16 @@ func detachPlanRun(t *testing.T) {
 // would leak it into every later test in the package.
 func attachPhaseDiag(t *testing.T, g worktree.Git) {
 	t.Helper()
-	prev := phasediagGit
-	AttachPhaseDiag(g)
-	t.Cleanup(func() { AttachPhaseDiag(prev) })
+	attachPhaseDiagOwn(t, g, nil)
+}
+
+// attachPhaseDiagOwn is attachPhaseDiag plus the ownership seam, for the tests
+// that exercise the own-worktree / branch-dirty split.
+func attachPhaseDiagOwn(t *testing.T, g worktree.Git, own phasediag.OwnCheckout) {
+	t.Helper()
+	prevGit, prevOwn := phasediagGit, phasediagOwn
+	AttachPhaseDiag(g, own)
+	t.Cleanup(func() { AttachPhaseDiag(prevGit, prevOwn) })
 }
 
 // fixturePhaseIDs reads the two phase ids the epicFixture inserted (seq order).

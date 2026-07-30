@@ -14,6 +14,7 @@ import { PageSearchProvider } from './lib/pageSearch';
 import { ProjectColorProvider } from './lib/projectColors';
 import { ScopeProvider } from './lib/scope';
 import { ThemeProvider } from './lib/theme';
+import { UsageDataProvider } from './lib/usageData';
 import { Loading } from './components/ui';
 import { Approvals } from './pages/Approvals';
 import { Overview } from './pages/Overview';
@@ -80,12 +81,20 @@ const ScopedArchitecture = lazy(() =>
 );
 
 /** Pathless root layout: shared providers (project scope + palette colors) for
- * BOTH the fleet App and the project-workspace shell, so they read one store. */
+ * BOTH the fleet App and the project-workspace shell, so they read one store.
+ *
+ * UsageDataProvider belongs HERE, not in App.tsx: the fleet shell and the
+ * project-workspace shell are SIBLING routes under this layout, so a provider
+ * mounted inside App.tsx would leave the workspace header's chip without a
+ * poller (and re-poll from scratch on every mode switch). One mount here is what
+ * makes "exactly one /api/usage poller app-wide" true. */
 function RootProviders(): JSX.Element {
   return (
     <ScopeProvider>
       <PageSearchProvider>
-        <Outlet />
+        <UsageDataProvider>
+          <Outlet />
+        </UsageDataProvider>
         {/* One themed tooltip layer for the whole app — every `data-tip=` in
             any route draws through this node (see components/Tooltip.tsx). */}
         <TooltipLayer />

@@ -277,6 +277,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// the escape hatch for the branch-dirty 409 the run endpoint returns.
 	mux.HandleFunc("GET /api/epics/{taskId}/phases/{phaseId}/diagnosis", h.phaseDiagnosis)
 	mux.HandleFunc("DELETE /api/epics/{taskId}/phases/{phaseId}/branch", requireLocalOrigin(h.deletePhaseRunBranch))
+	// The cleanup action behind phasediag's orphan-branch blocker: a swarm/phase-<id>
+	// branch whose id matches no phase row — work stranded under a previous id
+	// generation, which the phase-scoped route above structurally cannot name. Kept a
+	// SIBLING route so that route stays incapable of naming an arbitrary branch.
+	mux.HandleFunc("DELETE /api/epics/{taskId}/orphan-branch", requireLocalOrigin(h.deleteOrphanBranch))
 	// Plan runs: hand the WHOLE plan to one agent (one headless session driving
 	// core's run-plan skill), state on plan_runs. 503 until AttachPlanRun wires
 	// the service.

@@ -57,6 +57,7 @@ import {
   savePlanDoc,
   togglePlanCheckbox,
   type EpicLifecycleAction,
+  type PhaseRunBranchError,
 } from '../api';
 import { fetchSystemItems } from '../api/system';
 import type { PlanRunMode } from '../api/types';
@@ -512,10 +513,12 @@ export function Plans(): JSX.Element {
         .then(() => reload())
         .catch((e: unknown) => {
           failRunMsg(taskId)(e);
-          // The branch-holds-commits 409 carries `branch` — that is not a
+          // Keyed off the 409's `code`, never off which fields arrived: a
+          // presence sniff silently re-classifies every future case that
+          // happens to carry `branch`. The branch-holds-commits 409 is not a
           // message to read, it is a blocker with an action, so land the user
           // on the diagnosis (which offers Delete branch) instead of a toast.
-          if (e instanceof Error && typeof (e as Error & { branch?: string }).branch === 'string')
+          if (e instanceof Error && (e as PhaseRunBranchError).code === 'branch-dirty')
             setOutcomeFor(phaseId);
         })
         .finally(() => setRunBusy(null));
@@ -558,11 +561,14 @@ export function Plans(): JSX.Element {
         .then(() => reload())
         .catch((e: unknown) => {
           failRunMsg(taskId)(e);
-          const branchErr = e as Error & { branch?: string; commitsAhead?: number; base?: string };
-          if (e instanceof Error && typeof branchErr.branch === 'string')
+          // Keyed off the 409's `code`, never off which fields arrived: a
+          // presence sniff silently re-classifies every future case that
+          // happens to carry `branch`. The fields stay display data.
+          const branchErr = e as PhaseRunBranchError;
+          if (e instanceof Error && branchErr.code === 'branch-dirty')
             setPlanDirty({
               dirty: {
-                branch: branchErr.branch,
+                branch: branchErr.branch ?? '',
                 commitsAhead: branchErr.commitsAhead ?? 0,
                 base: branchErr.base ?? '',
                 message: e.message,

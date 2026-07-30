@@ -3,9 +3,12 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -175,6 +178,162 @@ func TestPhaseDiagnosis_DepIncompleteBlocker(t *testing.T) {
 	if !found {
 		t.Errorf("blockers = %+v, want a dep-incomplete blocker", d.Blockers)
 	}
+}
+
+// diagGitStub scripts the four reads phasediag makes off its Git seam:
+// `symbolic-ref --short HEAD` (the base), `show-ref --verify --quiet` (does the
+// branch exist), `rev-list --count base..ref` (how far ahead) and `log --format=%s`
+// (the subjects the branch-dirty detail lists). Any branch absent from `ahead` is
+// reported as non-existent, which is how a repo with no leftover branches looks.
+//
+// Same shape as the scripted stub internal/phasediag's own tests use — the point
+// of duplicating it here is that this one drives the real HTTP handler, so it
+// covers the wiring (AttachPhaseDiag → phasediagGit → Diagnose) that a package
+// test cannot reach.
+type diagGitStub struct {
+	base     string
+	ahead    map[string]int
+	subjects map[string][]string
+	// branches is what `git branch --list 'swarm/phase-*'` reports. nil ⇒ the list
+	// fails, which the orphan rule degrades to "no orphans" — the shape every test
+	// that predates phase 8 relies on.
+	branches []string
+	calls    []string
+}
+
+func (g *diagGitStub) Run(dir string, args ...string) (string, error) {
+	g.calls = append(g.calls, strings.Join(args, " "))
+	branchOf := func(spec string) string {
+		// "dev..refs/heads/swarm/phase-7" → "swarm/phase-7"
+		_, ref, _ := strings.Cut(spec, "..")
+		return strings.TrimPrefix(ref, "refs/heads/")
+	}
+	switch args[0] {
+	case "symbolic-ref":
+		if g.base == "" {
+			return "", errors.New("detached HEAD")
+		}
+		return g.base + "\n", nil
+	case "show-ref":
+		br := strings.TrimPrefix(args[len(args)-1], "refs/heads/")
+		if _, ok := g.ahead[br]; ok {
+			return "", nil
+		}
+		return "", errors.New("no such ref")
+	case "rev-list":
+		return strconv.Itoa(g.ahead[branchOf(args[len(args)-1])]) + "\n", nil
+	case "log":
+		return strings.Join(g.subjects[branchOf(args[len(args)-1])], "\n") + "\n", nil
+	case "branch":
+		if g.branches == nil {
+			return "", errors.New("no branch list scripted")
+		}
+		return "  " + strings.Join(g.branches, "\n  ") + "\n", nil
+	}
+	return "", nil
+}
+
+// The branch-derived half of the diagnosis, end-to-end through HTTP. Everything
+// below the handler was covered by internal/phasediag's own tests, but the wiring
+// — AttachPhaseDiag's package var reaching Diagnose, and Blocker's Branch /
+// CommitsAhead surviving JSON — had no coverage at the API layer, which is exactly
+// where the UI reads it from.
+func TestPhaseDiagnosis_BranchDirtyBlocker_EndToEnd(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	seedNoopPhase(t, db, p1)
+
+	branch := "swarm/phase-" + i64(p1)
+	g := &diagGitStub{
+		base:     "dev",
+		ahead:    map[string]int{branch: 3},
+		subjects: map[string][]string{branch: {"feat: third", "feat: second", "feat: first"}},
+	}
+	attachPhaseDiag(t, g)
+
+	resp, err := http.Get(diagURL(srv, taskID, p1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var d phasediag.Diagnosis
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+
+	var dirty *phasediag.Blocker
+	for i, b := range d.Blockers {
+		if b.Kind == phasediag.KindBranchDirty {
+			dirty = &d.Blockers[i]
+		}
+	}
+	if dirty == nil {
+		t.Fatalf("blockers = %+v, want a branch-dirty blocker", d.Blockers)
+	}
+	// The two facts the delete confirmation names must arrive as DATA, not only
+	// inside the prose — a UI that had to parse Summary would go on naming a
+	// branch after the server's naming rule moved.
+	if dirty.Branch != branch {
+		t.Errorf("blocker.branch = %q, want %q", dirty.Branch, branch)
+	}
+	if dirty.CommitsAhead != 3 {
+		t.Errorf("blocker.commitsAhead = %d, want 3", dirty.CommitsAhead)
+	}
+	if !strings.Contains(dirty.Detail, "feat: third") {
+		t.Errorf("detail = %q, want the commit subjects", dirty.Detail)
+	}
+	// Every branch-derived blocker says which branch it measured against, so base
+	// skew is recognisable instead of looking like a real problem.
+	if !strings.Contains(dirty.Detail, "dev") {
+		t.Errorf("detail = %q, want it to name the base it measured against", dirty.Detail)
+	}
+	if !g.called("symbolic-ref") {
+		t.Errorf("the handler never resolved a base through the attached seam (calls: %v)", g.calls)
+	}
+}
+
+// The same wiring with NO git seam attached: branch-derived blockers are omitted
+// rather than guessed, and the endpoint still answers 200 with the criteria facts.
+// This is the contract that keeps a diagnosis from failing because git was unhappy.
+func TestPhaseDiagnosis_NoGitSeam_OmitsBranchBlockers(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	seedNoopPhase(t, db, p1)
+	attachPhaseDiag(t, nil)
+
+	resp, err := http.Get(diagURL(srv, taskID, p1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var d phasediag.Diagnosis
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range d.Blockers {
+		if b.Kind == phasediag.KindBranchDirty || b.Kind == phasediag.KindBranchBlocksRetry ||
+			b.Kind == phasediag.KindDepUnmerged {
+			t.Errorf("blocker %q emitted with no git seam — it can only have been guessed", b.Kind)
+		}
+	}
+	if d.RunOutcome != phasediag.OutcomeNoop {
+		t.Errorf("runOutcome = %q, want noop — criteria facts survive a missing seam", d.RunOutcome)
+	}
+}
+
+func (g *diagGitStub) called(substr string) bool {
+	for _, c := range g.calls {
+		if strings.Contains(c, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPhaseDiagnosis_TaskMismatch_404(t *testing.T) {
@@ -504,4 +663,301 @@ func TestDeletePhaseRunBranch_Running_409(t *testing.T) {
 		t.Fatalf("status = %d, want 409", resp.StatusCode)
 	}
 	postPhase(t, phaseRunURL(srv, taskID, p1)+"/cancel") // unblock the goroutine
+}
+
+// Every worktree sentinel through BOTH phaserun switches, asserting the STATUS
+// CODE and the `code` discriminator.
+//
+// The status assertion is the point: worktreeConflict is matched above the generic
+// `case err != nil` arm, and an arm placed BELOW that one is dead code no body
+// assertion would ever reveal — the request would simply 500 with the same prose.
+// ErrBranchIsHead and ErrRefusedBranch had no test on either phase switch, so a
+// future edit reordering the arms would have shipped silently.
+func TestPhaseRun_WorktreeSentinels_409(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"is-head", worktree.ErrBranchIsHead, codeBranchIsHead},
+		{"refused", worktree.ErrRefusedBranch, codeBranchRefused},
+		{"busy", worktree.ErrBranchBusy, codeBranchBusy},
+		{"checked-out", worktree.ErrBranchCheckedOut, codeBranchCheckedOut},
+		{"detached", worktree.ErrDetachedHead, codeDetachedHead},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, db, taskID, _ := epicFixture(t)
+			p1, _ := fixturePhaseIDs(t, db, taskID)
+			attachPhaseRunWt(t, db, &phaseStubRunner{}, true, &phaseWtStub{reclaimErr: tc.err})
+
+			resp := postPhase(t, phaseRunURL(srv, taskID, p1))
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 — the sentinel arm must sit above `case err != nil`",
+					resp.StatusCode)
+			}
+			var body struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Code != tc.code {
+				t.Errorf("code = %q, want %q", body.Code, tc.code)
+			}
+			if body.Error == "" {
+				t.Error("error = \"\", want an actionable message")
+			}
+		})
+	}
+}
+
+func TestDeletePhaseRunBranch_WorktreeSentinels_409(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{"is-head", worktree.ErrBranchIsHead, codeBranchIsHead},
+		{"refused", worktree.ErrRefusedBranch, codeBranchRefused},
+		{"busy", worktree.ErrBranchBusy, codeBranchBusy},
+		{"detached", worktree.ErrDetachedHead, codeDetachedHead},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, db, taskID, _ := epicFixture(t)
+			p1, _ := fixturePhaseIDs(t, db, taskID)
+			attachPhaseRunWt(t, db, &phaseStubRunner{}, true, &phaseWtStub{deleteErr: tc.err})
+			stampRunBranch(t, db, p1, "swarm/phase-"+i64(p1))
+
+			resp := deletePhase(t, branchURL(srv, taskID, p1))
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 — the sentinel arm must sit above `case err != nil`",
+					resp.StatusCode)
+			}
+			var body struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Code != tc.code {
+				t.Errorf("code = %q, want %q", body.Code, tc.code)
+			}
+		})
+	}
+}
+
+// ── orphan cleanup endpoint (phase 8) ──
+
+func orphanURL(srv *httptest.Server, taskID int64, branch string) string {
+	return srv.URL + "/api/epics/" + i64(taskID) + "/orphan-branch?branch=" + url.QueryEscape(branch)
+}
+
+// The happy path: a swarm/phase-<id> branch whose id matches no row is deletable
+// through the sibling route, and `deleted` reports whether it was actually there.
+func TestDeleteOrphanBranch_200(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-999999"))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Deleted bool   `json:"deleted"`
+		Branch  string `json:"branch"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Deleted || body.Branch != "swarm/phase-999999" {
+		t.Errorf("body = %+v, want {true, swarm/phase-999999}", body)
+	}
+	if wt.deleted != "swarm/phase-999999" {
+		t.Errorf("deleted branch = %q, want the one the client named", wt.deleted)
+	}
+}
+
+// Guard 1: anything outside swarm/phase-<digits> is refused BEFORE any git call.
+// This route takes a branch name from the client, so the namespace class has to be
+// closed here as well as at the worktree boundary.
+func TestDeleteOrphanBranch_RefusesForeignNamespace(t *testing.T) {
+	// The non-canonical ids (leading zeros, bare 0, a dash) are refused for a second
+	// reason: the route rebuilds the name it hands git from the parsed id, and only a
+	// canonical decimal id makes that rebuild an identity. swarm/phase-007 must not
+	// resolve to swarm/phase-7 — that is a different branch.
+	for _, branch := range []string{"dev", "main", "feature/x", "swarm/", "swarm/plan-71",
+		"swarm/phase-", "swarm/phase-abc", "swarm/phase-1/x",
+		"swarm/phase-007", "swarm/phase-0", "swarm/phase--1", "swarm/phase-+1",
+		"swarm/phase-1 --force"} {
+		t.Run(branch, func(t *testing.T) {
+			srv, db, taskID, _ := epicFixture(t)
+			wt := &phaseWtStub{}
+			attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+
+			resp := deletePhase(t, orphanURL(srv, taskID, branch))
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 for %q", resp.StatusCode, branch)
+			}
+			var body struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Code != codeBranchRefused {
+				t.Errorf("code = %q, want %q", body.Code, codeBranchRefused)
+			}
+			if wt.deleted != "" {
+				t.Errorf("deleted %q despite the refusal", wt.deleted)
+			}
+		})
+	}
+}
+
+// Guard 2: a branch whose id IS a live phase row is refused — including a row in
+// ANOTHER epic, since ids are global and an epic-scoped check would let one plan
+// delete another plan's live run branch. The phase-scoped route is the only way to
+// delete a live phase's branch, and it derives the name rather than taking one.
+func TestDeleteOrphanBranch_RefusesLivePhaseBranch(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-"+i64(p1)))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != codeBranchLivePhase {
+		t.Errorf("code = %q, want %q", body.Code, codeBranchLivePhase)
+	}
+	if wt.deleted != "" {
+		t.Errorf("deleted a live phase's branch (%q)", wt.deleted)
+	}
+}
+
+// The phase-scoped route still cannot be told a branch: it derives swarm/phase-<id>
+// from the row and ignores anything the client tries to pass. That is the property
+// the sibling route exists to preserve.
+func TestDeletePhaseRunBranch_IgnoresClientSuppliedBranch(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+	stampRunBranch(t, db, p1, "swarm/phase-"+i64(p1))
+
+	resp := deletePhase(t, branchURL(srv, taskID, p1)+"?branch=dev")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if wt.deleted != "swarm/phase-"+i64(p1) {
+		t.Errorf("deleted = %q, want the STAMPED branch, never the query param", wt.deleted)
+	}
+}
+
+// End-to-end: a phase in an epic with a stranded branch reports the orphan through
+// GET .../diagnosis. This is the whole point of phase 8 — the deterministic
+// diagnosis naming the branch that previously appeared only in executor prose.
+func TestPhaseDiagnosis_OrphanBranch_EndToEnd(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	seedNoopPhase(t, db, p1)
+
+	own := "swarm/phase-" + i64(p1)
+	g := &diagGitStub{
+		base:     "dev",
+		ahead:    map[string]int{"swarm/phase-697": 2},
+		subjects: map[string][]string{"swarm/phase-697": {"feat: plugindrift", "feat: findings"}},
+		branches: []string{"swarm/phase-697", own},
+	}
+	attachPhaseDiag(t, g)
+
+	resp, err := http.Get(diagURL(srv, taskID, p1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var d phasediag.Diagnosis
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatal(err)
+	}
+	var orphan *phasediag.Blocker
+	for i, b := range d.Blockers {
+		if b.Kind == phasediag.KindOrphanBranch {
+			orphan = &d.Blockers[i]
+		}
+	}
+	if orphan == nil {
+		t.Fatalf("blockers = %+v, want an orphan-branch blocker", d.Blockers)
+	}
+	if orphan.Branch != "swarm/phase-697" || orphan.CommitsAhead != 2 {
+		t.Errorf("blocker = {%q,%d}, want {swarm/phase-697,2} as DATA for the cleanup action",
+			orphan.Branch, orphan.CommitsAhead)
+	}
+	if !strings.Contains(orphan.Summary, "swarm/phase-697") {
+		t.Errorf("summary = %q, want it to name the stranded branch", orphan.Summary)
+	}
+}
+
+// An already-gone orphan answers deleted:false — the honest reading of an
+// idempotent delete. Without it the UI clears its banner on a no-op, the same
+// defect the phase-scoped route's `existed` plumbing exists to prevent.
+func TestDeleteOrphanBranch_AlreadyGone_DeletedFalse(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, &phaseWtStub{branchMissing: true})
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-999999"))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Deleted {
+		t.Error("deleted = true for a branch that was not there")
+	}
+}
+
+// A branch id too large for int64 must be REFUSED, not slide past guard 2. The
+// regexp accepts any digit run, and an unparseable id bound as a string would make
+// `id = ?` match no row — the guard would fail OPEN and delete the branch.
+func TestDeleteOrphanBranch_RefusesOversizedID(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	wt := &phaseWtStub{}
+	attachPhaseRunWt(t, db, &phaseStubRunner{}, true, wt)
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-99999999999999999999999"))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if wt.deleted != "" {
+		t.Errorf("deleted %q for an id that cannot be checked against the table", wt.deleted)
+	}
+}
+
+// Unattached daemon: the route answers 503 rather than nil-dereferencing
+// phaserunSvc.Wt. detachPhaseRun restores the package var, so this cannot leak
+// into a later test in the package.
+func TestDeleteOrphanBranch_NotAttached_503(t *testing.T) {
+	srv, _, taskID, _ := epicFixture(t)
+	detachPhaseRun(t)
+
+	resp := deletePhase(t, orphanURL(srv, taskID, "swarm/phase-999999"))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
 }

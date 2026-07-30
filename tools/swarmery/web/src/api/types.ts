@@ -2205,9 +2205,55 @@ export type PhaseRunState = 'idle' | 'running' | 'done' | 'failed';
  *  Distinct from PhaseRunState, which only says how the process ended. */
 export type PhaseRunOutcome = 'idle' | 'running' | 'completed' | 'partial' | 'noop' | 'failed';
 
+/**
+ * The `code` discriminator every run 409 carries — mirrors the constants in
+ * internal/api/runconflict.go, which is the authoritative list.
+ *
+ * POST …/run and DELETE …/branch answer 409 for a dozen different reasons, and the
+ * client used to tell them apart by sniffing which fields were present (`branch`
+ * ⇒ "the branch holds commits"). That silently mis-classifies every future case
+ * that happens to carry the same field, so the discriminator is the contract and
+ * the fields are display data.
+ */
+export type RunConflictCode =
+  // Run admission (both the phase and the whole-plan surface).
+  | 'already-running'
+  | 'deps-unmet'
+  | 'doc-unreadable'
+  | 'no-project-path'
+  // Branch lifecycle — the phase surface's own gate, then the worktree sentinels.
+  | 'no-run-branch'
+  | 'branch-dirty'
+  | 'branch-checked-out'
+  | 'branch-is-head'
+  | 'branch-refused'
+  | 'branch-busy'
+  | 'detached-head'
+  /** orphan-cleanup route only: the named branch's id IS a live phase row, so it is
+   *  some phase's run branch rather than stranded work. */
+  | 'branch-live-phase'
+  // Plan-run-only admission gates.
+  | 'phase-running'
+  | 'plan-not-active'
+  | 'no-phases'
+  | 'plan-complete';
+
 /** One reason a phase did not progress — mirrors phasediag.Blocker. */
 export interface PhaseBlocker {
-  kind: 'dep-incomplete' | 'dep-unmerged' | 'branch-blocks-retry' | 'branch-dirty' | 'no-criteria';
+  kind:
+    | 'dep-incomplete'
+    | 'dep-unmerged'
+    | 'branch-blocks-retry'
+    | 'branch-dirty'
+    /** the branch holds commits but its own run's worktree is still checked out on
+     *  it — a retry continues that work, and a delete 409s, so this kind offers NO
+     *  delete action (phasediag.KindOwnWorktree). */
+    | 'own-worktree'
+    | 'no-criteria'
+    /** a swarm/phase-<id> branch whose id matches no phase row: work stranded under
+     *  a previous id generation. A legitimate delete target, but only through the
+     *  orphan-cleanup route — this phase cannot derive its name (phasediag.KindOrphanBranch). */
+    | 'orphan-branch';
   summary: string;
   detail: string;
   /** branch-dirty only: the branch a delete would destroy and how many commits go

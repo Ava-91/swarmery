@@ -20,7 +20,32 @@ const (
 	KindBranchBlocksRetry = "branch-blocks-retry"
 	KindBranchDirty       = "branch-dirty"
 	KindNoCriteria        = "no-criteria"
+
+	// KindOwnWorktree: the phase's branch holds commits AND is checked out at the
+	// worktree this daemon created for that very run. That state needs no action —
+	// a retry warm-reuses the worktree and continues the work — and the one thing
+	// KindBranchDirty advises, deleting the branch, is exactly what git refuses on
+	// a live checkout (409 ErrBranchCheckedOut). So it is its own kind, with no
+	// delete affordance, and KindBranchDirty is reserved for a leftover that is
+	// genuinely not ours.
+	KindOwnWorktree = "own-worktree"
+
+	// KindOrphanBranch: a swarm/phase-<id> branch whose id matches no phase row at
+	// all — work stranded under a previous id generation (rows used to be deleted
+	// and re-inserted on every plan rescan, minting new ids; see the applyEpics
+	// upsert). Only reported when the branch holds commits: an empty orphan is
+	// litter the next run reclaims automatically, not lost work.
+	//
+	// Emitted LAST, after no-criteria: it is a plan-level fact about the repo
+	// rather than a property of the phase being diagnosed, so it must not crowd
+	// out the phase's own blockers.
+	KindOrphanBranch = "orphan-branch"
 )
+
+// maxOrphans caps the named orphan blockers one diagnosis emits. A repo littered
+// with old run branches would otherwise flood the modal and bury the phase's own
+// blockers; the overflow is reported as a single "+N more" line instead.
+const maxOrphans = 5
 
 // Blocker is one reason the phase did not progress, or one thing standing between
 // the user and a successful retry. Summary is rendered verbatim by the UI.
@@ -71,6 +96,15 @@ type Diagnosis struct {
 // ErrPhaseNotFound: no epic_phases row for the id (mapped to 404 by the api layer).
 var ErrPhaseNotFound = errors.New("phasediag: phase not found")
 
+// OwnCheckout is the seam that tells a leftover run branch apart from a run whose
+// own worktree is still checked out on it — satisfied by *worktree.Manager. A nil
+// OwnCheckout means "cannot tell", and the diagnosis then reports the blocking
+// reading (branch-dirty), which is the safe direction: it over-warns rather than
+// telling a user that a branch which really does block a retry needs no action.
+type OwnCheckout interface {
+	OwnCheckoutOf(repoRoot, branch string) (string, bool)
+}
+
 // maxAgentText caps the executor excerpt shown in the modal.
 const maxAgentText = 1200
 
@@ -99,7 +133,7 @@ func branchName(phaseID int64) string {
 // Diagnose builds the diagnosis for one phase. git may be nil, and the project may
 // have no filesystem path — branch-derived blockers are then omitted rather than
 // guessed; criteria and dependency blockers still render.
-func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
+func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Diagnosis, error) {
 	var (
 		d          Diagnosis
 		taskID     int64
@@ -216,17 +250,35 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 	}
 
 	// 3/4. The phase's OWN leftover branch — mutually exclusive states: an empty
-	// one is noise the next retry cleans up, a non-empty one holds work a retry
-	// would collide with.
+	// one is noise the next retry cleans up, a non-empty one either holds work a
+	// retry would collide with, or is still checked out at the run's own worktree
+	// (own-worktree), where a retry simply continues it.
 	if branchesKnown {
 		branch := branchName(phaseID)
 		exists, ahead, subjects := branchAhead(git, repoRoot, base, branch)
+		ownPath := ""
+		if exists && ahead > 0 && own != nil {
+			if p, ok := own.OwnCheckoutOf(repoRoot, branch); ok {
+				ownPath = p
+			}
+		}
 		switch {
 		case exists && ahead == 0:
 			d.Blockers = append(d.Blockers, Blocker{
 				Kind:    KindBranchBlocksRetry,
 				Summary: fmt.Sprintf("Leftover branch %s will be cleaned up automatically on retry", branch),
 				Detail:  fmt.Sprintf("%s → 0 commits ahead, %s", branch, againstBase(base)),
+			})
+		case exists && ownPath != "":
+			// No Branch field: this state must offer no delete affordance, because
+			// `git branch -D` on a live checkout is refused (409) — the blocker would
+			// otherwise advise the one action that cannot work.
+			d.Blockers = append(d.Blockers, Blocker{
+				Kind: KindOwnWorktree,
+				Summary: fmt.Sprintf(
+					"A previous run's worktree is still checked out on %s; retrying continues it", branch),
+				Detail: fmt.Sprintf("%s → %s ahead, checked out at %s, %s",
+					branch, plural(ahead, "commit"), ownPath, againstBase(base)),
 			})
 		case exists:
 			d.Blockers = append(d.Blockers, Blocker{
@@ -253,8 +305,115 @@ func Diagnose(db *sql.DB, git worktree.Git, phaseID int64) (Diagnosis, error) {
 		})
 	}
 
+	// 6. orphan-branch — LAST, because it is a fact about the repo rather than
+	// about this phase. See KindOrphanBranch.
+	if branchesKnown {
+		orphans, err := orphanBranches(db, git, repoRoot, base)
+		if err != nil {
+			return Diagnosis{}, err
+		}
+		d.Blockers = append(d.Blockers, orphans...)
+	}
+
 	d.AgentMessage = agentMessage(db, uuid.String)
 	return d, nil
+}
+
+// orphanBranches lists swarm/phase-<id> branches whose id matches no epic_phases
+// row AND that hold commits ahead of base.
+//
+// Scoping: the id must be absent from epic_phases ENTIRELY, not merely absent from
+// the epic being diagnosed. Phase ids are global across epics, so an epic-scoped
+// check would make every plan report every other plan's live run branches — noise
+// that would bury the one branch that actually is lost work.
+//
+// Empty orphans are omitted: 0 commits ahead of base means there is nothing to
+// lose, and the next run's ReclaimEmptyBranch deletes them automatically.
+//
+// Like every other branch-derived rule here, a caller with base == "" (detached
+// HEAD, nil git, pathless project) never reaches this function, and ANY git error
+// degrades to "no orphans" rather than failing the diagnosis.
+func orphanBranches(db *sql.DB, git worktree.Git, repoRoot, base string) ([]Blocker, error) {
+	out, err := git.Run(repoRoot, "branch", "--list", "swarm/phase-*")
+	if err != nil {
+		return nil, nil
+	}
+
+	ids := make([]int64, 0, 8)
+	for _, line := range strings.Split(out, "\n") {
+		// `git branch --list` marks the current branch "* " and a branch checked
+		// out in another worktree "+ ", and indents the rest by two spaces.
+		name := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "*+"))
+		name = strings.TrimSpace(name)
+		if !strings.HasPrefix(name, "swarm/phase-") {
+			continue
+		}
+		id, convErr := strconv.ParseInt(strings.TrimPrefix(name, "swarm/phase-"), 10, 64)
+		if convErr != nil {
+			continue // swarm/phase-<not a number> is not a run branch of ours
+		}
+		// Only the CANONICAL spelling is ours. The blocker below reports branchName(id)
+		// rather than the listed line, so a hand-made swarm/phase-007 would otherwise be
+		// reported as swarm/phase-7 — a branch that may not exist, whose cleanup button
+		// would then act on the wrong name (and which the orphan route now refuses).
+		if name != branchName(id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	var (
+		blockers []Blocker
+		overflow int
+	)
+	for _, id := range ids {
+		var one int
+		queryErr := db.QueryRow(`SELECT 1 FROM epic_phases WHERE id = ?`, id).Scan(&one)
+		if queryErr == nil {
+			continue // the id IS a live phase row (possibly in another epic) — not orphaned
+		}
+		if !errors.Is(queryErr, sql.ErrNoRows) {
+			return nil, queryErr
+		}
+		branch := branchName(id)
+		exists, ahead, _ := branchAhead(git, repoRoot, base, branch)
+		if !exists || ahead == 0 {
+			continue // gone, unreadable, or empty litter
+		}
+		if len(blockers) >= maxOrphans {
+			overflow++
+			continue
+		}
+		blockers = append(blockers, Blocker{
+			Kind: KindOrphanBranch,
+			Summary: fmt.Sprintf(
+				"%s holds %s but matches no phase in this plan — work stranded before the ids were stabilised",
+				branch, plural(ahead, "commit")),
+			Detail: fmt.Sprintf("%s → %s ahead, %s; merge or delete it",
+				branch, plural(ahead, "commit"), againstBase(base)),
+			// Carried as data so the cleanup action names the branch the server
+			// proved, not one the client rebuilt from a phase id — an orphan's id
+			// matches no row, so there is no phase to derive it from.
+			Branch:       branch,
+			CommitsAhead: ahead,
+		})
+	}
+	if overflow > 0 {
+		// No Branch field: the overflow line is a count, not a delete target, and
+		// a delete affordance keyed on Branch must not appear for it.
+		noun := "branches"
+		if overflow == 1 {
+			noun = "branch"
+		}
+		blockers = append(blockers, Blocker{
+			Kind:    KindOrphanBranch,
+			Summary: fmt.Sprintf("+%d more orphaned run %s in this repo hold commits", overflow, noun),
+			Detail: fmt.Sprintf("listed %d of %d; %s",
+				maxOrphans, maxOrphans+overflow, againstBase(base)),
+		})
+	}
+	return blockers, nil
 }
 
 // loadDeps resolves depends_on (JSON seq numbers) to sibling phase rows, ascending
