@@ -13,7 +13,9 @@
 // Cadence (deliberately cheaper than the reference implementation, which polls
 // only while its modal is open and not at all otherwise):
 //   · 120s while mounted — the chip stays meaningful without the modal;
-//   · 30s while the modal is open — matches the daemon's own 30s usage cache;
+//   · 30s while the modal is open — matches the daemon's own 30s usage cache,
+//     plus ONE catch-up fetch on open when the snapshot is over 5s old, because
+//     re-arming the interval alone shows nothing new until its first tick;
 //   · paused entirely while the tab is hidden, with ONE catch-up fetch on
 //     return if the snapshot is staler than the cadence then in force.
 // Automatic polls never send `?fresh=1`: they are absorbed by the daemon cache.
@@ -36,6 +38,12 @@ import type { UsageProvider } from '../api/types';
 const CHIP_POLL_MS = 120_000;
 /** Cadence while the modal is open. */
 const MODAL_POLL_MS = 30_000;
+/**
+ * A snapshot younger than this counts as fresh, so opening the modal right after
+ * a poll costs no upstream call. Deliberately much shorter than either cadence:
+ * the on-open fetch exists to kill staleness, not to re-implement the interval.
+ */
+const FRESH_SKIP_MS = 5_000;
 
 export interface UsageState {
   providers: UsageProvider[];
@@ -77,6 +85,8 @@ export function UsageDataProvider({ children }: { children: ReactNode }): JSX.El
   /** In-flight non-fresh load, deduped so StrictMode's double mount and a
    *  cadence change landing on the same tick cannot stack requests. */
   const inFlight = useRef<Promise<void> | null>(null);
+  /** Previous open-count, so only the 0→1 edge fetches — never 1→2 or any close. */
+  const prevOpenCount = useRef(0);
 
   const pollMs = openCount > 0 ? MODAL_POLL_MS : CHIP_POLL_MS;
   const pollMsRef = useRef(pollMs);
@@ -146,6 +156,24 @@ export function UsageDataProvider({ children }: { children: ReactNode }): JSX.El
     }, pollMs);
     return () => window.clearInterval(id);
   }, [visible, pollMs, load]);
+
+  // Catch-up on modal open, same shape as the visibility-return case below.
+  // DO NOT DELETE: the cadence bump above does NOT fetch. window.setInterval
+  // waits a full new period before its first tick, so re-arming it at 30s leaves
+  // whatever the 120s chip cadence last fetched on screen — up to CHIP_POLL_MS
+  // old, worse if the pending slow tick got cleared — and then shows nothing new
+  // for another 30s. This restores the on-open fetch the shared poller replaced.
+  useEffect(() => {
+    const opened = prevOpenCount.current === 0 && openCount > 0;
+    // Recorded before the early returns: if this effect is ever invoked twice for
+    // the same openCount (StrictMode replays setup, and refs survive that), the
+    // second pass reads a non-zero previous count and no-ops.
+    prevOpenCount.current = openCount;
+    if (!opened) return;
+    const last = lastUpdatedRef.current;
+    if (last !== null && Date.now() - last < FRESH_SKIP_MS) return;
+    void load(false);
+  }, [openCount, load]);
 
   useEffect(() => {
     const onVisibility = (): void => {

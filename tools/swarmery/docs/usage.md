@@ -328,14 +328,18 @@ information.
 | modal open | **30s** (matches the daemon's own cache TTL) |
 | browser tab hidden | **paused entirely** — no timer exists |
 | tab becomes visible again | **one** catch-up fetch, and only if the snapshot already outlived the cadence in force; a quick tab-away costs nothing |
+| modal opened | **one** fetch, and only if the snapshot is already older than 5s — so opening the modal twice in quick succession costs one call, not two |
 | page load | one fetch on mount |
 | `refresh` button | immediate, and the **only** thing that sends `?fresh=1` |
 
 Automatic polls never send `?fresh=1` — they are absorbed by the 30-second daemon cache, so
 the sustained upstream rate is at most one call per 30 seconds no matter how many tabs are
-open. Opening the modal changes the shared cadence (reference-counted, so a double mount
-cannot leave it stuck fast) but does not itself trigger a fetch; the modal separately ticks
-a display-only clock every 30s so `resets in …` stays live between polls.
+open. Opening the modal both changes the shared cadence (reference-counted, so a double mount
+cannot leave it stuck fast) *and* takes the staleness-gated fetch above: changing a
+`setInterval`'s delay does not make it fire, so without that fetch the panel would open
+showing whatever the slow 120s cadence last retrieved. Closing the modal never fetches. The
+modal separately ticks a display-only clock every 30s so `resets in …` stays live between
+polls.
 
 ## 8. Operator knobs
 
