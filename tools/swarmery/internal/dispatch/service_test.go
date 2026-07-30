@@ -1118,3 +1118,131 @@ func TestHealDeadProcessBoundZeroDisablesParking(t *testing.T) {
 		t.Errorf("retry_count = %d, want 100 — retries are still counted, just not enforced", retry)
 	}
 }
+
+// ── dependency gate reads the verdict (phase 4, close-the-run-loops) ──
+
+// depFixture inserts a dependency task in `column` with `verdict`, then a dependent
+// task that declares it, and returns the dependent's id plus the service.
+func depFixture(t *testing.T, column, verdict string) (*Service, *sql.DB, int64) {
+	t.Helper()
+	db := testDB(t)
+	s := newTestService(t, db, &stubRunner{}, &stubWt{})
+	if _, err := db.Exec(`
+		INSERT INTO tasks(project_id, title, prompt, status, created_at, source, external_id,
+		                  board_column, verify_verdict)
+		VALUES(1, 'dep', 'x', 'done', '2026-07-01T00:00:00Z', 'queue', 'T-dep', ?, NULLIF(?, ''))`,
+		column, verdict); err != nil {
+		t.Fatal(err)
+	}
+	id := insertTask(t, db, "T-child", taskOpts{deps: `["T-dep"]`})
+	return s, db, id
+}
+
+func TestDepGateBlocksOnExplicitFailOnly(t *testing.T) {
+	for _, tc := range []struct {
+		verdict   string
+		wantBlock bool
+		why       string
+	}{
+		{"fail", true, "an explicit failure is the one verdict that blocks"},
+		{"", false, "NULL must NOT block: verify_verdict is NULL for 100% of live tasks, " +
+			"and a gate that blocked on it would make the board impassable"},
+		{"pass", false, "a passing dependency obviously proceeds"},
+		{"inconclusive", false, "nothing gradeable is not a failure — same invariant as phasediag"},
+	} {
+		t.Run("verdict="+tc.verdict, func(t *testing.T) {
+			s, _, _ := depFixture(t, "done", tc.verdict)
+			blocker, err := s.depBlocker([]string{"T-dep"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (blocker != nil) != tc.wantBlock {
+				t.Fatalf("blocker = %v, want blocked=%v — %s", blocker, tc.wantBlock, tc.why)
+			}
+			if tc.wantBlock && blocker.Reason != "verification failed" {
+				t.Errorf("Reason = %q, want 'verification failed'", blocker.Reason)
+			}
+		})
+	}
+}
+
+func TestDepGateBlocksUnknownDependency(t *testing.T) {
+	s, _, _ := depFixture(t, "done", "pass")
+	blocker, err := s.depBlocker([]string{"T-nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocker == nil {
+		t.Fatal("a dangling dependency must block — it cannot be proven satisfied")
+	}
+	if blocker.Reason != "not found" {
+		t.Errorf("Reason = %q, want 'not found'", blocker.Reason)
+	}
+}
+
+func TestDepGateBlocksOnColumnAndNamesIt(t *testing.T) {
+	s, _, _ := depFixture(t, "todo", "")
+	blocker, err := s.depBlocker([]string{"T-dep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocker == nil {
+		t.Fatal("a dependency still in todo must block")
+	}
+	if !contains(blocker.Reason, "column=todo") {
+		t.Errorf("Reason = %q, want it to name the column", blocker.Reason)
+	}
+}
+
+func TestDepGateArchivedDependencyPasses(t *testing.T) {
+	s, _, _ := depFixture(t, "archived", "")
+	blocker, err := s.depBlocker([]string{"T-dep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocker != nil {
+		t.Errorf("blocker = %v, want nil — archived counts as resolved", blocker)
+	}
+}
+
+func TestDepGateRecordsReasonOnTheTask(t *testing.T) {
+	s, db, id := depFixture(t, "done", "fail")
+	s.Schedule()
+
+	e := taskField(t, db, id, "dispatch_error")
+	if !contains(e.String, "verification failed") || !contains(e.String, "T-dep") {
+		t.Errorf("dispatch_error = %q, want it to name both the dependency and the reason", e.String)
+	}
+	if column(t, db, id) != "todo" {
+		t.Errorf("board_column = %q, want the card to stay in todo", column(t, db, id))
+	}
+}
+
+// A real failure carries information the dep gate does not have. Every scheduling
+// pass re-evaluates the same blocked card, so without the prefix guard the gate would
+// overwrite a runner error with "waiting on a dependency" within seconds.
+func TestDepGateNeverOverwritesAForeignError(t *testing.T) {
+	s, db, id := depFixture(t, "done", "fail")
+	if _, err := db.Exec(`UPDATE tasks SET dispatch_error='runner start: exec format error' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	s.Schedule()
+
+	if e := taskField(t, db, id, "dispatch_error"); e.String != "runner start: exec format error" {
+		t.Errorf("dispatch_error = %q, want the original runner error preserved", e.String)
+	}
+}
+
+func TestDepGateEmptyDepsPass(t *testing.T) {
+	db := testDB(t)
+	s := newTestService(t, db, &stubRunner{}, &stubWt{})
+	for _, deps := range [][]string{nil, {}, {""}, {"  "}} {
+		blocker, err := s.depBlocker(deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocker != nil {
+			t.Errorf("deps %v → %v, want nil", deps, blocker)
+		}
+	}
+}

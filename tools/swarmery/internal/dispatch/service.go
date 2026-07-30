@@ -264,8 +264,11 @@ func (s *Service) Schedule() {
 		if liveWorktrees >= s.Cfg.MaxWorktrees {
 			break
 		}
-		// Gate: dependencies all resolved (done|archived).
-		if !c.depsSatisfied {
+		// Gate: dependencies all resolved (done|archived, verification not failed).
+		// The reason is surfaced, not swallowed — an operator seeing a card sit still
+		// with no explanation is what this gate used to produce.
+		if c.depBlocker != nil {
+			s.recordDepBlock(c.ID, *c.depBlocker)
 			continue
 		}
 		// Gate: file-scope overlap vs every active task in the SAME project.
@@ -287,19 +290,19 @@ func (s *Service) Schedule() {
 
 // candidate is one eligible-or-nearly Todo task with the fields the gates need.
 type candidate struct {
-	ID            int64
-	ExternalID    string
-	ProjectID     int64
-	ProjectSlug   string
-	ProjectPath   string // repo root for worktree.Acquire
-	Prompt        string
-	Model         sql.NullString
-	Playbook      sql.NullString // selected recipe name (NULL ⇒ default 'standard')
-	Priority      int
-	CreatedAt     string
-	FileScope     []string
-	Dependencies  []string
-	depsSatisfied bool
+	ID           int64
+	ExternalID   string
+	ProjectID    int64
+	ProjectSlug  string
+	ProjectPath  string // repo root for worktree.Acquire
+	Prompt       string
+	Model        sql.NullString
+	Playbook     sql.NullString // selected recipe name (NULL ⇒ default 'standard')
+	Priority     int
+	CreatedAt    string
+	FileScope    []string
+	Dependencies []string
+	depBlocker   *DepBlocker // nil ⇒ every dependency clear
 }
 
 // candidates returns Todo board tasks (source='queue', both pause flags clear)
@@ -350,42 +353,97 @@ func (s *Service) candidates() ([]candidate, error) {
 		return cands[i].ID < cands[j].ID
 	})
 
-	// Resolve dependency satisfaction once (a dep is satisfied iff its task is in
-	// done|archived, keyed by external_id — the card id used in the trailer and
-	// dependency arrays).
+	// Resolve dependency satisfaction once, keeping the REASON: a dep is satisfied iff
+	// its task is in done|archived and its verification did not explicitly fail.
+	// Keyed by external_id — the card id used in the trailer and dependency arrays.
 	for i := range cands {
-		ok, err := s.depsSatisfied(cands[i].Dependencies)
+		blocker, err := s.depBlocker(cands[i].Dependencies)
 		if err != nil {
 			return nil, err
 		}
-		cands[i].depsSatisfied = ok
+		cands[i].depBlocker = blocker
 	}
 	return cands, nil
 }
 
-// depsSatisfied reports whether every dependency external_id refers to a task
-// currently in done|archived. Unknown ids are treated as UNSATISFIED (a
-// dangling dependency must not silently unblock — conservative).
-func (s *Service) depsSatisfied(deps []string) (bool, error) {
+// DepBlocker names WHY a dependency is not satisfied. A bool cannot be shown to an
+// operator, and "not dispatching, no reason given" is a state this codebase has
+// already paid for: four phase runs once launched on top of a 0/7 dependency because
+// the gate accepted a board column as proof of completion. Fusion's
+// getTaskMergeBlocker (packages/core/src/task-merge.ts:239) returns the reason for
+// exactly this purpose.
+type DepBlocker struct {
+	Dep    string // external_id of the blocking dependency
+	Reason string // "not found" | "not done (column=X)" | "verification failed"
+}
+
+func (b DepBlocker) String() string { return b.Dep + ": " + b.Reason }
+
+// depBlocker returns the first unsatisfied dependency, or nil when every dependency
+// is clear. Unknown ids block (a dangling dependency must not silently unblock).
+//
+// Rule order matters. The verdict check comes LAST and fires only on an explicit
+// 'fail':
+//
+// NULL, ”, 'pass' and 'inconclusive' all pass the gate. This is not leniency — it
+// is the invariant this codebase already keeps in internal/phasediag/outcome.go,
+// where a missing baseline yields a zero delta and never a negative verdict, and the
+// one Fusion keeps at packages/engine/src/reviewer.ts:50, where a provider error
+// never becomes a verdict. Unavailability of a measurement is not a bad measurement.
+//
+// The practical stake: verify_verdict is NULL for 100% of tasks in the live database.
+// A gate that blocked on NULL would make the board impassable on its first boot.
+func (s *Service) depBlocker(deps []string) (*DepBlocker, error) {
 	for _, dep := range deps {
 		dep = strings.TrimSpace(dep)
 		if dep == "" {
 			continue
 		}
-		var col string
+		var col, verdict string
 		err := s.DB.QueryRow(
-			`SELECT board_column FROM tasks WHERE external_id=? LIMIT 1`, dep).Scan(&col)
+			`SELECT board_column, COALESCE(verify_verdict,'') FROM tasks WHERE external_id=? LIMIT 1`,
+			dep).Scan(&col, &verdict)
 		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
+			return &DepBlocker{Dep: dep, Reason: "not found"}, nil
 		}
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if col != "done" && col != "archived" {
-			return false, nil
+			return &DepBlocker{Dep: dep, Reason: "not done (column=" + col + ")"}, nil
+		}
+		if verdict == verdictFail {
+			return &DepBlocker{Dep: dep, Reason: "verification failed"}, nil
 		}
 	}
-	return true, nil
+	return nil, nil
+}
+
+// verdictFail is the only verify_verdict value that blocks. Named so the contrast
+// with the values that do NOT block is explicit at the call site.
+const verdictFail = "fail"
+
+// depBlockPrefix marks a dispatch_error this gate wrote, so a later pass can
+// recognise and refresh its own message without clobbering an error some other part
+// of the dispatcher recorded.
+const depBlockPrefix = "blocked by dependency "
+
+// recordDepBlock surfaces the blocking reason on the task row.
+//
+// It only ever overwrites nothing or its OWN previous message. A real failure — a
+// runner crash, a worktree error, a parked no-progress marker — carries information
+// this gate does not have and must not be replaced by "waiting on a dependency",
+// which would read as benign. Every scheduling pass re-evaluates the same blocked
+// card, so without the prefix check the gate would overwrite such an error within
+// seconds of it being written.
+func (s *Service) recordDepBlock(id int64, b DepBlocker) {
+	msg := depBlockPrefix + b.String()
+	if _, err := s.DB.Exec(`
+		UPDATE tasks SET dispatch_error=?
+		 WHERE id=? AND (dispatch_error IS NULL OR dispatch_error='' OR dispatch_error LIKE ?)`,
+		msg, id, depBlockPrefix+"%"); err != nil {
+		log.Printf("error: dispatch: record dep block (task %d): %v", id, err)
+	}
 }
 
 // activeScope pairs an in-progress task's project with its declared file scope.
