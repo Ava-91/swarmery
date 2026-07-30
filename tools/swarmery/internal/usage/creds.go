@@ -109,6 +109,17 @@ func credentialPaths() []string {
 	)
 }
 
+// CredentialSources lists, in resolution order, the sources LoadCreds consults,
+// in a form fit for an operator-facing setup hint ("looked in …"). It reports
+// LOCATIONS only and never reads or reveals credential content.
+func CredentialSources() []string {
+	srcs := credentialPaths()
+	if runtime.GOOS == "darwin" {
+		srcs = append(srcs, "macOS Keychain: "+keychainService)
+	}
+	return srcs
+}
+
 // readKeychainCreds reads the CLI's credential item out of the macOS login
 // keychain. The 5s timeout keeps a keychain prompt from wedging a poll. Callers
 // are responsible for the runtime.GOOS guard (LoadCreds does it) so this stays

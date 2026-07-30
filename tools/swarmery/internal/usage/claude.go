@@ -123,11 +123,60 @@ func (c *Client) cacheToken(tok string) {
 	c.mu.Unlock()
 }
 
+// ── setup hints ────────────────────────────────────────────────────────────
+//
+// A local-setup failure — no `claude` login, an expired or rejected token, a
+// missing scope, an explicit opt-out — is not a broken provider: the operator
+// fixes it in one step. Those outcomes carry a Hint (and stay StatusNoAuth) so
+// the card explains what is missing, where the credential is read from, why it
+// is needed and how it is handled, instead of one red error line the operator
+// has to decode. Genuine upstream trouble — 429, a non-200, an unparseable body,
+// a transport failure — stays StatusError with no hint.
+
+const (
+	hintWhy = "Reads your live Claude quota — the 5-hour session window and the weekly windows, the same numbers `claude /usage` shows. Only this card depends on it."
+	// hintHandling states the package's standing policy in operator-facing
+	// words. Keep it in sync with the policy note in types.go.
+	hintHandling = "Read from your own machine, sent only to Anthropic's API, refreshed in memory — never written back, logged, or returned by the dashboard."
+)
+
+// loginHint is the "(re-)run the CLI login" hint every credential-shaped
+// failure shares; kind and wording differ, the remedy does not.
+func loginHint(kind, title, detail string) *Hint {
+	return &Hint{
+		Kind:     kind,
+		Title:    title,
+		Detail:   detail,
+		Command:  "claude",
+		Sources:  CredentialSources(),
+		Why:      hintWhy,
+		Handling: hintHandling,
+	}
+}
+
+// fail is an outcome that must reach the operator: the one-line message, plus
+// the hint when the cause is local setup rather than a broken provider.
+type fail struct {
+	msg  string
+	hint *Hint
+}
+
+// apply encodes a failure on the provider. A hinted failure is "not connected
+// yet" (StatusNoAuth), everything else is a real error.
+func (p *Provider) apply(f *fail) {
+	p.Error = f.msg
+	if f.hint != nil {
+		p.Status, p.Hint = StatusNoAuth, f.hint
+		return
+	}
+	p.Status = StatusError
+}
+
 // Fetch reads the operator's live Claude quota windows.
 //
 // It never returns an error: every outcome — opted out, not logged in, auth
 // rejected, rate limited, malformed payload — is encoded in the returned
-// Provider's Status and Error so a broken provider degrades to one error card
+// Provider's Status, Error and Hint, so a broken provider degrades to one card
 // and can never break the endpoint.
 func (c *Client) Fetch(ctx context.Context) Provider {
 	p := Provider{
@@ -141,9 +190,19 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 	switch {
 	case errors.Is(err, ErrDisabled):
 		p.Error = "usage OAuth disabled (SWARMERY_USAGE_OAUTH=0)"
+		p.Hint = &Hint{
+			Kind:     HintOptedOut,
+			Title:    "Live usage is switched off",
+			Detail:   "SWARMERY_USAGE_OAUTH=0 disables the credential read entirely — nothing on disk or in the keychain is touched.",
+			Command:  "unset SWARMERY_USAGE_OAUTH",
+			Why:      hintWhy,
+			Handling: hintHandling,
+		}
 		return p
 	case err != nil, creds == nil, creds.AccessToken == "":
 		p.Error = "No Claude credentials — run `claude` to log in"
+		p.Hint = loginHint(HintLogin, "Claude login required",
+			"No Claude credential was found on this machine, so the live quota cannot be read.")
 		return p
 	}
 
@@ -155,19 +214,21 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 	// path below remains the backstop for a token that is actually unauthorized.
 	if len(creds.Scopes) > 0 && !hasScope(creds.Scopes, requiredScope) {
 		p.Error = "Claude token missing user:profile scope — re-run `claude` login"
+		p.Hint = loginHint(HintScope, "Claude login is missing a permission",
+			"The stored credential has no `user:profile` scope, which the quota endpoint requires. A fresh login grants it.")
 		return p
 	}
 	p.Plan = inferPlan(creds)
 
-	token, refreshed, errMsg := c.resolveToken(ctx, creds)
-	if errMsg != "" {
-		p.Status, p.Error = StatusError, errMsg
+	token, refreshed, f := c.resolveToken(ctx, creds)
+	if f != nil {
+		p.apply(f)
 		return p
 	}
 
-	body, errMsg := c.fetchUsage(ctx, creds, token, refreshed)
-	if errMsg != "" {
-		p.Status, p.Error = StatusError, errMsg
+	body, f := c.fetchUsage(ctx, creds, token, refreshed)
+	if f != nil {
+		p.apply(f)
 		return p
 	}
 
@@ -187,21 +248,29 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 // token is expired (or expires within the grace window). The bool reports
 // whether the returned token came from a refresh, so the 401 path knows not to
 // refresh the same token twice.
-func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, refreshed bool, errMsg string) {
+func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, refreshed bool, f *fail) {
 	if tok := c.cachedToken(); tok != "" {
-		return tok, true, ""
+		return tok, true, nil
 	}
 	if !c.tokenExpired(creds.ExpiresAt) {
-		return creds.AccessToken, false, ""
+		return creds.AccessToken, false, nil
 	}
 	if creds.RefreshToken == "" {
-		return "", false, "Claude token expired and no refresh token — run `claude` to re-login"
+		return "", false, &fail{
+			msg: "Claude token expired and no refresh token — run `claude` to re-login",
+			hint: loginHint(HintLogin, "Claude login expired",
+				"The stored token has expired and carries no refresh token, so it cannot be renewed automatically."),
+		}
 	}
 	tok, ok := c.refresh(ctx, creds)
 	if !ok {
-		return "", false, "Claude token refresh failed — run `claude` to re-login"
+		return "", false, &fail{
+			msg: "Claude token refresh failed — run `claude` to re-login",
+			hint: loginHint(HintLogin, "Claude login expired",
+				"The stored token has expired and Anthropic declined to refresh it, so a fresh login is needed."),
+		}
 	}
-	return tok, true, ""
+	return tok, true, nil
 }
 
 // tokenExpired treats a token expiring within the grace window as expired. An
@@ -217,11 +286,11 @@ func (c *Client) tokenExpired(expiresAtMs int64) bool {
 // one refresh attempt on 401/403, up to maxRetries attempts on 429 honouring
 // Retry-After (seconds) or exponential backoff from 1s, and immediate failure
 // on any other non-200.
-func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, refreshed bool) (body []byte, errMsg string) {
+func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, refreshed bool) (body []byte, f *fail) {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		status, header, b, err := c.get(ctx, c.apiBase()+oauthUsagePath, token)
 		if err != nil {
-			return nil, "Claude usage request failed: " + scrubSecrets(err.Error())
+			return nil, &fail{msg: "Claude usage request failed: " + scrubSecrets(err.Error())}
 		}
 
 		switch {
@@ -232,25 +301,41 @@ func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, ref
 					continue
 				}
 			}
-			return nil, "Claude auth rejected — run `claude` to re-login"
+			return nil, c.authRejected()
 
 		case status == http.StatusTooManyRequests:
 			if attempt < maxRetries-1 {
 				c.wait(retryDelay(header.Get("Retry-After"), attempt))
 				continue
 			}
-			return nil, "Claude usage rate-limited (HTTP 429) — retry later"
+			return nil, &fail{msg: "Claude usage rate-limited (HTTP 429) — retry later"}
 
 		case status != http.StatusOK:
 			if s := snippet(b); s != "" {
-				return nil, fmt.Sprintf("HTTP %d: %s", status, s)
+				return nil, &fail{msg: fmt.Sprintf("HTTP %d: %s", status, s)}
 			}
-			return nil, fmt.Sprintf("HTTP %d", status)
+			return nil, &fail{msg: fmt.Sprintf("HTTP %d", status)}
 		}
-		return b, ""
+		return b, nil
 	}
 	// Only reachable when every attempt was consumed by a 401→refresh retry.
-	return nil, "Claude auth rejected — run `claude` to re-login"
+	return nil, c.authRejected()
+}
+
+// authRejected reports a rejected bearer AND drops the in-memory refreshed
+// token. Without the drop, a token that has gone stale inside the daemon's
+// lifetime would be replayed on every subsequent poll — resolveToken prefers
+// the cache and marks it `refreshed`, which suppresses the refresh retry — so
+// following the hint (`claude` re-login) would appear to change nothing until
+// the daemon restarted. Clearing it makes the next poll start from the
+// on-disk credential again.
+func (c *Client) authRejected() *fail {
+	c.cacheToken("")
+	return &fail{
+		msg: "Claude auth rejected — run `claude` to re-login",
+		hint: loginHint(HintLogin, "Claude login was rejected",
+			"Anthropic rejected the stored credential, which usually means the login was revoked or superseded elsewhere."),
+	}
 }
 
 // retryDelay honours a numeric Retry-After (seconds) when the server sends one,

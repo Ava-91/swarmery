@@ -86,6 +86,33 @@ type Window struct {
 	Limit       int64   `json:"limit,omitempty"` // estimate provider only
 }
 
+// Hint kinds. A hint marks a failure the operator can fix themselves on this
+// machine, as opposed to a broken or unreachable provider.
+const (
+	HintLogin    = "login"     // no credential, expired, refresh failed, rejected
+	HintScope    = "scope"     // credential lacks the user:profile scope
+	HintOptedOut = "opted-out" // SWARMERY_USAGE_OAUTH=0
+)
+
+// Hint is operator-facing setup guidance attached to a provider whose quota
+// could not be read because of LOCAL configuration — no `claude` login, an
+// expired token, a missing scope, an explicit opt-out.
+//
+// It exists so the card can answer the four questions a bare error line leaves
+// open: what is missing (Title/Detail), how to supply it (Command), where the
+// daemon looks for it (Sources), and why it is needed and how it is handled
+// (Why/Handling). A provider carrying a Hint is StatusNoAuth, never
+// StatusError: nothing is broken, something is simply not connected yet.
+type Hint struct {
+	Kind     string   `json:"kind"`              // "login" | "scope" | "opted-out"
+	Title    string   `json:"title"`             // "Claude login required"
+	Detail   string   `json:"detail"`            // what is missing, one sentence
+	Command  string   `json:"command,omitempty"` // exact command to run
+	Sources  []string `json:"sources,omitempty"` // where the credential is read from
+	Why      string   `json:"why"`               // what supplying it unlocks
+	Handling string   `json:"handling"`          // how the credential is used
+}
+
 // Provider is one card in the Usage modal.
 type Provider struct {
 	Name    string   `json:"name"`   // "Claude"
@@ -94,4 +121,7 @@ type Provider struct {
 	Plan    string   `json:"plan,omitempty"` // "Max" | "Pro" | "Team"
 	Source  string   `json:"source"`         // "oauth" | "estimate"
 	Windows []Window `json:"windows"`
+	// Hint is set only for a local-setup failure (StatusNoAuth); the UI renders
+	// it instead of the raw Error line.
+	Hint *Hint `json:"hint,omitempty"`
 }

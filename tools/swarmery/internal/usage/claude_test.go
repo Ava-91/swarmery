@@ -82,6 +82,30 @@ func newStub(t *testing.T,
 	return s
 }
 
+// wantSetupCard asserts the shape a credential-shaped failure must have: the
+// provider is "not connected" rather than "error", it still carries the one-line
+// message, and it carries a hint complete enough for the card to explain what is
+// missing, how to supply it, why it is needed and how it is handled.
+func wantSetupCard(t *testing.T, p Provider, kind, wantMsg string) {
+	t.Helper()
+	if p.Status != StatusNoAuth {
+		t.Errorf("status = %q, want %q — a credential problem is setup, not a provider error", p.Status, StatusNoAuth)
+	}
+	if !strings.Contains(p.Error, wantMsg) {
+		t.Errorf("error = %q, want it to mention %q", p.Error, wantMsg)
+	}
+	if p.Hint == nil {
+		t.Fatalf("hint = nil, want setup guidance alongside %q", p.Error)
+	}
+	if p.Hint.Kind != kind {
+		t.Errorf("hint kind = %q, want %q", p.Hint.Kind, kind)
+	}
+	if p.Hint.Title == "" || p.Hint.Detail == "" || p.Hint.Command == "" ||
+		p.Hint.Why == "" || p.Hint.Handling == "" {
+		t.Errorf("hint = %+v, want every operator-facing field populated", *p.Hint)
+	}
+}
+
 // serveJSON is the common "200 with this body" usage handler.
 func serveJSON(body []byte) func(int, http.ResponseWriter) {
 	return func(_ int, w http.ResponseWriter) {
@@ -444,12 +468,7 @@ func TestFetchAuthRejected(t *testing.T) {
 			c, _ := newClient(s, tc.creds)
 
 			p := c.Fetch(context.Background())
-			if p.Status != StatusError {
-				t.Fatalf("status = %q, want error", p.Status)
-			}
-			if !strings.Contains(p.Error, "auth rejected") {
-				t.Errorf("error = %q, want the re-login hint", p.Error)
-			}
+			wantSetupCard(t, p, HintLogin, "auth rejected")
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			if s.usageCalls != tc.wantCalls {
@@ -466,8 +485,30 @@ func TestFetchRefreshWithoutAccessTokenInResponse(t *testing.T) {
 	c, _ := newClient(s, testCreds())
 
 	p := c.Fetch(context.Background())
-	if p.Status != StatusError || !strings.Contains(p.Error, "auth rejected") {
-		t.Errorf("provider = %q / %q, want an auth error when the refresh returns no token", p.Status, p.Error)
+	wantSetupCard(t, p, HintLogin, "auth rejected")
+}
+
+// TestFetchAuthRejectionDropsCachedToken pins the recovery path behind the
+// re-login hint: once a refreshed token starts being rejected, it must not be
+// replayed on every later poll (resolveToken prefers the cache and marks it
+// already-refreshed, which suppresses the refresh retry). Dropping it means the
+// next poll starts from the on-disk credential again, so a fresh `claude` login
+// takes effect without restarting the daemon.
+func TestFetchAuthRejectionDropsCachedToken(t *testing.T) {
+	s := newStub(t, func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			w.WriteHeader(http.StatusUnauthorized) // forces one refresh
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized) // the refreshed token is rejected too
+	}, nil)
+	c, _ := newClient(s, testCreds())
+
+	if p := c.Fetch(context.Background()); p.Status != StatusNoAuth {
+		t.Fatalf("first fetch = %q (%s), want the setup card", p.Status, p.Error)
+	}
+	if tok := c.cachedToken(); tok != "" {
+		t.Errorf("cached token = %q, want it dropped after a rejection", tok)
 	}
 }
 
@@ -554,9 +595,7 @@ func TestFetchExpiredTokenFailures(t *testing.T) {
 		c, _ := newClient(s, creds)
 
 		p := c.Fetch(context.Background())
-		if p.Status != StatusError || !strings.Contains(p.Error, "expired") {
-			t.Errorf("provider = %q / %q, want an expiry error", p.Status, p.Error)
-		}
+		wantSetupCard(t, p, HintLogin, "expired")
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.usageCalls != 0 {
@@ -572,9 +611,7 @@ func TestFetchExpiredTokenFailures(t *testing.T) {
 		c, _ := newClient(s, creds)
 
 		p := c.Fetch(context.Background())
-		if p.Status != StatusError || !strings.Contains(p.Error, "refresh failed") {
-			t.Errorf("provider = %q / %q, want a refresh error", p.Status, p.Error)
-		}
+		wantSetupCard(t, p, HintLogin, "refresh failed")
 	})
 
 	t.Run("refresh endpoint unreachable", func(t *testing.T) {
@@ -585,9 +622,7 @@ func TestFetchExpiredTokenFailures(t *testing.T) {
 		c.AuthBase = "http://exa\x7fmple.invalid" // unparseable as a URL
 
 		p := c.Fetch(context.Background())
-		if p.Status != StatusError || !strings.Contains(p.Error, "refresh failed") {
-			t.Errorf("provider = %q / %q, want a refresh error", p.Status, p.Error)
-		}
+		wantSetupCard(t, p, HintLogin, "refresh failed")
 	})
 }
 
