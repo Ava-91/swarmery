@@ -1,0 +1,20 @@
+-- 0045: give a dispatcher task a monotone progress mark so a re-dispatch that never
+-- advances can be bounded instead of repeating for ever.
+--
+-- The observable progress signal already exists: commits carrying the task's
+-- Swarm-Task-Id trailer (internal/worktree/trailer.go CommitsForTask). What was
+-- missing is memory of the best value ever seen. Without it, "did this attempt
+-- advance anything?" is unanswerable, because the current count alone cannot
+-- distinguish a first attempt from the fourth.
+--
+-- Monotone by construction, and every write must go through MAX(): a squash, a branch
+-- reset or a rollback legitimately LOWERS the observable commit count, and a mark that
+-- followed it downward would read as fresh progress on the next pass — turning the
+-- anti-loop into a loop. Fusion documents this exact failure at
+-- packages/engine/src/executor/requeue-loop.ts:32, where the high-water mark exists
+-- for the same reason.
+--
+-- No backfill: 0 is the correct starting value for every existing row. A task that
+-- already carries commits will record them on its first observation, and the first
+-- observation is never treated as "no progress" — it is the baseline.
+ALTER TABLE tasks ADD COLUMN progress_high_water INTEGER NOT NULL DEFAULT 0;

@@ -53,6 +53,8 @@ type stubWt struct {
 	acquired   []string // task ids acquired
 	removed    []string // task ids (via branch) removed
 	acquireErr error
+	commits    map[string][]string // external id → trailer-bearing commit SHAs
+	commitsErr error               // when set, the progress signal is UNREADABLE
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -80,6 +82,18 @@ func (w *stubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) e
 // branch for their whole lifetime) — inert here.
 func (w *stubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
 func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error)      { return false, nil }
+
+// commits is the scripted progress signal: SHAs per task external id. commitsErr,
+// when set, makes CommitsForTask fail — the case that must NOT be read as zero
+// progress.
+func (w *stubWt) CommitsForTask(repoRoot, taskID string) ([]string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.commitsErr != nil {
+		return nil, w.commitsErr
+	}
+	return w.commits[taskID], nil
+}
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
@@ -978,5 +992,129 @@ func TestBlockedSentinelDoesNotPokeVerify(t *testing.T) {
 
 	if len(pv.poked) != 0 {
 		t.Errorf("poked = %v, want none — a blocked task produced no work to grade", pv.poked)
+	}
+}
+
+// ── progress high-water + terminal park (phase 3, close-the-run-loops) ──
+
+// healWithProgress runs one dead-process heal pass with a scripted progress signal
+// and returns the row's post-state.
+func healWithProgress(t *testing.T, commits []string, commitsErr error, retryCount, highWater, bound int) (
+	column, status, dispatchErr string, paused int64, gotRetry, gotHighWater int) {
+	t.Helper()
+	db := testDB(t)
+	wt := &stubWt{commits: map[string][]string{"T-p": commits}, commitsErr: commitsErr}
+	s := newTestService(t, db, &stubRunner{}, wt)
+	s.Cfg.MaxNoProgressRetries = bound
+	id := deadDispatchTask(t, db, "T-p", "queue", "dead")
+	if _, err := db.Exec(`UPDATE tasks SET retry_count=?, progress_high_water=? WHERE id=?`,
+		retryCount, highWater, id); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.HealDeadProcess(); err != nil {
+		t.Fatalf("HealDeadProcess: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT board_column, status, COALESCE(dispatch_error,''), paused, retry_count, progress_high_water
+		   FROM tasks WHERE id=?`, id).
+		Scan(&column, &status, &dispatchErr, &paused, &gotRetry, &gotHighWater); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+func TestHealDeadProcessAdvancedProgressRequeuesWithoutChargingRetry(t *testing.T) {
+	col, st, _, paused, retry, hw := healWithProgress(t,
+		[]string{"sha1", "sha2", "sha3"}, nil, 0 /*retry*/, 1 /*highWater*/, 3 /*bound*/)
+
+	if col != "todo" || st != "queued" {
+		t.Errorf("column/status = %q/%q, want todo/queued", col, st)
+	}
+	if paused != 0 {
+		t.Error("paused = 1; a task that advanced must not be parked")
+	}
+	if retry != 0 {
+		t.Errorf("retry_count = %d, want 0 — progress is not a retry", retry)
+	}
+	if hw != 3 {
+		t.Errorf("progress_high_water = %d, want 3", hw)
+	}
+}
+
+func TestHealDeadProcessNoProgressChargesRetryBelowBound(t *testing.T) {
+	col, st, _, paused, retry, hw := healWithProgress(t,
+		[]string{"sha1"}, nil, 0 /*retry*/, 1 /*highWater — already seen*/, 3)
+
+	if col != "todo" || st != "queued" {
+		t.Errorf("column/status = %q/%q, want todo/queued while under the bound", col, st)
+	}
+	if paused != 0 {
+		t.Error("paused = 1 below the bound; the task still has budget")
+	}
+	if retry != 1 {
+		t.Errorf("retry_count = %d, want 1", retry)
+	}
+	if hw != 1 {
+		t.Errorf("progress_high_water = %d, want it unchanged at 1", hw)
+	}
+}
+
+func TestHealDeadProcessParksAtBoundInsteadOfRequeueing(t *testing.T) {
+	col, _, dispatchErr, paused, _, _ := healWithProgress(t,
+		[]string{"sha1"}, nil, 2 /*retry — one short of the bound*/, 1, 3)
+
+	if paused != 1 {
+		t.Fatalf("paused = %d, want 1 — the bound must stop the cycle, not extend it", paused)
+	}
+	if col == "todo" {
+		t.Error("board_column = todo: a parked task must NOT be requeued as well")
+	}
+	if !contains(dispatchErr, "no progress after 3") {
+		t.Errorf("dispatch_error = %q, want it to name the bound", dispatchErr)
+	}
+}
+
+// A squash or branch reset lowers the observable count. The mark must not follow it
+// down, or the next pass reads the drop as fresh progress and the bound never binds.
+func TestHealDeadProcessHighWaterNeverDecreases(t *testing.T) {
+	_, _, _, _, _, hw := healWithProgress(t,
+		[]string{"sha1"}, nil, 0, 7 /*highWater from before a squash*/, 3)
+
+	if hw != 7 {
+		t.Errorf("progress_high_water = %d, want it held at 7 — MAX(), never assignment", hw)
+	}
+}
+
+// An unreadable repo is not evidence. Spending the retry budget on it would charge a
+// task that may be progressing fine for git's failure.
+func TestHealDeadProcessUnreadableProgressChangesNothing(t *testing.T) {
+	col, st, dispatchErr, paused, retry, hw := healWithProgress(t,
+		nil, errors.New("fatal: not a git repository"), 1, 2, 3)
+
+	if col != "triage" || st != "running" {
+		t.Errorf("column/status = %q/%q, want them untouched at triage/running", col, st)
+	}
+	if paused != 0 || retry != 1 || hw != 2 {
+		t.Errorf("paused=%d retry=%d hw=%d, want 0/1/2 — nothing may change on an unreadable signal",
+			paused, retry, hw)
+	}
+	if dispatchErr != "" {
+		t.Errorf("dispatch_error = %q, want empty", dispatchErr)
+	}
+}
+
+func TestHealDeadProcessBoundZeroDisablesParking(t *testing.T) {
+	col, st, _, paused, retry, _ := healWithProgress(t,
+		[]string{"sha1"}, nil, 99 /*far past any bound*/, 1, 0 /*bound disabled*/)
+
+	if paused != 0 {
+		t.Error("paused = 1 with the bound disabled; 0 must mean pre-0045 behaviour")
+	}
+	if col != "todo" || st != "queued" {
+		t.Errorf("column/status = %q/%q, want todo/queued", col, st)
+	}
+	if retry != 100 {
+		t.Errorf("retry_count = %d, want 100 — retries are still counted, just not enforced", retry)
 	}
 }

@@ -52,6 +52,10 @@ func (phaseStubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool)
 func (phaseStubWt) ReclaimEmptyBranch(repoRoot, branch string) (int, error) { return 0, nil }
 func (phaseStubWt) DeleteBranch(repoRoot, branch string) (bool, error)      { return true, nil }
 
+// CommitsForTask satisfies dispatch.WorktreeManager; phase-run tests do not exercise
+// the dispatcher's progress high-water, so an empty history is the honest stub.
+func (phaseStubWt) CommitsForTask(repoRoot, taskID string) ([]string, error) { return nil, nil }
+
 // attachPhaseRun wires a stub-backed phaserun service (package var, reset on
 // cleanup). sync=true runs the spawn inline so a POST response implies the run
 // finished (deterministic end-state assertions).
