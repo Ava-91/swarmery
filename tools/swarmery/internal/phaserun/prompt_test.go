@@ -17,6 +17,10 @@ func TestBuildPrompt_InterpolatesAllFields(t *testing.T) {
 		"tick its checkbox (- [ ] → - [x])",
 		"The document lives at: /ws/proj/workspace/working/2026/07/27/thing/plan/phase-2-api.md",
 		"Do NOT push, do NOT open PRs, do NOT merge",
+		// Headless run-context: the reply that says "waiting on my helpers" is the
+		// reply that kills them, and the 0 exit code books the run as a success over
+		// nothing (plan 70, 2026-07-30).
+		"ENDING YOUR TURN ENDS THIS PROCESS",
 		"PHASE BLOCKED:",
 		"PHASE DONE.",
 		// The embedded doc, framed by its rel path.

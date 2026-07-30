@@ -489,9 +489,14 @@ func TestPrunePropagatesGitError(t *testing.T) {
 }
 
 func TestRemovePropagatesErrors(t *testing.T) {
-	// worktree remove fails → error surfaced, branch delete not attempted.
+	// worktree remove fails on a path git DOES track → a real failure: surfaced, and
+	// the branch is not deleted while that checkout still holds it. The registration
+	// is what makes the failure real, so the list probe must show it — a remove
+	// failure on a path git tracks nothing for is recoverable, and
+	// TestRemoveFinishesTeardownWhenGitTracksNothing pins that opposite case.
 	g := &stubGit{}
 	g.on("worktree remove", "cannot remove", errors.New("exit 1"))
+	g.on("worktree list --porcelain", "worktree /wt/T-x\nbranch refs/heads/swarm/T-x\n", nil)
 	m := &Manager{Git: g}
 	if err := m.Remove("/tmp/repo", Acquired{Path: "/wt/T-x", Branch: "swarm/T-x"}, false); err == nil {
 		t.Error("Remove should propagate a worktree-remove failure")
@@ -505,6 +510,216 @@ func TestRemovePropagatesErrors(t *testing.T) {
 	m2 := &Manager{Git: g2}
 	if err := m2.Remove("/tmp/repo", Acquired{Path: "/wt/T-x", Branch: "swarm/T-x"}, false); err == nil {
 		t.Error("Remove should propagate a branch-delete failure")
+	}
+}
+
+// ---- orphaned worktree paths (the 2026-07-30 retry dead end) --------------
+//
+// The incident: an external `git worktree prune` dropped a run's registration while
+// its DIRECTORY survived, non-empty. Teardown could not remove it (git refuses
+// `worktree remove` on a path it does not track), so every later acquisition ran
+// `git worktree add -b` against an occupied path — which mints the branch BEFORE it
+// validates the path, then fails with `fatal: '<path>' already exists`. Both that
+// message and the branch-collision one contain "already exists", so the failure was
+// reported as ErrBranchExists: the operator kept deleting a branch the retry itself
+// had just created, four times over, while the real blocker sat on disk untouched.
+
+// fixedClock makes quarantine names deterministic.
+func fixedClock() time.Time { return time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC) }
+
+// quarantineOf returns the single .orphaned-* sibling of path, failing if the
+// leftover was not moved aside exactly once.
+func quarantineOf(t *testing.T, path string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("readdir %s: %v", filepath.Dir(path), err)
+	}
+	var found []string
+	for _, e := range entries {
+		if strings.Contains(e.Name(), orphanSuffix) {
+			found = append(found, filepath.Join(filepath.Dir(path), e.Name()))
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("quarantined dirs = %v, want exactly 1", found)
+	}
+	return found[0]
+}
+
+func TestRemoveFinishesTeardownWhenGitTracksNothing(t *testing.T) {
+	g := &stubGit{}
+	g.on("worktree remove", "fatal: '/wt/T-x' is not a working tree", errors.New("exit 128"))
+	m := &Manager{Git: g}
+	if err := m.Remove("/tmp/repo", Acquired{Path: "/wt/T-x", Branch: "swarm/T-x"}, false); err != nil {
+		t.Fatalf("Remove = %v, want nil — git had nothing to remove and nothing is left on disk", err)
+	}
+	if !g.called("branch -D swarm/T-x") {
+		t.Error("teardown must still delete the branch it was asked to delete")
+	}
+}
+
+func TestRemoveQuarantinesUntrackedLeftover(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wts")
+	path := filepath.Join(root, "proj", "T-x")
+	mustMkdir(t, path)
+	mustWrite(t, filepath.Join(path, "uncommitted.go"), "package x\n")
+
+	g := &stubGit{}
+	g.on("worktree remove", "fatal: not a working tree", errors.New("exit 128"))
+	m := &Manager{Git: g, Root: root, now: fixedClock}
+	if err := m.Remove("/tmp/repo", Acquired{Path: path, Branch: "swarm/T-x"}, true); err != nil {
+		t.Fatalf("Remove = %v, want the leftover cleared", err)
+	}
+	if dirExists(path) {
+		t.Fatal("the path is still occupied — the next Acquire would collide on it")
+	}
+	got, err := os.ReadFile(filepath.Join(quarantineOf(t, path), "uncommitted.go"))
+	if err != nil {
+		t.Fatalf("read quarantined file: %v", err)
+	}
+	if string(got) != "package x\n" {
+		t.Errorf("quarantined content = %q, want the dead run's work preserved verbatim", got)
+	}
+}
+
+func TestRemoveRefusesToClearAPathItDoesNotOwn(t *testing.T) {
+	foreign := t.TempDir() // not <Root>/<slug>/<taskID>
+	mustWrite(t, filepath.Join(foreign, "someone-elses.txt"), "keep me\n")
+
+	g := &stubGit{}
+	g.on("worktree remove", "fatal: not a working tree", errors.New("exit 128"))
+	m := &Manager{Git: g, Root: filepath.Join(t.TempDir(), "wts")}
+	if err := m.Remove("/tmp/repo", Acquired{Path: foreign, Branch: "swarm/T-x"}, false); !errors.Is(err, ErrPathOccupied) {
+		t.Fatalf("Remove = %v, want ErrPathOccupied for a path outside Root", err)
+	}
+	if !fileExists(filepath.Join(foreign, "someone-elses.txt")) {
+		t.Fatal("a foreign directory was touched — the namespace guard is what makes this safe")
+	}
+}
+
+func TestAcquireFreesUntrackedNonEmptyLeftover(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wts")
+	path := filepath.Join(root, "proj", "T-x")
+	mustMkdir(t, path)
+	mustWrite(t, filepath.Join(path, "leftover.go"), "package x\n")
+
+	g := baseStub()
+	g.on("worktree remove", "fatal: '"+path+"' is not a working tree", errors.New("exit 128"))
+	m := &Manager{Git: g, Root: root, now: fixedClock}
+	if _, err := m.Acquire("/tmp/repo", "proj", "T-x"); err != nil {
+		t.Fatalf("Acquire = %v, want the leftover freed and the worktree created", err)
+	}
+	if !g.called("worktree add -b swarm/T-x " + path) {
+		t.Error("Acquire never reached `worktree add` — the path was not freed")
+	}
+	if got, err := os.ReadFile(filepath.Join(quarantineOf(t, path), "leftover.go")); err != nil || string(got) != "package x\n" {
+		t.Errorf("quarantined content = %q (err %v), want it preserved", got, err)
+	}
+}
+
+func TestAcquireDeletesEmptyLeftoverInsteadOfQuarantiningIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wts")
+	path := filepath.Join(root, "proj", "T-x")
+	mustMkdir(t, path)
+
+	g := baseStub()
+	g.on("worktree remove", "fatal: not a working tree", errors.New("exit 128"))
+	m := &Manager{Git: g, Root: root, now: fixedClock}
+	if _, err := m.Acquire("/tmp/repo", "proj", "T-x"); err != nil {
+		t.Fatalf("Acquire = %v, want nil", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	// An empty leftover holds nothing to preserve; quarantining one per retry would
+	// litter Root for ever.
+	if len(entries) != 0 {
+		t.Errorf("siblings after acquiring over an EMPTY leftover = %d, want 0", len(entries))
+	}
+}
+
+func TestFreeOrphanPathSurvivesAQuarantineNameCollision(t *testing.T) {
+	// Two frees inside the same second — the stamp alone is not unique, and the
+	// earlier quarantine must not be overwritten (it holds work too).
+	root := filepath.Join(t.TempDir(), "wts")
+	path := filepath.Join(root, "proj", "T-x")
+	mustMkdir(t, path)
+	mustWrite(t, filepath.Join(path, "second.go"), "second\n")
+	taken := path + orphanSuffix + fixedClock().Format("20060102-150405")
+	mustMkdir(t, taken)
+	mustWrite(t, filepath.Join(taken, "first.go"), "first\n")
+
+	m := &Manager{Git: &stubGit{}, Root: root, now: fixedClock}
+	if err := m.freeOrphanPath(path, "T-x"); err != nil {
+		t.Fatalf("freeOrphanPath = %v, want a sibling name picked", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(taken, "first.go")); err != nil || string(got) != "first\n" {
+		t.Fatalf("earlier quarantine = %q (err %v), want it untouched", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(taken+"-2", "second.go")); err != nil || string(got) != "second\n" {
+		t.Fatalf("second quarantine = %q (err %v), want it beside the first", got, err)
+	}
+}
+
+func TestAcquireDiscriminatesGitsTwoAlreadyExists(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want error
+	}{
+		{"branch name taken", "fatal: a branch named 'swarm/T-x' already exists", ErrBranchExists},
+		{"target path taken", "fatal: '/wts/proj/T-x' already exists", ErrPathOccupied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := baseStub()
+			g.on("worktree add", tc.out, errors.New("exit 128"))
+			m := newMgr(t, g)
+			_, err := m.Acquire("/tmp/repo", "proj", "T-x")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Acquire = %v, want %v — the two blockers need different remedies", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAcquireRollsBackTheBranchItsFailedAddMinted(t *testing.T) {
+	g := baseStub()
+	probes := 0
+	g.onFn("rev-parse --verify --quiet refs/heads/swarm/T-x", func([]string) (string, error) {
+		probes++
+		if probes == 1 {
+			return "", errors.New("exit 1") // absent before the add
+		}
+		return "cccc3333\n", nil // the failed add left it behind
+	})
+	g.on("worktree add", "fatal: '/wts/proj/T-x' already exists", errors.New("exit 128"))
+	m := newMgr(t, g)
+	if _, err := m.Acquire("/tmp/repo", "proj", "T-x"); !errors.Is(err, ErrPathOccupied) {
+		t.Fatalf("Acquire = %v, want ErrPathOccupied", err)
+	}
+	if !g.called("branch -D swarm/T-x") {
+		t.Error("a failed add left its freshly minted branch behind — one orphan per retry")
+	}
+}
+
+func TestAcquireNeverRollsBackAPreexistingBranch(t *testing.T) {
+	g := baseStub()
+	g.on("rev-parse --verify --quiet refs/heads/swarm/T-x", "cccc3333\n", nil)
+	g.on("worktree add", "fatal: a branch named 'swarm/T-x' already exists", errors.New("exit 128"))
+	m := newMgr(t, g)
+	if _, err := m.Acquire("/tmp/repo", "proj", "T-x"); !errors.Is(err, ErrBranchExists) {
+		t.Fatalf("Acquire = %v, want ErrBranchExists", err)
+	}
+	if g.called("branch -D") {
+		t.Error("a branch that predates the add may hold the only copy of a crashed run's commits")
+	}
+}
+
+func TestBlockerSentinelsAreDistinct(t *testing.T) {
+	if errors.Is(ErrPathOccupied, ErrBranchExists) || errors.Is(ErrBranchExists, ErrPathOccupied) {
+		t.Fatal("ErrPathOccupied and ErrBranchExists must not alias — the whole point is telling them apart")
 	}
 }
 

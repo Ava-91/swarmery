@@ -34,6 +34,26 @@ func TestBuildPromptDelegatesToTheSkill(t *testing.T) {
 	}
 }
 
+// TestBuildPromptForbidsReturningWithChildrenInFlight pins the run-context fact the
+// skill cannot know: under `claude -p` the reply that says "waiting on the
+// executors" is the reply that kills them, and the 0 exit code then books the run
+// as `done` over nothing. Plan 70 lost 13m24s to exactly that on 2026-07-30. If
+// this instruction is ever dropped from the prompt, the failure is silent — a green
+// chip — so it gets its own test rather than riding along in the omnibus one.
+func TestBuildPromptForbidsReturningWithChildrenInFlight(t *testing.T) {
+	for _, mode := range []Mode{ModeAuto, ModeSubagents, ModeInline} {
+		got := BuildPrompt("/ws/plan", "readme", testPhases(), mode)
+		for _, want := range []string{
+			"ENDING YOUR TURN ENDS THIS PROCESS", // the mechanism
+			"Await every subagent you dispatch",  // the rule that follows from it
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("mode %q: prompt missing %q", mode, want)
+			}
+		}
+	}
+}
+
 func TestBuildPromptManifestMarksDonePhases(t *testing.T) {
 	got := BuildPrompt("/ws/plan", "readme", testPhases(), ModeAuto)
 

@@ -29,6 +29,16 @@ var (
 	// merge them or discard them. Different remedy from ErrBranchBusy, hence a
 	// different sentinel.
 	ErrBranchExists = errors.New("worktree: task branch already exists")
+	// ErrPathOccupied: the worktree path is taken by a directory git does not know
+	// about, and it could not be freed. Git reports this as `fatal: '<path>' already
+	// exists` — the SAME "already exists" substring it uses for a taken branch name,
+	// which is why the two used to collapse into ErrBranchExists. That mis-diagnosis
+	// cost a real run (2026-07-30): the operator kept deleting a branch on the
+	// daemon's advice while the actual blocker was a leftover directory, and since
+	// `git worktree add -b` mints the branch BEFORE it validates the path, every
+	// retry recreated the very branch it then blamed. Distinct blocker, distinct
+	// remedy (free the path), distinct sentinel.
+	ErrPathOccupied = errors.New("worktree: worktree path is occupied by a directory git does not track")
 	// ErrRepoRootRefused: the computed worktree path equals or contains repoRoot
 	// (or vice versa). A runtime invariant — never hand a task the repo root.
 	ErrRepoRootRefused = errors.New("worktree: refusing to use a path inside the repo root")
@@ -200,6 +210,15 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 		// archive→restore). Reclaim: prune already ran; force-remove clears any
 		// stale registration, then recreate.
 		_, _ = m.Git.Run(repoRoot, "worktree", "remove", "--force", path)
+		// That call is a no-op when NOTHING is registered for the path — git refuses
+		// it outright ("is not a working tree"), so the directory survives and the
+		// `worktree add` below dies on the path instead. Free the name here, where
+		// the state is known, rather than letting git's ambiguous message decide.
+		if dirExists(path) {
+			if err := m.freeOrphanPath(path, taskID); err != nil {
+				return Acquired{}, err
+			}
+		}
 	}
 
 	// Invariant 1: create pinned to the explicit start SHA. Never a bare
@@ -207,17 +226,110 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return Acquired{}, fmt.Errorf("worktree: mkdir base %s: %w", filepath.Dir(path), err)
 	}
+	// `git worktree add -b` creates the branch ref BEFORE it validates the target
+	// path, so a failure below can leave behind a branch nothing holds — one more
+	// per retry, each of them then reported as the blocker. Whether the ref is ours
+	// to roll back is only knowable BEFORE the add.
+	branchExisted, branchProbeErr := m.branchExists(repoRoot, branch)
+
 	if out, err := m.Git.Run(repoRoot, "worktree", "add", "-b", branch, path, startSHA); err != nil {
-		// A branch that exists but is not checked out anywhere collides on add. It is
-		// NOT busy — the list probe above already proved no worktree holds it — so it
-		// gets its own sentinel and a message that does not send the reader looking
-		// for a checkout that does not exist.
-		if strings.Contains(out, "already exists") {
+		// Roll back a ref this failed add just minted — never one that predates it
+		// (that branch may hold the only copy of a crashed run's commits).
+		if !branchExisted && branchProbeErr == nil {
+			if minted, probeErr := m.branchExists(repoRoot, branch); probeErr == nil && minted {
+				_, _ = m.Git.Run(repoRoot, "branch", "-D", branch)
+			}
+		}
+		// Git says "already exists" for two unrelated blockers. Discriminate on the
+		// half of each message that is NOT shared, most specific first.
+		switch {
+		case strings.Contains(out, "a branch named"):
+			// The branch exists but is not checked out anywhere. It is NOT busy — the
+			// list probe above already proved no worktree holds it — so it gets its own
+			// sentinel and a message that does not send the reader looking for a
+			// checkout that does not exist.
 			return Acquired{}, fmt.Errorf("%w: %s (no worktree holds it — merge or delete it)", ErrBranchExists, branch)
+		case strings.Contains(out, "already exists"):
+			// The target path. freeOrphanPath above handles the leftover we own, so
+			// reaching here means something else holds the name (a file, a foreign
+			// directory, a permission wall) — say so instead of blaming the branch.
+			return Acquired{}, fmt.Errorf("%w: %s", ErrPathOccupied, path)
 		}
 		return Acquired{}, fmt.Errorf("worktree: add %s: %w", path, err)
 	}
 	return Acquired{Path: path, Branch: branch, StartPoint: startSHA}, nil
+}
+
+// orphanSuffix marks a leftover directory freeOrphanPath moved aside. The leaf of
+// such a path is never a bare taskID, so a later Acquire cannot mistake a
+// quarantined leftover for the worktree it owns.
+const orphanSuffix = ".orphaned-"
+
+// freeOrphanPath frees the worktree path when a directory git does not track sits
+// on it — the state an external `git worktree prune` leaves when the directory
+// outlives its registration, and the one that made a retry a permanent dead end on
+// 2026-07-30.
+//
+// An EMPTY leftover is deleted: there is nothing to preserve and moving it aside
+// would litter Root for ever. A NON-EMPTY one is renamed to
+// `<path>.orphaned-<UTC stamp>`, because in that incident the sole file in the dead
+// directory was an uncommitted test — freeing the path must never mean destroying
+// the work. Refuses with ErrPathOccupied for anything outside the
+// <Root>/<slug>/<taskID> shape this manager owns: this function deletes or moves a
+// directory, and the namespace guard is what keeps that from ever aiming at one we
+// did not create.
+func (m *Manager) freeOrphanPath(path, taskID string) error {
+	if !m.ownsWorktreePath(path, taskID) {
+		return fmt.Errorf("%w: %s (outside the worktree root this manager owns)", ErrPathOccupied, path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrPathOccupied, path, err)
+	}
+	if len(entries) == 0 {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrPathOccupied, path, err)
+		}
+		return nil
+	}
+	stamp := m.clock().UTC().Format("20060102-150405")
+	dest := path + orphanSuffix + stamp
+	// Two frees inside one second must not collide — and a bounded search keeps a
+	// pathological Root from turning this into an unbounded loop.
+	for i := 2; dirExists(dest); i++ {
+		if i > 9 {
+			return fmt.Errorf("%w: %s (no free quarantine name next to it)", ErrPathOccupied, path)
+		}
+		dest = fmt.Sprintf("%s%s%s-%d", path, orphanSuffix, stamp, i)
+	}
+	if err := os.Rename(path, dest); err != nil {
+		return fmt.Errorf("%w: %s: %v", ErrPathOccupied, path, err)
+	}
+	return nil
+}
+
+// clearUntrackedLeftover completes a teardown whose `git worktree remove` failed.
+// It succeeds for exactly one failure — the one that is not a real problem: git has
+// nothing registered for the path, so it could not have removed it, and whatever is
+// on disk is a leftover this manager owns. Anything git DOES track is left alone
+// and the caller's original error stands; deleting a live registration behind git's
+// back would strand .git/worktrees metadata.
+func (m *Manager) clearUntrackedLeftover(repoRoot string, a Acquired) error {
+	taskID := taskIDForBranch(a.Branch)
+	if taskID == "" {
+		return fmt.Errorf("%w: %q cannot prove ownership of %s", ErrRefusedBranch, a.Branch, a.Path)
+	}
+	list, err := m.Git.Run(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("worktree: list worktrees: %w", err)
+	}
+	if _, registered := parseWorktreeList(list).byPath(a.Path); registered {
+		return fmt.Errorf("worktree: %s is still registered — git's removal failure is real", a.Path)
+	}
+	if !dirExists(a.Path) {
+		return nil // git had nothing to remove and nothing is left behind
+	}
+	return m.freeOrphanPath(a.Path, taskID)
 }
 
 // resolveStartPoint returns the SHA of the repo's DEFAULT-branch tip, resolved
@@ -250,7 +362,15 @@ func (m *Manager) resolveStartPoint(repoRoot string) (string, error) {
 // deleted too.
 func (m *Manager) Remove(repoRoot string, a Acquired, keepBranch bool) error {
 	if _, err := m.Git.Run(repoRoot, "worktree", "remove", "--force", a.Path); err != nil {
-		return fmt.Errorf("worktree: remove %s: %w", a.Path, err)
+		// A teardown that leaves the directory behind is what makes the NEXT Acquire
+		// fail — git refuses `worktree remove` on a path it does not track, and the
+		// leftover then collides with `worktree add`. That is how one externally
+		// pruned worktree cost a plan every retry it had (2026-07-30). Finish the job
+		// when git had nothing to remove, deciding from state rather than from git's
+		// message; a genuine failure still surfaces, now with both causes attached.
+		if freeErr := m.clearUntrackedLeftover(repoRoot, a); freeErr != nil {
+			return fmt.Errorf("worktree: remove %s: %w", a.Path, errors.Join(err, freeErr))
+		}
 	}
 	if !keepBranch && a.Branch != "" {
 		// The last `git branch -D` in this package that does NOT go through
