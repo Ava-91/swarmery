@@ -738,8 +738,32 @@ export interface UsageWindow {
 }
 
 /**
+ * Operator-facing setup guidance on a provider that is not connected YET — no
+ * `claude` login, an expired or rejected token, a missing scope, or an explicit
+ * opt-out. Present only on a `no-auth` provider; the card renders it instead of
+ * the raw `error` line, because none of these are failures of the dashboard,
+ * they are one local step the operator has not taken.
+ */
+export interface UsageHint {
+  kind: 'login' | 'scope' | 'opted-out';
+  /** Headline: "Claude login required". */
+  title: string;
+  /** What exactly is missing, one sentence. */
+  detail: string;
+  /** The exact command to run, offered with a copy button. */
+  command?: string;
+  /** Locations the daemon reads the credential from — paths and/or the keychain. */
+  sources?: string[];
+  /** What supplying it unlocks. */
+  why: string;
+  /** How the credential is handled once supplied. */
+  handling: string;
+}
+
+/**
  * One card in the Usage modal. `status` carries every failure mode so a broken
- * provider degrades to one error card instead of breaking the endpoint.
+ * provider degrades to one error card instead of breaking the endpoint; `hint`
+ * separates "you have not connected this yet" from "this is broken".
  */
 export interface UsageProvider {
   name: string;
@@ -749,6 +773,8 @@ export interface UsageProvider {
   plan?: string;
   source: 'oauth' | 'estimate';
   windows: UsageWindow[];
+  /** Set only on a `no-auth` provider — see UsageHint. */
+  hint?: UsageHint;
 }
 
 /**

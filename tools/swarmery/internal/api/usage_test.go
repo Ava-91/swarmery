@@ -483,6 +483,10 @@ func TestUsageHTTP(t *testing.T) {
 
 var usageGeneratedAtRe = regexp.MustCompile(`"generatedAt":"[^"]*"`)
 
+// usageHintRe elides the setup hint from a pinned body. Safe as a flat match:
+// Hint has no nested objects, only an array of source locations.
+var usageHintRe = regexp.MustCompile(`"hint":\{[^{}]*\}`)
+
 // TestUsageNoCredsNoLimitsSingleProvider pins the body served on the common
 // clean machine: no Claude login, no SWARMERY_USAGE_LIMITS. The estimate card
 // must be ABSENT (not an empty card), the Claude card must be a no-auth card
@@ -499,12 +503,15 @@ func TestUsageNoCredsNoLimitsSingleProvider(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (a missing credential is not a server error)", status)
 	}
 
-	// generatedAt is the only volatile field; everything else is the contract.
+	// generatedAt is volatile and the hint's `sources` are this machine's
+	// credential paths, so both are elided here — the hint is pinned
+	// field-by-field below.
 	got := usageGeneratedAtRe.ReplaceAllString(strings.TrimSpace(body), `"generatedAt":"<ts>"`)
+	got = usageHintRe.ReplaceAllString(got, `"hint":{…}`)
 	want := `{"generatedAt":"<ts>","providers":[` +
 		"{\"name\":\"Claude\",\"status\":\"no-auth\"," +
 		"\"error\":\"No Claude credentials — run `claude` to log in\"," +
-		`"source":"oauth","windows":[]}]}`
+		`"source":"oauth","windows":[],"hint":{…}}]}`
 	if got != want {
 		t.Errorf("body =\n%s\nwant\n%s", got, want)
 	}
@@ -521,6 +528,23 @@ func TestUsageNoCredsNoLimitsSingleProvider(t *testing.T) {
 	}
 	if !strings.Contains(decoded.Providers[0].Error, "claude") {
 		t.Errorf("error %q is not actionable — it should name the `claude` CLI", decoded.Providers[0].Error)
+	}
+
+	// The card must be able to explain itself instead of rendering a red error:
+	// what to run, where the credential is read from, why it is needed and how
+	// it is handled.
+	hint := decoded.Providers[0].Hint
+	if hint == nil {
+		t.Fatal("hint = nil, want setup guidance on the no-auth card")
+	}
+	if hint.Kind != usage.HintLogin || hint.Command != "claude" {
+		t.Errorf("hint = %+v, want the login hint with the `claude` command", *hint)
+	}
+	if hint.Title == "" || hint.Detail == "" || hint.Why == "" || hint.Handling == "" {
+		t.Errorf("hint = %+v, want every operator-facing field populated", *hint)
+	}
+	if len(hint.Sources) == 0 {
+		t.Error("hint sources = empty, want the credential locations the daemon looked in")
 	}
 }
 

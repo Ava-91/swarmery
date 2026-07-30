@@ -1,9 +1,11 @@
 // One provider card in the Usage modal: glyph + name + plan chip + status
 // badge, an error block for a provider that failed, and its window rows.
 //
-// A provider whose fetch failed degrades to THIS card (red block, no rows)
-// rather than taking the whole modal down — that is why UsageProvider carries a
-// per-provider `status`/`error` instead of one top-level error.
+// A provider whose fetch failed degrades to THIS card (no rows) rather than
+// taking the whole modal down — that is why UsageProvider carries a per-provider
+// `status`/`error` instead of one top-level error. A card that failed because
+// the operator has not connected the provider yet renders the daemon's setup
+// hint (UsageSetupHint) instead of a red error line.
 //
 // NOT PORTED from the reference implementation: provider drag-reorder (and its
 // persisted order). With two providers — the live Claude card and the optional
@@ -11,18 +13,35 @@
 // providers both render in server order.
 
 import type { UsageProvider } from '../../api/types';
+import { UsageSetupHint } from './UsageSetupHint';
 import { UsageWindowRow } from './UsageWindowRow';
 
-function StatusBadge({ status }: { status: UsageProvider['status'] }): JSX.Element | null {
-  if (status === 'ok') return null;
-  const error = status === 'error';
+/**
+ * The badge distinguishes the three states the operator can act on differently:
+ * red `error` = the provider is broken and there is nothing to do but retry;
+ * amber `setup needed` = the operator can fix it right now (the hint says how);
+ * neutral `disabled`/`not connected` = switched off, or off with no guidance.
+ */
+function StatusBadge({ p }: { p: UsageProvider }): JSX.Element | null {
+  if (p.status === 'ok') return null;
+
+  let label = 'not connected';
+  let tone = 'bg-field text-ink-dim';
+  if (p.status === 'error') {
+    label = 'error';
+    tone = 'bg-red/10 text-red';
+  } else if (p.hint?.kind === 'opted-out') {
+    label = 'disabled';
+  } else if (p.hint !== undefined) {
+    label = 'setup needed';
+    tone = 'bg-amber/10 text-amber';
+  }
+
   return (
     <span
-      className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9px] tracking-[0.12em] whitespace-nowrap uppercase ${
-        error ? 'bg-red/10 text-red' : 'bg-field text-ink-dim'
-      }`}
+      className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9px] tracking-[0.12em] whitespace-nowrap uppercase ${tone}`}
     >
-      {error ? 'error' : 'not connected'}
+      {label}
     </span>
   );
 }
@@ -75,14 +94,22 @@ export function UsageProviderCard({
               show hidden ({hiddenCount})
             </button>
           )}
-          <StatusBadge status={p.status} />
+          <StatusBadge p={p} />
         </span>
       </div>
 
-      {p.error !== undefined && (
-        <div className="mt-2 border-l-2 border-red bg-red/8 px-2 py-1.5 font-mono text-[10.5px] leading-snug break-words text-red">
-          {p.error}
-        </div>
+      {/* A hint means "not connected yet", not "broken": it supersedes the raw
+          error line, which is the same fact in a form the operator cannot act
+          on. The red block is kept for genuine provider failures — a 429, a
+          non-200, an unparseable payload. */}
+      {p.hint !== undefined ? (
+        <UsageSetupHint hint={p.hint} />
+      ) : (
+        p.error !== undefined && (
+          <div className="mt-2 border-l-2 border-red bg-red/8 px-2 py-1.5 font-mono text-[10.5px] leading-snug break-words text-red">
+            {p.error}
+          </div>
+        )
       )}
 
       {p.windows.length > 0 ? (

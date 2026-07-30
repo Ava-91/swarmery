@@ -19,6 +19,20 @@ import { UsageModal } from './UsageModal';
 const NO_AUTH_TIP = 'Claude usage unavailable — run `claude` to log in';
 
 /**
+ * Tip for a payload with nothing but not-connected providers. The daemon's own
+ * hint headline is preferred when there is one — "Claude login expired" is the
+ * fact the operator needs, and it differs per cause (expired, rejected, missing
+ * scope, switched off) where the generic line does not.
+ */
+function noAuthTip(providers: readonly UsageProvider[]): string {
+  const hint = providers.find((p) => p.hint !== undefined)?.hint;
+  if (hint === undefined) return NO_AUTH_TIP;
+  const fix =
+    hint.command !== undefined && hint.command !== '' ? `run \`${hint.command}\`` : 'open usage';
+  return `${hint.title} — ${fix}`;
+}
+
+/**
  * The window the chip speaks for: the session window of the first healthy
  * provider, falling back to that provider's first window (a payload with only a
  * weekly window is still worth showing), then to nothing.
@@ -69,7 +83,7 @@ function buildView(
   // no-auth provider. `every` (not `some`) keeps a half-broken payload — one
   // healthy card, one no-auth — reporting the healthy percentage.
   if (providers.length > 0 && providers.every((p) => p.status === 'no-auth')) {
-    return { text: 'usage', tone: 'text-ink-2', tip: NO_AUTH_TIP };
+    return { text: 'usage', tone: 'text-ink-2', tip: noAuthTip(providers) };
   }
 
   const w = pickWindow(providers);
