@@ -135,6 +135,11 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 		writeConflict(w, codeDocUnreadable, "phase doc is unreadable")
 	case errors.Is(err, phaserun.ErrNoPath):
 		writeConflict(w, codeNoProjectPath, "project has no known path to run in")
+	// The project path is not a checkout and the phase's declared repo did not
+	// resolve to one. The wrapped repopath message lists every candidate that was
+	// tried, so it is forwarded verbatim.
+	case errors.Is(err, phaserun.ErrNoRepoRoot):
+		writeConflict(w, codeNoRepoRoot, err.Error())
 	// The leftover run branch holds commits a retry would collide with. Commit
 	// SUBJECTS are deliberately absent here — the UI already fetches /diagnosis,
 	// whose branch-dirty blocker carries them, and git ownership stays in phasediag.
@@ -225,6 +230,8 @@ func (h *Handler) deletePhaseRunBranch(w http.ResponseWriter, r *http.Request) {
 		writeConflict(w, codeAlreadyRunning, "a run is active for this phase")
 	case errors.Is(err, phaserun.ErrNoPath):
 		writeConflict(w, codeNoProjectPath, "project has no known path")
+	case errors.Is(err, phaserun.ErrNoRepoRoot):
+		writeConflict(w, codeNoRepoRoot, err.Error())
 	case errors.Is(err, phaserun.ErrNoRunBranch):
 		writeConflict(w, codeNoRunBranch, "this phase has no recorded run branch")
 	case isWtConflict:

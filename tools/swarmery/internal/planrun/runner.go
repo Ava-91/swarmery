@@ -43,6 +43,12 @@ type RunSpec struct {
 	SessionUUID string // daemon-generated; passed as --session-id (explicit link)
 	Cwd         string // the acquired worktree path — the process runs here
 	Agent       string // --agent; "" ⇒ omitted (the session's default agent)
+	// SettingsFile is passed as --settings when non-empty: the project's
+	// .claude/settings.json, lent to a run whose worktree cannot discover it
+	// (see repopath.InheritedSettings). It carries the project's enabled plugins,
+	// permissions and additionalDirectories — without it a multi-repo run has no
+	// core@swarmery, and the default agent does not exist.
+	SettingsFile string
 }
 
 // Run is the outcome of a completed plan-run process.
@@ -125,6 +131,11 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 	if m := strings.TrimSpace(os.Getenv(modelEnv)); m != "" {
 		args = append(args, "--model", m)
+	}
+	// Before --agent is resolved: the settings file is what enables the plugin the
+	// agent ships in.
+	if f := strings.TrimSpace(spec.SettingsFile); f != "" {
+		args = append(args, "--settings", f)
 	}
 
 	start := time.Now()

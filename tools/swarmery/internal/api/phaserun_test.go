@@ -70,6 +70,10 @@ func attachPhaseRunWt(t *testing.T, db *sql.DB, r phaserun.Runner, sync bool, wt
 	t.Helper()
 	svc := phaserun.NewService(db, r, wt)
 	svc.UUID = func() string { return "phase-uuid-1" }
+	// Identity resolver: the api fixtures use project paths that are not checkouts,
+	// and what they assert is the HTTP contract, not repo resolution (which has its
+	// own tests in internal/repopath and the run services).
+	svc.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	if sync {
 		svc.Go = func(fn func()) { fn() }
 	}

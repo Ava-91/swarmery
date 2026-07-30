@@ -87,7 +87,10 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 	mode := planrun.ValidMode(body.Mode)
 
 	uuid, err := planrunSvc.Start(taskID, agent, string(mode))
-	var dirtyErr *planrun.BranchDirtyError
+	var (
+		dirtyErr *planrun.BranchDirtyError
+		spansErr *planrun.PlanSpansReposError
+	)
 	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
 	// errors.Is still matches through the wrap. Resolved before the switch and
 	// matched above the generic arm — an arm below `case err != nil` is dead code
@@ -110,6 +113,17 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 		writeConflict(w, codeDocUnreadable, "plan README is unreadable")
 	case errors.Is(err, planrun.ErrNoPath):
 		writeConflict(w, codeNoProjectPath, "project has no known path to run in")
+	// The project path is not a checkout and no declared repo resolved to one. The
+	// wrapped repopath message lists every candidate that was tried, so it is
+	// forwarded verbatim rather than replaced by a generic sentence.
+	case errors.Is(err, planrun.ErrNoRepoRoot):
+		writeConflict(w, codeNoRepoRoot, err.Error())
+	// One worktree, several declared repos: name them, so "run the phases
+	// individually" is an instruction rather than a guess.
+	case errors.As(err, &spansErr):
+		writeConflictFields(w, codePlanSpansRepos, spansErr.Error(), map[string]any{
+			"repos": spansErr.Repos,
+		})
 	// The previous run's branch still holds commits, so reclaiming its name would
 	// destroy them. Same body shape runPhase emits (error/code/branch/commitsAhead/
 	// base) — the two run surfaces answer retry identically, and the UI parses one

@@ -45,14 +45,19 @@ var (
 
 // epicPhase is one parsed phase (a README table row joined to its doc file).
 type epicPhase struct {
-	seq              int
-	name             string
-	docPath          string // absolute path to the phase/step doc (may not exist on disk yet)
-	dependsOn        []int  // seq numbers this phase depends on
-	checkboxesDone   int
-	checkboxesTotal  int
-	docStatus        string // normalized `Status:` header marker; "" when absent
-	docUpdatedAt     string // RFC3339 mtime of the doc file; "" when unresolved
+	seq             int
+	name            string
+	docPath         string // absolute path to the phase/step doc (may not exist on disk yet)
+	dependsOn       []int  // seq numbers this phase depends on
+	checkboxesDone  int
+	checkboxesTotal int
+	docStatus       string // normalized `Status:` header marker; "" when absent
+	docUpdatedAt    string // RFC3339 mtime of the doc file; "" when unresolved
+	// repo is the RAW declared Repo cell ("`sk-next` (`/abs/sk-next`)", "sk-next
+	// (+ helm)"), never a resolved path: turning it into a run root depends on the
+	// filesystem and on project.json, which is the run surface's decision at Start
+	// time (internal/repopath). "" when the plan declares nothing.
+	repo             string
 	completionReport string // `## Completion Report` section body; "" when absent
 }
 
@@ -116,6 +121,37 @@ func parseDocStatus(text string) string {
 	return ""
 }
 
+var (
+	// The phase doc's header table row: `| **Repo** | `sk-next` (`/abs/sk-next`) |`.
+	docRepoRowRe = regexp.MustCompile(`(?i)^\|\s*\*\*Repos?\*\*\s*\|\s*(.+?)\s*\|\s*$`)
+	// The prose header form: `**Repo:** `/Volumes/Work/swarmery``.
+	docRepoLineRe = regexp.MustCompile(`(?i)^\s*\*\*Repos?:\*\*\s*(.+?)\s*$`)
+)
+
+// parseDocRepo extracts the phase doc's own declared repo cell from its header
+// block. Bounded by docStatusHeaderLines and stopping at the first `## ` section
+// for the same reason parseDocStatus is: phase docs quote agent prompts and
+// templates further down, and a `**Repo:**` line inside a quoted prompt describes
+// someone else's work, not this phase's. "" when absent. Pure; unit-tested.
+func parseDocRepo(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > docStatusHeaderLines {
+		lines = lines[:docStatusHeaderLines]
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			break
+		}
+		if m := docRepoRowRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			return strings.TrimSpace(m[1])
+		}
+		if m := docRepoLineRe.FindStringSubmatch(line); m != nil {
+			return strings.TrimSpace(m[1])
+		}
+	}
+	return ""
+}
+
 // CountCheckboxes counts acceptance-criteria checkboxes in a doc, returning
 // (done, total). Pure; unit-tested. A doc with none yields (0, 0).
 //
@@ -140,29 +176,38 @@ func CountCheckboxes(text string) (done, total int) {
 	return done, total
 }
 
-// phaseTableCols locates the phase-sequencing table's header row and returns the
-// 0-based column indices for the seq (#), name (Phase), doc (Doc), and
-// depends-on (Depends on) columns. ok=false when no such header is present.
-// Pure; unit-tested.
-func phaseTableCols(cells []string) (seqCol, nameCol, docCol, depCol int, ok bool) {
-	seqCol, nameCol, docCol, depCol = -1, -1, -1, -1
+// phaseCols is the 0-based column layout of a phase-sequencing table; -1 means
+// the column is absent.
+type phaseCols struct{ seq, name, doc, dep, repo int }
+
+// phaseTableCols locates the phase-sequencing table's header row and returns its
+// column layout. ok=false when no such header is present. Pure; unit-tested.
+//
+// `Repo` is matched EXACTLY (plus Repos/Repository): plans in the wild also carry
+// a "Repo area" column that names a subsystem, not a checkout, and treating that
+// as a run root would send a run into a directory that does not exist.
+func phaseTableCols(cells []string) (cols phaseCols, ok bool) {
+	cols = phaseCols{seq: -1, name: -1, doc: -1, dep: -1, repo: -1}
 	for i, c := range cells {
 		switch h := strings.ToLower(strings.TrimSpace(c)); {
 		case h == "#" || h == "seq":
-			seqCol = i
+			cols.seq = i
 		case h == "phase" || h == "name":
-			nameCol = i
+			cols.name = i
 		case h == "doc" || h == "file":
-			docCol = i
+			cols.doc = i
+		case h == "repo" || h == "repos" || h == "repository":
+			cols.repo = i
 		case strings.HasPrefix(h, "depends"):
-			depCol = i
+			cols.dep = i
 		}
 	}
 	// The doc column is the one indispensable anchor (it names the phase file);
-	// a name column is required to label the phase. seq/depends degrade to
-	// positional/empty when absent.
-	ok = docCol >= 0 && nameCol >= 0
-	return seqCol, nameCol, docCol, depCol, ok
+	// a name column is required to label the phase. seq/depends/repo degrade to
+	// positional/empty when absent — a plan without a Repo column indexes exactly
+	// as it did before the column existed.
+	ok = cols.doc >= 0 && cols.name >= 0
+	return cols, ok
 }
 
 // parseLeadingInts extracts every integer token from a "Depends on" cell,
@@ -189,7 +234,7 @@ func parseLeadingInts(cell string) []int {
 func parsePlanTable(readme string) []epicPhase {
 	lines := strings.Split(readme, "\n")
 	var (
-		cols    struct{ seq, name, doc, dep int }
+		cols    phaseCols
 		haveHdr bool
 		out     []epicPhase
 	)
@@ -201,9 +246,8 @@ func parsePlanTable(readme string) []epicPhase {
 		}
 		cells := tableCells(t)
 		if !haveHdr {
-			if s, n, d, dp, ok := phaseTableCols(cells); ok {
-				cols.seq, cols.name, cols.doc, cols.dep = s, n, d, dp
-				haveHdr = true
+			if c, ok := phaseTableCols(cells); ok {
+				cols, haveHdr = c, true
 			}
 			continue
 		}
@@ -232,10 +276,14 @@ func parsePlanTable(readme string) []epicPhase {
 		if cols.dep >= 0 && cols.dep < len(cells) {
 			dep = parseLeadingInts(cells[cols.dep])
 		}
+		repo := ""
+		if cols.repo >= 0 && cols.repo < len(cells) {
+			repo = strings.TrimSpace(cells[cols.repo])
+		}
 		if name == "" {
 			name = strings.TrimSuffix(doc, ".md")
 		}
-		out = append(out, epicPhase{seq: seq, name: name, docPath: doc, dependsOn: dep})
+		out = append(out, epicPhase{seq: seq, name: name, docPath: doc, dependsOn: dep, repo: repo})
 	}
 	return out
 }
@@ -336,12 +384,23 @@ func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 		phases[i].checkboxesDone, phases[i].checkboxesTotal = CountCheckboxes(string(body))
 		phases[i].docStatus = parseDocStatus(string(body))
 		phases[i].completionReport = parseCompletionReport(string(body))
+		// The doc's own header outranks the README table cell: it is the more
+		// specific statement, it lives next to the work, and it is the form that
+		// carries an absolute path.
+		if repo := parseDocRepo(string(body)); repo != "" {
+			phases[i].repo = repo
+		}
 		if fi, err := os.Stat(abs); err == nil {
 			phases[i].docUpdatedAt = fi.ModTime().UTC().Format(time.RFC3339)
 		}
 	}
 	return phases
 }
+
+// parserVersion identifies WHAT parsePlan extracts. It is mixed into planHash so
+// a parser that learns a new field re-parses plans whose bytes are unchanged.
+// v2: epic_phases.repo (declared `Repo` column / phase doc header), migration 0046.
+const parserVersion = "v2"
 
 // planHash combines every plan file's bytes into one content hash, so the gate
 // re-parses when the README OR any phase doc changes (a checkbox flip lives in a
@@ -359,6 +418,14 @@ func planHash(planDir string) (string, bool) {
 	}
 	sort.Strings(names)
 	h := sha256.New()
+	// The parser version is part of the identity of a parse result, not just the
+	// bytes it read. Without it, a release that teaches the parser a NEW field
+	// (0046's declared `Repo`) leaves every already-indexed plan on its old row for
+	// ever: the files did not change, the hash matched, and the gate skipped the
+	// only pass that could have filled the column. Bump this whenever parsePlan
+	// starts extracting something it did not extract before.
+	h.Write([]byte(parserVersion))
+	h.Write([]byte{0})
 	for _, n := range names {
 		b, err := os.ReadFile(filepath.Join(planDir, n))
 		if err != nil {
@@ -503,12 +570,16 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 		if p.completionReport != "" {
 			completionReport = p.completionReport
 		}
+		var repo any
+		if p.repo != "" {
+			repo = p.repo
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO epic_phases
 				(workspace_task_id, seq, name, doc_path, depends_on,
 				 checkboxes_total, checkboxes_done, doc_status, doc_updated_at,
-				 completion_report)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 completion_report, repo)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(workspace_task_id, doc_path) DO UPDATE SET
 				seq               = excluded.seq,
 				name              = excluded.name,
@@ -517,10 +588,11 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 				checkboxes_done   = excluded.checkboxes_done,
 				doc_status        = excluded.doc_status,
 				doc_updated_at    = excluded.doc_updated_at,
-				completion_report = excluded.completion_report`,
+				completion_report = excluded.completion_report,
+				repo              = excluded.repo`,
 			taskID, p.seq, p.name, p.docPath, string(depJSON),
 			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
-			completionReport); err != nil {
+			completionReport, repo); err != nil {
 			return err
 		}
 	}

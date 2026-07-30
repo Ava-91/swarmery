@@ -36,6 +36,11 @@ type RunSpec struct {
 	Prompt      string // full phase-run prompt (contract + embedded phase doc)
 	SessionUUID string // daemon-generated; passed as --session-id (explicit link)
 	Cwd         string // the acquired worktree path — the process runs here
+	// SettingsFile is passed as --settings when non-empty: the project's
+	// .claude/settings.json, lent to a run whose worktree cannot discover it
+	// (see repopath.InheritedSettings). It carries the project's enabled plugins,
+	// permissions and additionalDirectories.
+	SettingsFile string
 }
 
 // Run is the outcome of a completed phase-run process.
@@ -82,6 +87,9 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID}
 	if m := strings.TrimSpace(os.Getenv(modelEnv)); m != "" {
 		args = append(args, "--model", m)
+	}
+	if f := strings.TrimSpace(spec.SettingsFile); f != "" {
+		args = append(args, "--settings", f)
 	}
 
 	start := time.Now()
