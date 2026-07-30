@@ -65,17 +65,19 @@ func (s *stubRunner) count() int { s.mu.Lock(); defer s.mu.Unlock(); return len(
 
 // stubWt is a scripted WorktreeManager recording Acquire/Remove/reclaim calls.
 type stubWt struct {
-	mu         sync.Mutex
-	acquired   []string // taskIDs handed to Acquire
-	removed    []worktree.Acquired
-	keepBranch []bool
-	acquireErr error
-	onRemove   func() // observed inside Remove, before it returns
+	mu           sync.Mutex
+	acquired     []string // taskIDs handed to Acquire
+	acquireRoots []string // repoRoots handed to Acquire — what proves WHERE a run went
+	removed      []worktree.Acquired
+	keepBranch   []bool
+	acquireErr   error
+	onRemove     func() // observed inside Remove, before it returns
 
 	reclaimed    []string // branches handed to ReclaimEmptyBranch, in order
 	reclaimAhead int      // commits-ahead ReclaimEmptyBranch reports (0 ⇒ reclaimed)
 	reclaimErr   error
 	deleted      []string // branches handed to DeleteBranch
+	deleteRoots  []string // repoRoots handed to DeleteBranch
 	deleteErr    error
 	// branchMissing makes DeleteBranch report existed=false — the idempotent
 	// "already gone" path worktree.DeleteBranch answers with (false, nil).
@@ -89,6 +91,7 @@ func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquire
 		return worktree.Acquired{}, w.acquireErr
 	}
 	w.acquired = append(w.acquired, taskID)
+	w.acquireRoots = append(w.acquireRoots, repoRoot)
 	return worktree.Acquired{
 		Path:   "/wt/" + projectSlug + "/" + taskID,
 		Branch: "swarm/" + taskID,
@@ -121,6 +124,7 @@ func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.deleted = append(w.deleted, branch)
+	w.deleteRoots = append(w.deleteRoots, repoRoot)
 	if w.deleteErr != nil {
 		return false, w.deleteErr
 	}
@@ -131,6 +135,24 @@ func (w *stubWt) DeleteBranch(repoRoot, branch string) (bool, error) {
 // exercise the dispatcher's progress high-water, so an empty history is the honest
 // stub: no commits observed, no error.
 func (w *stubWt) CommitsForTask(repoRoot, taskID string) ([]string, error) { return nil, nil }
+
+func (w *stubWt) lastDeleteRoot() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.deleteRoots) == 0 {
+		return ""
+	}
+	return w.deleteRoots[len(w.deleteRoots)-1]
+}
+
+func (w *stubWt) lastAcquireRoot() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.acquireRoots) == 0 {
+		return ""
+	}
+	return w.acquireRoots[len(w.acquireRoots)-1]
+}
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
@@ -209,6 +231,11 @@ func newTestService(db *sql.DB, r Runner, wt *stubWt) *Service {
 	s := NewService(db, r, wt)
 	s.UUID = func() string { return "uuid-1" }
 	s.Go = func(fn func()) { fn() }
+	// Identity resolver: these fixtures use paths that are not checkouts (often not
+	// even on disk), and what they exercise is the run lifecycle, not repo
+	// resolution. Resolution has its own tests, which assert the argument the
+	// worktree manager receives.
+	s.RepoRoot = func(projectPath string, _ ...string) (string, error) { return projectPath, nil }
 	return s
 }
 
@@ -498,6 +525,7 @@ func TestCancelStampsCancelled(t *testing.T) {
 	wt := &stubWt{}
 	s := NewService(db, r, wt) // real goroutine — the run must be observable in flight
 	s.UUID = func() string { return "uuid-1" }
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 
 	if _, err := s.Start(taskID, "", ""); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -804,6 +832,7 @@ func TestStart_CrashLeftoverWorktreeIsReusedNotRefused(t *testing.T) {
 	r := &stubRunner{}
 	s := NewService(db, r, mgr)
 	s.UUID = func() string { return "uuid-1" }
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	s.Go = func(fn func()) { fn() }
 
 	if _, err := s.Start(taskID, "", ""); err != nil {
@@ -954,6 +983,7 @@ func TestDeleteRunBranch_ErrRunning(t *testing.T) {
 	wt := &stubWt{}
 	s := NewService(db, r, wt) // real goroutine — run stays in flight
 	s.UUID = func() string { return "uuid-1" }
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 
 	if _, err := s.Start(taskID, "", ""); err != nil {
 		t.Fatalf("Start: %v", err)

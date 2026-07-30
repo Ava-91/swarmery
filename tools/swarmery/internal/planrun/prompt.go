@@ -2,6 +2,7 @@ package planrun
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"text/template"
 )
@@ -19,6 +20,10 @@ type Phase struct {
 	Done      int    // ticked acceptance checkboxes
 	Total     int    // acceptance checkboxes in the doc
 	DependsOn []int  // seqs this phase waits on
+	// Repo is the RAW declared Repo cell from epic_phases.repo (migration 0046) —
+	// "`sk-next` (`/abs/sk-next`)", "sk-next (+ helm)", or "" when the plan declares
+	// nothing. Resolved to a run root by internal/repopath at Start.
+	Repo string
 }
 
 // complete reports whether the phase needs no further work.
@@ -121,7 +126,7 @@ var promptTemplate = template.Must(template.New("planrun").Parse(
 Execute this plan using the ` + "`run-plan`" + ` skill — invoke it with the Skill tool (skill: run-plan) and this plan directory as its argument. That skill IS your procedure: it parses the phase DAG, picks the execution route, dispatches per-phase implement+review loops, ticks acceptance criteria in the phase docs, and keeps the run ledger. Follow it; do not invent a different procedure.
 
 PLAN DIRECTORY: {{.PlanDir}}
-{{.ModeDirective}}
+{{.RepoNote}}{{.ModeDirective}}
 Constraints this run adds on top of the skill, because THERE IS NO HUMAN in this session — nothing can be ASK-gated:
 - Work only in your cwd worktree. Do NOT touch the operator's main checkout.
 - Commit per phase, in the worktree, with conventional commits. Do NOT push, do NOT open PRs, do NOT merge into the default branch, do NOT pull the base branch.
@@ -142,12 +147,41 @@ PLAN README:
 // template with string data cannot fail, so the (unreachable) error is ignored
 // (same posture as planning.BuildPrompt / phaserun.BuildPrompt).
 func BuildPrompt(planDir, readme string, phases []Phase, mode Mode) string {
+	return BuildPromptIn(planDir, readme, phases, mode, "", "")
+}
+
+// BuildPromptIn is BuildPrompt with the run's repository context: repoRoot is the
+// resolved checkout the worktree was cut from, projectPath the project root.
+//
+// When they differ — a multi-repo project, where the run lives in ONE checkout
+// inside the umbrella — the prompt has to say so. Plans for such projects write
+// their paths from the project root ("sk-next/src/components/x.tsx"), and inside
+// the worktree that same file is "src/components/x.tsx". Without this note an
+// agent "fixes" the mismatch by creating a nested sk-next/ directory and writes
+// the whole phase into a tree nobody reads.
+func BuildPromptIn(planDir, readme string, phases []Phase, mode Mode, repoRoot, projectPath string) string {
 	var b strings.Builder
 	_ = promptTemplate.Execute(&b, struct {
 		PlanDir       string
+		RepoNote      string
 		ModeDirective string
 		Manifest      string
 		Readme        string
-	}{planDir, modeDirective(mode), manifest(phases), readme})
+	}{planDir, repoNote(repoRoot, projectPath), modeDirective(mode), manifest(phases), readme})
 	return b.String()
+}
+
+// repoNote renders the multi-repo orientation block, or "" when the run's
+// repository IS the project root (the single-repo case, where the note would only
+// add noise).
+func repoNote(repoRoot, projectPath string) string {
+	if repoRoot == "" || projectPath == "" || filepath.Clean(repoRoot) == filepath.Clean(projectPath) {
+		return ""
+	}
+	name := filepath.Base(repoRoot)
+	return fmt.Sprintf(
+		"REPOSITORY: your worktree is a checkout of `%s` (%s), ONE repository inside the project root %s.\n"+
+			"Paths in this plan may be written from the project root (e.g. `%s/src/...`); inside your worktree that same file is `src/...`. "+
+			"Do NOT create a `%s/` directory to make such a path resolve.\n",
+		name, repoRoot, projectPath, name, name)
 }

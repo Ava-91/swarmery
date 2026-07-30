@@ -67,6 +67,9 @@ func attachPlanRunWt(t *testing.T, db *sql.DB, r planrun.Runner, sync bool,
 	t.Helper()
 	svc := planrun.NewService(db, r, wt)
 	svc.UUID = func() string { return "plan-uuid-1" }
+	// Identity resolver: see attachPhaseRunWt — these fixtures assert the HTTP
+	// contract, not repo resolution.
+	svc.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	svc.Git = planGitStub{}
 	if sync {
 		svc.Go = func(fn func()) { fn() }
@@ -466,5 +469,100 @@ func TestDeletePlanRunBranch_MethodAndOrigin(t *testing.T) {
 	xres.Body.Close()
 	if xres.StatusCode != http.StatusForbidden {
 		t.Errorf("cross-origin status = %d, want 403", xres.StatusCode)
+	}
+}
+
+// The project has a path — it is simply not a checkout, and nothing the plan
+// declares resolved to one. Before this code existed the same condition arrived
+// as git's raw "fatal: not a git repository", which named nothing actionable.
+func TestRunPlan_NoRepoRoot_409(t *testing.T) {
+	srv, db, taskID := planFixtureWithReadme(t)
+	umbrella := t.TempDir() // exists, has no .git, declares no repo
+	if _, err := db.Exec(`UPDATE projects SET path=? WHERE id=1`, umbrella); err != nil {
+		t.Fatal(err)
+	}
+	svc := attachPlanRunWt(t, db, &planrunStubRunner{}, true, &phaseWtStub{})
+	svc.RepoRoot = nil // the real resolver is the subject here
+
+	resp := postPlanRun(t, planRunURL(srv, taskID), "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct{ Error, Code string }
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "no-repo-root" {
+		t.Errorf("code = %q, want no-repo-root", body.Code)
+	}
+	if !strings.Contains(body.Error, umbrella) {
+		t.Errorf("error = %q, want it to name the path that was checked", body.Error)
+	}
+}
+
+// One worktree, several declared repos: the 409 lists them, so "run the phases
+// individually" is an instruction rather than a guess.
+func TestRunPlan_PlanSpansRepos_409(t *testing.T) {
+	srv, db, taskID := planFixtureWithReadme(t)
+	umbrella := t.TempDir()
+	for _, name := range []string{"app", "infra"} {
+		if err := os.MkdirAll(filepath.Join(umbrella, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE projects SET path=? WHERE id=1`, umbrella); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE epic_phases SET repo='`app`' WHERE workspace_task_id=? AND seq=1", taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE epic_phases SET repo='`infra`' WHERE workspace_task_id=? AND seq=2", taskID); err != nil {
+		t.Fatal(err)
+	}
+	svc := attachPlanRunWt(t, db, &planrunStubRunner{}, true, &phaseWtStub{})
+	svc.RepoRoot = nil
+
+	resp := postPlanRun(t, planRunURL(srv, taskID), "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct {
+		Error string   `json:"error"`
+		Code  string   `json:"code"`
+		Repos []string `json:"repos"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "plan-spans-repos" {
+		t.Errorf("code = %q, want plan-spans-repos", body.Code)
+	}
+	if len(body.Repos) != 2 || body.Repos[0] != "app" || body.Repos[1] != "infra" {
+		t.Errorf("repos = %v, want [app infra]", body.Repos)
+	}
+}
+
+// The phase surface answers the same condition with the same code — the two run
+// surfaces must not disagree about a state the user has to resolve once.
+func TestRunPhase_NoRepoRoot_409(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	umbrella := t.TempDir()
+	if _, err := db.Exec(`UPDATE projects SET path=? WHERE id=1`, umbrella); err != nil {
+		t.Fatal(err)
+	}
+	svc := attachPhaseRunWt(t, db, &phaseStubRunner{}, true, &phaseWtStub{})
+	svc.RepoRoot = nil
+
+	resp := postPhase(t, phaseRunURL(srv, taskID, p1))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct{ Error, Code string }
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "no-repo-root" {
+		t.Errorf("code = %q, want no-repo-root", body.Code)
 	}
 }

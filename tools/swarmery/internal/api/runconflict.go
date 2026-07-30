@@ -30,6 +30,18 @@ const (
 	codeDepsUnmet      = "deps-unmet"
 	codeDocUnreadable  = "doc-unreadable"
 	codeNoProjectPath  = "no-project-path"
+	// codeNoRepoRoot: the project HAS a path, it is simply not a git checkout, and
+	// nothing the plan declares resolved to one either. Distinct from
+	// codeNoProjectPath ("no path at all") because the fix is different: name the
+	// repo in the phase doc's `Repo` header, or set mainApp in project.json. The
+	// message carries the candidates that were checked — before this code existed,
+	// a multi-repo project answered with git's raw "fatal: not a git repository",
+	// which named nothing the user could act on.
+	codeNoRepoRoot = "no-repo-root"
+	// codePlanSpansRepos: a plan run executes in ONE worktree, and this plan's
+	// unfinished phases name several repos. Plan-run-only; the phase surface has no
+	// such condition (a phase is one repo by construction).
+	codePlanSpansRepos = "plan-spans-repos"
 
 	// Branch lifecycle — the phase surface's own gate, then the worktree sentinels
 	// (see worktreeConflict). codeNoRunBranch is not a worktree condition: the phase

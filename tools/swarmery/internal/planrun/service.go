@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -52,6 +53,16 @@ var (
 	ErrNoPath = errors.New("project has no known path to run in")
 	// ErrComplete: every phase is already done — nothing to run (409).
 	ErrComplete = errors.New("every phase of this plan is already done")
+	// ErrNoRepoRoot: the project has a path, but neither it nor anything the plan
+	// declares is a git repository (409). Distinct from ErrNoPath ("no path at
+	// all"): here the fix is a `Repo` cell or project.json's mainApp, and the
+	// wrapped repopath error names every candidate that was checked — the
+	// diagnostic the raw "fatal: not a git repository" never gave.
+	ErrNoRepoRoot = repopath.ErrNoRepoRoot
+	// ErrPlanSpansRepos: the plan's unfinished phases declare more than one repo,
+	// and a plan run executes in ONE worktree (409). Returned as a
+	// *PlanSpansReposError, which errors.Is-matches this sentinel.
+	ErrPlanSpansRepos = errors.New("plan spans multiple repositories")
 	// ErrBranchDirty: the previous run's branch still exists and holds commits, so
 	// the deterministic branch name cannot be reclaimed automatically. Returned as
 	// a *BranchDirtyError, which errors.Is-matches this sentinel. Mirrors
@@ -78,6 +89,20 @@ func (e *BranchDirtyError) Error() string {
 
 func (e *BranchDirtyError) Is(target error) bool { return target == ErrBranchDirty }
 
+// PlanSpansReposError names the repos a plan's unfinished phases declare. A plan
+// run hands every phase to ONE session in ONE worktree, so there is no correct
+// repo to pick here — and picking one silently would run half the plan in the
+// wrong checkout. The list is what makes the alternative (run the phases
+// individually) actionable.
+type PlanSpansReposError struct{ Repos []string }
+
+func (e *PlanSpansReposError) Error() string {
+	return fmt.Sprintf("plan spans %d repositories (%s) — run its phases individually",
+		len(e.Repos), strings.Join(e.Repos, ", "))
+}
+
+func (e *PlanSpansReposError) Is(target error) bool { return target == ErrPlanSpansRepos }
+
 // run is one in-flight plan run: its cancel (aborts the child claude) and the
 // pre-generated session uuid.
 type run struct {
@@ -96,10 +121,15 @@ type Service struct {
 	// Git is an OPTIONAL read-only seam, used for one thing: naming the branch a
 	// commits-ahead count was measured against (BranchDirtyError.Base). nil ⇒ the
 	// base is reported as unknown; no run behaviour depends on it.
-	Git  worktree.Git
-	UUID func() string    // session-uuid generator (test seam; default newUUID)
-	now  func() time.Time // clock (test seam; default time.Now)
-	Go   func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors phaserun.Go
+	Git worktree.Git
+	// RepoRoot resolves the git repository a run executes in from the project path
+	// and the repos the plan declares, in priority order. nil ⇒ repopath.Resolve.
+	// A seam because the production resolver stats the filesystem, and the run
+	// gates have to be testable without a real checkout on disk.
+	RepoRoot func(projectPath string, cells ...string) (string, error)
+	UUID     func() string    // session-uuid generator (test seam; default newUUID)
+	now      func() time.Time // clock (test seam; default time.Now)
+	Go       func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors phaserun.Go
 	// Notify emits plan_updated for the plan at run edges. nil ⇒ no live nudge.
 	Notify func(taskID int64)
 
@@ -156,13 +186,65 @@ func (s *Service) notify(taskID int64) {
 
 // planInfo is the Start admission read: the plan task joined to its project.
 type planInfo struct {
-	TaskID      int64
-	PlanDir     string
-	Status      string
-	Archived    bool
+	TaskID   int64
+	PlanDir  string
+	Status   string
+	Archived bool
+	// ProjectPath is projects.path — the project ROOT, which for a multi-repo
+	// project is an umbrella dir and NOT a checkout. Never hand it to git; hand it
+	// to runRoot.
 	ProjectPath string
 	ProjectSlug string
-	Phases      []Phase
+	// WorkspaceRoot is the workspace namespace dir (workspaces.root_path), the home
+	// of overlay/project.json — one of the repo-hint sources. "" when the project
+	// has no workspace mapped.
+	WorkspaceRoot string
+	// RepoRoot is the resolved git repository this run executes in. Set by Start
+	// before the worktree is acquired; every Wt call must use it.
+	RepoRoot string
+	Phases   []Phase
+}
+
+// runRoot resolves the repository a plan run executes in.
+//
+// Hint order, most specific first: what the plan's UNFINISHED phases declare, then
+// the workspace overlay's project.json, then the checkout's own .claude/project.json.
+// repopath.Resolve appends ProjectPath itself as the final candidate, which is what
+// keeps every single-repo project resolving exactly as it did before.
+//
+// Finished phases are excluded on purpose: a plan whose completed phase touched an
+// infra repo is not a plan spanning repos today, and refusing it would strand the
+// remaining work behind a conflict that no longer exists.
+func (s *Service) runRoot(info planInfo) (string, error) {
+	var cells []string
+	seen := map[string]bool{}
+	for _, p := range info.Phases {
+		if p.complete() || strings.TrimSpace(p.Repo) == "" {
+			continue
+		}
+		if name := repopath.Primary(p.Repo); name != "" && !seen[name] {
+			seen[name] = true
+		}
+		cells = append(cells, p.Repo)
+	}
+	if len(seen) > 1 {
+		names := make([]string, 0, len(seen))
+		for n := range seen {
+			names = append(names, n)
+		}
+		sort.Strings(names) // deterministic message; the set has no natural order
+		return "", &PlanSpansReposError{Repos: names}
+	}
+	if info.WorkspaceRoot != "" {
+		cells = append(cells, repopath.FileHints(filepath.Join(info.WorkspaceRoot, "overlay", "project.json"))...)
+	}
+	cells = append(cells, repopath.FileHints(filepath.Join(info.ProjectPath, ".claude", "project.json"))...)
+
+	resolve := s.RepoRoot
+	if resolve == nil {
+		resolve = repopath.Resolve
+	}
+	return resolve(info.ProjectPath, cells...)
 }
 
 // Start admits a run for a whole plan: gates (single-flight, lifecycle, phase
@@ -208,6 +290,16 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", ErrNoDoc, filepath.Join(info.PlanDir, "README.md"))
 	}
+	// Resolve the repository BEFORE anything hands a path to git: projects.path is
+	// the project ROOT, which for a multi-repo project is not a checkout at all,
+	// and handing it to the branch probe is what made every run in such a project
+	// die during admission with git's "fatal: not a git repository". Still ahead of
+	// the single-flight slot — a resolution failure is an admission verdict and
+	// must leave no state behind.
+	info.RepoRoot, err = s.runRoot(info)
+	if err != nil {
+		return "", err
+	}
 	if agent == "" {
 		agent = DefaultAgent()
 	}
@@ -240,17 +332,17 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	// Acquire derives from the taskName passed just after.
 	taskName := "plan-" + strconv.FormatInt(taskID, 10)
 	branch := "swarm/" + taskName
-	ahead, err := s.Wt.ReclaimEmptyBranch(info.ProjectPath, branch)
+	ahead, err := s.Wt.ReclaimEmptyBranch(info.RepoRoot, branch)
 	if err != nil {
 		release()
 		return "", fmt.Errorf("reclaim run branch: %w", err)
 	}
 	if ahead > 0 {
 		release()
-		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead, Base: s.baseBranch(info.ProjectPath)}
+		return "", &BranchDirtyError{Branch: branch, CommitsAhead: ahead, Base: s.baseBranch(info.RepoRoot)}
 	}
 
-	acq, err := s.Wt.Acquire(info.ProjectPath, info.ProjectSlug, taskName)
+	acq, err := s.Wt.Acquire(info.RepoRoot, info.ProjectSlug, taskName)
 	if err != nil {
 		release()
 		return "", fmt.Errorf("worktree acquire: %w", err)
@@ -262,7 +354,7 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 		// concurrent Start warm-reuse (worktree invariant 4) the deterministic
 		// plan-<taskID> path we are about to delete; the failed stamp is precisely
 		// the write that would have closed the DB gate, so nothing else holds it.
-		s.removeWorktree(info.ProjectPath, acq)
+		s.removeWorktree(info.RepoRoot, acq)
 		release()
 		return "", err
 	}
@@ -272,7 +364,7 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	s.notify(taskID)
 
 	spec := RunSpec{
-		Prompt:      BuildPrompt(info.PlanDir, string(readme), info.Phases, runMode),
+		Prompt:      BuildPromptIn(info.PlanDir, string(readme), info.Phases, runMode, info.RepoRoot, info.ProjectPath),
 		SessionUUID: uuid,
 		Cwd:         acq.Path,
 		Agent:       agent,
@@ -302,7 +394,7 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, i
 		// re-Start re-acquires the SAME deterministic worktree path (worktree
 		// invariant-4 reuse) and this defer then rips the new run's worktree out
 		// from under it.
-		s.removeWorktree(info.ProjectPath, acq)
+		s.removeWorktree(info.RepoRoot, acq)
 		s.mu.Lock()
 		delete(s.active, info.TaskID)
 		s.mu.Unlock()
@@ -430,9 +522,16 @@ func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, er
 	if busy {
 		return "", false, ErrRunning
 	}
+	// The branch lives in the repository the run resolved to, not at the project
+	// root — deleting it anywhere else finds nothing and reports a no-op deletion
+	// as success.
+	root, err := s.runRoot(info)
+	if err != nil {
+		return "", false, err
+	}
 	// Same deterministic name Start reclaims and Acquire derives (worktree.branchName).
 	branch = "swarm/plan-" + strconv.FormatInt(taskID, 10)
-	existed, err = s.Wt.DeleteBranch(info.ProjectPath, branch)
+	existed, err = s.Wt.DeleteBranch(root, branch)
 	if err != nil {
 		return "", false, err
 	}
@@ -485,14 +584,19 @@ func (s *Service) loadPlan(taskID int64) (planInfo, error) {
 		info    planInfo
 		planDir sql.NullString
 		path    sql.NullString
+		wsRoot  sql.NullString
 	)
+	// LEFT JOIN workspaces: the overlay's project.json is a repo-hint source, and a
+	// project with no workspace mapped must still load (the join is advisory, the
+	// plan is not).
 	err := s.DB.QueryRow(`
-		SELECT t.id, t.status, t.archived_at IS NOT NULL, p.path, p.slug,
+		SELECT t.id, t.status, t.archived_at IS NOT NULL, p.path, p.slug, w.root_path,
 		       (SELECT path FROM task_artifacts WHERE task_id = t.id AND kind = 'plan')
 		  FROM tasks t
 		  JOIN projects p ON p.id = t.project_id
+		  LEFT JOIN workspaces w ON w.project_id = p.id
 		 WHERE t.id = ? AND t.source = 'workspace'`, taskID).Scan(
-		&info.TaskID, &info.Status, &info.Archived, &path, &info.ProjectSlug, &planDir)
+		&info.TaskID, &info.Status, &info.Archived, &path, &info.ProjectSlug, &wsRoot, &planDir)
 	if errors.Is(err, sql.ErrNoRows) {
 		return info, ErrPlanNotFound
 	}
@@ -500,6 +604,7 @@ func (s *Service) loadPlan(taskID int64) (planInfo, error) {
 		return info, err
 	}
 	info.ProjectPath = path.String
+	info.WorkspaceRoot = wsRoot.String
 	info.PlanDir = planDir.String
 	if info.PlanDir == "" {
 		return info, ErrPlanNotFound
@@ -515,7 +620,7 @@ func (s *Service) loadPlan(taskID int64) (planInfo, error) {
 // loadPhases reads the plan's phases in execution order.
 func (s *Service) loadPhases(taskID int64) ([]Phase, error) {
 	rows, err := s.DB.Query(`
-		SELECT seq, name, doc_path, depends_on, checkboxes_done, checkboxes_total
+		SELECT seq, name, doc_path, depends_on, checkboxes_done, checkboxes_total, repo
 		  FROM epic_phases
 		 WHERE workspace_task_id = ?
 		 ORDER BY seq, id`, taskID)
@@ -528,10 +633,12 @@ func (s *Service) loadPhases(taskID int64) ([]Phase, error) {
 		var (
 			p        Phase
 			depsJSON string
+			repo     sql.NullString
 		)
-		if err := rows.Scan(&p.Seq, &p.Name, &p.DocPath, &depsJSON, &p.Done, &p.Total); err != nil {
+		if err := rows.Scan(&p.Seq, &p.Name, &p.DocPath, &depsJSON, &p.Done, &p.Total, &repo); err != nil {
 			return nil, err
 		}
+		p.Repo = repo.String
 		if err := json.Unmarshal([]byte(depsJSON), &p.DependsOn); err != nil {
 			p.DependsOn = nil // garbage depends_on ⇒ no ordering hint (epics.go posture)
 		}

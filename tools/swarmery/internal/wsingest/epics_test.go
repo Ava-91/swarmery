@@ -120,24 +120,126 @@ func TestDocFromCell(t *testing.T) {
 func TestPhaseTableCols(t *testing.T) {
 	t.Run("full header", func(t *testing.T) {
 		cells := []string{"#", "Phase", "Doc", "Repo area", "Depends on", "Parallel?", "Est."}
-		seq, name, doc, dep, ok := phaseTableCols(cells)
-		if !ok || seq != 0 || name != 1 || doc != 2 || dep != 4 {
-			t.Errorf("cols = seq %d name %d doc %d dep %d ok %v", seq, name, doc, dep, ok)
+		cols, ok := phaseTableCols(cells)
+		if !ok || cols.seq != 0 || cols.name != 1 || cols.doc != 2 || cols.dep != 4 {
+			t.Errorf("cols = %+v ok %v", cols, ok)
+		}
+		// "Repo area" names a subsystem, not a checkout — it must NOT be read as the
+		// run root, or a run would be sent into a directory called "daemon".
+		if cols.repo != -1 {
+			t.Errorf("cols.repo = %d, want -1 for a 'Repo area' column", cols.repo)
 		}
 	})
 	t.Run("no doc column → not ok", func(t *testing.T) {
 		cells := []string{"#", "Phase", "Repo area"}
-		if _, _, _, _, ok := phaseTableCols(cells); ok {
+		if _, ok := phaseTableCols(cells); ok {
 			t.Error("expected ok=false without a Doc column")
 		}
 	})
 	t.Run("synonyms seq/name/file", func(t *testing.T) {
 		cells := []string{"Seq", "Name", "File", "Depends"}
-		seq, name, doc, dep, ok := phaseTableCols(cells)
-		if !ok || seq != 0 || name != 1 || doc != 2 || dep != 3 {
-			t.Errorf("cols = seq %d name %d doc %d dep %d ok %v", seq, name, doc, dep, ok)
+		cols, ok := phaseTableCols(cells)
+		if !ok || cols.seq != 0 || cols.name != 1 || cols.doc != 2 || cols.dep != 3 {
+			t.Errorf("cols = %+v ok %v", cols, ok)
 		}
 	})
+	t.Run("repo column and its synonyms", func(t *testing.T) {
+		for i, cells := range [][]string{
+			{"#", "Phase", "Doc", "Repo", "Depends on"},
+			{"#", "Phase", "Doc", "Repos", "Depends on"},
+			{"#", "Phase", "Doc", "Repository", "Depends on"},
+		} {
+			cols, ok := phaseTableCols(cells)
+			if !ok || cols.repo != 3 {
+				t.Errorf("case %d: cols = %+v ok %v, want repo=3", i, cols, ok)
+			}
+		}
+	})
+}
+
+func TestParseDocRepo(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{
+			name: "header table row (name + absolute path)",
+			in:   "# Phase 3\n\n| Field | Value |\n|---|---|\n| **Repo** | `sk-next` (`/Volumes/Work/Skygor/sk-next`) |\n| **Branch** | `perf/x` |\n",
+			want: "`sk-next` (`/Volumes/Work/Skygor/sk-next`)",
+		},
+		{
+			name: "prose header line",
+			in:   "# Phase 1\n\n**Repo:** `/Volumes/Work/swarmery`\n**Branch:** `feat/x`\n",
+			want: "`/Volumes/Work/swarmery`",
+		},
+		{
+			name: "plural spelling",
+			in:   "# Phase 1\n\n| **Repos** | `a` |\n",
+			want: "`a`",
+		},
+		{name: "absent", in: "# Phase 1\n\nno repo here\n", want: ""},
+		{
+			// A quoted agent prompt further down describes someone else's repo; the
+			// header block bound is what keeps it from being read as this phase's.
+			name: "after a section heading is ignored",
+			in:   "# Phase 1\n\n## Agent prompt\n\n> **Repo:** `/other/repo`\n",
+			want: "",
+		},
+		{
+			name: "beyond the header window is ignored",
+			in:   "# Phase 1\n" + strings.Repeat("\n", 20) + "**Repo:** `/late/repo`\n",
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseDocRepo(c.in); got != c.want {
+				t.Errorf("parseDocRepo = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParsePlanTableRepoColumn(t *testing.T) {
+	readme := "# Epic\n\n| # | Phase | Doc | Repo | Depends on |\n|---|---|---|---|---|\n" +
+		"| 1 | Schema | `phase-1.md` | sk-next | — |\n" +
+		"| 2 | Helm | `phase-2.md` | sk-next (+ helm) | 1 |\n"
+	phases := parsePlanTable(readme)
+	if len(phases) != 2 {
+		t.Fatalf("phases = %d, want 2", len(phases))
+	}
+	if phases[0].repo != "sk-next" || phases[1].repo != "sk-next (+ helm)" {
+		t.Errorf("repos = %q, %q", phases[0].repo, phases[1].repo)
+	}
+}
+
+// A plan with no Repo column must index exactly as it did before the column
+// existed — that is what every already-indexed plan looks like.
+func TestParsePlanTableNoRepoColumn(t *testing.T) {
+	readme := "# Epic\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
+		"| 1 | Schema | `phase-1.md` | — |\n"
+	phases := parsePlanTable(readme)
+	if len(phases) != 1 || phases[0].repo != "" {
+		t.Fatalf("phases = %+v, want one phase with an empty repo", phases)
+	}
+}
+
+// The doc's own header is the more specific statement and outranks the table.
+func TestParsePlanDocRepoOverridesTable(t *testing.T) {
+	dir := writePlan(t, map[string]string{
+		"README.md": "# Epic\n\n| # | Phase | Doc | Repo |\n|---|---|---|---|\n" +
+			"| 1 | Schema | `phase-1.md` | table-repo |\n| 2 | UI | `phase-2.md` | table-repo |\n",
+		"phase-1.md": "# Phase 1\n\n| **Repo** | `doc-repo` |\n",
+		"phase-2.md": "# Phase 2\n\nno header repo\n",
+	})
+	warn, _ := collectWarn(t)
+	phases := parsePlan(dir, warn)
+	if len(phases) != 2 {
+		t.Fatalf("phases = %d, want 2", len(phases))
+	}
+	if phases[0].repo != "`doc-repo`" {
+		t.Errorf("phase[0].repo = %q, want the doc header", phases[0].repo)
+	}
+	if phases[1].repo != "table-repo" {
+		t.Errorf("phase[1].repo = %q, want the table cell to survive", phases[1].repo)
+	}
 }
 
 func TestParsePlanTable(t *testing.T) {
@@ -376,6 +478,65 @@ func TestScanEpicsIndexesEveryUnresolvedPhase(t *testing.T) {
 	}
 	if got[1].seq != 2 || got[1].name != "Parser" || filepath.Base(got[1].doc) != "phase-2-parser.md" {
 		t.Errorf("phase 2 = %+v", got[1])
+	}
+}
+
+// The declared repo has to survive the whole scan into the column the run
+// surfaces read — and a rescan after the declaration is deleted must clear it.
+// The docs are the truth; an index that keeps a stale repo would send a run into
+// a directory the plan no longer names.
+func TestScanEpicsStoresAndClearsDeclaredRepo(t *testing.T) {
+	db := testDB(t)
+	root := t.TempDir()
+	taskDir := filepath.Join(root, "demo", "workspace", "working", "2026", "07", "30", "demo")
+	planDir := filepath.Join(taskDir, "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	card := "# Task: Demo epic\n\n" +
+		"- **Статус**: active\n- **Старт**: 2026-07-30 · **Завершено**: —\n- **Ціль**: demo goal\n"
+	if err := os.WriteFile(filepath.Join(taskDir, "README.md"), []byte(card), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readme := "# Demo plan\n\n| # | Phase | Doc | Repo | Depends on |\n|---|---|---|---|---|\n" +
+		"| 1 | Schema | `phase-1.md` | table-repo | — |\n"
+	if err := os.WriteFile(filepath.Join(planDir, "README.md"), []byte(readme), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeDoc := func(body string) {
+		if err := os.WriteFile(filepath.Join(planDir, "phase-1.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeDoc("# Phase 1\n\n| **Repo** | `sk-next` |\n\n- [ ] a\n")
+
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	var repo sql.NullString
+	if err := db.QueryRow(`SELECT repo FROM epic_phases WHERE seq = 1`).Scan(&repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo.String != "`sk-next`" {
+		t.Fatalf("repo = %q, want the doc header cell", repo.String)
+	}
+
+	// Drop the declaration from both the doc and the table, rescan.
+	writeDoc("# Phase 1\n\n- [ ] a\n")
+	if err := os.WriteFile(filepath.Join(planDir, "README.md"),
+		[]byte("# Demo plan\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n| 1 | Schema | `phase-1.md` | — |\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	if err := db.QueryRow(`SELECT repo FROM epic_phases WHERE seq = 1`).Scan(&repo); err != nil {
+		t.Fatal(err)
+	}
+	if repo.Valid {
+		t.Fatalf("repo = %q after the declaration was removed, want NULL", repo.String)
 	}
 }
 
