@@ -11,6 +11,7 @@ package api
 //	POST   /api/epics/{taskId}/phases/{phaseId}/run/cancel → 202 {status}
 //	GET    /api/epics/{taskId}/phases/{phaseId}/diagnosis  → 200 phasediag.Diagnosis
 //	DELETE /api/epics/{taskId}/phases/{phaseId}/branch     → 200 {deleted, branch}
+//	DELETE /api/epics/{taskId}/orphan-branch?branch=…      → 200 {deleted, branch}
 //
 // The service is attached once at daemon startup (AttachPhaseRun) — the same
 // package-var idiom as AttachPlanning/AttachDispatch — so httptest handlers
@@ -22,7 +23,9 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
@@ -39,8 +42,20 @@ var phaserunSvc *phaserun.Service
 // phaserunSvc, so httptest handlers built with &Handler{DB: db} stay hermetic.
 var phasediagGit worktree.Git
 
-// AttachPhaseDiag wires the git boundary used by the diagnosis endpoint.
-func AttachPhaseDiag(g worktree.Git) { phasediagGit = g }
+// phasediagOwn is the ownership seam that lets a diagnosis tell a leftover run
+// branch apart from a run whose own worktree is still checked out on it. nil ⇒
+// "cannot tell", and phasediag reports the blocking reading (branch-dirty), which
+// is the safe direction. Same package-var idiom as phasediagGit.
+var phasediagOwn phasediag.OwnCheckout
+
+// AttachPhaseDiag wires the boundaries used by the diagnosis endpoint: the git
+// seam every branch-derived blocker reads through, and the ownership probe that
+// splits own-worktree from branch-dirty. Both may be nil; the endpoint degrades
+// rather than guessing.
+func AttachPhaseDiag(g worktree.Git, own phasediag.OwnCheckout) {
+	phasediagGit = g
+	phasediagOwn = own
+}
 
 // AttachPhaseRun wires the phase-run service into the api layer and gives it
 // the api-owned plan_updated emitter (keyed by workspace task id — the same
@@ -170,7 +185,7 @@ func (h *Handler) phaseDiagnosis(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	d, err := phasediag.Diagnose(h.DB, phasediagGit, phaseID)
+	d, err := phasediag.Diagnose(h.DB, phasediagGit, phasediagOwn, phaseID)
 	switch {
 	case errors.Is(err, phasediag.ErrPhaseNotFound):
 		writeClientErr(w, http.StatusNotFound, "phase not found")
@@ -211,6 +226,114 @@ func (h *Handler) deletePhaseRunBranch(w http.ResponseWriter, r *http.Request) {
 		writeConflict(w, codeNoProjectPath, "project has no known path")
 	case errors.Is(err, phaserun.ErrNoRunBranch):
 		writeConflict(w, codeNoRunBranch, "this phase has no recorded run branch")
+	case isWtConflict:
+		writeConflict(w, wtCode, wtMsg)
+	case err != nil:
+		writeErr(w, err)
+	default:
+		writeJSON(w, map[string]any{"deleted": existed, "branch": branch}, nil)
+	}
+}
+
+// orphanBranchPattern is the ONE branch shape the orphan route accepts:
+// swarm/phase-<digits>, nothing else. The namespace guard in
+// worktree.DeleteBranch would refuse the rest anyway, but a route that takes a
+// branch NAME from the client validates it before spending a git call, and a
+// 409 that names the rule beats a sentinel translated back into prose.
+var orphanBranchPattern = regexp.MustCompile(`^swarm/phase-([0-9]+)$`)
+
+// deleteOrphanBranch — DELETE /api/epics/{taskId}/orphan-branch?branch=…
+// requireLocalOrigin. Deletes a swarm/phase-<id> branch whose id matches NO
+// epic_phases row: work stranded under a previous id generation, which the
+// phase-scoped delete route structurally cannot reach because it derives the
+// branch from a row that no longer exists.
+//
+// This is deliberately a SIBLING route rather than a `branch` parameter on the
+// phase-scoped one. Keeping that route incapable of naming an arbitrary branch is
+// the property phase 2's namespace guard was added to protect; widening it would
+// hand every caller of a phase-addressed URL the ability to delete any branch the
+// daemon can reach. So the client-supplied name is confined here, behind two
+// guards it cannot talk its way past:
+//
+//  1. the name must match swarm/phase-<digits> exactly;
+//  2. the id must be absent from epic_phases — a LIVE phase's branch is refused,
+//     even when that phase belongs to another epic (ids are global).
+//
+// 200 {deleted, branch} where `deleted` reports whether the branch was actually
+// there; 400 a missing/blank branch; 409 (with a `code`) for either guard or any
+// worktree sentinel; 503 not attached.
+func (h *Handler) deleteOrphanBranch(w http.ResponseWriter, r *http.Request) {
+	if phaserunSvc == nil || phaserunSvc.Wt == nil {
+		writeClientErr(w, http.StatusServiceUnavailable, "phase runs not attached")
+		return
+	}
+	taskID, err := strconv.ParseInt(r.PathValue("taskId"), 10, 64)
+	if err != nil {
+		writeClientErr(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
+	if branch == "" {
+		writeClientErr(w, http.StatusBadRequest, "branch is required")
+		return
+	}
+	m := orphanBranchPattern.FindStringSubmatch(branch)
+	if m == nil {
+		writeConflict(w, codeBranchRefused,
+			"refusing to delete a branch outside the swarm/phase-<id> namespace")
+		return
+	}
+
+	// Guard 2: the id must match no phase row AT ALL. Scoped to the whole table on
+	// purpose — ids are global across epics, so an epic-scoped check would let this
+	// route delete another plan's live run branch.
+	//
+	// The capture is converted to int64 rather than bound as the string it arrives
+	// as. SQLite's INTEGER affinity would coerce '5' to 5 and the guard would work
+	// either way, but a guard on a destructive route should not rest on an implicit
+	// conversion: bound explicitly, "does this id have a row" cannot become "no row
+	// matched because the types differed", which fails OPEN and deletes the branch.
+	branchID, convErr := strconv.ParseInt(m[1], 10, 64)
+	if convErr != nil {
+		// Unreachable through orphanBranchPattern (^swarm/phase-([0-9]+)$), but an
+		// id too large for int64 would land here rather than sliding past the guard.
+		writeConflict(w, codeBranchRefused, "not a swarm/phase-<id> run branch")
+		return
+	}
+	var one int
+	switch err := h.DB.QueryRow(
+		`SELECT 1 FROM epic_phases WHERE id = ?`, branchID).Scan(&one); {
+	case err == nil:
+		writeConflict(w, codeBranchLivePhase,
+			"that branch belongs to a live phase — delete it from that phase instead")
+		return
+	case !errors.Is(err, sql.ErrNoRows):
+		writeErr(w, err)
+		return
+	}
+
+	// The repo to operate in comes from the addressed epic's project, never from
+	// the client.
+	var projectPath sql.NullString
+	err = h.DB.QueryRow(`
+		SELECT p.path FROM tasks t JOIN projects p ON p.id = t.project_id
+		 WHERE t.id = ?`, taskID).Scan(&projectPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeClientErr(w, http.StatusNotFound, "epic not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if projectPath.String == "" {
+		writeConflict(w, codeNoProjectPath, "project has no known path")
+		return
+	}
+
+	existed, err := phaserunSvc.Wt.DeleteBranch(projectPath.String, branch)
+	wtCode, wtMsg, isWtConflict := worktreeConflict(err)
+	switch {
 	case isWtConflict:
 		writeConflict(w, wtCode, wtMsg)
 	case err != nil:
