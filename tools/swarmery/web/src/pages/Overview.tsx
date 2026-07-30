@@ -406,8 +406,14 @@ function Interrupts({
           const busy = pending.has(t.key);
           const covered = t.covered || busy;
           return (
-            <div key={t.key} className="flex items-center gap-3 border-b border-line-soft py-[11px]">
-              <span className="w-[148px] shrink-0 truncate font-mono text-[12px] text-ink">
+            // The four trailing columns are fixed-width and already sum past a
+            // 390px viewport, so below desk the tool key takes its own line
+            // instead of pushing the row into horizontal overflow.
+            <div
+              key={t.key}
+              className="flex flex-wrap items-center gap-3 border-b border-line-soft py-[11px] desk:flex-nowrap"
+            >
+              <span className="w-full min-w-0 truncate font-mono text-[12px] text-ink desk:w-[148px] desk:shrink-0">
                 {t.key}
               </span>
               <span className="w-[92px] shrink-0 font-mono text-[11px] whitespace-nowrap text-ink-dim">
