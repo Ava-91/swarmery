@@ -61,12 +61,21 @@ var securityBin = "security"
 // `security` invocation (and therefore no keychain prompt) ever happens.
 var keychainCreds = readKeychainCreds
 
-// LoadCreds resolves the operator's Claude OAuth credential, first hit wins:
+// LoadCreds resolves the operator's Claude OAuth credential. Sources are
+// consulted in this order, and the first UNEXPIRED hit wins:
 //
 //  1. $CLAUDE_CONFIG_DIR/.credentials.json (when CLAUDE_CONFIG_DIR is set)
 //  2. ~/.claude/.credentials.json
 //  3. ~/.config/claude/.credentials.json
 //  4. macOS only: `security find-generic-password -s "Claude Code-credentials" -w`
+//
+// Expiry has to break the tie, not mere presence: on macOS the CLI keeps the
+// live credential in the login keychain, so a leftover ~/.claude/.credentials.json
+// written by an older CLI would otherwise shadow it forever — the daemon would
+// report "run `claude` to re-login" no matter how many times the operator did.
+// Expired candidates are therefore remembered rather than returned, and the one
+// expiring latest is the fallback if every source turns out to be stale (its
+// refresh token is the likeliest to still be live).
 //
 // Every individual failure is silent — a missing or unreadable source is just
 // the next candidate. Exhausting all sources returns ErrNoCreds; opting out
@@ -75,21 +84,59 @@ func LoadCreds(ctx context.Context) (*Creds, error) {
 	if os.Getenv(oauthOptOutEnv) == "0" {
 		return nil, ErrDisabled
 	}
+	var stale *Creds
 	for _, path := range credentialPaths() {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		if c := parseCreds(raw); c != nil {
+		c := parseCreds(raw)
+		if c == nil {
+			continue
+		}
+		if !c.expired() {
 			return c, nil
 		}
+		stale = laterExpiry(stale, c)
 	}
 	if runtime.GOOS == "darwin" {
 		if c := keychainCreds(ctx); c != nil {
-			return c, nil
+			if !c.expired() {
+				return c, nil
+			}
+			stale = laterExpiry(stale, c)
 		}
 	}
+	if stale != nil {
+		return stale, nil
+	}
 	return nil, ErrNoCreds
+}
+
+// credsNow is the clock seam for expiry comparison. A package var rather than a
+// Client field because LoadCreds is a package function with no Client to hang it
+// off; tests pin it to make staleness deterministic.
+var credsNow = time.Now
+
+// expired reports whether the credential's access token is past its expiry,
+// using the same grace window (*Client).tokenExpired applies so the two agree
+// on what "usable" means. An UNKNOWN expiry (0, absent from the file) is not
+// treated as expired: the CLI has shipped credential files without the field,
+// and judging those stale would demote a perfectly good login.
+func (c *Creds) expired() bool {
+	if c.ExpiresAt <= 0 {
+		return false
+	}
+	return credsNow().UnixMilli() >= c.ExpiresAt-tokenExpiryGrace.Milliseconds()
+}
+
+// laterExpiry keeps whichever expired candidate expires latest, preferring the
+// incumbent on a tie so source precedence still decides between equals.
+func laterExpiry(best, next *Creds) *Creds {
+	if best == nil || next.ExpiresAt > best.ExpiresAt {
+		return next
+	}
+	return best
 }
 
 // credentialPaths lists the file sources in resolution order. Sources whose
