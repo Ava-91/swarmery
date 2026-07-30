@@ -35,6 +35,12 @@ type Config struct {
 	// restart is required to flip it (the durable pause flags are the runtime
 	// knob).
 	Enabled bool
+	// MaxNoProgressRetries bounds how many times a task may be re-dispatched
+	// without advancing its progress high-water mark before it is parked instead.
+	// Fusion's equivalent bound is 6 (executor/requeue-loop.ts); ours is lower
+	// because one swarmery re-dispatch is a whole headless session, not a workflow
+	// step. 0 disables the bound entirely — the pre-0045 behaviour.
+	MaxNoProgressRetries int
 }
 
 // Config defaults. Exported so tests and docs reference one source of truth.
@@ -43,6 +49,11 @@ const (
 	DefaultMaxWorktrees  = 4
 	DefaultPollInterval  = 15 * time.Second
 	DefaultRunTimeout    = 45 * time.Minute
+	// DefaultMaxNoProgressRetries is deliberately not env-overridable: the whole
+	// point of the bound is that a wedged task stops costing sessions, and an
+	// operator who can raise it from the environment will raise it while debugging
+	// and forget. The durable pause flags remain the runtime knob.
+	DefaultMaxNoProgressRetries = 3
 )
 
 // ConfigFromEnv builds a Config from the SWARMERY_* env vars, falling back to
@@ -54,6 +65,8 @@ func ConfigFromEnv() Config {
 		PollInterval:  DefaultPollInterval,
 		RunTimeout:    DefaultRunTimeout,
 		Enabled:       dispatchEnabled(),
+
+		MaxNoProgressRetries: DefaultMaxNoProgressRetries,
 	}
 	if v := envPositiveInt("SWARMERY_MAX_CONCURRENT"); v > 0 {
 		c.MaxConcurrent = v

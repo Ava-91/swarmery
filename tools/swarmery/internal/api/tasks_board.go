@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
@@ -176,8 +177,14 @@ type boardTaskDTO struct {
 	RetryCount    int      `json:"retryCount"`
 	VerifyVerdict *string  `json:"verifyVerdict"`
 	VerifyDetail  *string  `json:"verifyDetail"`
-	ColumnMovedAt *string  `json:"columnMovedAt"`
-	CreatedAt     string   `json:"createdAt"`
+	// Derived, never stored: whether a task that claims to be running actually is,
+	// and on what evidence. Computed per request by internal/staleness — a cached
+	// verdict would be stale exactly when it matters, since the state it reads
+	// changes outside the daemon. Empty when the task does not claim to be running.
+	Staleness       string  `json:"staleness,omitempty"`
+	StalenessReason string  `json:"stalenessReason,omitempty"`
+	ColumnMovedAt   *string `json:"columnMovedAt"`
+	CreatedAt       string  `json:"createdAt"`
 }
 
 const boardTaskSelect = `
@@ -272,7 +279,47 @@ func (h *Handler) listBoardTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, d)
 	}
-	writeJSON(w, out, rows.Err())
+	if err := rows.Err(); err != nil {
+		writeJSON(w, out, err)
+		return
+	}
+	// Staleness is joined in Go rather than folded into boardTaskSelect: that select
+	// is shared with the single-task handler, and widening it would make every
+	// caller pay for four extra aggregates. A failure here degrades the field to
+	// empty and never fails the list — a missing derived hint must not cost the
+	// board its data.
+	annotateStaleness(h.DB, out)
+	writeJSON(w, out, nil)
+}
+
+// annotateStaleness fills the derived staleness fields in place. Best-effort by
+// design: the verdict is a hint for a human, and the board must render without it.
+//
+// NOTE for whoever extends this: the board lists only source='queue' rows
+// (see listBoardTasks), so workspace tasks — which is where every stuck task in the
+// live database actually sits — never reach this function. `swarmery stale` is the
+// surface that covers them.
+func annotateStaleness(db *sql.DB, out []boardTaskDTO) {
+	if len(out) == 0 {
+		return
+	}
+	verdicts, err := staleness.Load(db, 0)
+	if err != nil {
+		log.Printf("warning: api: staleness annotate: %v", err)
+		return
+	}
+	byID := make(map[int64]staleness.Verdict, len(verdicts))
+	for _, v := range verdicts {
+		byID[v.TaskID] = v.Verdict
+	}
+	for i := range out {
+		v, ok := byID[out[i].ID]
+		if !ok || v.Kind == staleness.KindLive {
+			continue // a live task carries no hint; absence is the signal
+		}
+		out[i].Staleness = string(v.Kind)
+		out[i].StalenessReason = v.Reason
+	}
 }
 
 // POST /api/board/tasks {projectId, title, prompt, priority?, model?,

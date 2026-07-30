@@ -50,6 +50,11 @@ func (s *phaseWtStub) DeleteBranch(repoRoot, branch string) (bool, error) {
 	return true, nil
 }
 
+// CommitsForTask satisfies dispatch.WorktreeManager. This package's tests do not
+// exercise the dispatcher's progress high-water, so an empty history is the honest
+// stub: no commits observed, no error.
+func (s *phaseWtStub) CommitsForTask(repoRoot, taskID string) ([]string, error) { return nil, nil }
+
 func diagURL(srv *httptest.Server, taskID, phaseID int64) string {
 	return srv.URL + "/api/epics/" + i64(taskID) + "/phases/" + i64(phaseID) + "/diagnosis"
 }

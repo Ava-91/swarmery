@@ -5,6 +5,7 @@
 //	swarmery serve                 serve the API/SPA + live ingest pipeline
 //	swarmery recost                recompute cost_usd for all turns
 //	swarmery economics             five token-economy metrics (read-only)
+//	swarmery stale                 tasks claiming to run with no sign of it (read-only)
 //	swarmery backup                write a VACUUM-INTO snapshot of the DB
 //	swarmery prune                 retention: roll up + delete old sessions' raw rows
 //	swarmery install               launchd auto-start (uninstall / status)
@@ -54,6 +55,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/routines"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysedit"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysscan"
@@ -84,6 +86,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "recost":
 		err = cmdRecost(os.Args[2:])
+	case "stale":
+		err = cmdStale(os.Args[2:])
 	case "economics":
 		err = cmdEconomics(os.Args[2:])
 	case "backup":
@@ -146,6 +150,7 @@ func usage() {
                     [--notify-url <url>] [--notify-events <list>] [--notify-template <generic|ntfy|telegram>]
                     [--notify-telegram-chat <id>]
   swarmery recost   [--db <path>]
+  swarmery stale [--db <path>] [--project <id>] [--all]
   swarmery economics [--db <path>] [--since <YYYY-MM-DD>] [--until <YYYY-MM-DD>]
                     [--project <id>] [--json]
                                    token economy of the agent system: cost per completed task,
@@ -319,6 +324,64 @@ func cmdEconomics(args []string) error {
 		return err
 	}
 	return economics.Render(os.Stdout, rep, *asJSON)
+}
+
+// cmdStale lists tasks that CLAIM to be running but show no sign of it, with the
+// evidence each verdict rests on. Read-only.
+//
+// This is the surface that covers workspace tasks: the board API lists only
+// source='queue' rows, and every stuck task in a real database sits on the
+// workspace side — which is precisely why the class stayed invisible until an audit
+// went looking for it with ad-hoc SQL.
+//
+// It deliberately does not offer a --fix flag. A workspace task's status is a
+// projection of its workspace artifacts (internal/wsingest rewrites it on every
+// scan), so "fixing" it here would be reverted minutes later while looking like it
+// worked. Closing such a task out happens in the workspace, by a human.
+func cmdStale(args []string) error {
+	fs := flag.NewFlagSet("stale", flag.ExitOnError)
+	dbPath := dbFlag(fs)
+	project := fs.Int64("project", 0, "project id filter (0 = all)")
+	all := fs.Bool("all", false, "include live and unknown verdicts, not just stale ones")
+	fs.Parse(args)
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: swarmery stale [--db <path>] [--project <id>] [--all]")
+	}
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	rows, err := staleness.Load(db, *project)
+	if err != nil {
+		return err
+	}
+
+	shown := 0
+	for _, r := range rows {
+		if !*all && r.Verdict.Kind != staleness.KindStale && r.Verdict.Kind != staleness.KindDeadProc {
+			continue
+		}
+		if shown == 0 {
+			fmt.Printf("%-6s %-12s %-10s %-10s %s\n", "ID", "VERDICT", "SOURCE", "EVIDENCE", "TITLE")
+		}
+		shown++
+		fmt.Printf("%-6d %-12s %-10s %-10s %s\n",
+			r.TaskID, r.Verdict.Kind, r.Input.Source, r.Verdict.Confidence, r.Title)
+		fmt.Printf("       └─ %s\n", r.Verdict.Reason)
+	}
+	if shown == 0 {
+		fmt.Println("no stale tasks")
+		return nil
+	}
+	fmt.Printf("\n%d task(s) shown of %d scanned.\n", shown, len(rows))
+	// The count is the actionable part: a heuristic-evidence verdict is a prompt to
+	// look, not a conclusion, and saying so here keeps the number from being quoted
+	// as a fact it cannot support.
+	fmt.Println("Verdicts marked `heuristic` rest on inferred task↔session links — read them as a prompt to check, not as proof.")
+	return nil
 }
 
 // cmdBackup writes a consistent snapshot of the database to a standalone file
@@ -910,6 +973,11 @@ func cmdServe(args []string) error {
 	// process liveness — checks active/idle sessions every 30 s, fast-forwards
 	// dead ones to status='completed', publishes session_updated when proc_state
 	// changes so the UI picks up orphan/dead badges in real time.
+	// procDeadHook lets a liveness transition reach the dispatcher without procwatch
+	// importing dispatch. It is assigned after dispatchSvc is constructed (further
+	// down this function), and pw.Run is started only after that — reading this var
+	// from the ticker goroutine while main still assigned it would be a data race.
+	var procDeadHook func()
 	pw := &procwatch.Ticker{
 		DB:       db,
 		Provider: procwatch.OsProvider{},
@@ -918,10 +986,11 @@ func cmdServe(args []string) error {
 			if bus != nil {
 				bus.Publish(ingest.Notification{Type: ingest.NoteSessionUpdated, SessionID: id})
 			}
+			if procDeadHook != nil {
+				procDeadHook()
+			}
 		},
 	}
-	go pw.Run(context.Background())
-	log.Printf("swarmery procwatch ticker started (interval 30s)")
 
 	// plugin drift — enabled-but-not-installed / version-behind / orphaned
 	// plugins, persisted into config_lint_findings under the plugin_* rules.
@@ -1145,6 +1214,22 @@ func cmdServe(args []string) error {
 	if err := dispatchSvc.HealStale(); err != nil {
 		log.Printf("warning: dispatch heal on startup: %v", err)
 	}
+	// Evidence-driven heal, unlike HealStale's unconditional boot sweep: it needs the
+	// dispatcher, so it is wired here and the procwatch ticker is started right after.
+	if err := dispatchSvc.HealDeadProcess(); err != nil {
+		log.Printf("warning: dispatch heal dead process on startup: %v", err)
+	}
+	procDeadHook = func() {
+		if err := dispatchSvc.HealDeadProcess(); err != nil {
+			log.Printf("warning: dispatch heal dead process: %v", err)
+			return
+		}
+		// Heal only changes state; scheduling the reclaimed task is the caller's
+		// job. Without this the task would wait for the poll fallback.
+		dispatchSvc.Poke()
+	}
+	go pw.Run(context.Background())
+	log.Printf("swarmery procwatch ticker started (interval 30s)")
 	api.AttachDispatch(dispatchSvc)
 
 	// fusion phase 6: auto-verification. After a dispatched run lands in_review
