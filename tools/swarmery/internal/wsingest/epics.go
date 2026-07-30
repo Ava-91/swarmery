@@ -45,14 +45,14 @@ var (
 
 // epicPhase is one parsed phase (a README table row joined to its doc file).
 type epicPhase struct {
-	seq              int
-	name             string
-	docPath          string // absolute path to the phase/step doc (may not exist on disk yet)
-	dependsOn        []int  // seq numbers this phase depends on
-	checkboxesDone   int
-	checkboxesTotal  int
-	docStatus        string // normalized `Status:` header marker; "" when absent
-	docUpdatedAt     string // RFC3339 mtime of the doc file; "" when unresolved
+	seq             int
+	name            string
+	docPath         string // absolute path to the phase/step doc (may not exist on disk yet)
+	dependsOn       []int  // seq numbers this phase depends on
+	checkboxesDone  int
+	checkboxesTotal int
+	docStatus       string // normalized `Status:` header marker; "" when absent
+	docUpdatedAt    string // RFC3339 mtime of the doc file; "" when unresolved
 	// repo is the RAW declared Repo cell ("`sk-next` (`/abs/sk-next`)", "sk-next
 	// (+ helm)"), never a resolved path: turning it into a run root depends on the
 	// filesystem and on project.json, which is the run surface's decision at Start
@@ -397,6 +397,11 @@ func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 	return phases
 }
 
+// parserVersion identifies WHAT parsePlan extracts. It is mixed into planHash so
+// a parser that learns a new field re-parses plans whose bytes are unchanged.
+// v2: epic_phases.repo (declared `Repo` column / phase doc header), migration 0046.
+const parserVersion = "v2"
+
 // planHash combines every plan file's bytes into one content hash, so the gate
 // re-parses when the README OR any phase doc changes (a checkbox flip lives in a
 // phase doc, not the README). Returns ("", false) when the dir is unreadable.
@@ -413,6 +418,14 @@ func planHash(planDir string) (string, bool) {
 	}
 	sort.Strings(names)
 	h := sha256.New()
+	// The parser version is part of the identity of a parse result, not just the
+	// bytes it read. Without it, a release that teaches the parser a NEW field
+	// (0046's declared `Repo`) leaves every already-indexed plan on its old row for
+	// ever: the files did not change, the hash matched, and the gate skipped the
+	// only pass that could have filled the column. Bump this whenever parsePlan
+	// starts extracting something it did not extract before.
+	h.Write([]byte(parserVersion))
+	h.Write([]byte{0})
 	for _, n := range names {
 		b, err := os.ReadFile(filepath.Join(planDir, n))
 		if err != nil {

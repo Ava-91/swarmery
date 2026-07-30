@@ -2,7 +2,9 @@ package wsingest
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1029,5 +1031,37 @@ func TestRunWatcherTriggersRescan(t *testing.T) {
 		case <-deadline:
 			t.Fatal("fsnotify-triggered rescan did not fire (watcher dead?)")
 		}
+	}
+}
+
+// A parser that learns a new field must re-parse plans whose bytes never
+// changed. Keying the gate on content alone left every already-indexed plan on
+// its old row for ever after migration 0046 — the observed behaviour right after
+// deploy: epic_phases.repo stayed NULL for all five phases of a plan whose docs
+// declared their repo in plain text.
+func TestPlanHashIncludesParserVersion(t *testing.T) {
+	dir := writePlan(t, map[string]string{
+		"README.md":  "# Epic\n",
+		"phase-1.md": "# Phase 1\n\n- [ ] a\n",
+	})
+	got, ok := planHash(dir)
+	if !ok {
+		t.Fatal("planHash failed on a readable plan dir")
+	}
+	// Same bytes hashed WITHOUT the version prefix — the pre-fix value. If the two
+	// agree, the version is not part of the hash and a parser bump changes nothing.
+	h := sha256.New()
+	for _, n := range []string{"README.md", "phase-1.md"} {
+		b, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Write([]byte(n))
+		h.Write([]byte{0})
+		h.Write(b)
+		h.Write([]byte{0})
+	}
+	if got == hex.EncodeToString(h.Sum(nil)) {
+		t.Fatal("planHash ignores parserVersion — a parser upgrade would never re-parse existing plans")
 	}
 }
