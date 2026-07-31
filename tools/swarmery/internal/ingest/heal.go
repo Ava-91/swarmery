@@ -73,6 +73,22 @@ func scanTranscriptMeta(path string) (transcriptMeta, error) {
 	return m, sc.Err()
 }
 
+// FindTranscript resolves a session uuid to its transcript file
+// (<root>/<slug>/<uuid>.jsonl) by searching every projects root in order —
+// FIRST MATCH WINS, so the configured root order decides ties. A uuid is a
+// v4 UUID minted per session, so a collision across two config dirs is a
+// theoretical event, not a case worth ranking. "" when no root holds it
+// (deleted transcript, or a hook-only session that never wrote one).
+func FindTranscript(projectsRoots []string, sessionUUID string) string {
+	for _, root := range projectsRoots {
+		matches, _ := filepath.Glob(filepath.Join(root, "*", sessionUUID+".jsonl"))
+		if len(matches) > 0 {
+			return matches[0]
+		}
+	}
+	return ""
+}
+
 // stubSession is one heal candidate.
 type stubSession struct {
 	id          int64
@@ -84,7 +100,9 @@ type stubSession struct {
 
 // HealStubSessions re-attributes stub sessions — rows on the '(unknown)'
 // project, or with an empty/placeholder cwd or empty started_at — from their
-// transcript files (located by session uuid under projectsRoot). Good values
+// transcript files (located by session uuid under any of projectsRoots: a
+// multi-subscription machine keeps one transcript tree per config dir and a
+// stub can belong to any of them). Good values
 // are NEVER overwritten; sessions whose transcript cannot be found are left
 // alone. Once no session references it any more, the '(unknown)' projects
 // row is deleted. Returns the ids of healed sessions so callers can emit
@@ -94,7 +112,7 @@ type stubSession struct {
 // already-tracked project is always allowed, but an excluded cwd never mints
 // a new projects row (the owner removes such data with a one-off cleanup,
 // and the scanner skips the dirs going forward).
-func HealStubSessions(db *sql.DB, projectsRoot string, exclude ExcludeList) ([]int64, error) {
+func HealStubSessions(db *sql.DB, projectsRoots []string, exclude ExcludeList) ([]int64, error) {
 	rows, err := db.Query(
 		`SELECT s.id, s.session_uuid, s.cwd, s.started_at, p.path
 		 FROM sessions s JOIN projects p ON p.id = s.project_id
@@ -120,11 +138,11 @@ func HealStubSessions(db *sql.DB, projectsRoot string, exclude ExcludeList) ([]i
 
 	var healed []int64
 	for _, s := range todo {
-		matches, _ := filepath.Glob(filepath.Join(projectsRoot, "*", s.uuid+".jsonl"))
-		if len(matches) == 0 {
+		transcript := FindTranscript(projectsRoots, s.uuid)
+		if transcript == "" {
 			continue // transcript gone (or hook-only session) — keep the stub
 		}
-		meta, err := scanTranscriptMeta(matches[0])
+		meta, err := scanTranscriptMeta(transcript)
 		if err != nil {
 			log.Printf("warn: ingest: heal session %s: %v", s.uuid, err)
 			continue

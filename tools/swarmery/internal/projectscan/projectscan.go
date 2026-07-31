@@ -37,13 +37,31 @@ type PluginState struct {
 	// daemon's onboarding roots — i.e. whether the (fenced) detach endpoint may
 	// operate on it. Purely advisory for the UI; the write path re-checks.
 	UnderOnboardRoot bool `json:"underOnboardRoot"`
+	// OverlaySources names the declared settings overlays that contributed to
+	// this state (internal/settingsoverlay). Empty/omitted for the ordinary case
+	// where the repo's own settings.json is the whole story — its presence is
+	// what tells a reader that managed/packs describe more than this repo.
+	OverlaySources []string `json:"overlaySources,omitempty"`
 }
 
 // marketplaceSuffix is the "@<marketplace>" tag every swarmery plugin key
 // carries in enabledPlugins (e.g. "core@swarmery").
 const marketplaceSuffix = "@swarmery"
 
-// settingsShape is the subset of .claude/settings.json projectscan reads.
+// Settings is the subset of a Claude Code settings.json that plugin state is
+// derived from. It is exported because settings no longer come only from the
+// repo: internal/settingsoverlay feeds DECLARED out-of-repo files through this
+// same parser, and two copies of a file format is how they drift apart.
+type Settings struct {
+	// EnabledPlugins is the raw enabledPlugins map ("<name>@<marketplace>" →
+	// on/off). Explicit false entries are kept: an overlay layered on top has to
+	// be able to turn something OFF, which a presence-only set cannot express.
+	EnabledPlugins map[string]bool
+	// Marketplaces maps extraKnownMarketplaces.<name> → source.repo.
+	Marketplaces map[string]string
+}
+
+// settingsShape is the on-disk JSON shape behind Settings.
 type settingsShape struct {
 	EnabledPlugins         map[string]bool `json:"enabledPlugins"`
 	ExtraKnownMarketplaces map[string]struct {
@@ -53,25 +71,62 @@ type settingsShape struct {
 	} `json:"extraKnownMarketplaces"`
 }
 
-// PluginState reads <projectPath>/.claude/settings.json and reports the swarmery
-// plugin state. A missing or malformed file returns (nil, nil): the project is
-// simply not swarmery-managed as far as we can tell, which must not fail the
-// list. roots is the daemon's onboarding allow-list, used only to compute
-// UnderOnboardRoot (pass nil to skip that hint).
-func ReadPluginState(projectPath string, roots []string) (*PluginState, error) {
-	raw, err := os.ReadFile(filepath.Join(projectPath, ".claude", "settings.json"))
+// ReadSettings parses one settings.json. Unlike the Read* helpers below it
+// REPORTS failure (missing file, malformed JSON) — the callers decide how
+// tolerant to be, and the overlay reader needs to tell "not declared" from
+// "declared but gone" to log the latter once.
+func ReadSettings(path string) (Settings, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil //nolint:nilerr // absent settings = not managed, not an error
+		return Settings{}, err
 	}
 	var s settingsShape
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return nil, nil //nolint:nilerr // malformed settings = treat as not managed
+		return Settings{}, err
+	}
+	out := Settings{EnabledPlugins: s.EnabledPlugins}
+	if len(s.ExtraKnownMarketplaces) > 0 {
+		out.Marketplaces = make(map[string]string, len(s.ExtraKnownMarketplaces))
+		for name, mp := range s.ExtraKnownMarketplaces {
+			out.Marketplaces[name] = mp.Source.Repo
+		}
+	}
+	return out, nil
+}
+
+// SettingsOverlay is one declared settings file that also applies to a project,
+// already read. Name is the operator's label, echoed back as provenance.
+type SettingsOverlay struct {
+	Name     string
+	Settings Settings
+}
+
+// ReadPluginState reads <projectPath>/.claude/settings.json and reports the
+// swarmery plugin state. A missing or malformed file returns (nil, nil): the
+// project is simply not swarmery-managed as far as we can tell, which must not
+// fail the list. roots is the daemon's onboarding allow-list, used only to
+// compute UnderOnboardRoot (pass nil to skip that hint).
+//
+// overlays are declared settings files that also apply to this project
+// (internal/settingsoverlay resolves them). They are folded ON TOP of the repo's
+// settings because that is where they sit in a real session: a launcher passing
+// `claude --settings <file>` outranks the repo's .claude/settings.json, so on a
+// key conflict the overlay wins, and later overlays win over earlier ones. With
+// no overlays this is byte-for-byte the previous behaviour.
+func ReadPluginState(projectPath string, roots []string, overlays ...SettingsOverlay) (*PluginState, error) {
+	repo, rerr := ReadSettings(filepath.Join(projectPath, ".claude", "settings.json"))
+	merged, sources := mergeSettings(repo, overlays)
+	if rerr != nil && len(sources) == 0 {
+		// Nothing readable in the repo AND nothing declared for it: not managed
+		// as far as we can tell. Not an error — see the package doc.
+		return nil, nil //nolint:nilerr // absent settings = not managed
 	}
 
 	st := &PluginState{
 		UnderOnboardRoot: underAnyRoot(projectPath, roots),
+		OverlaySources:   sources,
 	}
-	for key, on := range s.EnabledPlugins {
+	for key, on := range merged.EnabledPlugins {
 		if !on || !strings.HasSuffix(key, marketplaceSuffix) {
 			continue
 		}
@@ -83,24 +138,57 @@ func ReadPluginState(projectPath string, roots []string) (*PluginState, error) {
 		st.Packs = append(st.Packs, name)
 	}
 	sort.Strings(st.Packs)
-	if mp, ok := s.ExtraKnownMarketplaces["swarmery"]; ok {
-		st.Marketplace = mp.Source.Repo
-	}
+	st.Marketplace = merged.Marketplaces["swarmery"]
 	return st, nil
+}
+
+// mergeSettings folds the overlays over the repo's settings, key by key, and
+// returns the names of the overlays that actually supplied something.
+//
+// "Contributed" is deliberately narrow: an overlay that covers the project but
+// declares no enabledPlugins and no marketplaces changed nothing, and naming it
+// in overlaySources would be provenance for an effect that never happened.
+func mergeSettings(repo Settings, overlays []SettingsOverlay) (Settings, []string) {
+	out := Settings{
+		EnabledPlugins: make(map[string]bool, len(repo.EnabledPlugins)),
+		Marketplaces:   make(map[string]string, len(repo.Marketplaces)),
+	}
+	for k, v := range repo.EnabledPlugins {
+		out.EnabledPlugins[k] = v
+	}
+	for k, v := range repo.Marketplaces {
+		out.Marketplaces[k] = v
+	}
+	var sources []string
+	for _, ov := range overlays {
+		if len(ov.Settings.EnabledPlugins) == 0 && len(ov.Settings.Marketplaces) == 0 {
+			continue
+		}
+		for k, v := range ov.Settings.EnabledPlugins {
+			out.EnabledPlugins[k] = v
+		}
+		for k, v := range ov.Settings.Marketplaces {
+			out.Marketplaces[k] = v
+		}
+		sources = append(sources, ov.Name)
+	}
+	return out, sources
 }
 
 // ReadEnabledPlugins returns every plugin id ("<name>@<marketplace>") that
 // <projectPath>/.claude/settings.json switches on, across all marketplaces.
 // A missing or malformed file returns (nil, nil) — same tolerance as
 // ReadPluginState: an unreadable project must never fail a scan.
+//
+// Repo-only ON PURPOSE, unlike ReadPluginState: its one caller is the plugin
+// drift detector, whose question ("is what this project enables actually
+// installed for it?") and whose repair action (`claude plugin install --scope
+// project`, which WRITES the repo's settings.json) are both repo-scoped. See
+// internal/plugindrift/ticker.go loadProjects.
 func ReadEnabledPlugins(projectPath string) ([]string, error) {
-	raw, err := os.ReadFile(filepath.Join(projectPath, ".claude", "settings.json"))
+	s, err := ReadSettings(filepath.Join(projectPath, ".claude", "settings.json"))
 	if err != nil {
-		return nil, nil //nolint:nilerr // absent settings = nothing enabled here
-	}
-	var s settingsShape
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return nil, nil //nolint:nilerr // malformed settings = treat as not managed
+		return nil, nil //nolint:nilerr // absent/malformed settings = nothing enabled here
 	}
 	ids := make([]string, 0, len(s.EnabledPlugins))
 	for key, on := range s.EnabledPlugins {

@@ -23,6 +23,9 @@ var (
 	sessionKeys = []string{
 		"id", "projectId", "projectSlug", "projectName", "sessionUuid", "model", "gitBranch",
 		"cwd", "status", "startedAt", "endedAt", "title", "source",
+		// multi-subscription wave: which Claude Code account ran the session
+		// (migration 0047; '' = the stock one).
+		"account",
 		// parity wave: additive per-session aggregates (nullable).
 		"tokens", "costUsd",
 		// fat-session wave: last-assistant-turn context occupancy (nullable).

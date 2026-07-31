@@ -596,8 +596,10 @@ func (h *Handler) effectiveTemplates(r *http.Request) ([]systemTemplateDTO, erro
 	if !found {
 		return nil, errUnknownTemplateProject
 	}
+	// Overlay-aware: templates shipped by a pack a settings overlay enables are
+	// resolvable in that project's sessions, so they belong in this view.
 	enabledPacks := map[string]bool{}
-	if st, serr := projectscan.ReadPluginState(proj.Path, nil); serr == nil && st != nil {
+	if st, serr := projectscan.ReadPluginState(proj.Path, nil, overlaysFor(proj.Path)...); serr == nil && st != nil {
 		for _, name := range st.Packs {
 			enabledPacks[name] = true
 		}

@@ -10,6 +10,14 @@ package ingest
 //   - unknown standalone paths still mint their own project (no invention);
 //   - HealProjectAttribution re-points pre-existing phantom rows and drops
 //     the phantom project.
+//
+// …and the follow-up bug the ancestor rule itself caused (one session run at
+// the machine's onboarding root minted a projects row for it, and the rule
+// then swallowed all 36 sessions of every sibling repo under it):
+//   - a configured onboarding root is never an ancestor-rule target;
+//   - an archived row is never an ancestor-rule target (so archiving a trap
+//     row actually defuses it);
+//   - a pinned row is never folded away by the heal.
 
 import (
 	"testing"
@@ -198,6 +206,97 @@ func TestHealProjectAttributionMergesPhantoms(t *testing.T) {
 	}
 	if n := count(t, db, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, parent); n != 2 {
 		t.Errorf("parent sessions = %d, want 2 (re-pointed)", n)
+	}
+}
+
+// setOnboardRoots installs the onboarding allow-list for one test and restores
+// the previous value (the var is process-global, like worktreeRootOverride).
+func setOnboardRoots(t *testing.T, roots ...string) {
+	t.Helper()
+	old := onboardRootsOverride
+	SetOnboardRoots(roots)
+	t.Cleanup(func() { onboardRootsOverride = old })
+}
+
+func TestCanonicalProjectPathSkipsOnboardRoot(t *testing.T) {
+	db := testDB(t)
+	// Trailing slash on purpose: the setter cleans before comparing.
+	setOnboardRoots(t, "/Users/dev/projects/")
+
+	// The trap row: one session once ran at the onboarding root itself, so a
+	// projects row exists for the parent dir of every repo on the machine.
+	root := seedProject(t, db, "/Users/dev/projects")
+
+	if got := CanonicalProjectPath(db, "/Users/dev/projects/swarmery"); got != "/Users/dev/projects/swarmery" {
+		t.Errorf("cwd under onboarding root = %q, want it unchanged", got)
+	}
+	// …so a repo under the root mints its OWN row instead of folding in.
+	id, created, err := UpsertProject(db, "/Users/dev/projects/swarmery", "2026-07-26T00:00:00.000Z", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || id == root {
+		t.Errorf("repo under onboarding root: id=%d created=%v, want a fresh row (root id=%d)", id, created, root)
+	}
+	// A real project deeper than the root is still a valid ancestor — the ban
+	// is on the root row alone, not on the subtree.
+	if got := CanonicalProjectPath(db, "/Users/dev/projects/swarmery/web"); got != "/Users/dev/projects/swarmery" {
+		t.Errorf("subdir of a real repo = %q, want /Users/dev/projects/swarmery", got)
+	}
+}
+
+func TestCanonicalProjectPathSkipsArchivedAncestor(t *testing.T) {
+	db := testDB(t)
+	seedProject(t, db, "/Volumes/Work/swarmery")
+
+	// Unarchived, the ancestor rule folds the subdir in (baseline).
+	if got := CanonicalProjectPath(db, "/Volumes/Work/swarmery/web"); got != "/Volumes/Work/swarmery" {
+		t.Fatalf("baseline: got %q, want /Volumes/Work/swarmery", got)
+	}
+	mustExecT(t, db, `UPDATE projects SET archived = 1 WHERE path = ?`, "/Volumes/Work/swarmery")
+	if got := CanonicalProjectPath(db, "/Volumes/Work/swarmery/web"); got != "/Volumes/Work/swarmery/web" {
+		t.Errorf("archived ancestor = %q, want the cwd unchanged", got)
+	}
+}
+
+func TestHealProjectAttributionSkipsPinnedRow(t *testing.T) {
+	db := testDB(t)
+	parent := seedProject(t, db, "/Volumes/Work/swarmery")
+
+	// Two rows the ancestor rule would fold into the parent, identical except
+	// for the pin: neither is workspace-linked, so only `pinned` decides.
+	mustExecT(t, db, `INSERT INTO projects (path, slug, name, first_seen, pinned) VALUES (?, ?, ?, ?, 1)`,
+		"/Volumes/Work/swarmery/web", "-Volumes-Work-swarmery-web", "web", "2026-07-20T00:00:00.000Z")
+	mustExecT(t, db, `INSERT INTO projects (path, slug, name, first_seen, pinned) VALUES (?, ?, ?, ?, 0)`,
+		"/Volumes/Work/swarmery/docs", "-Volumes-Work-swarmery-docs", "docs", "2026-07-20T00:00:00.000Z")
+	var pinnedID, looseID int64
+	if err := db.QueryRow(`SELECT id FROM projects WHERE name = 'web'`).Scan(&pinnedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT id FROM projects WHERE name = 'docs'`).Scan(&looseID); err != nil {
+		t.Fatal(err)
+	}
+	mustExecT(t, db, `INSERT INTO sessions (project_id, session_uuid, started_at) VALUES (?, 'u-pinned', '2026-07-20T00:00:00.000Z')`, pinnedID)
+	mustExecT(t, db, `INSERT INTO sessions (project_id, session_uuid, started_at) VALUES (?, 'u-loose', '2026-07-20T00:00:00.000Z')`, looseID)
+
+	moved, err := HealProjectAttribution(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 1 {
+		t.Errorf("moved = %d, want 1 (the unpinned row only)", moved)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM projects WHERE id = ?`, pinnedID); n != 1 {
+		t.Errorf("pinned row was merged away")
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, pinnedID); n != 1 {
+		t.Errorf("pinned sessions = %d, want 1 (kept)", n)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM projects WHERE id = ?`, looseID); n != 0 {
+		t.Errorf("unpinned row survived the heal")
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM sessions WHERE project_id = ?`, parent); n != 1 {
+		t.Errorf("parent sessions = %d, want 1 (unpinned row re-pointed)", n)
 	}
 }
 

@@ -4,22 +4,25 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"path/filepath"
 	"strconv"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ctxhogs"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 )
 
-// transcriptsRoot is the Claude Code projects root (~/.claude/projects) the
-// daemon ingests from — the single source of truth for uuid→transcript lookups,
-// wired from cmd/swarmery via AttachProjectsRoot (pattern: AttachOverlaysDir).
-// Empty when unset (tests that don't touch the context-hogs endpoint, or an
-// unusual serve config): the endpoint then 404s, never panics.
-var transcriptsRoot string
+// transcriptsRoots are the Claude Code projects roots (~/.claude/projects,
+// ~/.claude-<account>/projects, … — one per config dir on a multi-subscription
+// machine) the daemon ingests from: the single source of truth for
+// uuid→transcript lookups, wired from cmd/swarmery via AttachProjectsRoots
+// (pattern: AttachOverlaysDir). Empty when unset (tests that don't touch the
+// context-hogs endpoint, or an unusual serve config): the endpoint then 404s,
+// never panics.
+var transcriptsRoots []string
 
-// AttachProjectsRoot wires the ingest projects root into the on-demand
-// transcript-parsing endpoints (currently the context-hogs analyzer).
-func AttachProjectsRoot(root string) { transcriptsRoot = root }
+// AttachProjectsRoots wires the ingest projects roots into the on-demand
+// transcript-parsing endpoints (currently the context-hogs analyzer). Lookups
+// search the roots in order, first match wins.
+func AttachProjectsRoots(roots []string) { transcriptsRoots = roots }
 
 // getSessionContextHogs serves GET /api/sessions/{id}/context-hogs — the
 // per-tool context attribution for a session, computed on demand by parsing the
@@ -46,21 +49,21 @@ func (h *Handler) getSessionContextHogs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Resolve uuid → transcript path: <projectsRoot>/<slug>/<uuid>.jsonl, the
-	// same glob the ingest stub-heal uses (internal/ingest/heal.go). First match
-	// wins; no transcript on disk is a legitimate 404 (hook-only session, or a
-	// deleted/rewound transcript).
-	if transcriptsRoot == "" {
+	// Resolve uuid → transcript path: <root>/<slug>/<uuid>.jsonl across EVERY
+	// configured root, through the same lookup the ingest stub-heal uses
+	// (internal/ingest.FindTranscript). First match wins; no transcript on disk
+	// is a legitimate 404 (hook-only session, or a deleted/rewound transcript).
+	if len(transcriptsRoots) == 0 {
 		writeClientErr(w, http.StatusNotFound, "no transcript root configured")
 		return
 	}
-	matches, _ := filepath.Glob(filepath.Join(transcriptsRoot, "*", sessionUUID+".jsonl"))
-	if len(matches) == 0 {
+	transcript := ingest.FindTranscript(transcriptsRoots, sessionUUID)
+	if transcript == "" {
 		writeClientErr(w, http.StatusNotFound, "no transcript on disk for session")
 		return
 	}
 
-	report, err := ctxhogs.Analyze(matches[0])
+	report, err := ctxhogs.Analyze(transcript)
 	if err != nil {
 		writeErr(w, err)
 		return

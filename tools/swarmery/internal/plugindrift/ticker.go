@@ -95,6 +95,22 @@ func (t *Ticker) activeTargets(rule string) map[string]bool {
 
 // loadProjects reads every registered project and the plugin ids its
 // settings.json enables. Projects that enable nothing are skipped.
+//
+// Deliberately repo-only: it does NOT fold in the declared settings overlays
+// that internal/settingsoverlay resolves for the API's managed/pack view. Two
+// reasons, both about what a finding here means:
+//
+//   - RuleEnabledNotInstalled says "enabled in settings.json but not installed
+//     on this machine". An overlay's plugins are installed under whatever scope
+//     the launcher owns, which `claude plugin list --json` reports against a
+//     different project path — folding them in would manufacture an error-level
+//     finding (and a webhook) for a plugin that loads fine in every session.
+//   - The repair those findings drive runs `claude plugin install --scope
+//     project`, which WRITES the repo's settings.json — exactly the thing an
+//     overlay-managed project keeps out of its repo.
+//
+// The API compensates rather than papers over it: a plugin enabled only by an
+// overlay renders as "unknown", never a green "ok" (see api/project_plugins.go).
 func loadProjects(db *sql.DB) ([]Project, error) {
 	rows, err := db.Query(`SELECT path FROM projects WHERE path <> '' ORDER BY path`)
 	if err != nil {

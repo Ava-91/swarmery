@@ -191,3 +191,106 @@ func TestReadEnabledPlugins_MissingAndMalformed(t *testing.T) {
 		t.Errorf("malformed settings: (%v, %v), want (nil, nil)", ids, err)
 	}
 }
+
+// overlay is a test-local shorthand for a declared settings overlay.
+func overlay(name string, enabled map[string]bool, marketplaces map[string]string) SettingsOverlay {
+	return SettingsOverlay{Name: name, Settings: Settings{EnabledPlugins: enabled, Marketplaces: marketplaces}}
+}
+
+func TestPluginState_OverlayEnablesEmptyRepo(t *testing.T) {
+	dir := t.TempDir()
+	writeSettings(t, dir, `{}`)
+
+	st, err := ReadPluginState(dir, nil, overlay("acme",
+		map[string]bool{"core@swarmery": true, "iot-pack@swarmery": true},
+		map[string]string{"swarmery": "owner/swarmery"}))
+	if err != nil || st == nil {
+		t.Fatalf("ReadPluginState = (%v, %v), want a state", st, err)
+	}
+	if !st.Managed {
+		t.Error("want Managed=true from the overlay")
+	}
+	if !reflect.DeepEqual(st.Packs, []string{"iot-pack"}) {
+		t.Errorf("packs = %v, want [iot-pack]", st.Packs)
+	}
+	if st.Marketplace != "owner/swarmery" {
+		t.Errorf("marketplace = %q, want the overlay's", st.Marketplace)
+	}
+	if !reflect.DeepEqual(st.OverlaySources, []string{"acme"}) {
+		t.Errorf("overlaySources = %v, want [acme]", st.OverlaySources)
+	}
+}
+
+// TestPluginState_OverlayWithoutRepoSettings: no .claude/settings.json at all
+// used to mean (nil, nil). With a covering overlay there IS state to report.
+func TestPluginState_OverlayWithoutRepoSettings(t *testing.T) {
+	st, err := ReadPluginState(t.TempDir(), nil,
+		overlay("acme", map[string]bool{"core@swarmery": true}, nil))
+	if err != nil || st == nil {
+		t.Fatalf("ReadPluginState = (%v, %v), want a state", st, err)
+	}
+	if !st.Managed || len(st.OverlaySources) != 1 {
+		t.Errorf("state = %+v, want Managed=true with one overlay source", st)
+	}
+}
+
+// TestPluginState_OverlayWinsOnConflict pins precedence: an overlay rides at
+// CLI precedence in a real session, so it outranks the repo per key — later
+// overlays outrank earlier ones for the same reason.
+func TestPluginState_OverlayWinsOnConflict(t *testing.T) {
+	dir := t.TempDir()
+	writeSettings(t, dir, `{
+		"extraKnownMarketplaces": {"swarmery": {"source": {"repo": "repo/one"}}},
+		"enabledPlugins": {"core@swarmery": true, "iot-pack@swarmery": true}
+	}`)
+
+	st, err := ReadPluginState(dir, nil,
+		overlay("first", map[string]bool{"iot-pack@swarmery": false, "web-pack@swarmery": false}, nil),
+		overlay("second", map[string]bool{"web-pack@swarmery": true}, map[string]string{"swarmery": "repo/two"}))
+	if err != nil || st == nil {
+		t.Fatalf("ReadPluginState = (%v, %v), want a state", st, err)
+	}
+	if !st.Managed {
+		t.Error("core came from the repo and no overlay touched it — want Managed=true")
+	}
+	if !reflect.DeepEqual(st.Packs, []string{"web-pack"}) {
+		t.Errorf("packs = %v, want [web-pack] (iot-pack off by overlay, web-pack on by the later one)", st.Packs)
+	}
+	if st.Marketplace != "repo/two" {
+		t.Errorf("marketplace = %q, want repo/two (overlay wins)", st.Marketplace)
+	}
+	if !reflect.DeepEqual(st.OverlaySources, []string{"first", "second"}) {
+		t.Errorf("overlaySources = %v, want [first second]", st.OverlaySources)
+	}
+}
+
+// TestPluginState_EmptyOverlayIsNotProvenance: an overlay that declares nothing
+// changed nothing, so naming it would be provenance for a non-event.
+func TestPluginState_EmptyOverlayIsNotProvenance(t *testing.T) {
+	dir := t.TempDir()
+	writeSettings(t, dir, `{"enabledPlugins": {"core@swarmery": true}}`)
+
+	st, err := ReadPluginState(dir, nil, overlay("empty", nil, nil))
+	if err != nil || st == nil {
+		t.Fatalf("ReadPluginState = (%v, %v), want a state", st, err)
+	}
+	if len(st.OverlaySources) != 0 {
+		t.Errorf("overlaySources = %v, want none", st.OverlaySources)
+	}
+	if !st.Managed {
+		t.Error("the repo's own state must survive an empty overlay")
+	}
+}
+
+func TestReadSettings_ReportsFailure(t *testing.T) {
+	if _, err := ReadSettings(filepath.Join(t.TempDir(), "absent.json")); err == nil {
+		t.Error("ReadSettings on a missing file must report the error (the overlay reader logs it once)")
+	}
+	bad := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(bad, []byte(`{nope`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadSettings(bad); err == nil {
+		t.Error("ReadSettings on malformed JSON must report the error")
+	}
+}

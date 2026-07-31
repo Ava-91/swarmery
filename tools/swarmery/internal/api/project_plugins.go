@@ -31,6 +31,12 @@ import (
 // projectscan's marketplaceSuffix ("@swarmery") view of enabledPlugins.
 const pluginMarketplace = "swarmery"
 
+// overlayStatusDetail explains a row that is enabled by a declared settings
+// overlay: it is live in real sessions, but the drift detector never looked at
+// it (see internal/plugindrift/ticker.go loadProjects for why it stays
+// repo-scoped), so its status is "unknown" rather than a green "ok".
+const overlayStatusDetail = "enabled by a settings overlay — drift is only scanned from this repo's settings.json"
+
 // pluginCatalogDir is attached once at startup (or per-test); empty ⇒ resolve
 // ~/.claude at request time. Mirrors AttachOnboard (onboard.go:41).
 var pluginCatalogDir string
@@ -132,6 +138,11 @@ type projectPluginsResponse struct {
 	MarketplaceName string             `json:"marketplaceName"`
 	CanWrite        bool               `json:"canWrite"`
 	Plugins         []projectPluginDTO `json:"plugins"`
+	// OverlaySources names the declared settings overlays that contributed to
+	// the enabled state below (internal/settingsoverlay). Omitted when the repo's
+	// own settings.json is the whole story — its presence is the reader's only
+	// clue that this project's plugin set does not live in its repo.
+	OverlaySources []string `json:"overlaySources,omitempty"`
 }
 
 // projectPlugins handles GET /api/projects/{id}/plugins.
@@ -173,10 +184,30 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 	// (telemetry-only project, unreadable settings) renders everything off.
 	// roots=nil: UnderOnboardRoot is unused here — canWrite is derived
 	// separately below via resolveUnderRoots.
-	enabledCore, enabledPacks := false, []string{}
-	if st, serr := projectscan.ReadPluginState(path, nil); serr == nil && st != nil {
+	//
+	// Declared settings overlays are folded in: for a project whose plugin set
+	// is injected by a launcher at CLI precedence, the repo alone would report
+	// every row disabled while every session runs them.
+	overlays := overlaysFor(path)
+	enabledCore, enabledPacks, overlaySources := false, []string{}, []string(nil)
+	if st, serr := projectscan.ReadPluginState(path, nil, overlays...); serr == nil && st != nil {
 		enabledCore = st.Managed
 		enabledPacks = st.Packs
+		overlaySources = st.OverlaySources
+	}
+	// Drift is scanned from the repo's own settings only
+	// (internal/plugindrift/ticker.go loadProjects), so a plugin that is enabled
+	// ONLY by an overlay has no finding either way — and "no finding" must not
+	// render as a checked "ok" for it, for the same reason a disabled row is
+	// "unknown". Repo-enabled plugins keep their real status even when an
+	// overlay names them too, hence the subtraction rather than a plain lookup.
+	fromOverlay, repoEnabled := overlayPacks(overlays), map[string]bool{}
+	if ids, ierr := projectscan.ReadEnabledPlugins(path); ierr == nil {
+		for _, id := range ids {
+			if name, mkt, _ := strings.Cut(id, "@"); mkt == pluginMarketplace {
+				repoEnabled[name] = true
+			}
+		}
 	}
 
 	// canWrite mirrors the attach/detach fence (attach.go:42-87): roots must be
@@ -199,6 +230,7 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 		MarketplaceName:    pluginMarketplace,
 		CanWrite:           canWrite,
 		Plugins:            []projectPluginDTO{},
+		OverlaySources:     overlaySources,
 	}
 	seen := map[string]bool{}
 	for _, p := range cat.Plugins {
@@ -207,10 +239,15 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 		// A disabled plugin is "unknown", not "ok": no finding is expected for it
 		// either way, so claiming health would be an assertion nothing checked.
 		status, detail := "ok", ""
-		if !enabled {
+		switch {
+		case !enabled:
 			status = "unknown"
-		} else if d, ok := drift[p.Name]; ok {
-			status, detail = d.status, d.detail
+		case fromOverlay[p.Name] && !repoEnabled[p.Name]:
+			status, detail = "unknown", overlayStatusDetail
+		default:
+			if d, ok := drift[p.Name]; ok {
+				status, detail = d.status, d.detail
+			}
 		}
 		resp.Plugins = append(resp.Plugins, projectPluginDTO{
 			Name: p.Name, Description: p.Description,

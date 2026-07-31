@@ -184,7 +184,9 @@ func (h *Handler) toolsDash(w http.ResponseWriter, r *http.Request) {
 		// architecture union (pack∪artifact). State nil = telemetry-only /
 		// unreadable settings — those still appear in the architecture list if
 		// they have an artifact (artifact-only gating for telemetry projects).
-		st, serr := projectscan.ReadPluginState(path, nil)
+		// Overlay-aware: a pack switched on by a declared settings overlay is
+		// live in that project's sessions, so it belongs on these lists too.
+		st, serr := projectscan.ReadPluginState(path, nil, overlaysFor(path)...)
 		packEnabled := serr == nil && st != nil && slices.Contains(st.Packs, architecturePack)
 		if d, ok := architectureDTO(id, slug, namePtr, path, packEnabled); ok {
 			// The latest provision job (if any) rides on the DTO so the sidebar

@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import type { Session } from '../api/types';
 import { fmtSpan, fmtTime } from '../lib/format';
+import { accountLabel } from '../lib/sessionAccount';
 import { useSessionHref } from '../lib/sessionHref';
 import { sessionState, useNowMs, type SessionState } from '../lib/sessionState';
 import { ExplainPair } from './Explain';
@@ -66,6 +67,26 @@ function HandoffChip({ session }: { session: Session }): JSX.Element | null {
         Handoff
       </span>
     </ExplainPair>
+  );
+}
+
+/** Which Claude Code subscription ran this session (migration 0047) — rendered
+ * ONLY for non-default accounts (lib/sessionAccount): on a one-subscription
+ * machine every row would otherwise carry an identical "default" chip.
+ *
+ * Neutral line/ink styling on purpose: the account is provenance, not a
+ * warning, so it must not compete with the amber/red context chip or the
+ * purple handoff chip it sits beside. */
+function AccountBadge({ session }: { session: Session }): JSX.Element | null {
+  const label = accountLabel(session);
+  if (label === null) return null;
+  return (
+    <span
+      data-tip={`ingested from the ${label} Claude Code account`}
+      className="shrink-0 rounded-full border border-line-strong bg-surface2 px-[7px] py-0.5 font-mono text-[10px] whitespace-nowrap text-ink-dim"
+    >
+      {label}
+    </span>
   );
 }
 
@@ -217,6 +238,7 @@ export function SessionCard({
             className="min-w-0 flex-1 truncate font-mono text-[11px]"
           />
         )}
+        <AccountBadge session={session} />
         <ContextBadge session={session} />
         <HandoffChip session={session} />
         <ProcBadge session={session} />
@@ -328,6 +350,7 @@ export function SessionCard({
                 {OUTCOME_GLYPH[session.outcome].glyph}
               </span>
             )}
+            <AccountBadge session={session} />
             <ContextBadge session={session} />
             <HandoffChip session={session} />
           </span>
