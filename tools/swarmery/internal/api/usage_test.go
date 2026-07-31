@@ -38,12 +38,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
 )
@@ -149,28 +151,86 @@ func (s *usageStub) sentBearers() []string {
 	return append([]string(nil), s.bearers...)
 }
 
-// installStubUsageClient points the package-level client at stub (nil = no
-// endpoint at all, over a refusing transport) with the given credential loader.
-// It clears the shared response cache before and after, so tests are
-// order-independent.
-func installStubUsageClient(t *testing.T, stub *usageStub, load func(context.Context) (*usage.Creds, error)) {
-	t.Helper()
-	prev := usageClient
+// stubUsageClient builds a client for src wired to stub (nil = no endpoint at
+// all, over a refusing transport) with the given credential loader.
+func stubUsageClient(src usage.Source, stub *usageStub, load func(context.Context) (*usage.Creds, error)) *usage.Client {
 	c := &usage.Client{
 		Now:       func() time.Time { return usageStubNow },
 		LoadCreds: load,
+		Src:       src,
 	}
 	if stub != nil {
 		c.HTTP, c.APIBase, c.AuthBase = stub.srv.Client(), stub.srv.URL, stub.srv.URL
 	} else {
 		c.HTTP = &http.Client{Transport: usageRefusingTransport{}}
 	}
-	usageClient = c
+	return c
+}
+
+// installStubUsageClient points the DEFAULT account's client at stub. It clears
+// the shared response cache before and after, so tests are order-independent.
+func installStubUsageClient(t *testing.T, stub *usageStub, load func(context.Context) (*usage.Creds, error)) {
+	t.Helper()
+	prev := usageClient
+	usageClient = stubUsageClient(usage.Source{Account: ingest.DefaultAccount}, stub, load)
 	resetUsageCache()
 	t.Cleanup(func() {
 		usageClient = prev
 		resetUsageCache()
 	})
+}
+
+// installStubUsageClientFor is installStubUsageClient for a NAMED account: it
+// pre-seeds the per-account registry usageClientFor reads, so the handler's
+// fan-out finds a stub instead of minting a client that would resolve a real
+// credential dir. src carries the account's config dir, so the setup hint the
+// stub produces is the per-account one.
+func installStubUsageClientFor(t *testing.T, src usage.Source, stub *usageStub, load func(context.Context) (*usage.Creds, error)) {
+	t.Helper()
+	c := stubUsageClient(src, stub, load)
+	usageClientsMu.Lock()
+	prev, had := usageClients[src.Account]
+	usageClients[src.Account] = c
+	usageClientsMu.Unlock()
+	resetUsageCache()
+	t.Cleanup(func() {
+		usageClientsMu.Lock()
+		if had {
+			usageClients[src.Account] = prev
+		} else {
+			delete(usageClients, src.Account)
+		}
+		usageClientsMu.Unlock()
+		resetUsageCache()
+	})
+}
+
+// attachAccountRoots points the package's transcript roots at one synthetic
+// projects root per account ("default" → <tmp>/.claude/projects, "nabu-org" →
+// <tmp>/.claude-nabu-org/projects) and returns each account's CONFIG DIR — the
+// root's parent, which is what a scoped usage.Source is built from.
+//
+// The directories are deliberately NOT created: account enumeration is pure path
+// arithmetic over the configured roots, and nothing in this path may stat, read
+// or otherwise touch a real credential store.
+func attachAccountRoots(t *testing.T, accounts ...string) map[string]string {
+	t.Helper()
+	base := t.TempDir()
+	dirs := make(map[string]string, len(accounts))
+	roots := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		name := ".claude"
+		if a != ingest.DefaultAccount {
+			name = ".claude-" + a
+		}
+		dir := filepath.Join(base, name)
+		dirs[a] = dir
+		roots = append(roots, filepath.Join(dir, "projects"))
+	}
+	prev := transcriptsRoots
+	AttachProjectsRoots(roots)
+	t.Cleanup(func() { AttachProjectsRoots(prev) })
+	return dirs
 }
 
 // providerNamed returns the provider with the given name, failing the test when
@@ -272,6 +332,169 @@ func TestUsageWindowElapsed(t *testing.T) {
 	e2, _, r2 := usageWindowElapsed(now, 5)
 	if e2 != elapsed || !r2.Equal(resetsAt) {
 		t.Errorf("non-deterministic: (%v,%v) vs (%v,%v)", e2, r2, elapsed, resetsAt)
+	}
+}
+
+// TestAccountsFromRoots pins the account enumeration: which subscriptions the
+// endpoint fans out to, and — the load-bearing half — which of them resolve
+// through the legacy credential chain rather than a scoped config dir.
+func TestAccountsFromRoots(t *testing.T) {
+	const (
+		stock  = "/home/dev/.claude/projects"
+		named  = "/home/dev/.claude-nabu-org/projects"
+		nabuCD = "/home/dev/.claude-nabu-org"
+	)
+	for _, tc := range []struct {
+		name  string
+		roots []string
+		want  []usage.Source
+	}{
+		{
+			// B3: the api test binary and any non-standard boot land here, and
+			// must behave exactly as the single-account daemon always did.
+			name: "no roots at all is exactly one default account, over the legacy chain",
+			want: []usage.Source{{Account: "default"}},
+		},
+		{
+			name:  "an empty slice is the same as none",
+			roots: []string{},
+			want:  []usage.Source{{Account: "default"}},
+		},
+		{
+			// The stock account keeps ConfigDir empty ON PURPOSE: ~/.claude has
+			// no credential file on macOS, where the chain's keychain fallback
+			// is the only thing that works.
+			name:  "the stock root is the default account with NO config dir",
+			roots: []string{stock},
+			want:  []usage.Source{{Account: "default"}},
+		},
+		{
+			name:  "a named root carries its own config dir",
+			roots: []string{named},
+			want:  []usage.Source{{Account: "nabu-org", ConfigDir: nabuCD}},
+		},
+		{
+			name:  "both roots, in root order",
+			roots: []string{stock, named},
+			want:  []usage.Source{{Account: "default"}, {Account: "nabu-org", ConfigDir: nabuCD}},
+		},
+		{
+			name:  "a trailing slash names the same config dir",
+			roots: []string{named + "/"},
+			want:  []usage.Source{{Account: "nabu-org", ConfigDir: nabuCD}},
+		},
+		{
+			// Two roots can derive one key; polling it twice would double the
+			// upstream calls and render two identical cards.
+			name:  "duplicate keys are deduped, first root wins",
+			roots: []string{named, "/srv/other/.claude-nabu-org/projects", named + "//"},
+			want:  []usage.Source{{Account: "nabu-org", ConfigDir: nabuCD}},
+		},
+		{
+			name:  "a root outside a .claude dir keeps its basename",
+			roots: []string{"/srv/transcripts/projects"},
+			want:  []usage.Source{{Account: "transcripts", ConfigDir: "/srv/transcripts"}},
+		},
+		{
+			// Enumeration is pure path arithmetic — a configured-but-absent root
+			// still gets a card, which then reports "not connected".
+			name:  "a missing directory is still enumerated",
+			roots: []string{"/nope/does/not/exist/.claude-nabu-org/projects"},
+			want: []usage.Source{{
+				Account:   "nabu-org",
+				ConfigDir: "/nope/does/not/exist/.claude-nabu-org",
+			}},
+		},
+		{
+			// A degenerate root names no config dir; ingest.AccountFor calls it
+			// the default account, and it must NOT become a scoped "." lookup.
+			name:  "a rootless relative root is the default account, not a scoped '.'",
+			roots: []string{"projects"},
+			want:  []usage.Source{{Account: "default"}},
+		},
+		{
+			name:  "blank roots are skipped entirely",
+			roots: []string{"", "   "},
+			want:  []usage.Source{{Account: "default"}},
+		},
+		{
+			name:  "a blank root alongside a real one drops only the blank",
+			roots: []string{"", named},
+			want:  []usage.Source{{Account: "nabu-org", ConfigDir: nabuCD}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := accountsFromRoots(tc.roots); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("accountsFromRoots(%q) = %+v, want %+v", tc.roots, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUsageClientForRegistry: a named account's client must be minted ONCE and
+// kept. The refreshed-token cache lives on the client, so a fresh client per
+// poll would throw away a just-refreshed bearer and re-refresh on every 30s
+// tick. The default account keeps using the package-level var (the seam the
+// rest of these tests install stubs through).
+func TestUsageClientForRegistry(t *testing.T) {
+	if got := usageClientFor(usage.Source{Account: ingest.DefaultAccount}); got != usageClient {
+		t.Error("the default account must resolve to the package-level client")
+	}
+
+	src := usage.Source{Account: "registry-probe", ConfigDir: t.TempDir()}
+	t.Cleanup(func() {
+		usageClientsMu.Lock()
+		delete(usageClients, src.Account)
+		usageClientsMu.Unlock()
+	})
+
+	first := usageClientFor(src)
+	if first == nil {
+		t.Fatal("usageClientFor minted no client")
+	}
+	if first == usageClient {
+		t.Error("a named account shares the default account's client — and therefore its token cache")
+	}
+	if first.Src != src {
+		t.Errorf("minted client Src = %+v, want %+v", first.Src, src)
+	}
+	if second := usageClientFor(src); second != first {
+		t.Error("usageClientFor minted a second client for one account")
+	}
+}
+
+// TestDefaultAccountRow: which row the top-level alias speaks for. A daemon
+// pointed only at a named root has no default account at all, and the chip still
+// needs one card to speak for.
+func TestDefaultAccountRow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows []usageAccount
+		want string // the chosen row's account; "" means nil
+	}{
+		{"nil rows", nil, ""},
+		{"the default row, wherever it sits", []usageAccount{
+			{Account: "nabu-org"}, {Account: ingest.DefaultAccount},
+		}, ingest.DefaultAccount},
+		{"no default account falls back to the first row", []usageAccount{
+			{Account: "nabu-org"}, {Account: "science"},
+		}, "nabu-org"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := defaultAccountRow(tc.rows)
+			if tc.want == "" {
+				if got != nil {
+					t.Errorf("defaultAccountRow = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("defaultAccountRow = nil, want the %q row", tc.want)
+			}
+			if got.Account != tc.want {
+				t.Errorf("defaultAccountRow = %q, want %q", got.Account, tc.want)
+			}
+		})
 	}
 }
 
@@ -508,10 +731,13 @@ func TestUsageNoCredsNoLimitsSingleProvider(t *testing.T) {
 	// field-by-field below.
 	got := usageGeneratedAtRe.ReplaceAllString(strings.TrimSpace(body), `"generatedAt":"<ts>"`)
 	got = usageHintRe.ReplaceAllString(got, `"hint":{…}`)
-	want := `{"generatedAt":"<ts>","providers":[` +
-		"{\"name\":\"Claude\",\"status\":\"no-auth\"," +
+	// One account (no roots configured in this binary), one card, and the
+	// top-level `providers` alias carrying exactly that account's row.
+	card := "{\"account\":\"default\",\"name\":\"Claude\",\"status\":\"no-auth\"," +
 		"\"error\":\"No Claude credentials — run `claude` to log in\"," +
-		`"source":"oauth","windows":[],"hint":{…}}]}`
+		`"source":"oauth","windows":[],"hint":{…}}`
+	want := `{"generatedAt":"<ts>","providers":[` + card + `],` +
+		`"accounts":[{"account":"default","providers":[` + card + `]}]}`
 	if got != want {
 		t.Errorf("body =\n%s\nwant\n%s", got, want)
 	}
@@ -545,6 +771,133 @@ func TestUsageNoCredsNoLimitsSingleProvider(t *testing.T) {
 	}
 	if len(hint.Sources) == 0 {
 		t.Error("hint sources = empty, want the credential locations the daemon looked in")
+	}
+}
+
+// TestUsageFansOutAcrossAccounts is the multi-account contract: one row per
+// configured account, in root order, each card stamped with its own account key,
+// and the top-level `providers` alias carrying the DEFAULT account's row.
+//
+// The second account is deliberately credential-less, which is the common macOS
+// case: it must render as a "connect this account" card carrying ITS OWN login
+// command — never as an error, and never as the default account's quota under a
+// second name.
+func TestUsageFansOutAcrossAccounts(t *testing.T) {
+	recent := time.Now().UTC().Format("2006-01-02T15:04:05")
+	_, srv := usageTestDB(t, "usage-accounts.db", recent, [2]int64{10, 5})
+	dirs := attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+
+	stub := newUsageStub(t, usageStubPayload)
+	installStubUsageClient(t, stub, usageLoggedInCreds)
+	nabuSrc := usage.Source{Account: "nabu-org", ConfigDir: dirs["nabu-org"]}
+	installStubUsageClientFor(t, nabuSrc, nil, usageNoCreds)
+	t.Setenv("SWARMERY_USAGE_LIMITS", "")
+	resetUsageCache()
+
+	status, body := getBody(t, srv.URL+"/api/usage?fresh=1")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	var got usageResp
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(got.Accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2", len(got.Accounts))
+	}
+	if got.Accounts[0].Account != ingest.DefaultAccount || got.Accounts[1].Account != "nabu-org" {
+		t.Fatalf("account order = [%q %q], want [default nabu-org] (root order)",
+			got.Accounts[0].Account, got.Accounts[1].Account)
+	}
+	for _, row := range got.Accounts {
+		if row.Error != "" {
+			t.Errorf("account %q carries a row error %q, want none", row.Account, row.Error)
+		}
+		if len(row.Providers) != 1 {
+			t.Fatalf("account %q has %d cards, want 1", row.Account, len(row.Providers))
+		}
+		// Without this stamp every card is called "Claude" and the UI cannot
+		// tell two accounts' cards apart.
+		if row.Providers[0].Account != row.Account {
+			t.Errorf("card in row %q is stamped %q", row.Account, row.Providers[0].Account)
+		}
+	}
+
+	if def := got.Accounts[0].Providers[0]; def.Status != usage.StatusOK {
+		t.Errorf("default account card = %q (%s), want ok", def.Status, def.Error)
+	}
+	nabu := got.Accounts[1].Providers[0]
+	if nabu.Status != usage.StatusNoAuth {
+		t.Errorf("credential-less account = %q, want no-auth (a connect row, not an error)", nabu.Status)
+	}
+	if nabu.Hint == nil {
+		t.Fatal("credential-less account has no hint — the card cannot tell the operator what to do")
+	}
+	if want := "CLAUDE_CONFIG_DIR=" + dirs["nabu-org"] + " claude"; nabu.Hint.Command != want {
+		t.Errorf("hint command = %q, want %q — a bare `claude` re-logs-in the DEFAULT account",
+			nabu.Hint.Command, want)
+	}
+	if len(nabu.Hint.Sources) != 1 || !strings.HasPrefix(nabu.Hint.Sources[0], dirs["nabu-org"]) {
+		t.Errorf("hint sources = %v, want only this account's own config dir", nabu.Hint.Sources)
+	}
+	if len(nabu.Windows) != 0 {
+		t.Errorf("credential-less account reported %d windows, want none", len(nabu.Windows))
+	}
+
+	// The top-level fields are an ALIAS of the default account's row (S8).
+	if !reflect.DeepEqual(got.Providers, got.Accounts[0].Providers) {
+		t.Errorf("top-level providers = %+v, want the default account's row", got.Providers)
+	}
+	// A not-connected account costs no upstream call.
+	if n := stub.count(); n != 1 {
+		t.Errorf("anthropic calls = %d, want 1 (only the account with a credential)", n)
+	}
+}
+
+// TestUsageFailingAccountDegradesToItsOwnRow: R4's containment. One account's
+// credential path blowing up must cost THAT row and nothing else — the endpoint
+// still answers 200 and the healthy account still renders.
+func TestUsageFailingAccountDegradesToItsOwnRow(t *testing.T) {
+	recent := time.Now().UTC().Format("2006-01-02T15:04:05")
+	_, srv := usageTestDB(t, "usage-account-fail.db", recent, [2]int64{10, 5})
+	dirs := attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+
+	stub := newUsageStub(t, usageStubPayload)
+	installStubUsageClient(t, stub, usageLoggedInCreds)
+	installStubUsageClientFor(t, usage.Source{Account: "nabu-org", ConfigDir: dirs["nabu-org"]}, nil,
+		func(context.Context) (*usage.Creds, error) {
+			panic("credential store exploded — " + usageFixtureToken)
+		})
+	t.Setenv("SWARMERY_USAGE_LIMITS", "")
+	resetUsageCache()
+
+	status, body := getBody(t, srv.URL+"/api/usage?fresh=1")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — one broken account is not a server error", status)
+	}
+	var got usageResp
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2 (the broken one still gets a row)", len(got.Accounts))
+	}
+	if got.Accounts[0].Providers[0].Status != usage.StatusOK {
+		t.Errorf("healthy account = %q, want ok — it must survive its neighbour",
+			got.Accounts[0].Providers[0].Status)
+	}
+	broken := got.Accounts[1]
+	if broken.Error == "" {
+		t.Error("broken account row carries no error")
+	}
+	if len(broken.Providers) != 0 {
+		t.Errorf("broken account rendered %d cards, want none", len(broken.Providers))
+	}
+	// The recovered panic value can carry arbitrary interpolated state — here a
+	// token — so it must never be echoed into the response.
+	if strings.Contains(body, usageFixtureToken) || strings.Contains(body, "exploded") {
+		t.Errorf("row error echoed the recovered panic value:\n%s", body)
 	}
 }
 
@@ -648,12 +1001,21 @@ func TestUsageInvalidLimitsReturns500(t *testing.T) {
 // TestUsageResponseCarriesNoSecrets is the token-leak guard. The bearer is
 // genuinely used upstream (asserted via the stub's recorded authorization
 // header) and must appear NOWHERE in the bytes the daemon serves.
+//
+// Two accounts, both with a credential, so the scan covers the WHOLE serialized
+// body — the top-level alias AND every accounts[] row. A second account is where
+// a leak would most plausibly hide: its credential is read through a different
+// (scoped) path than the default account's.
 func TestUsageResponseCarriesNoSecrets(t *testing.T) {
 	recent := time.Now().UTC().Format("2006-01-02T15:04:05")
 	_, srv := usageTestDB(t, "usage-secrets.db", recent, [2]int64{10, 5})
+	dirs := attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
 
 	stub := newUsageStub(t, usageStubPayload)
 	installStubUsageClient(t, stub, usageLoggedInCreds)
+	nabuStub := newUsageStub(t, usageStubPayload)
+	installStubUsageClientFor(t,
+		usage.Source{Account: "nabu-org", ConfigDir: dirs["nabu-org"]}, nabuStub, usageLoggedInCreds)
 	t.Setenv("SWARMERY_USAGE_LIMITS", `{"session5h":{"label":"5h","tokens":900000,"windowHours":5}}`)
 	resetUsageCache()
 
@@ -667,6 +1029,14 @@ func TestUsageResponseCarriesNoSecrets(t *testing.T) {
 	bearers := stub.sentBearers()
 	if len(bearers) == 0 || bearers[0] != "Bearer "+usageFixtureToken {
 		t.Fatalf("stub saw bearers %v, want the fixture token sent exactly once upstream", bearers)
+	}
+	if nb := nabuStub.sentBearers(); len(nb) == 0 || nb[0] != "Bearer "+usageFixtureToken {
+		t.Fatalf("second account's stub saw bearers %v, want the fixture token upstream", nb)
+	}
+	// …and the body really does carry both accounts, so the scan below is not
+	// scanning a single-account payload by accident.
+	if !strings.Contains(body, `"accounts":[`) || !strings.Contains(body, `"account":"nabu-org"`) {
+		t.Fatalf("body is not the multi-account payload this guard is meant to scan:\n%s", body)
 	}
 
 	// …and none of it reached the operator-facing body.

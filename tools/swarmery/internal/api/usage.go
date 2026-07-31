@@ -46,11 +46,13 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
 )
 
@@ -63,10 +65,143 @@ const claudeFetchTimeout = 20 * time.Second
 // operator must never mistake the estimate for the real subscription reading.
 const estimateProviderName = "Telemetry estimate"
 
-// usageClient is the package-level live-quota client. The refreshed-token cache
-// lives on it, so it must outlive a single request. Tests swap this for a client
-// wired to a stub endpoint through usage.Client's seams.
+// usageClient is the DEFAULT account's live-quota client. The refreshed-token
+// cache lives on it, so it must outlive a single request. Tests swap this for a
+// client wired to a stub endpoint through usage.Client's seams.
 var usageClient = &usage.Client{}
+
+// Named accounts get their own clients, minted on first use and kept for the
+// same reason: one refreshed-token cache per credential. Keyed by account, which
+// accountsFromRoots has already deduped.
+var (
+	usageClientsMu sync.Mutex
+	usageClients   = map[string]*usage.Client{}
+)
+
+// usageClientFor returns the client that speaks for src. The default account
+// deliberately keeps using the package-level `usageClient` var: it is the seam
+// the existing tests install a stub through, and it is the account whose
+// credential resolves via the legacy chain.
+func usageClientFor(src usage.Source) *usage.Client {
+	if src.ConfigDir == "" {
+		return usageClient
+	}
+	usageClientsMu.Lock()
+	defer usageClientsMu.Unlock()
+	if c, ok := usageClients[src.Account]; ok {
+		return c
+	}
+	c := &usage.Client{Src: src}
+	usageClients[src.Account] = c
+	return c
+}
+
+// accountsFromRoots derives the accounts to poll from the ingest transcript
+// roots. Pure — the roots are the enumeration, and ingest.AccountFor is the SAME
+// key the sessions table is stamped with, so a usage card and a session row
+// agree on what "nabu-org" means.
+//
+// Each root is "<configDir>/projects", so the account's config dir is the root's
+// parent. Duplicate keys are dropped (a root need not end in /projects, and two
+// roots can name one account), and roots with no account context at all are
+// skipped.
+//
+// The DEFAULT account is given an EMPTY ConfigDir on purpose: it then resolves
+// through the legacy chain (CLAUDE_CONFIG_DIR, ~/.claude, ~/.config/claude, and
+// the plain keychain item on darwin), which is both what shipped and the only
+// source that works for the stock account on macOS. NO roots at all yields
+// exactly one default account, so an unusual boot config — and the api test
+// binary, where transcriptsRoots is empty — behaves exactly as before.
+//
+// Honesty note: on a stock config the roots are just ~/.claude/projects, so more
+// than one card REQUIRES SWARMERY_PROJECTS_ROOTS=auto (or an explicit list) on
+// every OS. Without it this returns the single default account.
+func accountsFromRoots(roots []string) []usage.Source {
+	out := make([]usage.Source, 0, len(roots)+1)
+	seen := make(map[string]bool, len(roots)+1)
+	for _, root := range roots {
+		key := ingest.AccountFor(root)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		src := usage.Source{Account: key}
+		if key != ingest.DefaultAccount {
+			src.ConfigDir = filepath.Dir(filepath.Clean(strings.TrimSpace(root)))
+		}
+		out = append(out, src)
+	}
+	if len(out) == 0 {
+		return []usage.Source{{Account: ingest.DefaultAccount}}
+	}
+	return out
+}
+
+// usageAccount is one subscription's row: its cards, or the reason there are
+// none. A row-level Error is NOT how a failed quota read surfaces — that is a
+// per-provider error/hint card (usage.Client.Fetch never returns an error) — it
+// is the last-resort guard for an account whose lookup blew up entirely, so one
+// account can never take the endpoint down with it.
+type usageAccount struct {
+	Account   string           `json:"account"`
+	Providers []usage.Provider `json:"providers"`
+	Error     string           `json:"error,omitempty"`
+}
+
+// fetchAccounts polls every account CONCURRENTLY, one goroutine each. Serial
+// fetches would share the handler's 20s budget across N accounts — with up to 3
+// retries and backoff per account, the tail cards would time out — while the
+// calls are independent and each client has its own token cache.
+func fetchAccounts(ctx context.Context, srcs []usage.Source) []usageAccount {
+	rows := make([]usageAccount, len(srcs))
+	var wg sync.WaitGroup
+	for i, src := range srcs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rows[i] = fetchAccount(ctx, src)
+		}()
+	}
+	wg.Wait()
+	return rows
+}
+
+// fetchAccount builds one account's row. The recover is the containment: Fetch
+// is documented never to return an error, so anything escaping it is a bug, and
+// a bug in one account's credential path must still leave the other accounts'
+// cards on screen. The recovered value is deliberately NOT echoed into the
+// response — it can carry arbitrary interpolated state.
+func fetchAccount(ctx context.Context, src usage.Source) (row usageAccount) {
+	row = usageAccount{Account: src.Account, Providers: []usage.Provider{}}
+	defer func() {
+		if rec := recover(); rec != nil {
+			row.Providers = []usage.Provider{}
+			row.Error = "usage lookup failed for this account"
+		}
+	}()
+	p := usageClientFor(src).Fetch(ctx)
+	// The ROW is the authority on which account a card belongs to: a client
+	// installed by a test (or any client built without a Src) would otherwise
+	// ship an unlabelled card and collide with the default account's in the UI.
+	p.Account = src.Account
+	row.Providers = append(row.Providers, p)
+	return row
+}
+
+// defaultAccountRow is the row the top-level alias fields speak for. A daemon
+// configured with only a named root has no default account at all, so the first
+// row stands in — the chip still needs one card to speak for.
+func defaultAccountRow(rows []usageAccount) *usageAccount {
+	for i := range rows {
+		if rows[i].Account == ingest.DefaultAccount {
+			return &rows[i]
+		}
+	}
+	if len(rows) > 0 {
+		return &rows[0]
+	}
+	return nil
+}
 
 // errBadUsageLimits marks a malformed SWARMERY_USAGE_LIMITS so the handler can
 // answer with the specific 500 body this endpoint has always returned, rather
@@ -83,9 +218,17 @@ type usageWindowConfig struct {
 // usageResp is the /api/usage body. The window/provider shapes are owned by
 // internal/usage and serialized verbatim — this package does not redefine or
 // re-map their JSON tags.
+//
+// `accounts` is the real payload: one row per subscription the daemon can see.
+// `providers` is a deliberate ALIAS of the default account's row — the header
+// chip wants one card and nothing else, and making it walk accounts[] to find
+// the default one would be work on every render for a value the daemon already
+// knows. It is not a compatibility shim: the SPA and the daemon ship together
+// (go:embed), so no version of one ever meets a different version of the other.
 type usageResp struct {
 	GeneratedAt string           `json:"generatedAt"`
 	Providers   []usage.Provider `json:"providers"`
+	Accounts    []usageAccount   `json:"accounts"`
 }
 
 // parseUsageLimits parses the SWARMERY_USAGE_LIMITS JSON. Blank → (nil, nil):
@@ -263,12 +406,20 @@ func (h *Handler) estimateProvider(now time.Time) (usage.Provider, bool, error) 
 	return p, true, nil
 }
 
-// GET /api/usage — the live Claude provider plus the optional telemetry-estimate
-// provider. See the file header for the policy note. Cached 30s; the Refresh
-// button in the modal appends ?fresh=1 to bypass the cache.
+// GET /api/usage — one row per account, each carrying its live Claude card,
+// plus the optional telemetry-estimate card on the default account's row. See
+// the file header for the policy note. Cached 30s as ONE whole response (the
+// fan-out is concurrent, so a per-account cache would buy nothing and would let
+// rows drift to different instants); the Refresh button in the modal appends
+// ?fresh=1 to bypass it.
+//
+// A failing account degrades to its own row — never to a 500. The only 500s
+// left are the operator's own misconfiguration (SWARMERY_USAGE_LIMITS) and a
+// broken local DB, both of which predate this endpoint's account dimension.
 //
 // The response body NEVER carries credential material — asserted by
-// TestUsageResponseCarriesNoSecrets.
+// TestUsageResponseCarriesNoSecrets, which scans the WHOLE body including
+// accounts[].
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("fresh") != "1" {
 		if body, ok := cachedUsage(); ok {
@@ -281,14 +432,11 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	now := time.Now()
-	out := usageResp{
-		GeneratedAt: now.UTC().Format(time.RFC3339),
-		Providers:   make([]usage.Provider, 0, 2),
-	}
-
-	// The live card always appears, whatever its status — an error card is the
-	// honest answer, an absent card would be a silent failure.
-	out.Providers = append(out.Providers, usageClient.Fetch(ctx))
+	// The live card always appears for every account, whatever its status — an
+	// error or "not connected" card is the honest answer, an absent card would
+	// be a silent failure.
+	rows := fetchAccounts(ctx, accountsFromRoots(transcriptsRoots))
+	def := defaultAccountRow(rows)
 
 	est, ok, err := h.estimateProvider(now)
 	switch {
@@ -298,8 +446,21 @@ func (h *Handler) usage(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeErr(w, err)
 		return
-	case ok:
-		out.Providers = append(out.Providers, est)
+	case ok && def != nil:
+		// The estimate is derived from OUR index of every account's turns, so
+		// it belongs to no single subscription; it rides the default row rather
+		// than being duplicated onto each one.
+		est.Account = def.Account
+		def.Providers = append(def.Providers, est)
+	}
+
+	out := usageResp{
+		GeneratedAt: now.UTC().Format(time.RFC3339),
+		Providers:   []usage.Provider{},
+		Accounts:    rows,
+	}
+	if def != nil {
+		out.Providers = def.Providers
 	}
 
 	storeUsage(out, now)

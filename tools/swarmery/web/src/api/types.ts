@@ -775,6 +775,12 @@ export interface UsageHint {
  * separates "you have not connected this yet" from "this is broken".
  */
 export interface UsageProvider {
+  /**
+   * The account key this card belongs to ("default", "nabu-org", …). Every
+   * account contributes a card called "Claude", so card identity across the UI
+   * — React keys, hidden-window prefs — is `${account}:${name}`, never `name`.
+   */
+  account: string;
   name: string;
   status: 'ok' | 'error' | 'no-auth';
   error?: string;
@@ -787,14 +793,32 @@ export interface UsageProvider {
 }
 
 /**
+ * One subscription's row in the usage payload. `error` is NOT how a failed quota
+ * read surfaces — that is a per-provider error/hint card — it is the daemon
+ * reporting that this account's lookup could not produce cards at all, so one
+ * account can never blank the others.
+ */
+export interface UsageAccount {
+  account: string;
+  providers: UsageProvider[];
+  error?: string;
+}
+
+/**
  * GET /api/usage — the operator's LIVE Claude subscription windows (read from
  * their own local credential via internal/usage) plus an optional
  * telemetry-estimate card, present only when SWARMERY_USAGE_LIMITS is set.
  * The estimate card's presence replaces the old top-level `configured` flag.
+ *
+ * `accounts` is the payload: one row per subscription the daemon can see (on a
+ * stock config that is exactly one, and the UI is identical to single-account).
+ * `providers` is a deliberate ALIAS of the DEFAULT account's row, so the header
+ * chip — which speaks for one account — needs no scan on every render.
  */
 export interface UsageResp {
   generatedAt: string;
   providers: UsageProvider[];
+  accounts: UsageAccount[];
 }
 
 // --- Retro loop (GET /api/retro/{agents,friction}) ---------------------------

@@ -11,7 +11,7 @@
 // header's height or horizontal rhythm.
 
 import { useEffect, useState } from 'react';
-import type { UsageProvider, UsageWindow } from '../../api/types';
+import type { UsageAccount, UsageProvider, UsageWindow } from '../../api/types';
 import { useUsage } from '../../lib/usageData';
 import { fmtResetsIn } from './format';
 import { UsageModal } from './UsageModal';
@@ -65,6 +65,7 @@ interface ChipView {
 
 function buildView(
   providers: readonly UsageProvider[],
+  accounts: readonly UsageAccount[],
   error: string | null,
   lastUpdated: number | null,
 ): ChipView {
@@ -78,16 +79,22 @@ function buildView(
   if (lastUpdated === null) {
     return { text: 'usage', tone: 'text-ink-2', tip: 'Subscription usage — loading…' };
   }
-  // No credentials: the daemon omits the estimate card entirely when
-  // SWARMERY_USAGE_LIMITS is unset, so a logged-out operator sees exactly one
-  // no-auth provider. `every` (not `some`) keeps a half-broken payload — one
-  // healthy card, one no-auth — reporting the healthy percentage.
-  if (providers.length > 0 && providers.every((p) => p.status === 'no-auth')) {
-    return { text: 'usage', tone: 'text-ink-2', tip: noAuthTip(providers) };
-  }
 
-  const w = pickWindow(providers);
+  // One chip cannot speak for N subscriptions, so it speaks for the DEFAULT
+  // account — the one a bare `claude` uses — and only falls back to the other
+  // accounts when that one has nothing to report. The modal is where every
+  // account's real reading lives.
+  const all = accounts.flatMap((a) => a.providers);
+  const w = pickWindow(providers) ?? pickWindow(all);
   if (w === null) {
+    // No healthy card anywhere. When EVERY card is a "not connected" one, say
+    // what to connect — the daemon's own headline, which differs per cause
+    // (expired, rejected, missing scope, switched off). A mix of not-connected
+    // and genuinely broken cards has no single honest headline, so it stays
+    // generic and sends the operator to the modal.
+    if (all.length > 0 && all.every((p) => p.status === 'no-auth')) {
+      return { text: 'usage', tone: 'text-ink-2', tip: noAuthTip(all) };
+    }
     return { text: 'usage', tone: 'text-ink-2', tip: 'Subscription usage' };
   }
 
@@ -105,7 +112,7 @@ function buildView(
 }
 
 export function UsageChip(): JSX.Element {
-  const { providers, error, lastUpdated, setModalOpen } = useUsage();
+  const { accounts, providers, error, lastUpdated, setModalOpen } = useUsage();
   const [open, setOpen] = useState(false);
 
   // Registering the open modal is what bumps the SHARED cadence 120s → 30s; it
@@ -117,7 +124,7 @@ export function UsageChip(): JSX.Element {
     return () => setModalOpen(false);
   }, [open, setModalOpen]);
 
-  const view = buildView(providers, error, lastUpdated);
+  const view = buildView(providers, accounts, error, lastUpdated);
 
   return (
     <span className="relative">

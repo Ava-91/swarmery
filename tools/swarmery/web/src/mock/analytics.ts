@@ -18,6 +18,7 @@ import type {
   SkillsResp,
   TimeseriesResp,
   ToolsResp,
+  UsageProvider,
   UsageResp,
 } from '../api/types';
 import { addDays, isoDay } from '../lib/format';
@@ -401,8 +402,14 @@ export function mockPlaybookStats(range: Range): PlaybookRollup[] {
 }
 
 /**
- * Two providers, so mock-mode screenshots show both states the modal must
- * handle: a healthy live Claude card and a provider that failed.
+ * Two accounts, so mock-mode screenshots show every state the modal must
+ * handle: the default account's healthy live Claude card, a provider that
+ * failed, and a SECOND subscription that has never been connected (the common
+ * macOS case — enumerated from an ingest root, no credential of its own).
+ *
+ * The second account is also what makes the account labels and the composite
+ * card identity visible in mock mode; with one account the modal renders
+ * exactly what it always did.
  *
  * Every number is internally consistent with the daemon's pace rule
  * (percentUsed - percentElapsed, ±5-point dead band), so the mock cannot drift
@@ -417,72 +424,104 @@ export function mockUsage(): UsageResp {
   const hr = 3_600_000;
   const fiveHours = 5 * hr;
   const sevenDays = 168 * hr;
+  const defaultProviders: UsageProvider[] = [
+    {
+      account: 'default',
+      name: 'Claude',
+      status: 'ok',
+      plan: 'Max',
+      source: 'oauth',
+      windows: [
+        {
+          key: 'session-5h',
+          label: 'Session (5h)',
+          percentUsed: 28,
+          percentLeft: 72,
+          resetText: 'resets in 3h 30m',
+          resetMs: 3.5 * hr,
+          resetAt: new Date(now + 3.5 * hr).toISOString(),
+          windowDurationMs: fiveHours,
+          pace: {
+            status: 'on-track',
+            percentElapsed: 30,
+            message: 'On pace with time elapsed',
+          },
+          source: 'oauth',
+        },
+        {
+          key: 'weekly',
+          label: 'Weekly',
+          percentUsed: 19,
+          percentLeft: 81,
+          resetText: 'resets in 5d 6h',
+          resetMs: 126 * hr,
+          resetAt: new Date(now + 126 * hr).toISOString(),
+          windowDurationMs: sevenDays,
+          // Under pace — the good state, despite how "behind" reads.
+          pace: { status: 'behind', percentElapsed: 25, message: '6% under pace' },
+          source: 'oauth',
+        },
+        {
+          key: 'weekly-fable',
+          label: 'Weekly (Fable)',
+          percentUsed: 28,
+          percentLeft: 72,
+          resetText: 'resets in 5d 6h',
+          resetMs: 126 * hr,
+          resetAt: new Date(now + 126 * hr).toISOString(),
+          windowDurationMs: sevenDays,
+          pace: {
+            status: 'on-track',
+            percentElapsed: 25,
+            message: 'On pace with time elapsed',
+          },
+          source: 'oauth',
+        },
+      ],
+    },
+    // Exercises the failure card. NOTE: the real daemon OMITS the estimate
+    // provider entirely when SWARMERY_USAGE_LIMITS is unset — this error card
+    // exists so mock mode can render the per-provider failure state at all.
+    {
+      account: 'default',
+      name: 'Telemetry estimate',
+      status: 'error',
+      error: 'SWARMERY_USAGE_LIMITS not set — no quota to compare against',
+      source: 'estimate',
+      windows: [],
+    },
+  ];
+  // A second subscription the daemon can SEE (it ingests its transcripts) but
+  // cannot read a quota for yet: enumeration is not entitlement, so it renders
+  // as a connect card, never as an error.
+  const nabuOrgProviders: UsageProvider[] = [
+    {
+      account: 'nabu-org',
+      name: 'Claude',
+      status: 'no-auth',
+      error: 'No Claude credentials — run `claude` to log in',
+      source: 'oauth',
+      windows: [],
+      hint: {
+        kind: 'login',
+        title: 'Claude login required',
+        detail:
+          'No Claude credential was found for this account, so its live quota cannot be read.',
+        command: 'CLAUDE_CONFIG_DIR=~/.claude-nabu-org claude',
+        sources: ['~/.claude-nabu-org/.credentials.json'],
+        why: 'Reads this account’s live Claude quota — the 5-hour session window and the weekly windows.',
+        handling:
+          'Read from your own machine, sent only to Anthropic’s API, refreshed in memory — never written back, logged, or returned by the dashboard.',
+      },
+    },
+  ];
   return {
     generatedAt: new Date(now).toISOString(),
-    providers: [
-      {
-        name: 'Claude',
-        status: 'ok',
-        plan: 'Max',
-        source: 'oauth',
-        windows: [
-          {
-            key: 'session-5h',
-            label: 'Session (5h)',
-            percentUsed: 28,
-            percentLeft: 72,
-            resetText: 'resets in 3h 30m',
-            resetMs: 3.5 * hr,
-            resetAt: new Date(now + 3.5 * hr).toISOString(),
-            windowDurationMs: fiveHours,
-            pace: {
-              status: 'on-track',
-              percentElapsed: 30,
-              message: 'On pace with time elapsed',
-            },
-            source: 'oauth',
-          },
-          {
-            key: 'weekly',
-            label: 'Weekly',
-            percentUsed: 19,
-            percentLeft: 81,
-            resetText: 'resets in 5d 6h',
-            resetMs: 126 * hr,
-            resetAt: new Date(now + 126 * hr).toISOString(),
-            windowDurationMs: sevenDays,
-            // Under pace — the good state, despite how "behind" reads.
-            pace: { status: 'behind', percentElapsed: 25, message: '6% under pace' },
-            source: 'oauth',
-          },
-          {
-            key: 'weekly-fable',
-            label: 'Weekly (Fable)',
-            percentUsed: 28,
-            percentLeft: 72,
-            resetText: 'resets in 5d 6h',
-            resetMs: 126 * hr,
-            resetAt: new Date(now + 126 * hr).toISOString(),
-            windowDurationMs: sevenDays,
-            pace: {
-              status: 'on-track',
-              percentElapsed: 25,
-              message: 'On pace with time elapsed',
-            },
-            source: 'oauth',
-          },
-        ],
-      },
-      // Exercises the failure card. NOTE: the real daemon OMITS the estimate
-      // provider entirely when SWARMERY_USAGE_LIMITS is unset — this error card
-      // exists so mock mode can render the per-provider failure state at all.
-      {
-        name: 'Telemetry estimate',
-        status: 'error',
-        error: 'SWARMERY_USAGE_LIMITS not set — no quota to compare against',
-        source: 'estimate',
-        windows: [],
-      },
+    // Top-level `providers` is the daemon's alias of the DEFAULT account's row.
+    providers: defaultProviders,
+    accounts: [
+      { account: 'default', providers: defaultProviders },
+      { account: 'nabu-org', providers: nabuOrgProviders },
     ],
   };
 }

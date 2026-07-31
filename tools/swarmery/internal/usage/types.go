@@ -14,6 +14,13 @@
 //     machine, from the same store the `claude` CLI itself wrote
 //     (~/.claude/.credentials.json, or the macOS Keychain item
 //     "Claude Code-credentials"). Nothing is harvested from anyone else.
+//     On a multi-subscription machine that extends to one credential per
+//     ACCOUNT — <configDir>/.credentials.json for each config dir the operator
+//     already logs in under (usage.Source, LoadCredsFor) — which is the same
+//     property one account at a time: still the operator's own logins, still
+//     read-only, still never written back. A scoped lookup is exclusive
+//     precisely so one account's quota can never be published under another's
+//     name.
 //   - The bearer token is sent ONLY to Anthropic's own API — the exact call
 //     `claude /usage` makes. It is never persisted to SQLite, never logged,
 //     never written back to disk or the keychain, and never included in any
@@ -115,6 +122,12 @@ type Hint struct {
 
 // Provider is one card in the Usage modal.
 type Provider struct {
+	// Account is the account key the card belongs to ("default", "nabu-org", …
+	// — ingest.AccountFor's vocabulary). Name alone is NOT unique once the
+	// daemon reads more than one account: every account contributes a card
+	// called "Claude", so the UI's card identity is `account:name` (React keys,
+	// hidden-window preferences).
+	Account string   `json:"account"`
 	Name    string   `json:"name"`   // "Claude"
 	Status  string   `json:"status"` // "ok" | "error" | "no-auth"
 	Error   string   `json:"error,omitempty"`

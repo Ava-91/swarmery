@@ -60,6 +60,12 @@ type Client struct {
 	AuthBase  string                                // default "https://platform.claude.com"
 	LoadCreds func(context.Context) (*Creds, error) // test seam
 
+	// Src is the account this client speaks for. The zero value is the default
+	// account over the legacy credential chain — i.e. single-account behaviour,
+	// unchanged. One Client per account is the multi-account unit, because the
+	// refreshed-token cache below is per credential and must not be shared.
+	Src Source
+
 	// sleep is the retry-backoff seam; tests replace it so a 429 path costs no
 	// wall-clock time. nil means time.Sleep.
 	sleep func(time.Duration)
@@ -100,7 +106,7 @@ func (c *Client) loadCreds(ctx context.Context) (*Creds, error) {
 	if c.LoadCreds != nil {
 		return c.LoadCreds(ctx)
 	}
-	return LoadCreds(ctx)
+	return LoadCredsFor(ctx, c.Src)
 }
 
 func (c *Client) wait(d time.Duration) {
@@ -141,17 +147,28 @@ const (
 )
 
 // loginHint is the "(re-)run the CLI login" hint every credential-shaped
-// failure shares; kind and wording differ, the remedy does not.
-func loginHint(kind, title, detail string) *Hint {
+// failure shares; kind and wording differ, the remedy does not. It is a method
+// because both the remedy and the "looked in …" list are per ACCOUNT.
+func (c *Client) loginHint(kind, title, detail string) *Hint {
 	return &Hint{
 		Kind:     kind,
 		Title:    title,
 		Detail:   detail,
-		Command:  "claude",
-		Sources:  CredentialSources(),
+		Command:  c.loginCommand(),
+		Sources:  CredentialSourcesFor(c.Src),
 		Why:      hintWhy,
 		Handling: hintHandling,
 	}
+}
+
+// loginCommand is the login THIS account needs. A scoped account is logged in
+// with its own config dir in the environment; a bare `claude` would re-login the
+// default account instead and leave the card exactly as it was.
+func (c *Client) loginCommand() string {
+	if c.Src.ConfigDir != "" {
+		return configDirEnv + "=" + c.Src.ConfigDir + " claude"
+	}
+	return "claude"
 }
 
 // fail is an outcome that must reach the operator: the one-line message, plus
@@ -180,6 +197,7 @@ func (p *Provider) apply(f *fail) {
 // and can never break the endpoint.
 func (c *Client) Fetch(ctx context.Context) Provider {
 	p := Provider{
+		Account: c.Src.Account,
 		Name:    providerName,
 		Status:  StatusNoAuth,
 		Source:  SourceOAuth,
@@ -201,7 +219,7 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 		return p
 	case err != nil, creds == nil, creds.AccessToken == "":
 		p.Error = "No Claude credentials — run `claude` to log in"
-		p.Hint = loginHint(HintLogin, "Claude login required",
+		p.Hint = c.loginHint(HintLogin, "Claude login required",
 			"No Claude credential was found on this machine, so the live quota cannot be read.")
 		return p
 	}
@@ -214,7 +232,7 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 	// path below remains the backstop for a token that is actually unauthorized.
 	if len(creds.Scopes) > 0 && !hasScope(creds.Scopes, requiredScope) {
 		p.Error = "Claude token missing user:profile scope — re-run `claude` login"
-		p.Hint = loginHint(HintScope, "Claude login is missing a permission",
+		p.Hint = c.loginHint(HintScope, "Claude login is missing a permission",
 			"The stored credential has no `user:profile` scope, which the quota endpoint requires. A fresh login grants it.")
 		return p
 	}
@@ -258,7 +276,7 @@ func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, 
 	if creds.RefreshToken == "" {
 		return "", false, &fail{
 			msg: "Claude token expired and no refresh token — run `claude` to re-login",
-			hint: loginHint(HintLogin, "Claude login expired",
+			hint: c.loginHint(HintLogin, "Claude login expired",
 				"The stored token has expired and carries no refresh token, so it cannot be renewed automatically."),
 		}
 	}
@@ -266,7 +284,7 @@ func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, 
 	if !ok {
 		return "", false, &fail{
 			msg: "Claude token refresh failed — run `claude` to re-login",
-			hint: loginHint(HintLogin, "Claude login expired",
+			hint: c.loginHint(HintLogin, "Claude login expired",
 				"The stored token has expired and Anthropic declined to refresh it, so a fresh login is needed."),
 		}
 	}
@@ -333,7 +351,7 @@ func (c *Client) authRejected() *fail {
 	c.cacheToken("")
 	return &fail{
 		msg: "Claude auth rejected — run `claude` to re-login",
-		hint: loginHint(HintLogin, "Claude login was rejected",
+		hint: c.loginHint(HintLogin, "Claude login was rejected",
 			"Anthropic rejected the stored credential, which usually means the login was revoked or superseded elsewhere."),
 	}
 }

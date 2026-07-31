@@ -61,8 +61,71 @@ var securityBin = "security"
 // `security` invocation (and therefore no keychain prompt) ever happens.
 var keychainCreds = readKeychainCreds
 
-// LoadCreds resolves the operator's Claude OAuth credential. Sources are
-// consulted in this order, and the first UNEXPIRED hit wins:
+// Source names WHOSE credential to resolve — one Claude Code account, keyed the
+// same way ingest keys a transcript (ingest.AccountFor: "default", "nabu-org", …)
+// and located by the config dir the `claude` CLI logs in under.
+//
+// The ZERO Source is the default account resolved through the legacy chain, so
+// LoadCredsFor(ctx, Source{}) is byte-identical to what LoadCreds always did. A
+// non-empty ConfigDir switches to the EXCLUSIVE scoped lookup — the only way a
+// second account is ever read.
+//
+// It is also the seam the planned rung 2 (swarmery's own PKCE session) plugs
+// into: per-account resolution — swarmery store → config dir → keychain — is
+// decided from a Source, so adding it needs no second refactor here.
+type Source struct {
+	// Account is the account key, for labelling only; resolution never uses it.
+	Account string
+	// ConfigDir is the account's `claude` config dir (the parent of its
+	// projects root). "" means the legacy chain — see LoadCredsFor.
+	ConfigDir string
+}
+
+// LoadCredsFor resolves ONE account's Claude OAuth credential.
+//
+// With an empty src.ConfigDir it consults the legacy chain (see LoadCreds).
+// With a NON-EMPTY src.ConfigDir it reads <ConfigDir>/.credentials.json and
+// NOTHING else: no home-dir sources, no CLAUDE_CONFIG_DIR (that env var names
+// the default account's dir and would be a lie here), no keychain — a miss is
+// ErrNoCreds, which the caller renders as a "not connected yet" card.
+//
+// The exclusivity is the whole safety property of multi-account: any fallback
+// would resolve the DEFAULT account's credential and publish its quota under a
+// second account's name — a wrong number the operator cannot spot. On macOS,
+// where a non-default account typically has no credential FILE, that is exactly
+// the case that would silently misreport.
+//
+// A scoped credential is returned even when expired: the refresh path is the
+// backstop, the same way the chain falls back to its latest-expiring candidate.
+//
+// SWARMERY_USAGE_OAUTH=0 returns ErrDisabled before any source is touched, for
+// every account.
+func LoadCredsFor(ctx context.Context, src Source) (*Creds, error) {
+	if os.Getenv(oauthOptOutEnv) == "0" {
+		return nil, ErrDisabled
+	}
+	if src.ConfigDir != "" {
+		return scopedCreds(src.ConfigDir)
+	}
+	return chainCreds(ctx)
+}
+
+// scopedCreds reads one account's credential file, exclusively.
+func scopedCreds(dir string) (*Creds, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, credentialsFile))
+	if err != nil {
+		return nil, ErrNoCreds
+	}
+	c := parseCreds(raw)
+	if c == nil {
+		return nil, ErrNoCreds
+	}
+	return c, nil
+}
+
+// LoadCreds resolves the DEFAULT account's Claude OAuth credential — the legacy
+// chain, unchanged. Sources are consulted in this order, and the first UNEXPIRED
+// hit wins:
 //
 //  1. $CLAUDE_CONFIG_DIR/.credentials.json (when CLAUDE_CONFIG_DIR is set)
 //  2. ~/.claude/.credentials.json
@@ -81,9 +144,11 @@ var keychainCreds = readKeychainCreds
 // the next candidate. Exhausting all sources returns ErrNoCreds; opting out
 // with SWARMERY_USAGE_OAUTH=0 returns ErrDisabled before any source is touched.
 func LoadCreds(ctx context.Context) (*Creds, error) {
-	if os.Getenv(oauthOptOutEnv) == "0" {
-		return nil, ErrDisabled
-	}
+	return LoadCredsFor(ctx, Source{})
+}
+
+// chainCreds is the legacy multi-source resolution documented on LoadCreds.
+func chainCreds(ctx context.Context) (*Creds, error) {
 	var stale *Creds
 	for _, path := range credentialPaths() {
 		raw, err := os.ReadFile(path)
@@ -165,6 +230,20 @@ func CredentialSources() []string {
 		srcs = append(srcs, "macOS Keychain: "+keychainService)
 	}
 	return srcs
+}
+
+// CredentialSourcesFor is CredentialSources for one account: the exact list
+// LoadCredsFor would consult for src, so the setup hint can never claim the
+// daemon looked somewhere it did not.
+//
+// A scoped account therefore lists ONE path and never the keychain: the plain
+// keychain item is the default account's login, so offering it to a second
+// account would point the operator at the wrong subscription's credential.
+func CredentialSourcesFor(src Source) []string {
+	if src.ConfigDir != "" {
+		return []string{filepath.Join(src.ConfigDir, credentialsFile)}
+	}
+	return CredentialSources()
 }
 
 // readKeychainCreds reads the CLI's credential item out of the macOS login

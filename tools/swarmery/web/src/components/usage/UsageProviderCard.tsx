@@ -7,10 +7,15 @@
 // the operator has not connected the provider yet renders the daemon's setup
 // hint (UsageSetupHint) instead of a red error line.
 //
+// One account contributes one live Claude card (plus, on the default account,
+// the optional telemetry-estimate card). The account label is rendered only when
+// the payload has more than one account, so the single-subscription card is
+// unchanged.
+//
 // NOT PORTED from the reference implementation: provider drag-reorder (and its
-// persisted order). With two providers — the live Claude card and the optional
-// telemetry-estimate card — reordering is cost without benefit, so windows and
-// providers both render in server order.
+// persisted order). Cards render in server order — accounts in root order, and
+// within an account the live card before the estimate — which is already the
+// order that means something.
 
 import type { UsageProvider } from '../../api/types';
 import { UsageSetupHint } from './UsageSetupHint';
@@ -48,6 +53,7 @@ function StatusBadge({ p }: { p: UsageProvider }): JSX.Element | null {
 
 export function UsageProviderCard({
   p,
+  showAccount,
   mode,
   hidden,
   onToggleWindow,
@@ -55,6 +61,13 @@ export function UsageProviderCard({
   now,
 }: {
   p: UsageProvider;
+  /**
+   * Render the account this card belongs to. Set only when the payload carries
+   * more than one account: on a single-subscription machine the account is
+   * ambient information, and showing it would add a chip to every card for no
+   * added meaning.
+   */
+  showAccount: boolean;
   mode: 'used' | 'remaining';
   /** Window keys the operator collapsed, across all providers. */
   hidden: string[];
@@ -68,6 +81,7 @@ export function UsageProviderCard({
     <div
       className="rounded-xl border border-line bg-surface2/40 px-2.5 py-2.5"
       data-provider={p.name}
+      data-account={p.account}
       data-status={p.status}
     >
       <div className="flex items-center justify-between gap-2">
@@ -78,6 +92,14 @@ export function UsageProviderCard({
           <span className="min-w-0 truncate font-mono text-[12px] font-semibold text-ink">
             {p.name}
           </span>
+          {showAccount && (
+            <span
+              className="shrink-0 rounded-full bg-field px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap text-ink-dim"
+              data-tip="subscription account"
+            >
+              {p.account}
+            </span>
+          )}
           {p.plan !== undefined && (
             <span className="shrink-0 rounded-full border border-line px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap text-ink-dim">
               {p.plan}

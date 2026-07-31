@@ -731,6 +731,56 @@ func TestFetchHonoursOptOutEndToEnd(t *testing.T) {
 	}
 }
 
+// TestFetchScopedAccountSpeaksForItsOwnAccount exercises the real per-account
+// resolution (no LoadCreds seam). A client pointed at an account's config dir
+// must, when that account has no credential, render a CONNECT card for THAT
+// account: its own key on the card, its own dir as the only place looked, and a
+// command that actually logs THAT account in — a bare `claude` would re-login
+// the default account and leave the card exactly as it was. Both decoys (the
+// default account's file and CLAUDE_CONFIG_DIR) are populated, so any leak
+// would show up here as a healthy card.
+func TestFetchScopedAccountSpeaksForItsOwnAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCredFile(t, filepath.Join(home, ".claude"))
+	t.Setenv(configDirEnv, filepath.Join(home, ".claude"))
+	stubKeychain(t, func(context.Context) *Creds {
+		t.Error("keychain consulted for a scoped account — that item is the default account's login")
+		return nil
+	})
+
+	dir := filepath.Join(home, ".claude-nabu-org")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir account config dir: %v", err)
+	}
+	s := newStub(t, serveJSON(fixture(t, "usage-full.json")), nil)
+	c := &Client{
+		HTTP:     s.srv.Client(),
+		Now:      func() time.Time { return testNow },
+		APIBase:  s.srv.URL,
+		AuthBase: s.srv.URL,
+		Src:      Source{Account: "nabu-org", ConfigDir: dir},
+	}
+
+	p := c.Fetch(context.Background())
+	wantSetupCard(t, p, HintLogin, "No Claude credentials")
+	if p.Account != "nabu-org" {
+		t.Errorf("card account = %q, want nabu-org", p.Account)
+	}
+	if want := configDirEnv + "=" + dir + " claude"; p.Hint.Command != want {
+		t.Errorf("hint command = %q, want %q", p.Hint.Command, want)
+	}
+	if want := filepath.Join(dir, credentialsFile); len(p.Hint.Sources) != 1 || p.Hint.Sources[0] != want {
+		t.Errorf("hint sources = %v, want exactly [%s]", p.Hint.Sources, want)
+	}
+
+	// …and once that account HAS logged in, the same client reads its quota.
+	writeCredFile(t, dir)
+	if got := c.Fetch(context.Background()); got.Status != StatusOK || got.Account != "nabu-org" {
+		t.Errorf("after login: status %q account %q (%s), want ok/nabu-org", got.Status, got.Account, got.Error)
+	}
+}
+
 func TestFetchNon200(t *testing.T) {
 	longBody := "authorization: Bearer sk-ant-oat01-supersecret-value " + strings.Repeat("x", 300)
 	cases := []struct {
