@@ -56,11 +56,31 @@ function toneFor(w: UsageWindow): string {
   return 'text-ink-2';
 }
 
-interface ChipView {
-  /** Label after the glyph — a percentage once data exists, else `usage`. */
+/** One account's slice of the chip: `in 41%`, coloured by its own burn. */
+interface ChipSegment {
+  /**
+   * Muted account prefix before the percentage. Empty for the default account
+   * (and therefore for every single-account machine), so the multi-account chip
+   * reads `◔ 2% · in 41%` and the single-account chip stays exactly `◔ 2%`.
+   */
+  label: string;
   text: string;
   tone: string;
+}
+
+interface ChipView {
+  /** Segments after the glyph — one per reporting account, else one `usage`. */
+  segments: ChipSegment[];
   tip: string;
+}
+
+function single(text: string, tone: string, tip: string): ChipView {
+  return { segments: [{ label: '', text, tone }], tip };
+}
+
+/** The muted prefix naming a non-default account's segment. */
+function segmentLabel(account: string): string {
+  return account === 'default' ? '' : account.slice(0, 2);
 }
 
 function buildView(
@@ -71,44 +91,58 @@ function buildView(
 ): ChipView {
   // Nothing has ever loaded and the fetch failed — the only genuinely blind
   // state, so the chip greys out. A failure AFTER a success keeps the last known
-  // percentage instead (stale but informative) and says so in the tip, matching
+  // percentages instead (stale but informative) and says so in the tip, matching
   // how the modal keeps stale cards behind a "refresh failed" footer.
   if (lastUpdated === null && error !== null) {
-    return { text: 'usage', tone: 'text-ink-dim', tip: `Claude usage unavailable — ${error}` };
+    return single('usage', 'text-ink-dim', `Claude usage unavailable — ${error}`);
   }
   if (lastUpdated === null) {
-    return { text: 'usage', tone: 'text-ink-2', tip: 'Subscription usage — loading…' };
+    return single('usage', 'text-ink-2', 'Subscription usage — loading…');
   }
 
-  // One chip cannot speak for N subscriptions, so it speaks for the DEFAULT
-  // account — the one a bare `claude` uses — and only falls back to the other
-  // accounts when that one has nothing to report. The modal is where every
-  // account's real reading lives.
-  const all = accounts.flatMap((a) => a.providers);
-  const w = pickWindow(providers) ?? pickWindow(all);
-  if (w === null) {
+  // One segment per account that has a healthy window, in the daemon's account
+  // order. An account with nothing to report (not connected, erroring) gets no
+  // segment — a chip slot it cannot fill would be noise — but is still named in
+  // the tip, so a disconnected second account remains discoverable without
+  // opening the modal. Guard for a payload with no accounts[] at all (mock or
+  // stub data): the top-level providers stand in as the single default account.
+  const rows: readonly UsageAccount[] =
+    accounts.length > 0 ? accounts : [{ account: 'default', providers: [...providers] }];
+  const segments: ChipSegment[] = [];
+  const tipParts: string[] = [];
+  for (const row of rows) {
+    const w = pickWindow(row.providers);
+    if (w === null) {
+      if (row.providers.some((p) => p.status === 'no-auth')) {
+        tipParts.push(`${row.account} — not connected`);
+      }
+      continue;
+    }
+    const reset =
+      w.resetText ?? (w.resetAt !== undefined ? fmtResetsIn(w.resetAt, Date.now()) : '');
+    const pct = String(Math.round(w.percentUsed));
+    const detail = [`${w.label} ${pct}% used`];
+    if (reset !== '') detail.push(reset);
+    if (w.pace !== undefined) detail.push(w.pace.message);
+    tipParts.push(`${row.account} — ${detail.join(', ')}`);
+    segments.push({ label: segmentLabel(row.account), text: `${pct}%`, tone: toneFor(w) });
+  }
+
+  if (segments.length === 0) {
     // No healthy card anywhere. When EVERY card is a "not connected" one, say
     // what to connect — the daemon's own headline, which differs per cause
     // (expired, rejected, missing scope, switched off). A mix of not-connected
     // and genuinely broken cards has no single honest headline, so it stays
     // generic and sends the operator to the modal.
+    const all = rows.flatMap((a) => a.providers);
     if (all.length > 0 && all.every((p) => p.status === 'no-auth')) {
-      return { text: 'usage', tone: 'text-ink-2', tip: noAuthTip(all) };
+      return single('usage', 'text-ink-2', noAuthTip(all));
     }
-    return { text: 'usage', tone: 'text-ink-2', tip: 'Subscription usage' };
+    return single('usage', 'text-ink-2', 'Subscription usage');
   }
 
-  const reset = w.resetText ?? (w.resetAt !== undefined ? fmtResetsIn(w.resetAt, Date.now()) : '');
-  const parts = [`${w.label} — ${String(Math.round(w.percentUsed))}% used`];
-  if (reset !== '') parts.push(reset);
-  if (w.pace !== undefined) parts.push(w.pace.message);
-  if (error !== null) parts.push('refresh failed');
-
-  return {
-    text: `${String(Math.round(w.percentUsed))}%`,
-    tone: toneFor(w),
-    tip: parts.join(' · '),
-  };
+  if (error !== null) tipParts.push('refresh failed');
+  return { segments, tip: tipParts.join(' · ') };
 }
 
 export function UsageChip(): JSX.Element {
@@ -139,9 +173,20 @@ export function UsageChip(): JSX.Element {
         // wires aria-describedby — the accessible NAME still comes from
         // aria-label above.
         data-tip={view.tip}
-        className={`rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[11px] font-semibold tabular-nums transition-colors hover:bg-surface2 ${view.tone}`}
+        // A single segment tints the whole button (glyph included) exactly as
+        // the pre-multi-account chip did; with several, each segment carries its
+        // own tone and the chrome stays neutral so no one account's colour
+        // claims the glyph.
+        className={`rounded-lg border border-line bg-surface px-2.5 py-1 font-mono text-[11px] font-semibold tabular-nums transition-colors hover:bg-surface2 ${view.segments.length === 1 ? (view.segments[0]?.tone ?? 'text-ink-2') : 'text-ink-2'}`}
       >
-        <span aria-hidden="true">◔</span> {view.text}
+        <span aria-hidden="true">◔</span>{' '}
+        {view.segments.map((seg, i) => (
+          <span key={`${seg.label}:${String(i)}`}>
+            {i > 0 && <span className="text-ink-dim"> · </span>}
+            {seg.label !== '' && <span className="font-normal text-ink-dim">{seg.label} </span>}
+            <span className={view.segments.length > 1 ? seg.tone : undefined}>{seg.text}</span>
+          </span>
+        ))}
       </button>
       <UsageModal open={open} onClose={() => setOpen(false)} />
     </span>
