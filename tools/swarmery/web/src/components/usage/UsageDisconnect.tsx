@@ -15,6 +15,12 @@
 // blocks the whole tab, cannot be styled or dismissed by the app, and is
 // suppressed outright in some embedded browsers — which would silently turn a
 // destructive action into a no-op.
+//
+// Placement: this renders INSIDE the card's header row (top right), not as a
+// card footer — idle is a single small button that costs the card no height.
+// The wrapper is `display: contents` so the pieces are flex items of the
+// header itself: the armed confirm strip and the error line are `w-full`,
+// which wraps each onto its own full-width line right under the title.
 
 import { useState } from 'react';
 import { disconnectUsageAccount } from '../../api';
@@ -48,9 +54,9 @@ export function UsageDisconnect({ account }: { account: string }): JSX.Element {
   };
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2" data-disconnect={account}>
+    <div className="contents" data-disconnect={account}>
       {phase === 'confirming' ? (
-        <>
+        <div className="flex w-full flex-wrap items-center gap-2">
           <span className="font-mono text-[9.5px] text-ink-dim">
             Disconnect {account}? Removes swarmery&apos;s stored credential only — your
             <code className="px-1">claude</code> login is untouched, and nothing is revoked at
@@ -62,7 +68,7 @@ export function UsageDisconnect({ account }: { account: string }): JSX.Element {
           <button type="button" onClick={() => setPhase('idle')} className={btn}>
             cancel
           </button>
-        </>
+        </div>
       ) : (
         <button
           type="button"
