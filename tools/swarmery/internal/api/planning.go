@@ -284,6 +284,12 @@ func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service
 			svc.RevertToAwaiting(uuid)
 		}
 	})
+	if errors.Is(err, errResumeCwdGone) {
+		svc.RevertToAwaiting(uuid)
+		writeClientErr(w, http.StatusConflict,
+			"the planner session's working directory ("+cwd.String+") no longer exists — start a new planning session")
+		return
+	}
 	if err != nil {
 		svc.RevertToAwaiting(uuid)
 		writeClientErr(w, http.StatusServiceUnavailable, "claude executable not found (set SWARMERY_CLAUDE_BIN)")

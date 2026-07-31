@@ -2,11 +2,22 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
 )
+
+// errResumeCwdGone reports that the directory a session recorded as its cwd no
+// longer exists. The common case is a phase or plan run: the daemon removes the
+// run's worktree the moment the run ends (keeping only the branch), while the
+// session row keeps pointing at it. Resuming there would drop the agent into a
+// deleted directory — it would read no repo, and nothing it wrote could be
+// committed — so the resume is refused instead of silently doing nothing useful.
+var errResumeCwdGone = errors.New("session working directory no longer exists")
 
 // startResume spawns `claude -r <uuid> -p <text>` in cwd with single-flight per
 // session uuid (msgInFlight), sessionMessageTimeout, and session_updated edges.
@@ -20,6 +31,11 @@ import (
 // (false, nil) when a resume is already in flight for uuid; a non-nil err means
 // the claude binary could not be resolved (nothing was spawned).
 func startResume(sessionID int64, sessionUUID, cwd, text string, onExit func(err error)) (started bool, err error) {
+	// Cheapest, most specific reject first: a vanished cwd is a state error the
+	// caller must explain to the operator, not a missing-binary condition.
+	if fi, statErr := os.Stat(cwd); statErr != nil || !fi.IsDir() {
+		return false, fmt.Errorf("%w: %s", errResumeCwdGone, cwd)
+	}
 	bin, binErr := claudeBin()
 	if binErr != nil {
 		return false, binErr
