@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
 // Runner is the headless-claude boundary for a planner run. ClaudeRunner is
@@ -41,6 +43,9 @@ type Run struct {
 // planTimeout bounds one planner run (a planner may think + ask + write a plan
 // dir, which is longer than a mechanical run but must not wedge a slot forever).
 const planTimeout = 20 * time.Minute
+
+// drainGrace bounds the post-exit wait for the run's process group to empty out.
+const drainGrace = 5 * time.Second
 
 // stderrTailBytes caps captured stderr landing in the run error.
 const stderrTailBytes = 4096
@@ -83,20 +88,28 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 	cmd := exec.CommandContext(ctx, bin, "-p", spec.Prompt, "--session-id", spec.SessionUUID, "--model", model)
 	cmd.Dir = spec.Cwd
-	// Own process group — survive daemon restarts (same rationale as the
-	// session resume spawn in api/session_message.go).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	// Own process group — survive daemon restarts (same rationale as the session
+	// resume spawn in api/session_message.go). procgroup adds the half a bare
+	// Setpgid was missing: cancellation and the plan timeout now reach the whole
+	// tree instead of the leader alone, and Wait cannot hang on a pipe an orphan
+	// still holds.
+	procgroup.Isolate(cmd, 0)
 	// stdout is the assistant text; we do NOT parse it — the planner's transcript
 	// is ingested independently and the page reads the linked session's turns from
 	// the DB. Discard it.
 	runErr := cmd.Run()
+	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
+
+	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
+		log.Printf("warning: planning: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
+	}
 
 	run := &Run{
 		SessionUUID: spec.SessionUUID,
 		Stderr:      tail(stderr.String(), stderrTailBytes),
-		Duration:    time.Since(start),
+		Duration:    elapsed,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		run.TimedOut = true

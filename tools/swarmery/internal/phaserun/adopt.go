@@ -24,13 +24,12 @@ package phaserun
 
 import (
 	"log"
-	"os/exec"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procfind"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
@@ -51,7 +50,7 @@ func (s *Service) findRun(sessionUUID string) (int, bool) {
 	if s.FindRun != nil {
 		return s.FindRun(sessionUUID)
 	}
-	return findRunProcess(sessionUUID)
+	return procfind.BySessionUUID(sessionUUID)
 }
 
 // procAlive reports whether a pid still exists, via the seam when wired.
@@ -67,36 +66,6 @@ func (s *Service) pollInterval() time.Duration {
 		return s.adoptPoll
 	}
 	return adoptPollInterval
-}
-
-// findRunProcess scans for a `claude` process whose argv carries --session-id
-// <uuid>. The uuid is the daemon's own generated identifier, so a match is
-// unambiguous — no cwd or start-time heuristics needed. -ww keeps ps from
-// truncating the argv, which for a phase run holds the whole phase document.
-func findRunProcess(sessionUUID string) (int, bool) {
-	if strings.TrimSpace(sessionUUID) == "" {
-		return 0, false
-	}
-	out, err := exec.Command("ps", "-axww", "-o", "pid=,command=").Output()
-	if err != nil {
-		log.Printf("warning: phaserun: ps scan for uuid=%s: %v", sessionUUID, err)
-		return 0, false
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.Contains(line, sessionUUID) {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		pid, convErr := strconv.Atoi(fields[0])
-		if convErr != nil || !strings.Contains(strings.ToLower(line), "claude") {
-			continue
-		}
-		return pid, true
-	}
-	return 0, false
 }
 
 // adoptSurvivors probes every 'running' row and adopts the ones whose process is

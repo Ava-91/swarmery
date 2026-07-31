@@ -8,6 +8,9 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procfind"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
 // tsFormat matches the millisecond-Z style the api/dispatch packages write.
@@ -51,6 +54,9 @@ type Service struct {
 	// registry so `verify` stays decoupled from `playbooks`. "off" skips the run
 	// entirely (no verdict stamped — the task keeps whatever verdict it had).
 	PlaybookVerify func(projectPath, playbookName string) string
+	// FindRun locates a verification process that outlived the daemon, by its
+	// session uuid. nil ⇒ a ps scan (procfind). Test seam.
+	FindRun func(sessionUUID string) (int, bool)
 
 	sem chan struct{} // verification concurrency cap (Cfg.Concurrency)
 }
@@ -641,20 +647,30 @@ func (s *Service) Reap() (int, error) {
 }
 
 // HealStale reclaims `running` verification_runs rows a crashed/restarted daemon
-// left behind: with no live goroutine in THIS process (there can't be — we just
-// started), a `running` row is orphaned. Mark it error + stamp the task
-// inconclusive so it is re-verifiable (provision/dispatch heal idiom). Unlike
-// Reap it ignores age (every running row at startup is by definition orphaned).
+// left behind. Mark it error + stamp the task inconclusive so it is re-verifiable
+// (provision/dispatch heal idiom). Unlike Reap it ignores age (every running row
+// at startup is by definition orphaned).
+//
+// A verifier process spawned in its own process group can OUTLIVE the daemon —
+// but unlike a phase or plan run it must not be adopted: the verdict lives in the
+// process's STDOUT, and the pipe that carried it died with the parent. Nobody can
+// read that run's result any more, so a survivor is pure waste holding a worktree
+// the operator may want to reuse. Each survivor is therefore killed (whole group,
+// procgroup.Kill), which is also what makes the 'inconclusive' stamp true.
 func (s *Service) HealStale() error {
-	rows, err := s.DB.Query(`SELECT id, task_id FROM verification_runs WHERE status='running'`)
+	rows, err := s.DB.Query(
+		`SELECT id, task_id, COALESCE(verify_session_uuid,'') FROM verification_runs WHERE status='running'`)
 	if err != nil {
 		return err
 	}
-	type stuck struct{ runID, taskID int64 }
+	type stuck struct {
+		runID, taskID int64
+		uuid          string
+	}
 	var stucks []stuck
 	for rows.Next() {
 		var st stuck
-		if err := rows.Scan(&st.runID, &st.taskID); err != nil {
+		if err := rows.Scan(&st.runID, &st.taskID, &st.uuid); err != nil {
 			rows.Close()
 			return err
 		}
@@ -665,6 +681,7 @@ func (s *Service) HealStale() error {
 		return err
 	}
 	for _, st := range stucks {
+		s.killOrphan(st.uuid, st.runID)
 		s.finishRun(st.runID, "error", "", "interrupted by daemon restart")
 		if _, err := s.DB.Exec(
 			`UPDATE tasks SET verify_verdict='inconclusive',
@@ -677,4 +694,25 @@ func (s *Service) HealStale() error {
 		log.Printf("swarmery verify: healed %d interrupted verification run(s)", len(stucks))
 	}
 	return nil
+}
+
+// killOrphan terminates a verification process that outlived the daemon. Its
+// verdict is unrecoverable (stdout died with the parent), so letting it run would
+// burn tokens and hold a worktree for an answer nobody can read.
+//
+// FindRun is the test seam; nil ⇒ the ps scan. A miss is the normal case (the
+// process really did die with the daemon) and is silent.
+func (s *Service) killOrphan(sessionUUID string, runID int64) {
+	find := s.FindRun
+	if find == nil {
+		find = procfind.BySessionUUID
+	}
+	pid, ok := find(sessionUUID)
+	if !ok {
+		return
+	}
+	log.Printf("verify: run %d outlived the daemon (pid=%d); killing it — its verdict is unreadable", runID, pid)
+	if err := procgroup.Kill(pid); err != nil {
+		log.Printf("warning: verify: kill orphaned run %d pid=%d: %v", runID, pid, err)
+	}
 }

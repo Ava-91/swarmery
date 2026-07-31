@@ -3,9 +3,12 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
 // RunSpec is one dispatched headless run.
@@ -38,6 +41,9 @@ type Runner interface {
 // stderrTailBytes caps captured stderr landing in dispatch_error.
 const stderrTailBytes = 4096
 
+// drainGrace bounds the post-exit wait for the run's process group to empty out.
+const drainGrace = 5 * time.Second
+
 // defaultModel pins dispatched implementation runs whose task carries no model
 // override: an unset --model inherits the account default (Fable-5 here — 5×
 // the Sonnet price). Executor tier — full ID, not an alias, because aliases
@@ -65,15 +71,26 @@ func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	cmd.Dir = spec.Cwd
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	// Own process group: a timeout or cancel must reach the executor's whole tree
+	// (shells, tools, sub-agents), and Wait must not block on a pipe an orphan
+	// still holds.
+	procgroup.Isolate(cmd, 0)
 	// stdout is the assistant text; we do NOT parse it here — the run's transcript
 	// is ingested independently and the dispatcher reads the linked session's
 	// last assistant turn from the DB for sentinels. Discard it.
 	err := cmd.Run()
+	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
+
+	// Wait only guarantees the leader is reaped; a survivor would keep writing into
+	// a worktree the dispatcher may hand to the next stage or reclaim.
+	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
+		log.Printf("warning: dispatch: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
+	}
 
 	run := &Run{
 		SessionUUID: spec.SessionUUID,
 		Stderr:      tail(stderr.String(), stderrTailBytes),
-		Duration:    time.Since(start),
+		Duration:    elapsed,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		run.TimedOut = true

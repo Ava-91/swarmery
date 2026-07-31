@@ -90,6 +90,13 @@ type Service struct {
 	// existing dispatch unit tests are unchanged. Resolved per admission through
 	// the candidate's project path (built-ins overlaid by project-local files).
 	Playbooks *playbooks.Registry
+	// FindRun locates the live process of a dispatched run by its session uuid
+	// (adopt.go). nil ⇒ a ps scan. Test seam.
+	FindRun func(sessionUUID string) (int, bool)
+	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
+	ProcAlive func(pid int) bool
+	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	adoptPoll time.Duration
 
 	scheduling atomic.Bool // re-entrance guard: overlapping Schedule passes skip
 
@@ -928,17 +935,36 @@ func (s *Service) lastAssistantText(uuid string) string {
 
 // ── startup heal ──
 
-// HealStale reclaims tasks left in_progress by a crashed/restarted daemon: with
-// no live run in THIS process (there can't be — we just started), an
-// in_progress queue task is orphaned. Move it back to todo with a marker so the
-// next Schedule re-admits it (provision-heal idiom, scheduler FN semantics). The
-// worktree is kept (idempotent re-Acquire reuses it).
+// HealStale reclaims tasks left in_progress by a crashed/restarted daemon: move
+// them back to todo with a marker so the next Schedule re-admits them
+// (provision-heal idiom, scheduler FN semantics). The worktree is kept
+// (idempotent re-Acquire reuses it).
+//
+// "Orphaned" is now PROVEN, not assumed: an executor in its own process group
+// outlives a daemon restart, and requeuing its task would put a second executor
+// into the worktree the first is still writing in. Survivors are adopted instead
+// (adopt.go) — the slot is held until their process exits, and the existing
+// evidence-based HealDeadProcess reclaims the task once procwatch sees it die.
 func (s *Service) HealStale() error {
-	res, err := s.DB.Exec(`
-		UPDATE tasks
+	adopted, err := s.adoptSurvivors()
+	if err != nil {
+		// Best-effort: a failed probe must not leave tasks stuck in_progress.
+		log.Printf("error: swarmery dispatch: adoption probe: %v", err)
+	}
+	// NOT IN () is invalid SQL and `x NOT IN (NULL)` is never true, so the
+	// exclusion clause exists only when there is something to exclude.
+	q := `UPDATE tasks
 		   SET board_column='todo', status='queued', dispatch_error='daemon restart',
 		       column_moved_at=?
-		 WHERE source='queue' AND board_column='in_progress'`, s.ts())
+		 WHERE source='queue' AND board_column='in_progress'`
+	args := []any{s.ts()}
+	if len(adopted) > 0 {
+		q += ` AND id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
+		for _, id := range adopted {
+			args = append(args, id)
+		}
+	}
+	res, err := s.DB.Exec(q, args...)
 	if err != nil {
 		return err
 	}

@@ -64,6 +64,10 @@ type Service struct {
 	// raw-fallback parse and stale reconcile must not fire mid-resume). Wired by
 	// api.AttachPlanning; nil ⇒ no resume tracking (bare unit tests).
 	ResumeInFlight func(sessionUUID string) bool
+	// FindRun locates a planner process by session uuid — the third liveness
+	// source in processAlive, which is what makes a planner that outlived a daemon
+	// restart still read as alive. nil ⇒ a ps scan (procfind). Test seam.
+	FindRun func(sessionUUID string) (int, bool)
 
 	mu     sync.Mutex
 	active map[int64]run // projectID → in-flight planner

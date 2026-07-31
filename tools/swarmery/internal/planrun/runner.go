@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
 // Runner is the spawn seam the service depends on.
@@ -79,6 +80,10 @@ const planRunTimeout = 8 * time.Hour
 
 // stderrTailBytes caps captured stderr landing in run_error.
 const stderrTailBytes = 4096
+
+// drainGrace bounds the post-exit wait for the run's process group to empty out
+// before the service removes the worktree.
+const drainGrace = 5 * time.Second
 
 // DefaultAgent is the agent a plan run uses when the caller names none: the
 // SWARMERY_PLANRUN_AGENT override, else fallbackAgent. Exported so the API can
@@ -144,15 +149,26 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	cmd.Dir = spec.Cwd
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	// Own process group: a timeout or cancel must reach the whole tree (the
+	// orchestrator spawns shells, tools, sub-runs), and Wait must not block on a
+	// pipe an orphan still holds.
+	procgroup.Isolate(cmd, 0)
 	// stdout is the assistant text; we do NOT parse it — the run's transcript is
 	// ingested independently and progress flows through the phase docs' checkbox
 	// ticks (wsingest). Discard it.
 	runErr := cmd.Run()
+	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
+
+	// Wait only guarantees the leader is reaped; the service removes the worktree
+	// the moment we return, so nothing of this run may still be writing to it.
+	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
+		log.Printf("warning: planrun: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
+	}
 
 	run := &Run{
 		SessionUUID: spec.SessionUUID,
 		Stderr:      tail(stderr.String(), stderrTailBytes),
-		Duration:    time.Since(start),
+		Duration:    elapsed,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		run.TimedOut = true
