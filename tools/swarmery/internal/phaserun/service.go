@@ -127,9 +127,16 @@ type Service struct {
 	// Notify emits plan_updated for the phase's workspace task at run edges.
 	// nil ⇒ no live nudge (guarded).
 	Notify func(taskID int64)
+	// FindRun locates the live process of a run by its session uuid (adopt.go).
+	// nil ⇒ a ps scan. Test seam: adoption must be exercisable without spawning.
+	FindRun func(sessionUUID string) (int, bool)
+	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
+	ProcAlive func(pid int) bool
 
 	mu     sync.Mutex
 	active map[int64]run // epic_phases.id → in-flight run
+	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	adoptPoll time.Duration
 }
 
 // NewService builds a phase-run service. The caller wires DB + Run
@@ -576,9 +583,12 @@ func (s *Service) DeleteRunBranch(phaseID int64) (branch string, existed bool, e
 	return branch, existed, nil
 }
 
-// HealStale fails any epic_phases row left 'running' by a crashed/restarted
-// daemon (there can be no live run in THIS process — we just started). Mirrors
-// dispatch.HealStale's posture. Called from cmd/swarmery before serving.
+// HealStale settles every epic_phases row left 'running' by a crashed or
+// restarted daemon. It does NOT assume they are all dead: a run spawned in its
+// own process group survives a daemon restart and keeps working, so each row is
+// probed first — a run whose process is still there is re-adopted (state stays
+// 'running', slot held, watcher stamps its exit; see adopt.go), and only rows
+// with no live process are failed. Called from cmd/swarmery before serving.
 //
 // CAVEAT for any consumer deriving a duration: run_ended_at here is the RESTART
 // time, not the moment the run actually died — the daemon has no record of that.
@@ -592,11 +602,26 @@ func (s *Service) DeleteRunBranch(phaseID int64) (branch string, existed bool, e
 // wsingest rescan and checklist tick moves. Healing is terminal, so it closes the
 // interval — the count as of the restart is the last honest right edge available.
 func (s *Service) HealStale() error {
-	res, err := s.DB.Exec(`
-		UPDATE epic_phases
+	adopted, err := s.adoptSurvivors()
+	if err != nil {
+		// Adoption is best-effort: a probe that fails must not leave rows stuck
+		// 'running' forever, so fall through to the heal below.
+		log.Printf("error: swarmery phaserun: adoption probe: %v", err)
+	}
+	// NOT IN () is not valid SQL, and `id NOT IN (NULL)` is never true — so the
+	// exclusion clause is built only when there is something to exclude.
+	q := `UPDATE epic_phases
 		   SET run_state='failed', run_error='daemon restart', run_ended_at=?,
 		       run_checkboxes_after=checkboxes_done
-		 WHERE run_state='running'`, s.ts())
+		 WHERE run_state='running'`
+	args := []any{s.ts()}
+	if len(adopted) > 0 {
+		q += ` AND id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
+		for _, id := range adopted {
+			args = append(args, id)
+		}
+	}
+	res, err := s.DB.Exec(q, args...)
 	if err != nil {
 		return err
 	}

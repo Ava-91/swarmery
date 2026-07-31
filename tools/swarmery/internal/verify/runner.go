@@ -3,9 +3,12 @@ package verify
 import (
 	"bytes"
 	"context"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
 // RunSpec is one bounded read-only verifier run.
@@ -42,6 +45,9 @@ type Runner interface {
 // spec: 15 minutes). Overridable via SWARMERY_VERIFY_TIMEOUT_MIN at the service
 // layer; ClaudeRunner uses this constant when the spec carries no ctx deadline.
 const claudeTimeout = 15 * time.Minute
+
+// drainGrace bounds the post-exit wait for the run's process group to empty out.
+const drainGrace = 5 * time.Second
 
 // stderrTailBytes caps captured stderr landing in verify_detail on an error.
 const stderrTailBytes = 4096
@@ -88,12 +94,21 @@ func (r ClaudeRunner) Run(ctx context.Context, spec RunSpec) (*Run, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// Own process group: the hard timeout must take the verifier's whole tree, and
+	// Wait must not block on a pipe a surviving descendant still holds — which for
+	// this runner would also mean stdout never closing, i.e. no verdict at all.
+	procgroup.Isolate(cmd, 0)
 	err := cmd.Run()
+	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
+
+	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
+		log.Printf("warning: verify: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
+	}
 
 	run := &Run{
 		Output:   stdout.String(),
 		Stderr:   tail(stderr.String(), stderrTailBytes),
-		Duration: time.Since(start),
+		Duration: elapsed,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		run.TimedOut = true

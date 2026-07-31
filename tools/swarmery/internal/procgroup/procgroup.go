@@ -31,6 +31,11 @@ const (
 // Isolate puts cmd in a dedicated process group and routes ctx cancellation to
 // the entire group. Call it after building cmd and before starting it.
 // waitDelay <= 0 uses defaultWaitDelay.
+//
+// cmd MUST come from exec.CommandContext: os/exec rejects a non-nil Cancel on a
+// command built with exec.Command ("command with a non-nil Cancel was not
+// created with CommandContext") — and a group with no cancellation wired is the
+// bug this package exists to prevent, so the constraint is deliberate.
 func Isolate(cmd *exec.Cmd, waitDelay time.Duration) {
 	if waitDelay <= 0 {
 		waitDelay = defaultWaitDelay
@@ -75,6 +80,17 @@ func Drain(pid int, grace time.Duration) bool {
 		time.Sleep(pollInterval)
 	}
 	return true
+}
+
+// Kill SIGKILLs every member of the group led by pid. Use it on a process this
+// daemon started under Isolate but no longer owns as a child (an orphan that
+// outlived a restart): Cmd.Cancel is gone with the parent, so the group signal
+// is the only handle left on the tree.
+func Kill(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	return signalGroup(pid, syscall.SIGKILL)
 }
 
 // groupAlive reports whether the group led by pid still has a member. Signal 0

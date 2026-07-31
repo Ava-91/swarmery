@@ -34,6 +34,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procfind"
 )
 
 // Wizard statuses — the closed set persisted in planning_sessions.status.
@@ -146,9 +148,17 @@ func (s *Service) newestWizard(projectID int64) (*wizardRow, error) {
 // ts is the stored-timestamp format (RFC3339 UTC, codebase-wide convention).
 func (s *Service) ts() string { return s.clock().UTC().Format(time.RFC3339) }
 
-// processAlive joins the two liveness sources: the in-memory planner slot
-// (initial `claude -p` run) and the api layer's resume map (`claude -r`,
-// exposed through the ResumeInFlight seam — nil in bare unit tests).
+// processAlive joins the liveness sources, cheapest first: the in-memory planner
+// slot (initial `claude -p` run), the api layer's resume map (`claude -r`,
+// exposed through the ResumeInFlight seam — nil in bare unit tests), and finally
+// the process table.
+//
+// The third source exists because the planner spawn is process-group isolated and
+// so OUTLIVES a daemon restart: after a restart both in-memory sources are empty,
+// and without a real probe a planner that is still writing its plan would be read
+// as dead and rolled back to awaiting_answer under the operator's feet. The probe
+// runs last — it shells out to ps, and the two in-memory checks answer for every
+// planner this process started itself.
 func (s *Service) processAlive(projectID int64, uuid string) bool {
 	s.mu.Lock()
 	r, ok := s.active[projectID]
@@ -156,7 +166,15 @@ func (s *Service) processAlive(projectID int64, uuid string) bool {
 	if ok && r.uuid == uuid {
 		return true
 	}
-	return s.ResumeInFlight != nil && s.ResumeInFlight(uuid)
+	if s.ResumeInFlight != nil && s.ResumeInFlight(uuid) {
+		return true
+	}
+	find := s.FindRun
+	if find == nil {
+		find = procfind.BySessionUUID
+	}
+	_, live := find(uuid)
+	return live
 }
 
 // lastAssistantText returns the session's newest assistant turn prose (by

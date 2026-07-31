@@ -132,9 +132,16 @@ type Service struct {
 	Go       func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors phaserun.Go
 	// Notify emits plan_updated for the plan at run edges. nil ⇒ no live nudge.
 	Notify func(taskID int64)
+	// FindRun locates the live process of a run by its session uuid (adopt.go).
+	// nil ⇒ a ps scan. Test seam: adoption must be exercisable without spawning.
+	FindRun func(sessionUUID string) (int, bool)
+	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
+	ProcAlive func(pid int) bool
 
 	mu     sync.Mutex
 	active map[int64]run // workspace task id → in-flight run
+	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	adoptPoll time.Duration
 }
 
 // NewService builds a plan-run service. The caller wires DB + Run
@@ -546,13 +553,29 @@ func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, er
 	return branch, existed, nil
 }
 
-// HealStale fails any plan_runs row left 'running' by a crashed/restarted
-// daemon (there can be no live run in THIS process — we just started). Mirrors
-// phaserun.HealStale's posture. Called from cmd/swarmery before serving.
+// HealStale settles every plan_runs row left 'running' by a crashed or restarted
+// daemon. Like phaserun.HealStale it does NOT assume they are all dead: a run in
+// its own process group outlives a restart and keeps working, so each row is
+// probed and the survivors are adopted (adopt.go). Called from cmd/swarmery
+// before serving.
 func (s *Service) HealStale() error {
-	res, err := s.DB.Exec(`
-		UPDATE plan_runs SET run_state='failed', run_error='daemon restart'
-		 WHERE run_state='running'`)
+	adopted, err := s.adoptSurvivors()
+	if err != nil {
+		// Best-effort: a failed probe must not leave rows stuck 'running' for ever.
+		log.Printf("error: swarmery planrun: adoption probe: %v", err)
+	}
+	// NOT IN () is invalid SQL and `x NOT IN (NULL)` is never true, so the
+	// exclusion clause exists only when there is something to exclude.
+	q := `UPDATE plan_runs SET run_state='failed', run_error='daemon restart'
+		 WHERE run_state='running'`
+	var args []any
+	if len(adopted) > 0 {
+		q += ` AND workspace_task_id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
+		for _, id := range adopted {
+			args = append(args, id)
+		}
+	}
+	res, err := s.DB.Exec(q, args...)
 	if err != nil {
 		return err
 	}
