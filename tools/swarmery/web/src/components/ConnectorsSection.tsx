@@ -52,24 +52,37 @@ function ConnectorRow({ c }: { c: Connector }): JSX.Element {
       className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3.5 py-2.5"
       data-status={c.status}
     >
-      {/* Status is never colour-only: the dot is decorative, the word is read
-          by assistive tech and revealed on hover. */}
-      <span className="flex shrink-0 items-center" title={`status: ${c.status}`}>
+      {/* Status is never colour-only: the word is visible next to the dot, so a
+          red/green pair of 7px dots is never the only signal. */}
+      <span className="flex shrink-0 items-center gap-1">
         <span
           aria-hidden="true"
           className={`inline-block h-[7px] w-[7px] rounded-full ${STATUS_DOT[c.status]}`}
         />
-        <span className="sr-only">status: {c.status}</span>
+        <span className="font-mono text-[9.5px] text-ink-dim">{c.status}</span>
       </span>
 
-      <span className="shrink-0 font-mono text-[12px] text-ink">{c.name}</span>
+      {/* min-w-0 + truncate, not shrink-0: a long plugin-prefixed name must give
+          way at phone width instead of shoving the source chip onto its own line
+          and making row heights ragged. */}
+      <span className="min-w-0 truncate font-mono text-[12px] text-ink" title={c.name}>
+        {c.name}
+      </span>
 
       {/* The CLI omits the type for some servers (claude.ai config), and the DTO
           carries that through as ''. An em dash, never a blank chip. */}
       <Chip>{c.transport === '' ? '—' : c.transport}</Chip>
-      <Chip>{c.scope}</Chip>
+      {/* `unknown` is every row today (the CLI listing carries no scope): a chip
+          that says nothing on every line is noise, so only a KNOWN scope shows. */}
+      {c.scope !== 'unknown' && <Chip>{c.scope}</Chip>}
 
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-dim" title={c.detail}>
+      {/* Full-width second line on narrow screens (order-last drops it below the
+          chips), inline-truncating column from sm up. Crushing it inline at
+          phone width truncated commands to a single character. */}
+      <span
+        className="order-last basis-full truncate font-mono text-[11px] text-ink-dim sm:order-none sm:min-w-0 sm:flex-1 sm:basis-0"
+        title={c.detail}
+      >
         {c.detail}
       </span>
 
@@ -145,9 +158,9 @@ export function ConnectorsSection(): JSX.Element {
 
       {state.kind !== 'loading' && (
         <p className="mt-2 font-mono text-[10px] text-ink-dim">
-          read-only · from `claude mcp list` on the default Claude account · project- and local-scope
-          servers configured in your repos are not listed (the daemon reads from its own working
-          directory)
+          read-only · from <code className="text-ink-2">claude mcp list</code> on the default Claude
+          account · project- and local-scope servers configured in your repos are not listed (the
+          daemon reads from its own working directory)
         </p>
       )}
     </>
