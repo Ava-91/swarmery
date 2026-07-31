@@ -3,14 +3,12 @@ package planning
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
@@ -129,34 +127,13 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	return run, nil
 }
 
-// ClaudeBin resolves the Claude Code executable, mirroring the
-// session_message.go resolution order so the planner spawn works under launchd's
-// minimal PATH: explicit SWARMERY_CLAUDE_BIN override → PATH lookup → probe the
-// common install locations. Exported so tests can assert the resolution and the
-// service can surface a clear "binary missing" error before spawning.
-func ClaudeBin() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("SWARMERY_CLAUDE_BIN")); v != "" {
-		return v, nil
-	}
-	if p, err := exec.LookPath("claude"); err == nil {
-		return p, nil
-	}
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		"/opt/homebrew/bin/claude",
-		"/usr/local/bin/claude",
-		filepath.Join(home, ".claude", "local", "claude"),
-		filepath.Join(home, ".local", "bin", "claude"),
-		filepath.Join(home, ".npm-global", "bin", "claude"),
-		filepath.Join(home, "bin", "claude"),
-	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("claude not found in PATH or common install locations")
-}
+// ClaudeBin resolves the Claude Code executable so the planner spawn works
+// under launchd's minimal PATH: explicit SWARMERY_CLAUDE_BIN override → PATH
+// lookup → probe the common install locations. Exported so tests can assert the
+// resolution and the service can surface a clear "binary missing" error before
+// spawning. The logic lives in internal/claudebin, shared with the API layer's
+// resume spawn and mcpcfg's `claude mcp …` shell-out.
+func ClaudeBin() (string, error) { return claudebin.Resolve() }
 
 // tail returns the last <= n bytes of s, trimmed.
 func tail(s string, n int) string {
