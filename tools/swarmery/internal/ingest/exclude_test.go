@@ -63,11 +63,11 @@ func TestDiscoverSkipsExcludedProjects(t *testing.T) {
 	}
 
 	p := NewPipeline(db, Config{
-		ProjectsRoot: root,
-		Exclude:      ParseExcludeList(DefaultExclude),
+		ProjectsRoots: []string{root},
+		Exclude:       ParseExcludeList(DefaultExclude),
 	}, nil)
 	files := p.discover()
-	if len(files) != 1 || filepath.Base(filepath.Dir(files[0])) != "-home-dev-app" {
+	if len(files) != 1 || filepath.Base(filepath.Dir(files[0].path)) != "-home-dev-app" {
 		t.Errorf("discover = %v, want only the -home-dev-app transcript", files)
 	}
 

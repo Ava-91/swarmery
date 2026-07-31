@@ -478,7 +478,7 @@ func TestTurnTextTailExtendsIncrementally(t *testing.T) {
 	if err := os.WriteFile(path, []byte(head), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := TailFile(db, path, Thresholds{}); err != nil {
+	if _, err := TailFile(db, path, "", Thresholds{}); err != nil {
 		t.Fatalf("tail 1: %v", err)
 	}
 	if got := textOf(t, db, `message_id='msg_TEXT01'`); got.String != "First paragraph." {
@@ -493,7 +493,7 @@ func TestTurnTextTailExtendsIncrementally(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Close()
-	if _, err := TailFile(db, path, Thresholds{}); err != nil {
+	if _, err := TailFile(db, path, "", Thresholds{}); err != nil {
 		t.Fatalf("tail 2: %v", err)
 	}
 	const want = "First paragraph.\n\nSecond paragraph."
@@ -537,7 +537,7 @@ func TestRebuildTextBackfillsExistingTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stats := RebuildText(t.Context(), db, root)
+	stats := RebuildText(t.Context(), db, []string{root})
 	if stats.Files != 1 || stats.Errors != 0 {
 		t.Errorf("rebuild stats = %+v, want 1 file / 0 errors", stats)
 	}

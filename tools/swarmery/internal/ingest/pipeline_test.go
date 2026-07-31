@@ -47,7 +47,7 @@ func TestTailOffsetResume(t *testing.T) {
 		line("aaaaaaaa-0000-4000-8000-000000000001", "2026-07-12T10:00:00.000Z", "first")+
 			line("aaaaaaaa-0000-4000-8000-000000000002", "2026-07-12T10:00:01.000Z", "second"))
 
-	res1, err := TailFile(db, path, Thresholds{})
+	res1, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatalf("first tail: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestTailOffsetResume(t *testing.T) {
 
 	// "Restart": a fresh TailFile call reads the offset from file_offsets.
 	mustAppend(t, path, line("aaaaaaaa-0000-4000-8000-000000000003", "2026-07-12T10:00:02.000Z", "third"))
-	res2, err := TailFile(db, path, Thresholds{})
+	res2, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatalf("second tail: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestTailOffsetResume(t *testing.T) {
 		t.Errorf("title = %q, want %q (tail batches must not rewrite it)", title, "first")
 	}
 	// Third pass with nothing new is a no-op.
-	res3, err := TailFile(db, path, Thresholds{})
+	res3, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestTailPartialLine(t *testing.T) {
 	half := partial[:len(partial)/2]
 	mustWrite(t, path, full+half)
 
-	res1, err := TailFile(db, path, Thresholds{})
+	res1, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestTailPartialLine(t *testing.T) {
 	}
 
 	mustAppend(t, path, partial[len(half):])
-	res2, err := TailFile(db, path, Thresholds{})
+	res2, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestTailFileRecreated(t *testing.T) {
 	content := line("cccccccc-0000-4000-8000-000000000001", "2026-07-12T10:00:00.000Z", "one") +
 		line("cccccccc-0000-4000-8000-000000000002", "2026-07-12T10:00:01.000Z", "two")
 	mustWrite(t, path, content)
-	if _, err := TailFile(db, path, Thresholds{}); err != nil {
+	if _, err := TailFile(db, path, "", Thresholds{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -146,7 +146,7 @@ func TestTailFileRecreated(t *testing.T) {
 	shorter := line("cccccccc-0000-4000-8000-000000000001", "2026-07-12T10:00:00.000Z", "one")
 	mustWrite(t, path, shorter)
 
-	res, err := TailFile(db, path, Thresholds{})
+	res, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestTailSidechainBeforeMainAdoptsOrphans(t *testing.T) {
 
 	// 1. Sidechain first: the parent subagent_start does not exist yet, so its
 	// events are ingested as orphans.
-	if _, err := TailFile(db, sidePath, Thresholds{}); err != nil {
+	if _, err := TailFile(db, sidePath, "", Thresholds{}); err != nil {
 		t.Fatalf("tail sidechain: %v", err)
 	}
 	if got := count(t, db,
@@ -198,7 +198,7 @@ func TestTailSidechainBeforeMainAdoptsOrphans(t *testing.T) {
 
 	// 2. Main transcript arrives: the Agent tool_result reveals the sidechain
 	// agentId — the orphans must be adopted by the new subagent_start.
-	if _, err := TailFile(db, mainPath, Thresholds{}); err != nil {
+	if _, err := TailFile(db, mainPath, "", Thresholds{}); err != nil {
 		t.Fatalf("tail main: %v", err)
 	}
 	if got := count(t, db,
@@ -250,7 +250,7 @@ func TestTailAsyncReconcileRepublishesRefinedEvents(t *testing.T) {
 
 	// 1. Main first: the async tool_result closes start/stop with the launch
 	// roundtrip (12:00:05.000 → 12:00:05.150 = 150ms). Nothing to refine yet.
-	res1, err := TailFile(db, mainPath, Thresholds{})
+	res1, err := TailFile(db, mainPath, "", Thresholds{})
 	if err != nil {
 		t.Fatalf("tail main: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestTailAsyncReconcileRepublishesRefinedEvents(t *testing.T) {
 
 	// 2. Sidechain arrives: reconcile refines both rows to the sidechain span
 	// (12:00:05.000 → 12:20:05.000 = 20 min) and reports them for re-publish.
-	res2, err := TailFile(db, sidePath, Thresholds{})
+	res2, err := TailFile(db, sidePath, "", Thresholds{})
 	if err != nil {
 		t.Fatalf("tail sidechain: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestTailAsyncReconcileRepublishesRefinedEvents(t *testing.T) {
 	}
 
 	// 3. No-op pass: nothing new, nothing re-published.
-	res3, err := TailFile(db, sidePath, Thresholds{})
+	res3, err := TailFile(db, sidePath, "", Thresholds{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func fixtureRoot(t *testing.T) string {
 func TestRepeatedBackfillNoDuplicates(t *testing.T) {
 	db := testDB(t)
 	root := fixtureRoot(t)
-	p := NewPipeline(db, Config{ProjectsRoot: root}, nil)
+	p := NewPipeline(db, Config{ProjectsRoots: []string{root}}, nil)
 	p.Backfill(context.Background())
 
 	events := count(t, db, `SELECT COUNT(*) FROM events`)
@@ -347,7 +347,7 @@ func TestRepeatedBackfillNoDuplicates(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM file_offsets`); err != nil {
 		t.Fatal(err)
 	}
-	p2 := NewPipeline(db, Config{ProjectsRoot: root}, nil)
+	p2 := NewPipeline(db, Config{ProjectsRoots: []string{root}}, nil)
 	p2.Backfill(context.Background())
 	p2.Backfill(context.Background())
 
@@ -386,7 +386,7 @@ func TestBackfillHealsNullProjectNames(t *testing.T) {
 
 	// Empty projects root: no transcripts change, so healing must not depend
 	// on any file being re-ingested.
-	NewPipeline(db, Config{ProjectsRoot: t.TempDir()}, nil).Backfill(context.Background())
+	NewPipeline(db, Config{ProjectsRoots: []string{t.TempDir()}}, nil).Backfill(context.Background())
 
 	var healed string
 	if err := db.QueryRow(
@@ -420,7 +420,7 @@ func TestCorruptFileDoesNotStopScanner(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
 
-	p := NewPipeline(db, Config{ProjectsRoot: root}, nil)
+	p := NewPipeline(db, Config{ProjectsRoots: []string{root}}, nil)
 	m := p.Backfill(context.Background())
 
 	if got := count(t, db, `SELECT COUNT(*) FROM sessions`); got != 3 {
@@ -548,7 +548,7 @@ func TestPipelineLiveTail(t *testing.T) {
 	ch, cancel := bus.Subscribe(64)
 	defer cancel()
 
-	p := NewPipeline(db, Config{ProjectsRoot: root, RescanInterval: 200 * time.Millisecond}, bus)
+	p := NewPipeline(db, Config{ProjectsRoots: []string{root}, RescanInterval: 200 * time.Millisecond}, bus)
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	go p.Run(ctx)

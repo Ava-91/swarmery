@@ -581,7 +581,7 @@ type breakdownRow struct {
 	SuccessRate *float64 `json:"success_rate"`
 }
 
-// GET /api/stats/breakdown?from&to&by=project|model|agent|skill
+// GET /api/stats/breakdown?from&to&by=project|model|account|agent|skill
 func (h *Handler) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	by := r.URL.Query().Get("by")
 	dr, err := parseRange(r)
@@ -593,14 +593,14 @@ func (h *Handler) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	pf, pargs := scopeFilter(r)
 	var out []breakdownRow
 	switch by {
-	case "project", "model":
+	case "project", "model", "account":
 		out, err = h.breakdownTurns(by, dr, pf, pargs)
 	case "agent":
 		out, err = h.breakdownAgent(dr, pf, pargs)
 	case "skill":
 		out, err = h.breakdownRuns("skill", dr, pf, pargs)
 	default:
-		http.Error(w, `{"error":"invalid by, want project|model|agent|skill"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid by, want project|model|account|agent|skill"}`, http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -614,12 +614,25 @@ func (h *Handler) statsBreakdown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out, nil)
 }
 
-// breakdownTurns ranks project|model by cost (turns-based). tokens & sessions
-// travel along; runs/last_used are null (Phase 1).
+// breakdownTurns ranks project|model|account by cost (turns-based). tokens &
+// sessions travel along; runs/last_used are null (Phase 1).
 func (h *Handler) breakdownTurns(by string, dr dateRange, pf string, pargs []any) ([]breakdownRow, error) {
 	keyExpr, labelIsName := "p.slug", true
-	if by == "model" {
+	switch by {
+	case "model":
 		keyExpr, labelIsName = "COALESCE(t.model, s.model, 'unknown')", false
+	case "account":
+		// Per-subscription split (migration 0047): what each Claude Code
+		// account cost over the range. '' folds into 'default' — the same
+		// synonym GET /api/sessions?account= honours — so the stock account
+		// is one row whether its sessions were stamped or predate the column.
+		//
+		// Turns-based like the other two pivots, which means days compacted by
+		// `swarmery prune` are NOT included: daily_rollups carries no account
+		// dimension, so there is nothing to merge (mergeProjectRollups exists
+		// for by=project only). The pivot answers "recent spend per account",
+		// not "spend since the beginning of time".
+		keyExpr, labelIsName = "CASE WHEN s.account = '' THEN 'default' ELSE s.account END", false
 	}
 	rows, err := h.DB.Query(`
 		SELECT `+keyExpr+` AS k, p.name,

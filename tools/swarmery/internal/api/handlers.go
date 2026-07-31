@@ -117,6 +117,11 @@ type sessionDTO struct {
 	EndedAt     *string `json:"endedAt"`
 	Title       *string `json:"title"`
 	Source      string  `json:"source"`
+	// Account is the Claude Code subscription this session ran under
+	// (migration 0047), derived at ingest from the config dir of its
+	// transcript root. "" — pre-0047 rows and every hook-minted session —
+	// means the stock account and is displayed as ingest.DefaultAccount.
+	Account string `json:"account"`
 	// Parity contract: per-session aggregates over deduped turns.
 	// tokens = SUM(tokens_in + tokens_out), null while the session has no
 	// turns; costUsd = SUM(cost_usd), null while no turn is priced.
@@ -268,8 +273,10 @@ func scanProject(rows *sql.Rows, roots []string) (projectDTO, error) {
 		p.IsSystem = true
 	}
 	// A single project's unreadable settings must not fail the list — PluginState
-	// already collapses those cases to (nil, nil).
-	if st, err := projectscan.ReadPluginState(p.Path, roots); err == nil {
+	// already collapses those cases to (nil, nil). Declared settings overlays are
+	// folded in so a project whose plugin set is injected by a launcher (rather
+	// than committed to its repo) still lists as managed.
+	if st, err := projectscan.ReadPluginState(p.Path, roots, overlaysFor(p.Path)...); err == nil {
 		p.Plugin = st
 	}
 	return p, nil
@@ -409,6 +416,7 @@ func (h *Handler) recentSessions(projectID int64) ([]projectRecentSessionDTO, er
 var sessionSelect = `
 	SELECT s.id, s.project_id, p.slug, p.name, s.session_uuid, s.model, s.git_branch, s.cwd,
 	       s.status, s.started_at, s.ended_at, COALESCE(s.custom_title, s.title), s.source,
+	       s.account,
 	       agg.tokens, agg.cost_usd, ctx.context_tokens,
 	       tl.task_id, tl.external_id, tl.link_source, tl.confidence,
 	       s.proc_state, s.pid, s.outcome,
@@ -500,7 +508,7 @@ func decodeSessionCursor(cursor string) (startedAt string, id int64, err error) 
 	return startedAt, id, nil
 }
 
-// GET /api/sessions?project=<slug|id>&status=<status>&limit=<n>&cursor=<opaque>
+// GET /api/sessions?project=<slug|id>&status=<status>&account=<key>&limit=<n>&cursor=<opaque>
 //
 // Keyset pagination: rows are ordered by (started_at DESC, id DESC); the
 // cursor is the opaque position of the last row of the previous page. The
@@ -534,6 +542,21 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 	if status := r.URL.Query().Get("status"); status != "" {
 		query += ` AND s.status = ?`
 		args = append(args, status)
+	}
+	// Subscription filter (migration 0047): exact match on sessions.account,
+	// with ONE synonym — 'default' also matches '', because '' is how the
+	// stock account is stored for every row minted before the column existed
+	// and for every hook-sourced session, which has no config dir to derive
+	// from. Both spellings mean "the default subscription", so a single filter
+	// value has to reach both or the UI's `default` chip would hide most of
+	// its own rows.
+	if account := r.URL.Query().Get("account"); account != "" {
+		if account == ingest.DefaultAccount {
+			query += ` AND (s.account = '' OR s.account = ?)`
+		} else {
+			query += ` AND s.account = ?`
+		}
+		args = append(args, account)
 	}
 	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
 		startedAt, id, err := decodeSessionCursor(cursor)
@@ -709,6 +732,7 @@ func scanSession(scan func(...any) error, s *sessionDTO) error {
 	var group sessionPlanGroupScan
 	dest := append([]any{&s.ID, &s.ProjectID, &s.ProjectSlug, &s.ProjectName, &s.SessionUUID, &s.Model,
 		&s.GitBranch, &s.CWD, &s.Status, &s.StartedAt, &s.EndedAt, &s.Title, &s.Source,
+		&s.Account,
 		&s.Tokens, &s.CostUSD, &s.ContextTokens,
 		&s.TaskID, &s.TaskExternalID, &s.TaskLinkSource, &s.TaskConfidence,
 		&s.ProcState, &s.ProcPID, &s.Outcome,

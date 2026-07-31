@@ -176,8 +176,12 @@ func TestStartPlanning_409WhenActive(t *testing.T) {
 	if resp1.StatusCode != http.StatusAccepted {
 		t.Fatalf("first start = %d, want 202", resp1.StatusCode)
 	}
-	// Wait until observably active.
+	// Wait until observably active — and then until the spawn goroutine has
+	// actually entered the runner: Active flips before the goroutine runs, so
+	// asserting on the call count without this races the scheduler (seen as a
+	// CI-only "runner called 0 times" flake).
 	waitActive(t, svc)
+	waitRunnerCalled(t, r)
 
 	resp2 := postPlanningJSON(t, srv.URL+"/api/projects/1/planning", map[string]string{"idea": "two"})
 	defer resp2.Body.Close()
@@ -254,6 +258,21 @@ func waitActive(t *testing.T, svc *planning.Service) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("planner run never became active")
+}
+
+// waitRunnerCalled blocks until the stub runner has been entered at least
+// once. The service marks the run Active before its spawn goroutine reaches
+// the runner, so a test that asserts on call counts must wait for the call
+// itself, not just for Active.
+func waitRunnerCalled(t *testing.T, r *planStubRunner) {
+	t.Helper()
+	for i := 0; i < 400; i++ {
+		if r.count() >= 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("runner never entered")
 }
 
 func waitIdle(t *testing.T, svc *planning.Service) {

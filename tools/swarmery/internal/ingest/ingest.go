@@ -46,7 +46,13 @@ const UnknownProjectPath = "(unknown)"
 
 // File ingests one main transcript .jsonl and any sidechain transcripts under
 // its companion dir (<file-without-ext>/subagents/agent-*.jsonl, §1/§7).
-func File(db *sql.DB, path string) (Stats, error) {
+// Callers with no projects-root context (the single-file `swarmery ingest`
+// subcommand) get an empty origin root — see ingester.originRoot.
+func File(db *sql.DB, path string) (Stats, error) { return fileFrom(db, path, "") }
+
+// fileFrom is File with the projects root the transcript was discovered under,
+// so a multi-root scan (RebuildText) keeps the account dimension attached.
+func fileFrom(db *sql.DB, path, originRoot string) (Stats, error) {
 	var stats Stats
 
 	absPath, err := filepath.Abs(path)
@@ -72,7 +78,7 @@ func File(db *sql.DB, path string) (Stats, error) {
 	}
 	defer tx.Rollback()
 
-	ing := &ingester{tx: tx, stats: &stats, thresholds: DefaultThresholds()}
+	ing := &ingester{tx: tx, stats: &stats, thresholds: DefaultThresholds(), originRoot: originRoot}
 	if err := ing.upsertProjectAndSession(recs, fi.ModTime(), false); err != nil {
 		return stats, err
 	}
@@ -140,6 +146,16 @@ type ingester struct {
 	tx         *sql.Tx
 	stats      *Stats
 	thresholds Thresholds
+
+	// originRoot is the projects root this transcript was discovered under:
+	// ~/.claude/projects, ~/.claude-<account>/projects, … One machine can run
+	// several Claude Code subscriptions side by side (CLAUDE_CONFIG_DIR) and
+	// the config dir is the ONLY thing that tells their sessions apart — the
+	// transcripts themselves carry no account marker. AccountFor turns it into
+	// the sessions.account key stamped by upsertProjectAndSession; "" when the
+	// caller has no root context (single-file `swarmery ingest`, tests), which
+	// leaves the column at its '' default.
+	originRoot string
 
 	projectID int64
 	sessionID int64
@@ -254,6 +270,12 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 	}
 	status := StatusFor(lastActivity, time.Now(), in.thresholds)
 
+	// Subscription the transcript belongs to (migration 0047), derived from the
+	// config dir of the projects root it was found under. "" when this caller
+	// has no root context — the column then keeps its '' default and a later
+	// tail that DOES know the root fills it in.
+	account := AccountFor(in.originRoot)
+
 	// Resolve the session first: mid-file tail batches may carry no cwd, so an
 	// existing session must never depend on batch-derived project fields.
 	err := in.tx.QueryRow(
@@ -278,10 +300,10 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 
 		res, err := in.tx.Exec(
 			`INSERT INTO sessions (project_id, session_uuid, model, git_branch, cwd, status,
-			                       started_at, ended_at, title, source)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'jsonl')`,
+			                       started_at, ended_at, title, source, account)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'jsonl', ?)`,
 			in.projectID, sessionUUID, nullStr(model), nullStr(branch), cwd, status,
-			firstTS, nullStr(lastTS), nullStr(insertTitle))
+			firstTS, nullStr(lastTS), nullStr(insertTitle), account)
 		if err != nil {
 			return fmt.Errorf("insert session: %w", err)
 		}
@@ -344,7 +366,11 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 		//     death; tailing them must NOT resurrect it to a live status.
 		// started_at / git_branch only backfill stub rows (empty / NULL) —
 		// a mid-file tail batch's first timestamp is NOT the session start, so
-		// good values are never overwritten.
+		// good values are never overwritten. account backfills the same way
+		// (migration 0047): a re-tail through a caller with no root context
+		// must never blank an account already stamped, and a session belongs
+		// to exactly one subscription for its whole life, so the first root
+		// that knew wins.
 		if _, err := in.tx.Exec(
 			`UPDATE sessions SET model = COALESCE(?, model),
 			                     git_branch = COALESCE(git_branch, ?),
@@ -355,9 +381,10 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 			                     source = CASE WHEN source = 'hook' THEN 'both' ELSE source END,
 			                     ended_at = CASE WHEN ? = '' THEN ended_at
 			                                     ELSE MAX(COALESCE(ended_at,''), ?) END,
+			                     account = CASE WHEN account = '' THEN ? ELSE account END,
 			                     title = COALESCE(?, COALESCE(title, ?)) WHERE id = ?`,
 			nullStr(model), nullStr(branch), firstTS, firstTS, status, lastTS, lastTS,
-			nullStr(title), nullStr(firstPrompt), in.sessionID); err != nil {
+			account, nullStr(title), nullStr(firstPrompt), in.sessionID); err != nil {
 			return err
 		}
 	}
@@ -1198,12 +1225,37 @@ func systemBase() string {
 // only when the home dir is unresolvable.
 func SystemDir() string { return systemBase() }
 
+// onboardRootsOverride holds the daemon's onboarding roots (SWARMERY_ONBOARD_ROOTS,
+// cleaned) so the ancestor rule can refuse them as attribution targets. An
+// onboarding root is a PARENT directory holding many unrelated repos, not a
+// project — but one session that once ran at that exact cwd is enough to mint
+// a projects row for it, and from then on "deepest registered ancestor wins"
+// folds every sibling repo under it into that one catch-all row (and the heal
+// then deletes their real rows). Empty means the daemon was started without
+// onboarding roots, which is the pre-existing behaviour.
+var onboardRootsOverride []string
+
+// SetOnboardRoots publishes the onboarding allow-list to the attribution rules;
+// call once at startup, BEFORE the ingest pipeline starts (its first Backfill
+// runs HealProjectAttribution, which must already see the roots). Mirrors
+// api.AttachOnboard, which fences the onboarding endpoint with the same list.
+func SetOnboardRoots(roots []string) {
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if r = strings.TrimSpace(r); r != "" {
+			out = append(out, filepath.Clean(r))
+		}
+	}
+	onboardRootsOverride = out
+}
+
 // CanonicalProjectPath maps a raw session cwd to the path of the registered
 // project it belongs to, so satellite cwds never mint phantom project rows:
 //   - a dispatcher worktree <root>/<parentSlug>/<task> resolves to the
 //     project whose slug is the first segment under the worktree root;
 //   - a subdirectory of a registered project resolves to that project
-//     (deepest registered ancestor wins).
+//     (deepest registered ancestor wins), skipping archived rows and
+//     configured onboarding roots — see the ancestor query below.
 //
 // Unknown paths return unchanged — attribution never invents projects
 // (except cwd "/", which maps to the System dir; UpsertProject mints that
@@ -1223,10 +1275,27 @@ func CanonicalProjectPath(q dbtx, path string) string {
 			}
 		}
 	}
+	// Deepest registered ancestor wins, with two rows barred from ever being
+	// the target:
+	//   - archived = 1: archiving a row is the operator saying "stop using
+	//     this project"; without the filter an archived trap row keeps
+	//     swallowing new cwds and archiving cannot defuse it;
+	//   - an onboarding root: a parent dir of many repos, never a project in
+	//     the attribution sense (see onboardRootsOverride).
+	// Both bans are ancestor-rule-only — UpsertProject's exact-path lookup
+	// still resolves an archived project or an onboarding root that really
+	// did host a session, so no existing row loses its own sessions.
+	query := `SELECT path FROM projects WHERE ? LIKE path || '/%' AND archived = 0`
+	args := []any{path}
+	if len(onboardRootsOverride) > 0 {
+		query += ` AND path NOT IN (?` + strings.Repeat(`, ?`, len(onboardRootsOverride)-1) + `)`
+		for _, r := range onboardRootsOverride {
+			args = append(args, r)
+		}
+	}
+	query += ` ORDER BY LENGTH(path) DESC LIMIT 1`
 	var ancestor string
-	if err := q.QueryRow(
-		`SELECT path FROM projects WHERE ? LIKE path || '/%' ORDER BY LENGTH(path) DESC LIMIT 1`,
-		path).Scan(&ancestor); err == nil && ancestor != "" {
+	if err := q.QueryRow(query, args...).Scan(&ancestor); err == nil && ancestor != "" {
 		return ancestor
 	}
 	return path
@@ -1317,23 +1386,27 @@ func HealProjectNames(db *sql.DB) (int, error) {
 // before canonicalization existed — dispatcher worktrees, in-repo
 // subdirectories) into the project their path canonicalizes to: every
 // project_id reference in every table is re-pointed, then the phantom row is
-// dropped. A project with a linked workspaces row is never treated as a
-// phantom — real projects carry workspaces, satellites don't. Returns the
-// number of phantoms merged. Called from every Backfill pass, so existing
-// databases heal on the first daemon restart after upgrading.
+// dropped. Two markers make a row a real project that is never folded away:
+// a linked workspaces row (real projects carry workspaces, satellites don't)
+// and pinned = 1 (the operator's explicit "never merge this row away" — the
+// escape hatch when a rule would otherwise swallow a row the operator knows
+// is its own project). Returns the number of phantoms merged. Called from
+// every Backfill pass, so existing databases heal on the first daemon restart
+// after upgrading.
 func HealProjectAttribution(db *sql.DB) (int, error) {
-	rows, err := db.Query(`SELECT id, path FROM projects`)
+	rows, err := db.Query(`SELECT id, path, pinned FROM projects`)
 	if err != nil {
 		return 0, err
 	}
 	type row struct {
-		id   int64
-		path string
+		id     int64
+		path   string
+		pinned int
 	}
 	var projs []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.path); err != nil {
+		if err := rows.Scan(&r.id, &r.path, &r.pinned); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -1371,6 +1444,9 @@ func HealProjectAttribution(db *sql.DB) (int, error) {
 		target, _, err := UpsertProject(db, canon, "", "")
 		if err != nil || target == p.id {
 			continue
+		}
+		if p.pinned != 0 {
+			continue // pinned → the operator declared it a real project
 		}
 		var linked int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM workspaces WHERE project_id = ?`, p.id).Scan(&linked); err == nil && linked > 0 {

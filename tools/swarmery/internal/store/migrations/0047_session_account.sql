@@ -1,0 +1,25 @@
+-- 0047: which Claude Code subscription ("account") a session was run under.
+--
+-- One machine can run several subscriptions side by side (CLAUDE_CONFIG_DIR):
+-- ~/.claude, ~/.claude-<account>, … Each config dir owns its own projects/
+-- transcript tree, and the config dir is the ONLY thing that tells their
+-- sessions apart — the JSONL carries no account marker of its own.
+--
+-- The dimension belongs on the SESSION, not on the project: projects stay
+-- keyed by cwd, so one repo worked from two subscriptions is still ONE
+-- projects row, and it is the individual sessions under it that were billed
+-- to different plans.
+--
+-- '' (the default) means "unknown / stock account": every row that existed
+-- before this column did, plus every session minted by the hooks channel
+-- (internal/approvals), which has no config dir to derive from. Readers fold
+-- '' into the display key 'default' (ingest.AccountFor / DefaultAccount) and
+-- the ?account=default filter matches both spellings. '' is deliberately not
+-- stored as 'default': the empty string is what marks a row as "not stamped
+-- yet", which is what lets a later re-tail of the same transcript fill it in
+-- without ever overwriting an account already recorded.
+--
+-- No index: the sessions list is ordered by (started_at DESC, id DESC) and
+-- the account predicate rides along with the existing scan, exactly like the
+-- hidden/pruned/outcome flags added the same way (0011/0014).
+ALTER TABLE sessions ADD COLUMN account TEXT NOT NULL DEFAULT '';

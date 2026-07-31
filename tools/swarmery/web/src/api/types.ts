@@ -195,6 +195,15 @@ export interface Session {
   endedAt: string | null;
   title: string | null;
   source: SessionSource;
+  /**
+   * Claude Code subscription this session ran under (migration 0047), derived
+   * at ingest from its transcript root's config dir: '' or 'default' for the
+   * stock ~/.claude, otherwise the suffix ('nabu-org' for ~/.claude-nabu-org).
+   * Additive optional — absent on responses from an older daemon. Only
+   * NON-default values are surfaced (accountLabel), so a single-subscription
+   * machine sees no account UI at all.
+   */
+  account?: string;
   /** Aggregate SUM(turns.tokens_in + tokens_out) — parity wave; optional until backend lands. */
   tokens?: number | null;
   /** Aggregate SUM(turns.cost_usd) — parity wave; optional until backend lands. */
