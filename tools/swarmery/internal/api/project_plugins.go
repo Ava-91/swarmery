@@ -1,8 +1,10 @@
 package api
 
 // phase: projects — GET /api/projects/{id}/plugins merges the swarmery
-// marketplace catalog (the clone under ~/.claude/plugins/marketplaces/swarmery,
-// read via internal/marketplace) with the project's enabledPlugins state
+// marketplace catalog (read via internal/marketplace, which resolves the
+// catalog root out of <claudeDir>/plugins/known_marketplaces.json — a github
+// clone under plugins/marketplaces/, or the operator's own checkout for a
+// directory-source marketplace) with the project's enabledPlugins state
 // (projectscan.ReadPluginState). Read-only and unfenced; the canWrite flag
 // tells the UI whether the PUT fence (step 03, same file) would admit a write.
 
@@ -41,8 +43,11 @@ const overlayStatusDetail = "enabled by a settings overlay — drift is only sca
 // ~/.claude at request time. Mirrors AttachOnboard (onboard.go:41).
 var pluginCatalogDir string
 
-// AttachPluginCatalog points the project-plugins endpoints at the directory
-// holding plugins/marketplaces/ (production: ~/.claude; tests: a temp dir).
+// AttachPluginCatalog points the project-plugins endpoints at the Claude Code
+// config root (production: ~/.claude; tests: a temp dir). internal/marketplace
+// resolves the catalog underneath it via plugins/known_marketplaces.json, so
+// this dir need not itself contain plugins/marketplaces/<name> — on a
+// directory-source machine it does not.
 func AttachPluginCatalog(claudeDir string) { pluginCatalogDir = claudeDir }
 
 func catalogDir() (string, error) {
