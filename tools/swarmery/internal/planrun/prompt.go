@@ -120,6 +120,13 @@ func manifest(phases []Phase) string {
 // parent's final second), and the green chip claimed success. Hence the
 // await-your-children rule below.
 //
+// The third: the skill's per-phase report contract points executors at
+// `<task-dir>/reports/phase-<N>-report.md`, a path the dashboard never reads.
+// The Plans UI renders a phase's summary from the doc's own `## Completion
+// Report` section (wsingest.parseCompletionReport) and from nothing else, so a
+// run whose phases landed can still show "no summary of the work written". The
+// prompt therefore makes the in-doc section part of finishing a phase.
+//
 // text/template so paths and content interpolate without any prompt-side format
 // bug (idiom of planning/prompt.go, phaserun/prompt.go).
 var promptTemplate = template.Must(template.New("planrun").Parse(
@@ -136,6 +143,7 @@ Constraints this run adds on top of the skill, because THERE IS NO HUMAN in this
 - If you reach a decision that genuinely needs a human — an ASK gate you cannot defer, a destructive operation, or a phase whose premises contradict the code you find — STOP there and end your reply with: PLAN BLOCKED at phase <n>: <one-line reason>. Do not improvise a different design to get past it.
 - ENDING YOUR TURN ENDS THIS PROCESS, and every subagent still running dies with it — while the exit code stays 0, so the run is recorded as a clean success that landed nothing. Never dispatch executors and then reply that you are waiting on them: that reply IS the kill. Await every subagent you dispatch inside the same turn (poll it to completion), and only finish your reply once no dispatched work is still in flight and its results are written to disk. If you cannot await them, do the phase work inline instead.
 - Tick each acceptance criterion in its phase doc as you satisfy it, not in one batch at the end. Those ticks are the ONLY progress signal the operator can see while you run.
+- When a phase's last criterion is ticked, WRITE THAT PHASE'S SUMMARY INTO ITS OWN PHASE DOC: fill the doc's ` + "`## Completion Report`" + ` section, or append it at the end of the doc when the section does not exist yet — what shipped, files and commits, verification output, deviations, and anything DEFERRED. That section is the ONLY per-phase summary the operator's dashboard shows; the run ledger and any reports/ file are invisible there, so this is in addition to them, never instead. A phase left with no Completion Report is not finished.
 - When every phase is finished, end with: PLAN DONE.
 
 PHASE MANIFEST (current state — phases marked DONE are already landed; skip them):

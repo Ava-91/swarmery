@@ -23,6 +23,12 @@ func TestBuildPrompt_InterpolatesAllFields(t *testing.T) {
 		"ENDING YOUR TURN ENDS THIS PROCESS",
 		"PHASE BLOCKED:",
 		"PHASE DONE.",
+		// The summary contract: wsingest reads the doc's `## Completion Report`
+		// section and the Plans UI shows that and nothing else, so a phase whose
+		// account lives only in the final reply reads as "no summary of the work
+		// written" over work that shipped.
+		"## Completion Report",
+		"the ONLY summary the operator's dashboard shows",
 		// The embedded doc, framed by its rel path.
 		"PHASE DOCUMENT (phase-2-api.md):",
 		"# Phase 2 — API",

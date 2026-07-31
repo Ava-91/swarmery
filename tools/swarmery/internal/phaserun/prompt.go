@@ -15,6 +15,14 @@ import (
 // place (progress then flows through the existing wsingest checkbox pipeline),
 // commits locally, and never pushes.
 //
+// The doc is also where the phase's SUMMARY has to land. wsingest parses the
+// doc's `## Completion Report` section (parseCompletionReport) and the Plans UI
+// renders exactly that as the phase summary; nothing else is read. Executors
+// that write their account into a reports/ file or only into their final reply
+// leave the operator staring at "no summary of the work written" over a phase
+// that in fact shipped — so the prompt demands the section explicitly, on the
+// blocked path too.
+//
 // text/template so the doc path/content interpolate without any prompt-side
 // format bug (idiom of planning/prompt.go).
 var promptTemplate = template.Must(template.New("phaserun").Parse(
@@ -25,6 +33,7 @@ The phase document below is your complete contract. Follow it exactly:
 - As you complete each acceptance criterion, EDIT the phase document itself and tick its checkbox (- [ ] → - [x]). The document lives at: {{.DocPath}} — edit it in place (it is outside the repo; use the absolute path).
 - Run the verification commands the document specifies before declaring done.
 - Commit your work in the worktree with conventional commits. Do NOT push, do NOT open PRs, do NOT merge.
+- WRITE THE PHASE SUMMARY INTO THE PHASE DOCUMENT before you finish: fill the doc's ` + "`## Completion Report`" + ` section, or append it at the end of the doc when the section does not exist yet. Cover what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this phase — a report left in your reply, in a scratchpad, or in a reports/ file is invisible there. Write it on the blocked path too, describing how far you got and what stopped you.
 - ENDING YOUR TURN ENDS THIS PROCESS, and any subagent still running dies with it — while the exit code stays 0, so the run is recorded as a clean success that landed nothing. Never dispatch helpers and then reply that you are waiting on them: that reply IS the kill. Await anything you dispatch inside the same turn, or do the work yourself.
 - If the document's premises don't match the code you find, STOP and end your reply with: PHASE BLOCKED: <one-line reason>. Otherwise end with: PHASE DONE.
 

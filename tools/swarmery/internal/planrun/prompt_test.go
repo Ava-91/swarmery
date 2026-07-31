@@ -34,6 +34,26 @@ func TestBuildPromptDelegatesToTheSkill(t *testing.T) {
 	}
 }
 
+// TestBuildPromptDemandsPerPhaseCompletionReport pins the one artifact the
+// dashboard reads as a phase summary. The skill's report contract sends executors
+// to `<task-dir>/reports/phase-<N>-report.md`, which wsingest never parses; only
+// the phase doc's `## Completion Report` section reaches the Plans UI. Dropping
+// this instruction fails silently — every phase ships and every Summary tab says
+// "no summary of the work written" — so it gets its own test.
+func TestBuildPromptDemandsPerPhaseCompletionReport(t *testing.T) {
+	for _, mode := range []Mode{ModeAuto, ModeSubagents, ModeInline} {
+		got := BuildPrompt("/ws/plan", "readme", testPhases(), mode)
+		for _, want := range []string{
+			"## Completion Report",
+			"A phase left with no Completion Report is not finished",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("mode %s: prompt missing %q", mode, want)
+			}
+		}
+	}
+}
+
 // TestBuildPromptForbidsReturningWithChildrenInFlight pins the run-context fact the
 // skill cannot know: under `claude -p` the reply that says "waiting on the
 // executors" is the reply that kills them, and the 0 exit code then books the run
