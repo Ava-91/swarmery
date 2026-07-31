@@ -790,6 +790,18 @@ export interface UsageProvider {
   windows: UsageWindow[];
   /** Set only on a `no-auth` provider — see UsageHint. */
   hint?: UsageHint;
+  /**
+   * Present — as `'swarmery'` — when this card's credential came from swarmery's
+   * OWN store, i.e. the account was connected from this panel rather than with
+   * the `claude` CLI. Absent for a CLI credential and for an account with no
+   * credential at all. Provenance only: never a token, never a path.
+   *
+   * Two decisions read it. Only a card marked here may offer `Disconnect` (the
+   * CLI's credentials are not ours to delete), and only a card marked here turns
+   * a credential failure into `Reconnect` — for a store swarmery owns, a `claude`
+   * login writes to the wrong place and would change nothing.
+   */
+  connectedVia?: 'swarmery';
 }
 
 /**

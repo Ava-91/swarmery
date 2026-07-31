@@ -683,3 +683,92 @@ func TestRefreshWithoutAnAccountKeyDoesNotPersist(t *testing.T) {
 		t.Errorf("store holds %d entries, want none for an account-less client", len(entries))
 	}
 }
+
+// ── disconnect ─────────────────────────────────────────────────────────────
+
+// TestDisconnectRemovesOnlySwarmerysOwnCredential is the whole promise of the
+// Disconnect action: it removes the file SWARMERY wrote and nothing else. The
+// CLI's own credential for the same account sits right beside it here and must
+// survive — after the disconnect the account simply resolves through the CLI
+// again, which is the fallback the resolution chain has always had.
+func TestDisconnectRemovesOnlySwarmerysOwnCredential(t *testing.T) {
+	store := useTempStore(t)
+	cliDir := filepath.Join(t.TempDir(), ".claude-nabu-org")
+	writeCredFileAt(t, cliDir, "NOT-A-REAL-TOKEN-cli-access", testNow.Add(8*time.Hour))
+	if err := writeStoredCreds("nabu-org", storeFixtureCreds()); err != nil {
+		t.Fatalf("writeStoredCreds: %v", err)
+	}
+
+	c := &Client{
+		Now: func() time.Time { return testNow },
+		Src: Source{Account: "nabu-org", ConfigDir: cliDir},
+	}
+	// A bearer refreshed during the connected session. It must not outlive the
+	// credential that justified it.
+	c.cacheToken("NOT-A-REAL-TOKEN-refreshed")
+
+	// Precondition: while connected, the store is what resolves.
+	before, err := LoadCredsFor(context.Background(), c.Src)
+	if err != nil || before == nil || !before.FromStore {
+		t.Fatalf("LoadCredsFor before disconnect = (%v, %v), want the stored credential", before, err)
+	}
+
+	if err := c.Disconnect(); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(store, "nabu-org.json")); !os.IsNotExist(err) {
+		t.Errorf("swarmery's own credential survived the disconnect (stat err = %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(cliDir, credentialsFile)); err != nil {
+		t.Errorf("the CLI's own credential was touched: %v", err)
+	}
+	if c.cachedToken() != "" {
+		t.Error("the refreshed bearer survived the disconnect — it would outlive the credential")
+	}
+
+	after, err := LoadCredsFor(context.Background(), c.Src)
+	if err != nil || after == nil {
+		t.Fatalf("LoadCredsFor after disconnect = (%v, %v), want the CLI credential", after, err)
+	}
+	if after.FromStore {
+		t.Error("resolution still reports a store credential after the disconnect")
+	}
+
+	// Idempotent: an account with nothing stored is already in the state the
+	// caller is asking for.
+	if err := c.Disconnect(); err != nil {
+		t.Errorf("second Disconnect = %v, want nil — disconnect is idempotent", err)
+	}
+}
+
+// TestDisconnectHonoursOptOut: the kill switch covers the whole OAuth surface,
+// and that includes the one call that DELETES a credential — an operator who
+// switched the surface off gets a refusal, not a silent removal.
+func TestDisconnectHonoursOptOut(t *testing.T) {
+	store := useTempStore(t)
+	if err := writeStoredCreds("nabu-org", storeFixtureCreds()); err != nil {
+		t.Fatalf("writeStoredCreds: %v", err)
+	}
+	t.Setenv(oauthOptOutEnv, "0")
+
+	c := &Client{Src: Source{Account: "nabu-org"}}
+	if err := c.Disconnect(); !errors.Is(err, ErrDisabled) {
+		t.Errorf("Disconnect = %v, want ErrDisabled", err)
+	}
+	if _, err := os.Stat(filepath.Join(store, "nabu-org.json")); err != nil {
+		t.Errorf("a credential was removed while the OAuth surface was switched off: %v", err)
+	}
+}
+
+// TestDisconnectWithoutAResolvableStore: no account key means no store path and
+// nothing to remove. Reported rather than silently treated as done — the caller
+// must not tell the operator a connection is gone when nothing was even looked
+// at.
+func TestDisconnectWithoutAResolvableStore(t *testing.T) {
+	useTempStore(t)
+	c := &Client{}
+	if err := c.Disconnect(); !errors.Is(err, errNoStore) {
+		t.Errorf("Disconnect = %v, want errNoStore for an account-less client", err)
+	}
+}

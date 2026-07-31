@@ -148,13 +148,28 @@ const (
 	// hintHandling states the package's standing policy in operator-facing
 	// words. Keep it in sync with the policy note in types.go.
 	hintHandling = "Read from your own machine, sent only to Anthropic's API, refreshed in memory — never written back, logged, or returned by the dashboard."
+	// reconnectDetail replaces the CLI remedy for a credential that came from
+	// swarmery's own store. Without it the card would name a command that writes
+	// somewhere this credential never came from, and the operator would run
+	// `claude`, see nothing change, and have no idea why.
+	reconnectDetail = "This account is connected through swarmery, not through the `claude` CLI, so a CLI login cannot repair it — reconnect the account from this card to authorize it again."
 )
 
-// loginHint is the "(re-)run the CLI login" hint every credential-shaped
+// loginHint is the "(re-)connect this account" hint every credential-shaped
 // failure shares; kind and wording differ, the remedy does not. It is a method
 // because both the remedy and the "looked in …" list are per ACCOUNT.
-func (c *Client) loginHint(kind, title, detail string) *Hint {
-	return &Hint{
+//
+// The REMEDY is decided by provenance, the same rule that decides write-back. A
+// credential the `claude` CLI owns is fixed by re-running that login, so the
+// hint carries the exact command. A credential from SWARMERY'S OWN store is not:
+// the CLI does not write there, so the command would be a dead end. Those hints
+// carry NO command and point at the card's own Reconnect action, which is the
+// one thing that actually replaces the file (login.go's CompleteLogin).
+//
+// creds is the credential the failure was about, and is nil when none resolved
+// at all — the plain CLI case.
+func (c *Client) loginHint(creds *Creds, kind, title, detail string) *Hint {
+	h := &Hint{
 		Kind:     kind,
 		Title:    title,
 		Detail:   detail,
@@ -163,6 +178,11 @@ func (c *Client) loginHint(kind, title, detail string) *Hint {
 		Why:      hintWhy,
 		Handling: hintHandling,
 	}
+	if creds != nil && creds.FromStore {
+		h.Command = ""
+		h.Detail = detail + " " + reconnectDetail
+	}
+	return h
 }
 
 // loginCommand is the login THIS account needs. A scoped account is logged in
@@ -223,9 +243,15 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 		return p
 	case err != nil, creds == nil, creds.AccessToken == "":
 		p.Error = "No Claude credentials — run `claude` to log in"
-		p.Hint = c.loginHint(HintLogin, "Claude login required",
+		p.Hint = c.loginHint(creds, HintLogin, "Claude login required",
 			"No Claude credential was found on this machine, so the live quota cannot be read.")
 		return p
+	}
+	// Provenance is stamped BEFORE any failure path can return: a card whose
+	// swarmery-owned credential has gone bad still has to be recognisable as
+	// ours, or the UI cannot offer the only remedy that works for it.
+	if creds.FromStore {
+		p.ConnectedVia = ConnectedViaSwarmery
 	}
 
 	// An absent or empty Scopes list is treated as permissive: the CLI does not
@@ -236,7 +262,7 @@ func (c *Client) Fetch(ctx context.Context) Provider {
 	// path below remains the backstop for a token that is actually unauthorized.
 	if len(creds.Scopes) > 0 && !hasScope(creds.Scopes, requiredScope) {
 		p.Error = "Claude token missing user:profile scope — re-run `claude` login"
-		p.Hint = c.loginHint(HintScope, "Claude login is missing a permission",
+		p.Hint = c.loginHint(creds, HintScope, "Claude login is missing a permission",
 			"The stored credential has no `user:profile` scope, which the quota endpoint requires. A fresh login grants it.")
 		return p
 	}
@@ -280,7 +306,7 @@ func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, 
 	if creds.RefreshToken == "" {
 		return "", false, &fail{
 			msg: "Claude token expired and no refresh token — run `claude` to re-login",
-			hint: c.loginHint(HintLogin, "Claude login expired",
+			hint: c.loginHint(creds, HintLogin, "Claude login expired",
 				"The stored token has expired and carries no refresh token, so it cannot be renewed automatically."),
 		}
 	}
@@ -288,7 +314,7 @@ func (c *Client) resolveToken(ctx context.Context, creds *Creds) (token string, 
 	if !ok {
 		return "", false, &fail{
 			msg: "Claude token refresh failed — run `claude` to re-login",
-			hint: c.loginHint(HintLogin, "Claude login expired",
+			hint: c.loginHint(creds, HintLogin, "Claude login expired",
 				"The stored token has expired and Anthropic declined to refresh it, so a fresh login is needed."),
 		}
 	}
@@ -323,7 +349,7 @@ func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, ref
 					continue
 				}
 			}
-			return nil, c.authRejected()
+			return nil, c.authRejected(creds)
 
 		case status == http.StatusTooManyRequests:
 			if attempt < maxRetries-1 {
@@ -341,7 +367,7 @@ func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, ref
 		return b, nil
 	}
 	// Only reachable when every attempt was consumed by a 401→refresh retry.
-	return nil, c.authRejected()
+	return nil, c.authRejected(creds)
 }
 
 // authRejected reports a rejected bearer AND drops the in-memory refreshed
@@ -351,11 +377,11 @@ func (c *Client) fetchUsage(ctx context.Context, creds *Creds, token string, ref
 // following the hint (`claude` re-login) would appear to change nothing until
 // the daemon restarted. Clearing it makes the next poll start from the
 // on-disk credential again.
-func (c *Client) authRejected() *fail {
+func (c *Client) authRejected(creds *Creds) *fail {
 	c.cacheToken("")
 	return &fail{
 		msg: "Claude auth rejected — run `claude` to re-login",
-		hint: c.loginHint(HintLogin, "Claude login was rejected",
+		hint: c.loginHint(creds, HintLogin, "Claude login was rejected",
 			"Anthropic rejected the stored credential, which usually means the login was revoked or superseded elsewhere."),
 	}
 }

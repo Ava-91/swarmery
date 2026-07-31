@@ -12,9 +12,16 @@
 // sees a token, and the code it does handle is single-use and useless without
 // the verifier that never left the daemon.
 //
-// Rendered ONLY on a card that is in the login-hint state, so a connected
+// Rendered ONLY on a card that is waiting on a login, so a healthy connected
 // account — the single-account default on every OS — is pixel-identical to what
 // it was before this existed.
+//
+// Two entries, one flow. `connect` is the original: an account the daemon has no
+// credential for. `reconnect` is a card whose SWARMERY-owned credential went bad
+// (refresh declined, token rejected, scope missing) — for those the daemon sends
+// no CLI command, because `claude` writes to a store that credential never came
+// from, and this is the only remedy that replaces it. The steps are identical;
+// only the wording changes, because the operator's situation differs.
 
 import { useState } from 'react';
 import { completeUsageLogin, startUsageLogin } from '../../api';
@@ -22,10 +29,30 @@ import { useUsage } from '../../lib/usageData';
 
 type Phase = 'idle' | 'starting' | 'awaiting-code' | 'submitting';
 
+/** `connect` = never connected; `reconnect` = ours, and currently broken. */
+export type ConnectVariant = 'connect' | 'reconnect';
+
+const copy: Record<ConnectVariant, { action: string; blurb: string }> = {
+  connect: {
+    action: 'Connect account',
+    blurb: "Authorize swarmery to read this account's quota — no CLI login needed.",
+  },
+  reconnect: {
+    action: 'Reconnect',
+    blurb: 'Authorize swarmery again — this replaces the stored credential for this account.',
+  },
+};
+
 const btn =
   'rounded-[6px] border border-line-strong px-2 py-0.5 font-mono text-[10px] whitespace-nowrap text-ink-dim transition-colors hover:bg-surface2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand disabled:opacity-50';
 
-export function UsageConnect({ account }: { account: string }): JSX.Element {
+export function UsageConnect({
+  account,
+  variant = 'connect',
+}: {
+  account: string;
+  variant?: ConnectVariant;
+}): JSX.Element {
   const { refresh } = useUsage();
   const [phase, setPhase] = useState<Phase>('idle');
   const [code, setCode] = useState('');
@@ -71,7 +98,7 @@ export function UsageConnect({ account }: { account: string }): JSX.Element {
   };
 
   return (
-    <div className="mt-2 border-t border-line pt-2" data-connect={account}>
+    <div className="mt-2 border-t border-line pt-2" data-connect={account} data-variant={variant}>
       {phase === 'idle' || phase === 'starting' ? (
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -80,10 +107,10 @@ export function UsageConnect({ account }: { account: string }): JSX.Element {
             disabled={busy}
             className={btn}
           >
-            {phase === 'starting' ? 'starting…' : 'Connect account'}
+            {phase === 'starting' ? 'starting…' : copy[variant].action}
           </button>
           <span className="font-mono text-[9.5px] leading-relaxed text-ink-faint">
-            Authorize swarmery to read this account&apos;s quota — no CLI login needed.
+            {copy[variant].blurb}
           </span>
         </div>
       ) : (

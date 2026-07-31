@@ -8,14 +8,18 @@ package api
 // depend on — renders a "not connected" card forever under rung 1. These two
 // endpoints let the operator authorize swarmery itself, once, from the browser:
 //
-//	POST /api/usage/accounts/{account}/login/start     → {authorizeUrl}
-//	POST /api/usage/accounts/{account}/login/complete  → {ok:true}
-//	     body {"code": "<code>#<state>"}
+//	POST   /api/usage/accounts/{account}/login/start     → {authorizeUrl}
+//	POST   /api/usage/accounts/{account}/login/complete  → {ok:true}
+//	       body {"code": "<code>#<state>"}
+//	DELETE /api/usage/accounts/{account}/login           → {ok:true}
 //
 // The split exists because the middle step happens in a browser we do not
 // control: start mints the PKCE verifier and CSRF state and hands back only the
 // URL, the operator authorizes and pastes back the "code#state" value the
 // callback page shows, complete exchanges it and persists the credential.
+//
+// The DELETE is that credential's removal — swarmery's own store file for this
+// account, and strictly nothing else (usage.Client.Disconnect).
 //
 // # What never crosses this boundary
 //
@@ -30,9 +34,9 @@ package api
 //
 //   - requireLocalOrigin (D4), as on every other state-changing endpoint.
 //   - The account must be one the daemon actually reads (accountsFromRoots), so
-//     these routes cannot be used to write a credential file for an arbitrary
-//     name.
-//   - SWARMERY_USAGE_OAUTH=0 disables both steps with 409, matching the read
+//     these routes cannot be used to write — or delete — a credential file for
+//     an arbitrary name.
+//   - SWARMERY_USAGE_OAUTH=0 disables all three with 409, matching the read
 //     path's ErrDisabled: the kill switch turns the whole OAuth surface off, not
 //     just the polling half.
 
@@ -198,5 +202,46 @@ func (h *Handler) usageLoginComplete(w http.ResponseWriter, r *http.Request) {
 		// header), and the operator's next action is the same either way.
 		writeClientErr(w, http.StatusBadRequest,
 			"the authorization could not be completed — start the connection again")
+	}
+}
+
+// DELETE /api/usage/accounts/{account}/login — disconnect an account.
+//
+// Removes the credential swarmery's OWN store holds for this account. The
+// `claude` CLI's credential file and the macOS keychain item are untouched:
+// they belong to the CLI, this daemon never writes to them, and a dashboard
+// button that could end the operator's terminal login would be a trap. Nothing
+// is revoked upstream either — the tokens stay valid at Anthropic until they
+// expire; what ends is this daemon's use of them. See usage.Client.Disconnect.
+//
+// IDEMPOTENT: an account with no stored credential is already disconnected, so a
+// missing file is 200, not 404. Only an unknown ACCOUNT is 404 — the same
+// allow-list the two login steps enforce, for the same reason.
+//
+// The account's client is reset through the very same resolver the read path
+// uses (usageClientFor), so the bearer it may still be replaying cannot outlive
+// the credential that justified it; the shared usage cache is dropped so the
+// next poll shows the disconnection instead of up to 30s of the card the
+// operator just removed.
+//
+// The response is {ok:true} and nothing else: no path, no credential material,
+// not even whether a file was there — which is also why the failure body is a
+// fixed string rather than the store error, whose text carries the store path.
+func (h *Handler) usageLoginDisconnect(w http.ResponseWriter, r *http.Request) {
+	account := r.PathValue("account")
+	src, ok := knownUsageAccount(account)
+	if !ok {
+		writeClientErr(w, http.StatusNotFound, "unknown account")
+		return
+	}
+
+	switch err := usageClientFor(src).Disconnect(); {
+	case err == nil:
+		resetUsageCache()
+		writeJSON(w, map[string]bool{"ok": true}, nil)
+	case errors.Is(err, usage.ErrDisabled):
+		writeClientErr(w, http.StatusConflict, "live usage is switched off (SWARMERY_USAGE_OAUTH=0)")
+	default:
+		writeClientErr(w, http.StatusInternalServerError, "the connection could not be removed")
 	}
 }
