@@ -15,9 +15,37 @@ card would be a lie; a wrong number would be worse.
 
 ## 1. Data sources
 
-The daemon reads the credential the `claude` CLI already wrote on this machine. **First hit
-wins**, and every individual miss is silent (an unreadable or absent source is just the next
-candidate):
+### Which accounts appear
+
+The account list is **not** discovered from credentials — it is the same list the ingest
+pipeline reads transcripts from. Each configured projects root (`SWARMERY_PROJECTS_ROOTS`;
+`auto` globs `~/.claude*/projects` once at daemon startup) is one account: the root's parent
+directory is that account's config dir, and the account's name is derived from that
+directory's name — `~/.claude` → `default`, `~/.claude-nabu-org` → `nabu-org`. This is the
+same key session rows are stamped with, so a usage card and a session badge always agree on
+what an account means.
+
+Practical consequences: a new account shows up after its config dir has a `projects/`
+directory (i.e. at least one session ran under it) **and** the daemon restarts — the `auto`
+glob is evaluated once at boot. With no roots configured at all, the list is exactly one
+`default` account, which is the pre-multi-account behaviour. The connect endpoints
+(section 6) accept only accounts on this list — the API cannot be used to store a
+credential under an arbitrary name.
+
+### Credential resolution, per account
+
+Every account first checks **swarmery's own store** — `~/.swarmery/credentials/<account>.json`,
+written by the dashboard's *Connect account* flow (dir `0700`, file `0600`, atomic writes).
+A store hit wins outright.
+
+After the store, resolution depends on the account:
+
+- A **named account** (non-default) reads `<configDir>/.credentials.json` **exclusively** —
+  no home-dir fallbacks, no `CLAUDE_CONFIG_DIR`, no keychain. Any fallback here would
+  resolve the *default* account's credential and publish its quota under another account's
+  name; a miss renders that account's `Connect` card instead.
+- The **default account** falls through to the legacy chain. **First hit wins**, and every
+  individual miss is silent (an unreadable or absent source is just the next candidate):
 
 | # | Source | Notes |
 |---|---|---|
@@ -28,8 +56,8 @@ candidate):
 
 Both credential shapes the CLI has shipped are accepted: the credential nested under
 `claudeAiOauth`, and a bare credential object at the file root. Anything without an
-`accessToken` counts as *absent*, not as an error. Exhausting all four sources yields the
-`not connected` card, never a 500.
+`accessToken` counts as *absent*, not as an error. Exhausting an account's sources yields
+its `not connected` card, never a 500.
 
 The quota itself comes from `GET https://api.anthropic.com/api/oauth/usage` (bearer +
 `anthropic-beta: oauth-2025-04-20`); token refresh, when needed, goes to
