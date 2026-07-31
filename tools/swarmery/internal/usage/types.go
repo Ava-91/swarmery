@@ -20,21 +20,41 @@
 //     property one account at a time: still the operator's own logins, still
 //     read-only, still never written back. A scoped lookup is exclusive
 //     precisely so one account's quota can never be published under another's
-//     name.
+//     name. Where the CLI leaves nothing readable — a non-default account on
+//     macOS, whose credential sits in the login Keychain under an undocumented
+//     per-config-dir name this package refuses to depend on — the operator can
+//     instead authorize the DAEMON itself, once, in their browser (login.go);
+//     that is still the operator's own login, granted deliberately, to a
+//     credential store swarmery owns rather than one it borrows.
 //   - The bearer token is sent ONLY to Anthropic's own API — the exact call
-//     `claude /usage` makes. It is never persisted to SQLite, never logged,
-//     never written back to disk or the keychain, and never included in any
-//     HTTP response body served by the daemon. Creds.String redacts so an
-//     accidental %v is safe, and upstream error bodies are scrubbed of bearer
-//     material and truncated before they can reach Provider.Error.
+//     `claude /usage` makes. It is never persisted to SQLite, never logged, and
+//     never included in any HTTP response body served by the daemon.
+//     Creds.String redacts so an accidental %v is safe, and upstream error
+//     bodies are scrubbed of bearer material and truncated before they can
+//     reach Provider.Error.
+//   - Writing a credential back is decided by PROVENANCE, and there are exactly
+//     two cases. A credential the `claude` CLI owns (a config-dir file, the
+//     macOS keychain item) is NEVER written back — the CLI is the other writer,
+//     and a refresh token we rotated behind its back can strand the operator's
+//     login; a refreshed token for those lives in memory for the daemon's
+//     lifetime and nowhere else. A credential the operator authorized THROUGH
+//     THE DASHBOARD (login.go's PKCE flow) belongs to swarmery alone and lives
+//     in swarmery's own store, ~/.swarmery/credentials/<account>.json at 0600
+//     under a 0700 directory (store.go); there a rotated refresh token MUST be
+//     persisted, atomically, or the connection dies at the next restart. The
+//     CLI's own stores are never written under either rule.
 //   - The endpoint is undocumented and may break. That is accepted and
 //     contained: Client.Fetch never returns an error — every failure mode
 //     degrades to a visible per-provider error card, never to a crash and never
 //     to a fabricated number. Every parse is tolerant (multiple key fallbacks
 //     plus a generic limits[] walk) so a field rename degrades one row, not the
 //     endpoint.
-//   - SWARMERY_USAGE_OAUTH=0 is an explicit opt-out: LoadCreds then returns
-//     ErrDisabled without touching the filesystem or the keychain at all.
+//   - SWARMERY_USAGE_OAUTH=0 is an explicit opt-out covering the WHOLE OAuth
+//     surface, read and write: LoadCreds returns ErrDisabled without touching
+//     the filesystem or the keychain at all, and StartLogin/CompleteLogin
+//     refuse before any URL is built or any code is exchanged. A per-account
+//     `"disabled": true` in a store file parks one connection the same way,
+//     without deleting its credential.
 //
 // Fusion's node-pty fallback (driving the `claude` TUI and scraping its /usage
 // screen when the API path fails) is deliberately NOT ported: Go has no

@@ -821,6 +821,20 @@ export interface UsageResp {
   accounts: UsageAccount[];
 }
 
+/**
+ * POST /api/usage/accounts/{account}/login/start — begin connecting an account
+ * whose credential the daemon cannot read on its own (the usual state of a
+ * non-default account on macOS, where the CLI keeps its credential in the login
+ * Keychain under an undocumented per-config-dir name).
+ *
+ * The response carries ONLY the URL to open. The PKCE verifier and the CSRF
+ * state stay in the daemon; the browser never sees them, and the completing
+ * request sends back just the code the callback page displays.
+ */
+export interface UsageLoginStart {
+  authorizeUrl: string;
+}
+
 // --- Retro loop (GET /api/retro/{agents,friction}) ---------------------------
 
 /** Same aggregates over the preceding window of equal length. */

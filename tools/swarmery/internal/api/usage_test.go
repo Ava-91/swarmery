@@ -838,8 +838,19 @@ func TestUsageFansOutAcrossAccounts(t *testing.T) {
 		t.Errorf("hint command = %q, want %q — a bare `claude` re-logs-in the DEFAULT account",
 			nabu.Hint.Command, want)
 	}
-	if len(nabu.Hint.Sources) != 1 || !strings.HasPrefix(nabu.Hint.Sources[0], dirs["nabu-org"]) {
-		t.Errorf("hint sources = %v, want only this account's own config dir", nabu.Hint.Sources)
+	// This account's OWN sources only: its swarmery-store path (rung 2's Connect
+	// target) and its own config dir — never the default account's chain, and
+	// never the keychain, which holds the default account's login.
+	if len(nabu.Hint.Sources) != 2 ||
+		!strings.HasSuffix(nabu.Hint.Sources[0], "nabu-org.json") ||
+		!strings.HasPrefix(nabu.Hint.Sources[1], dirs["nabu-org"]) {
+		t.Errorf("hint sources = %v, want this account's store path then its own config dir", nabu.Hint.Sources)
+	}
+	defaultCred := filepath.Join(dirs[ingest.DefaultAccount], ".credentials.json")
+	for _, s := range nabu.Hint.Sources {
+		if strings.Contains(s, "Keychain") || s == defaultCred {
+			t.Errorf("hint sources leak the default account's credential location: %q", s)
+		}
 	}
 	if len(nabu.Windows) != 0 {
 		t.Errorf("credential-less account reported %d windows, want none", len(nabu.Windows))

@@ -54,10 +54,14 @@ const (
 //
 // A Client carries a mutex and must not be copied after first use.
 type Client struct {
-	HTTP      *http.Client                          // default: 15s timeout
-	Now       func() time.Time                      // test seam
-	APIBase   string                                // default "https://api.anthropic.com"
-	AuthBase  string                                // default "https://platform.claude.com"
+	HTTP     *http.Client     // default: 15s timeout
+	Now      func() time.Time // test seam
+	APIBase  string           // default "https://api.anthropic.com"
+	AuthBase string           // default "https://platform.claude.com"
+	// LoginBase hosts the OAuth AUTHORIZE page (login.go) — a third host,
+	// default "https://claude.com". Only the URL is built here; the daemon never
+	// fetches it, the operator's browser does.
+	LoginBase string
 	LoadCreds func(context.Context) (*Creds, error) // test seam
 
 	// Src is the account this client speaks for. The zero value is the default
@@ -367,9 +371,25 @@ func retryDelay(retryAfter string, attempt int) time.Duration {
 	return initialRetryWait * time.Duration(1<<attempt)
 }
 
-// refresh exchanges the refresh token for a new access token and caches it IN
-// MEMORY ONLY. The result is never written back to disk or the keychain — the
-// CLI's own stored credential is left untouched (see the package policy note).
+// refresh exchanges the refresh token for a new access token and caches it in
+// memory.
+//
+// # Write-back is decided by PROVENANCE, not by preference
+//
+// A credential read from the CLI's own store (a config-dir file, the keychain)
+// is NEVER written back: the CLI is the other writer, and a rotated refresh
+// token written by us behind its back can strand the operator's login (see the
+// package policy note). Only the in-memory cache changes for those.
+//
+// A credential from SWARMERY'S OWN store (Creds.FromStore — the dashboard's
+// Connect flow) is ours alone, and there the opposite is true: if the endpoint
+// rotates the refresh token and we do not persist it, the old one is already
+// dead upstream and the connection breaks at the next daemon restart. Those are
+// written back atomically (store.go).
+//
+// The persist is best-effort: a store that cannot be written still leaves a
+// working in-memory session for this daemon's lifetime, which beats failing the
+// poll the operator is watching.
 //
 // The request shape mirrors what the CLI sends: JSON body (not form-encoded),
 // including `scope`; omitting either makes Anthropic answer 4xx even for a
@@ -417,6 +437,8 @@ func (c *Client) refresh(ctx context.Context, creds *Creds) (string, bool) {
 	var out struct {
 		AccessToken      string `json:"access_token"`
 		AccessTokenCamel string `json:"accessToken"`
+		RefreshToken     string `json:"refresh_token"`
+		ExpiresIn        int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", false
@@ -429,7 +451,28 @@ func (c *Client) refresh(ctx context.Context, creds *Creds) (string, bool) {
 		return "", false
 	}
 	c.cacheToken(tok)
+	c.persistRefresh(creds, tok, out.RefreshToken, out.ExpiresIn)
 	return tok, true
+}
+
+// persistRefresh writes a refreshed credential back to swarmery's own store, and
+// ONLY there — see the provenance rule on refresh. rotated is the endpoint's new
+// refresh token when it issued one; an empty value means the old one stands.
+func (c *Client) persistRefresh(creds *Creds, access, rotated string, expiresIn int64) {
+	if creds == nil || !creds.FromStore || c.Src.Account == "" {
+		return
+	}
+	next := *creds
+	next.AccessToken = access
+	if rotated != "" {
+		next.RefreshToken = rotated
+	}
+	if expiresIn > 0 {
+		next.ExpiresAt = c.now().Add(time.Duration(expiresIn) * time.Second).UnixMilli()
+	}
+	// Ignored on purpose: an unwritable store must not fail the poll, and the
+	// error text could carry a path we have no reason to surface.
+	_ = writeStoredCreds(c.Src.Account, &next)
 }
 
 // get issues the authenticated usage request. The bearer is set here and

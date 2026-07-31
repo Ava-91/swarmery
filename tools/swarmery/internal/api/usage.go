@@ -68,7 +68,13 @@ const estimateProviderName = "Telemetry estimate"
 // usageClient is the DEFAULT account's live-quota client. The refreshed-token
 // cache lives on it, so it must outlive a single request. Tests swap this for a
 // client wired to a stub endpoint through usage.Client's seams.
-var usageClient = &usage.Client{}
+//
+// Its Src names the default account even though the ConfigDir is empty (the
+// legacy chain resolves that account). The NAME is load-bearing on its own:
+// LoadCredsFor checks swarmery's own credential store by account key first, and
+// the Connect flow writes there — so a client with an anonymous Src would be the
+// one account that could never be connected from the dashboard.
+var usageClient = &usage.Client{Src: usage.Source{Account: ingest.DefaultAccount}}
 
 // Named accounts get their own clients, minted on first use and kept for the
 // same reason: one refreshed-token cache per credential. Keyed by account, which

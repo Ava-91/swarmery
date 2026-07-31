@@ -770,8 +770,20 @@ func TestFetchScopedAccountSpeaksForItsOwnAccount(t *testing.T) {
 	if want := configDirEnv + "=" + dir + " claude"; p.Hint.Command != want {
 		t.Errorf("hint command = %q, want %q", p.Hint.Command, want)
 	}
-	if want := filepath.Join(dir, credentialsFile); len(p.Hint.Sources) != 1 || p.Hint.Sources[0] != want {
-		t.Errorf("hint sources = %v, want exactly [%s]", p.Hint.Sources, want)
+	// The account's own config-dir file, preceded only by its swarmery-store
+	// path (rung 2's Connect target) — and never the keychain, which holds the
+	// DEFAULT account's login.
+	wantSources := []string{
+		filepath.Join(home, ".swarmery", "credentials", "nabu-org.json"),
+		filepath.Join(dir, credentialsFile),
+	}
+	if len(p.Hint.Sources) != len(wantSources) {
+		t.Fatalf("hint sources = %v, want %v", p.Hint.Sources, wantSources)
+	}
+	for i := range wantSources {
+		if p.Hint.Sources[i] != wantSources[i] {
+			t.Errorf("hint sources[%d] = %q, want %q", i, p.Hint.Sources[i], wantSources[i])
+		}
 	}
 
 	// …and once that account HAS logged in, the same client reads its quota.

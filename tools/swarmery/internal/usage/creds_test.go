@@ -13,10 +13,12 @@ import (
 	"time"
 )
 
-// TestMain is a hard safety guard for the whole package: no test may read the
-// operator's real credential file or trigger a macOS keychain prompt. HOME is
-// redirected to a throwaway directory and the keychain seam is stubbed out;
-// tests that need the keychain path install their own stub explicitly.
+// TestMain is a hard safety guard for the whole package: no test may read or
+// WRITE the operator's real credential stores, or trigger a macOS keychain
+// prompt. HOME is redirected to a throwaway directory, swarmery's own store
+// override is cleared so it resolves under that same throwaway HOME, and the
+// keychain seam is stubbed out; tests that need the keychain path install their
+// own stub explicitly, and store tests point storeDirEnv at a t.TempDir.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "usage-test-home")
 	if err != nil {
@@ -26,6 +28,7 @@ func TestMain(m *testing.M) {
 	os.Setenv("HOME", home)
 	os.Unsetenv(configDirEnv)
 	os.Unsetenv(oauthOptOutEnv)
+	os.Unsetenv(storeDirEnv)
 	keychainCreds = func(context.Context) *Creds { return nil }
 
 	code := m.Run()
@@ -563,13 +566,25 @@ func TestLoadCredsForScopedHonoursOptOut(t *testing.T) {
 }
 
 // TestCredentialSourcesFor: the "looked in …" list must match what the lookup
-// actually consults, or the setup hint sends the operator to the wrong place.
+// actually consults, IN ORDER, or the setup hint sends the operator to the wrong
+// place. Since rung 2 that list opens with swarmery's own store path — where the
+// dashboard's Connect flow writes — followed by the rung-1 sources.
 func TestCredentialSourcesFor(t *testing.T) {
 	dir := scopedFixture(t)
+	store := useTempStore(t)
 
 	scoped := CredentialSourcesFor(Source{Account: "nabu-org", ConfigDir: dir})
-	if len(scoped) != 1 || scoped[0] != filepath.Join(dir, credentialsFile) {
-		t.Errorf("scoped sources = %v, want exactly [%s]", scoped, filepath.Join(dir, credentialsFile))
+	wantScoped := []string{
+		filepath.Join(store, "nabu-org.json"),
+		filepath.Join(dir, credentialsFile),
+	}
+	if len(scoped) != len(wantScoped) {
+		t.Fatalf("scoped sources = %v, want %v", scoped, wantScoped)
+	}
+	for i := range wantScoped {
+		if scoped[i] != wantScoped[i] {
+			t.Errorf("scoped sources[%d] = %q, want %q", i, scoped[i], wantScoped[i])
+		}
 	}
 	for _, s := range scoped {
 		if strings.Contains(s, keychainService) {
@@ -577,18 +592,28 @@ func TestCredentialSourcesFor(t *testing.T) {
 		}
 	}
 
-	// The default account reports the legacy chain verbatim, keychain included
-	// where the chain consults it. Compared against CredentialSources() rather
-	// than a literal so this stays true on both CI (linux) and macOS.
+	// The default account reports its store path followed by the legacy chain
+	// verbatim, keychain included where the chain consults it. The tail is
+	// compared against CredentialSources() rather than a literal so this stays
+	// true on both CI (linux) and macOS.
 	def := CredentialSourcesFor(Source{Account: "default"})
-	want := CredentialSources()
+	want := append([]string{filepath.Join(store, "default.json")}, CredentialSources()...)
 	if len(def) != len(want) {
-		t.Fatalf("default sources = %v, want the legacy chain %v", def, want)
+		t.Fatalf("default sources = %v, want the store plus the legacy chain %v", def, want)
 	}
 	for i := range want {
 		if def[i] != want[i] {
 			t.Errorf("default sources[%d] = %q, want %q", i, def[i], want[i])
 		}
+	}
+
+	// An account with no resolvable store path degrades to the rung-1 list
+	// rather than to a bogus entry.
+	t.Setenv(storeDirEnv, "")
+	t.Setenv("HOME", "")
+	if got := CredentialSourcesFor(Source{Account: "nabu-org", ConfigDir: dir}); len(got) != 1 ||
+		got[0] != filepath.Join(dir, credentialsFile) {
+		t.Errorf("sources without a store = %v, want just the config-dir file", got)
 	}
 }
 

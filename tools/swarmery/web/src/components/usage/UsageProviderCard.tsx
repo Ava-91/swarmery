@@ -18,8 +18,22 @@
 // order that means something.
 
 import type { UsageProvider } from '../../api/types';
+import { UsageConnect } from './UsageConnect';
 import { UsageSetupHint } from './UsageSetupHint';
 import { UsageWindowRow } from './UsageWindowRow';
+
+/**
+ * Whether this card can offer the daemon's own OAuth connection (UsageConnect).
+ *
+ * Only a LIVE-quota card that is waiting on a login: the telemetry-estimate card
+ * has no credential to connect, an `ok` card is already connected, and a card
+ * that is opted out (SWARMERY_USAGE_OAUTH=0) or missing a scope needs a
+ * different fix than a fresh authorization. Anything else keeps the card exactly
+ * as it rendered before this existed.
+ */
+function canConnect(p: UsageProvider): boolean {
+  return p.source === 'oauth' && p.status === 'no-auth' && p.hint?.kind === 'login';
+}
 
 /**
  * The badge distinguishes the three states the operator can act on differently:
@@ -133,6 +147,11 @@ export function UsageProviderCard({
           </div>
         )
       )}
+
+      {/* The one-click alternative to the hint's CLI command, and the ONLY route
+          for an account whose credential the daemon cannot read at all — the
+          normal state of a non-default account on macOS. */}
+      {canConnect(p) && <UsageConnect account={p.account} />}
 
       {p.windows.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
