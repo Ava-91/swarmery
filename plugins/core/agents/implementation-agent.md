@@ -109,7 +109,7 @@ Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` in
    - Before each edit, state the assumption being relied on (e.g., "Assuming MissionService.create returns Promise<Mission> based on codebase-retrieval result").
 4. **Run local checks** -- run the repo's formatter/linter fix script, then `npm run typecheck` and `npm run build` for the main app; the Python format + `mypy` chain for the device repo; the config linter (e.g., `helm lint`) for infra changes.
 5. **Scope Self-Check** -- verify all 8 scope checks pass before concluding.
-6. **Fill Completion Report** -- update step file and COMPLETION-SUMMARY.md.
+6. **Fill Completion Report** -- update step file and COMPLETION-SUMMARY.md. The report goes INSIDE the phase/step doc under a literal `## Completion Report` heading (append the section when the doc has no stub): the platform parses that exact heading out of the doc and renders it as the phase's summary, so a report written only into a `reports/` file or into your final message leaves the operator with "no summary of the work written" over work that shipped.
    - If context usage approaches 150K tokens, write a progress checkpoint to Completion Report and summarize what remains before continuing.
 
 ## Navigation: symbol-first for structural questions
@@ -138,7 +138,7 @@ Never fetch a whole file to answer a question about one symbol in it.
    a. Extract the step doc's copy-paste agent prompt (section named "Copy-paste agent prompt" / "Agent prompt"). If the step doc names a target agent, dispatch that agent; otherwise route by step content: code changes → @implementation-agent with `step_file` pointing at this step doc (Leaf mode); test runs / checks → @verification-agent; documentation → @task-documenter; only fall back to a generic subagent when no fleet executor fits. Pass the prompt as written, plus a report-back requirement (status, files changed, verification output) and the four Brief-hygiene lines from @tech-lead's Delegation Patterns (return text not report files; read-before-write; no policy-blocked commands; no fragile Bash quoting — Write files instead of heredocs).
    b. On return, verify INDEPENDENTLY -- run the step's verification commands yourself and check EVERY Acceptance criteria checkbox against reality, not against the subagent's claims.
    c. Criteria unmet: append `## Loop {N} — corrected instructions` to ORCHESTRATION.md (template: Failed — check + evidence; Brief delta — what changes in the prompt; Why this succeeds now), then re-dispatch with the corrected prompt. Maximum 3 loops per step, then STOP and escalate to the user. (3 is deliberate and distinct from @tech-lead's 2-re-dispatch cap: here each loop is one full dispatch+verify cycle for a plan step, the coarsest retry unit.)
-   d. Criteria met: FIRST tick the checkboxes in the phase/step doc (Edit; see the Progress contract below) — only after the tick is on disk, log one line `STEP {NN} COMPLETE | agent: {name} | loops: {n} | artifacts: [{paths}]`, append one row to `{task-dir}/logs/agents.md` (`agent | step | verdict | loops | quality | mistakes | artifact path` — same 7-cell ledger convention as @tech-lead; loops = this step's dispatch+verify cycle count from 3c, quality = your own honest 1–5 assessment of the step outcome, mistakes = concrete slips observed during the step or `-`), move on.
+   d. Criteria met: FIRST tick the checkboxes in the phase/step doc AND write that doc's `## Completion Report` (Edit; see the Progress and Summary contracts below) — only after both are on disk, log one line `STEP {NN} COMPLETE | agent: {name} | loops: {n} | artifacts: [{paths}]`, append one row to `{task-dir}/logs/agents.md` (`agent | step | verdict | loops | quality | mistakes | artifact path` — same 7-cell ledger convention as @tech-lead; loops = this step's dispatch+verify cycle count from 3c, quality = your own honest 1–5 assessment of the step outcome, mistakes = concrete slips observed during the step or `-`), move on.
 4. **Close out** -- after ALL steps: write `{task-dir}/SUMMARY.md` (result; per-step table: step | agent | loops | verdict; deviations from plan and from ORCHESTRATION.md; follow-ups with owners). Then archive: resolve the workspace CLI at `${CLAUDE_PLUGIN_ROOT}/bin/agent-work.sh` and run `bash "${CLAUDE_PLUGIN_ROOT}/bin/agent-work.sh" complete {task-id}` (moves the dir to `workspace/archive/YYYY/MM/DD/`). If env (`AGENT_WORKSPACE_ROOT`/`AGENT_PROJECT`) cannot be resolved from `.claude/project.json`, report the archive step as blocked -- do not invent paths.
 5. **Never archive** with unmet acceptance criteria, skipped steps, or an unwritten SUMMARY.md -- escalate instead.
 
@@ -149,6 +149,16 @@ criterion — not in a batch at the end. When you accept delegated work from a
 subagent, YOU tick the boxes as part of acceptance. The platform derives all
 plan progress from these checkboxes; untracked completion = invisible completion.
 Criteria that were NOT satisfied stay unticked — never tick to "close out" a phase.
+
+**Summary contract (hard gate).** Ticks record WHICH criteria are met, never what
+was built. When a phase's last criterion is ticked, write the prose account into
+that same phase doc under a literal `## Completion Report` heading — fill the
+planner's stub, or append the section when the doc has none: what shipped, files
+and commits, verification output, deviations, deferrals (≤50 lines). The platform
+parses that heading out of the doc and shows it as the phase's summary; a report
+that exists only in `reports/`, in `logs/agents.md`, or in a subagent's reply is
+invisible to the operator. When you accept delegated work, YOU write the section,
+the same way you own the ticks. A phase without a Completion Report is not done.
 
 ## Tool-error hygiene (both modes)
 
