@@ -13,10 +13,12 @@ import (
 	"time"
 )
 
-// TestMain is a hard safety guard for the whole package: no test may read the
-// operator's real credential file or trigger a macOS keychain prompt. HOME is
-// redirected to a throwaway directory and the keychain seam is stubbed out;
-// tests that need the keychain path install their own stub explicitly.
+// TestMain is a hard safety guard for the whole package: no test may read or
+// WRITE the operator's real credential stores, or trigger a macOS keychain
+// prompt. HOME is redirected to a throwaway directory, swarmery's own store
+// override is cleared so it resolves under that same throwaway HOME, and the
+// keychain seam is stubbed out; tests that need the keychain path install their
+// own stub explicitly, and store tests point storeDirEnv at a t.TempDir.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "usage-test-home")
 	if err != nil {
@@ -26,6 +28,7 @@ func TestMain(m *testing.M) {
 	os.Setenv("HOME", home)
 	os.Unsetenv(configDirEnv)
 	os.Unsetenv(oauthOptOutEnv)
+	os.Unsetenv(storeDirEnv)
 	keychainCreds = func(context.Context) *Creds { return nil }
 
 	code := m.Run()
@@ -395,6 +398,222 @@ func TestLoadCredsOptOutOnlyMatchesZero(t *testing.T) {
 		if _, err := LoadCreds(context.Background()); err != nil {
 			t.Errorf("SWARMERY_USAGE_OAUTH=%q: LoadCreds error = %v, want the credential", v, err)
 		}
+	}
+}
+
+// ── per-account (scoped) resolution ────────────────────────────────────────
+//
+// Every case below stands up the SAME decoy environment — a populated
+// ~/.claude/.credentials.json and a populated CLAUDE_CONFIG_DIR — so a scoped
+// lookup that returned anything but its own dir's file would be caught: on a
+// multi-subscription machine that failure mode publishes the DEFAULT account's
+// quota under a second account's name, a wrong number the operator cannot spot.
+
+const (
+	scopedTok = "from-the-scoped-config-dir"
+	homeTok   = "from-the-home-chain"
+	envTok    = "from-CLAUDE_CONFIG_DIR"
+)
+
+// scopedFixture builds the decoy environment and returns the account's config
+// dir (which is left EMPTY — the caller decides what, if anything, goes in it).
+func scopedFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCredFileAt(t, filepath.Join(home, ".claude"), homeTok, time.Now().Add(24*time.Hour))
+	envDir := filepath.Join(home, "env-config")
+	writeCredFileAt(t, envDir, envTok, time.Now().Add(24*time.Hour))
+	t.Setenv(configDirEnv, envDir)
+
+	scoped := filepath.Join(home, ".claude-nabu-org")
+	if err := os.MkdirAll(scoped, 0o755); err != nil {
+		t.Fatalf("mkdir scoped dir: %v", err)
+	}
+	return scoped
+}
+
+func TestLoadCredsForScopedLookupIsExclusive(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// raw is written to <scoped>/.credentials.json; "" writes no file.
+		raw string
+		// scoped selects the account lookup; false exercises the legacy chain.
+		scoped bool
+		// want is the expected access token; "" means ErrNoCreds.
+		want string
+	}{
+		{
+			name:   "the account's own file wins",
+			raw:    `{"claudeAiOauth":{"accessToken":"` + scopedTok + `"}}`,
+			scoped: true,
+			want:   scopedTok,
+		},
+		{
+			// The B1 regression guard: no home-dir fallback, ever.
+			name:   "no file for the account is ErrNoCreds, not the default account's credential",
+			scoped: true,
+		},
+		{
+			// CLAUDE_CONFIG_DIR names the DEFAULT account's dir. Honouring it
+			// here would resolve every account to the same credential.
+			name:   "a scoped miss ignores CLAUDE_CONFIG_DIR",
+			scoped: true,
+		},
+		{
+			name:   "an unparseable file for the account is ErrNoCreds, not a fallback",
+			raw:    "not json at all",
+			scoped: true,
+		},
+		{
+			name:   "an empty file for the account is ErrNoCreds",
+			raw:    `{}`,
+			scoped: true,
+		},
+		{
+			// The default account is the zero Source: unchanged chain, env first.
+			name: "an empty Source is still the legacy chain",
+			raw:  `{"claudeAiOauth":{"accessToken":"` + scopedTok + `"}}`,
+			want: envTok,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := scopedFixture(t)
+			if tc.raw != "" {
+				if err := os.WriteFile(filepath.Join(dir, credentialsFile), []byte(tc.raw), 0o600); err != nil {
+					t.Fatalf("write scoped credential: %v", err)
+				}
+			}
+			calls := stubKeychain(t, func(context.Context) *Creds {
+				return &Creds{AccessToken: "from-the-keychain"}
+			})
+
+			src := Source{}
+			if tc.scoped {
+				src = Source{Account: "nabu-org", ConfigDir: dir}
+			}
+			got, err := LoadCredsFor(context.Background(), src)
+
+			if tc.want == "" {
+				if !errors.Is(err, ErrNoCreds) {
+					t.Fatalf("LoadCredsFor error = %v, want ErrNoCreds", err)
+				}
+				if got != nil {
+					t.Errorf("LoadCredsFor creds = %v, want nil", got)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("LoadCredsFor: %v", err)
+				}
+				if got.AccessToken != tc.want {
+					t.Errorf("resolved %q, want %q", got.AccessToken, tc.want)
+				}
+			}
+			// The plain keychain item is the DEFAULT account's login, so a
+			// scoped lookup must not reach for it on any OS (this assertion is
+			// deliberately not GOOS-gated: on linux it is trivially true, on
+			// darwin it is the property under test).
+			if tc.scoped && *calls != 0 {
+				t.Errorf("keychain consulted %d times for a scoped account, want 0", *calls)
+			}
+		})
+	}
+}
+
+// TestLoadCredsForScopedReturnsExpiredCredential: an expired scoped credential
+// is still handed back, exactly as the chain hands back its latest-expiring
+// candidate — the refresh grant is the backstop, and reporting "not connected"
+// for a refreshable login would be a worse lie than a stale token.
+func TestLoadCredsForScopedReturnsExpiredCredential(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	pinCredsClock(t, now)
+	dir := scopedFixture(t)
+	writeCredFileAt(t, dir, scopedTok, now.Add(-48*time.Hour))
+	stubKeychain(t, func(context.Context) *Creds { return nil })
+
+	got, err := LoadCredsFor(context.Background(), Source{Account: "nabu-org", ConfigDir: dir})
+	if err != nil {
+		t.Fatalf("LoadCredsFor: %v", err)
+	}
+	if got.AccessToken != scopedTok {
+		t.Errorf("resolved %q, want the account's expired credential %q", got.AccessToken, scopedTok)
+	}
+	if !got.expired() {
+		t.Error("fixture is not actually expired — the test proves nothing")
+	}
+}
+
+// TestLoadCredsForScopedHonoursOptOut: the kill switch is global, so it wins
+// before ANY account's file is opened.
+func TestLoadCredsForScopedHonoursOptOut(t *testing.T) {
+	dir := scopedFixture(t)
+	writeCredFileAt(t, dir, scopedTok, time.Now().Add(24*time.Hour))
+	src := Source{Account: "nabu-org", ConfigDir: dir}
+
+	// Positive control: without the opt-out this exact setup resolves.
+	if _, err := LoadCredsFor(context.Background(), src); err != nil {
+		t.Fatalf("control LoadCredsFor: %v", err)
+	}
+
+	t.Setenv(oauthOptOutEnv, "0")
+	got, err := LoadCredsFor(context.Background(), src)
+	if !errors.Is(err, ErrDisabled) {
+		t.Fatalf("LoadCredsFor error = %v, want ErrDisabled", err)
+	}
+	if got != nil {
+		t.Errorf("LoadCredsFor creds = %v, want nil", got)
+	}
+}
+
+// TestCredentialSourcesFor: the "looked in …" list must match what the lookup
+// actually consults, IN ORDER, or the setup hint sends the operator to the wrong
+// place. Since rung 2 that list opens with swarmery's own store path — where the
+// dashboard's Connect flow writes — followed by the rung-1 sources.
+func TestCredentialSourcesFor(t *testing.T) {
+	dir := scopedFixture(t)
+	store := useTempStore(t)
+
+	scoped := CredentialSourcesFor(Source{Account: "nabu-org", ConfigDir: dir})
+	wantScoped := []string{
+		filepath.Join(store, "nabu-org.json"),
+		filepath.Join(dir, credentialsFile),
+	}
+	if len(scoped) != len(wantScoped) {
+		t.Fatalf("scoped sources = %v, want %v", scoped, wantScoped)
+	}
+	for i := range wantScoped {
+		if scoped[i] != wantScoped[i] {
+			t.Errorf("scoped sources[%d] = %q, want %q", i, scoped[i], wantScoped[i])
+		}
+	}
+	for _, s := range scoped {
+		if strings.Contains(s, keychainService) {
+			t.Errorf("scoped sources mention the keychain (%q) — that item is the default account's login", s)
+		}
+	}
+
+	// The default account reports its store path followed by the legacy chain
+	// verbatim, keychain included where the chain consults it. The tail is
+	// compared against CredentialSources() rather than a literal so this stays
+	// true on both CI (linux) and macOS.
+	def := CredentialSourcesFor(Source{Account: "default"})
+	want := append([]string{filepath.Join(store, "default.json")}, CredentialSources()...)
+	if len(def) != len(want) {
+		t.Fatalf("default sources = %v, want the store plus the legacy chain %v", def, want)
+	}
+	for i := range want {
+		if def[i] != want[i] {
+			t.Errorf("default sources[%d] = %q, want %q", i, def[i], want[i])
+		}
+	}
+
+	// An account with no resolvable store path degrades to the rung-1 list
+	// rather than to a bogus entry.
+	t.Setenv(storeDirEnv, "")
+	t.Setenv("HOME", "")
+	if got := CredentialSourcesFor(Source{Account: "nabu-org", ConfigDir: dir}); len(got) != 1 ||
+		got[0] != filepath.Join(dir, credentialsFile) {
+		t.Errorf("sources without a store = %v, want just the config-dir file", got)
 	}
 }
 

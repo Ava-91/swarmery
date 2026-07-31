@@ -21,6 +21,11 @@ var (
 	// ErrDisabled means SWARMERY_USAGE_OAUTH=0 — the credential read is
 	// switched off and nothing on disk or in the keychain was touched.
 	ErrDisabled = errors.New("usage: OAuth usage lookup disabled (SWARMERY_USAGE_OAUTH=0)")
+	// errNoStore means swarmery's own credential store has no resolvable
+	// location (no home directory, or an unusable account key), so a rung-2
+	// credential cannot be persisted. Unexported: callers only ever report it
+	// as "could not save the connection".
+	errNoStore = errors.New("usage: swarmery credential store is unavailable")
 )
 
 const (
@@ -47,6 +52,13 @@ type Creds struct {
 	Scopes           []string
 	SubscriptionType string
 	RateLimitTier    string
+
+	// FromStore marks a credential that came from SWARMERY'S OWN store
+	// (store.go), i.e. one the operator authorized through the dashboard rather
+	// than through the `claude` CLI. It is the provenance the refresh path keys
+	// on: our own session persists a rotated refresh token, the CLI's is never
+	// written back. Set only by storedCreds; never serialized.
+	FromStore bool
 }
 
 // String redacts. This is the whole point: an accidental %v, %s or %+v on a
@@ -61,8 +73,84 @@ var securityBin = "security"
 // `security` invocation (and therefore no keychain prompt) ever happens.
 var keychainCreds = readKeychainCreds
 
-// LoadCreds resolves the operator's Claude OAuth credential. Sources are
-// consulted in this order, and the first UNEXPIRED hit wins:
+// Source names WHOSE credential to resolve — one Claude Code account, keyed the
+// same way ingest keys a transcript (ingest.AccountFor: "default", "nabu-org", …)
+// and located by the config dir the `claude` CLI logs in under.
+//
+// The ZERO Source is the default account resolved through the legacy chain, so
+// LoadCredsFor(ctx, Source{}) is byte-identical to what LoadCreds always did. A
+// non-empty ConfigDir switches to the EXCLUSIVE scoped lookup — the only way a
+// second account is ever read.
+//
+// It is also the seam the planned rung 2 (swarmery's own PKCE session) plugs
+// into: per-account resolution — swarmery store → config dir → keychain — is
+// decided from a Source, so adding it needs no second refactor here.
+type Source struct {
+	// Account is the account key, for labelling only; resolution never uses it.
+	Account string
+	// ConfigDir is the account's `claude` config dir (the parent of its
+	// projects root). "" means the legacy chain — see LoadCredsFor.
+	ConfigDir string
+}
+
+// LoadCredsFor resolves ONE account's Claude OAuth credential.
+//
+// Resolution order, for every account:
+//
+//  1. swarmery's OWN store — ~/.swarmery/credentials/<account>.json (store.go),
+//     written by the dashboard's Connect flow. Checked first because it is the
+//     credential the operator most recently and most explicitly gave THIS
+//     daemon: once an account is connected here, that connection is the answer.
+//  2. then the behaviour rung 1 shipped:
+//     · non-empty src.ConfigDir → <ConfigDir>/.credentials.json EXCLUSIVELY —
+//     no home-dir sources, no CLAUDE_CONFIG_DIR (that env var names the
+//     default account's dir and would be a lie here), no keychain;
+//     · empty src.ConfigDir → the legacy chain (see LoadCreds).
+//
+// The exclusivity at step 2 is the whole safety property of multi-account: any
+// fallback would resolve the DEFAULT account's credential and publish its quota
+// under a second account's name — a wrong number the operator cannot spot. On
+// macOS, where a non-default account typically has no credential FILE, that is
+// exactly the case that would silently misreport.
+//
+// Step 1 is a no-op when the store holds nothing for this account (including an
+// empty src.Account, which has no store file by construction), so a machine that
+// has never used the Connect flow behaves exactly as rung 1 did.
+//
+// A scoped credential is returned even when expired: the refresh path is the
+// backstop, the same way the chain falls back to its latest-expiring candidate.
+//
+// SWARMERY_USAGE_OAUTH=0 returns ErrDisabled before any source is touched, for
+// every account.
+func LoadCredsFor(ctx context.Context, src Source) (*Creds, error) {
+	if os.Getenv(oauthOptOutEnv) == "0" {
+		return nil, ErrDisabled
+	}
+	if c := storedCreds(src.Account); c != nil {
+		return c, nil
+	}
+	if src.ConfigDir != "" {
+		return scopedCreds(src.ConfigDir)
+	}
+	return chainCreds(ctx)
+}
+
+// scopedCreds reads one account's credential file, exclusively.
+func scopedCreds(dir string) (*Creds, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, credentialsFile))
+	if err != nil {
+		return nil, ErrNoCreds
+	}
+	c := parseCreds(raw)
+	if c == nil {
+		return nil, ErrNoCreds
+	}
+	return c, nil
+}
+
+// LoadCreds resolves the DEFAULT account's Claude OAuth credential — the legacy
+// chain, unchanged. Sources are consulted in this order, and the first UNEXPIRED
+// hit wins:
 //
 //  1. $CLAUDE_CONFIG_DIR/.credentials.json (when CLAUDE_CONFIG_DIR is set)
 //  2. ~/.claude/.credentials.json
@@ -81,9 +169,11 @@ var keychainCreds = readKeychainCreds
 // the next candidate. Exhausting all sources returns ErrNoCreds; opting out
 // with SWARMERY_USAGE_OAUTH=0 returns ErrDisabled before any source is touched.
 func LoadCreds(ctx context.Context) (*Creds, error) {
-	if os.Getenv(oauthOptOutEnv) == "0" {
-		return nil, ErrDisabled
-	}
+	return LoadCredsFor(ctx, Source{})
+}
+
+// chainCreds is the legacy multi-source resolution documented on LoadCreds.
+func chainCreds(ctx context.Context) (*Creds, error) {
 	var stale *Creds
 	for _, path := range credentialPaths() {
 		raw, err := os.ReadFile(path)
@@ -165,6 +255,28 @@ func CredentialSources() []string {
 		srcs = append(srcs, "macOS Keychain: "+keychainService)
 	}
 	return srcs
+}
+
+// CredentialSourcesFor is CredentialSources for one account: the exact list
+// LoadCredsFor would consult for src, in order, so the setup hint can never
+// claim the daemon looked somewhere it did not.
+//
+// The list therefore opens with swarmery's own store path whenever the account
+// has one — that is where the dashboard's Connect flow writes, and an operator
+// debugging a card that will not connect needs to see it.
+//
+// A scoped account then lists ONE config-dir path and never the keychain: the
+// plain keychain item is the default account's login, so offering it to a second
+// account would point the operator at the wrong subscription's credential.
+func CredentialSourcesFor(src Source) []string {
+	var srcs []string
+	if p := storePath(src.Account); p != "" {
+		srcs = append(srcs, p)
+	}
+	if src.ConfigDir != "" {
+		return append(srcs, filepath.Join(src.ConfigDir, credentialsFile))
+	}
+	return append(srcs, CredentialSources()...)
 }
 
 // readKeychainCreds reads the CLI's credential item out of the macOS login

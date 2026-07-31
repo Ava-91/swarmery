@@ -33,6 +33,7 @@ import type {
   OnboardConfig,
   PlaybookRollup,
   ProductivityResp,
+  UsageLoginStart,
   UsageResp,
   OnboardRequest,
   OnboardResponse,
@@ -490,6 +491,35 @@ export function fetchPlaybookStats(range: AnalyticsRange = {}): Promise<Playbook
 export function fetchUsage(fresh = false): Promise<UsageResp> {
   if (MOCK) return mockApi.usage();
   return get(`/api/usage${fresh ? '?fresh=1' : ''}`);
+}
+
+/**
+ * POST /api/usage/accounts/{account}/login/start — begin connecting an account
+ * swarmery cannot read a credential for. Returns the URL to open in a browser;
+ * the PKCE verifier and CSRF state stay in the daemon.
+ */
+export async function startUsageLogin(account: string): Promise<UsageLoginStart> {
+  if (MOCK) throw new Error('connecting an account is not available in mock mode');
+  const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login/start`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not start the connection'));
+  return (await res.json()) as UsageLoginStart;
+}
+
+/**
+ * POST /api/usage/accounts/{account}/login/complete — finish the connection with
+ * the "code#state" value the callback page shows. The daemon exchanges it and
+ * stores the credential; nothing is echoed back.
+ */
+export async function completeUsageLogin(account: string, code: string): Promise<void> {
+  if (MOCK) throw new Error('connecting an account is not available in mock mode');
+  const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not complete the connection'));
 }
 
 // --- retro loop (per-agent scorecards + friction board) -----------------------

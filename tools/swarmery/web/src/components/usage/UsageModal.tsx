@@ -1,7 +1,12 @@
 // The Usage modal — the operator's live subscription quota, one card per
-// provider (GET /api/usage → internal/usage). Replaces the old UsagePopover,
-// which flattened every provider's windows into one list and rendered none of
-// the per-provider plan/status/error detail the contract now carries.
+// provider per ACCOUNT (GET /api/usage → internal/usage). Replaces the old
+// UsagePopover, which flattened every provider's windows into one list and
+// rendered none of the per-provider plan/status/error detail the contract now
+// carries.
+//
+// Accounts are the daemon's ingest roots: one per `claude` config dir. With a
+// single account (the stock config) this renders exactly what it always did —
+// account labels appear only when there is more than one to tell apart.
 //
 // Trigger-less by design: UsageChip owns the trigger and the `open` state, so
 // both shells (fleet App + project WorkspaceShell) reuse this component and it
@@ -16,9 +21,10 @@
 // wrapper); below that it becomes a centred modal over a dimmed backdrop,
 // following AttachModal's overlay pattern.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useUsage } from '../../lib/usageData';
 import {
+  providerIdentity,
   pruneHiddenPrefs,
   readUsagePrefs,
   writeUsagePrefs,
@@ -46,13 +52,20 @@ export function UsageModal({
   open: boolean;
   onClose: () => void;
 }): JSX.Element | null {
-  const { providers, error, loading, lastUpdated, refresh } = useUsage();
+  const { accounts, error, loading, lastUpdated, refresh } = useUsage();
   const [prefs, setPrefs] = useState<UsagePrefs>(readUsagePrefs);
   const [now, setNow] = useState(() => Date.now());
   const [desktop, setDesktop] = useState(() => window.matchMedia(DESKTOP_QUERY).matches);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreFocus = useRef<HTMLElement | null>(null);
+
+  /** Every card across every account, in payload order — one flat list because
+   *  prefs are keyed on card identity, not on which row a card came from. */
+  const cards = useMemo(() => accounts.flatMap((a) => a.providers), [accounts]);
+  /** The account label only appears when there is more than one account, so a
+   *  single-subscription machine sees exactly the card it saw before. */
+  const multiAccount = accounts.length > 1;
 
   /** One writer for both prefs fields, so storage never drifts from state. */
   const commitPrefs = useCallback((next: UsagePrefs): void => {
@@ -65,10 +78,10 @@ export function UsageModal({
   // nothing to prune, so this settles on the first pass instead of looping.
   useEffect(() => {
     if (lastUpdated === null) return;
-    const pruned = pruneHiddenPrefs(prefs.hidden, providers);
+    const pruned = pruneHiddenPrefs(prefs.hidden, cards);
     if (pruned === prefs.hidden) return;
     commitPrefs({ ...prefs, hidden: pruned });
-  }, [providers, lastUpdated, prefs, commitPrefs]);
+  }, [cards, lastUpdated, prefs, commitPrefs]);
 
   // Display-only clock so "resets in …" stays live between polls.
   useEffect(() => {
@@ -113,28 +126,29 @@ export function UsageModal({
     [prefs, commitPrefs],
   );
 
-  // Hidden windows are stored per provider NAME and keyed on the server's
-  // `window.key`, so two providers may legitimately share a key without one
-  // hiding the other's window.
+  // Hidden windows are stored per CARD IDENTITY (`${account}:${name}`) and keyed
+  // on the server's `window.key`, so two cards may legitimately share a key
+  // without one hiding the other's window — including the same provider name
+  // reported by two different accounts.
   const toggleWindow = useCallback(
-    (provider: string, key: string): void => {
-      const current = prefs.hidden[provider] ?? [];
+    (card: string, key: string): void => {
+      const current = prefs.hidden[card] ?? [];
       const next = current.includes(key)
         ? current.filter((k) => k !== key)
         : [...current, key];
       const hidden = { ...prefs.hidden };
-      if (next.length > 0) hidden[provider] = next;
-      else delete hidden[provider]; // no empty arrays in storage
+      if (next.length > 0) hidden[card] = next;
+      else delete hidden[card]; // no empty arrays in storage
       commitPrefs({ ...prefs, hidden });
     },
     [prefs, commitPrefs],
   );
 
   const showAllHidden = useCallback(
-    (provider: string): void => {
-      if (prefs.hidden[provider] === undefined) return;
+    (card: string): void => {
+      if (prefs.hidden[card] === undefined) return;
       const hidden = { ...prefs.hidden };
-      delete hidden[provider];
+      delete hidden[card];
       commitPrefs({ ...prefs, hidden });
     },
     [prefs, commitPrefs],
@@ -142,6 +156,10 @@ export function UsageModal({
 
   if (!open) return null;
 
+  /** Anything worth rendering: a card, or an account that failed loudly enough
+   *  to have no cards. Without the second half, a failed account would show the
+   *  "nothing reported" empty state and swallow its own error. */
+  const hasContent = cards.length > 0 || accounts.some((a) => (a.error ?? '') !== '');
   const mode = prefs.mode;
   const segClass = (active: boolean): string =>
     `rounded-[6px] px-2 py-0.5 font-mono text-[10.5px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand ${
@@ -222,22 +240,40 @@ export function UsageModal({
           <ErrorBox message={error} onRetry={() => void refresh(true)} />
         )}
 
-        {lastUpdated !== null && providers.length === 0 && (
-          <Empty>no usage providers reported</Empty>
-        )}
+        {lastUpdated !== null && !hasContent && <Empty>no usage providers reported</Empty>}
 
-        {providers.length > 0 && (
+        {hasContent && (
           <div className="flex flex-col gap-2">
-            {providers.map((p) => (
-              <UsageProviderCard
-                key={p.name}
-                p={p}
-                mode={mode}
-                hidden={prefs.hidden[p.name] ?? []}
-                onToggleWindow={(key) => toggleWindow(p.name, key)}
-                onShowAllHidden={() => showAllHidden(p.name)}
-                now={now}
-              />
+            {accounts.map((a) => (
+              <Fragment key={a.account}>
+                {/* An account whose lookup produced no cards at all. Rare, and
+                    deliberately not a card: there is nothing to render inside
+                    one. The other accounts' cards stay untouched. */}
+                {(a.error ?? '') !== '' && (
+                  <div
+                    data-account={a.account}
+                    className="rounded-xl border border-red/40 bg-red/8 px-2.5 py-2 font-mono text-[10.5px] leading-snug break-words text-red"
+                  >
+                    {multiAccount && <span className="text-ink-dim">{a.account} · </span>}
+                    {a.error}
+                  </div>
+                )}
+                {a.providers.map((p) => {
+                  const id = providerIdentity(p);
+                  return (
+                    <UsageProviderCard
+                      key={id}
+                      p={p}
+                      showAccount={multiAccount}
+                      mode={mode}
+                      hidden={prefs.hidden[id] ?? []}
+                      onToggleWindow={(key) => toggleWindow(id, key)}
+                      onShowAllHidden={() => showAllHidden(id)}
+                      now={now}
+                    />
+                  );
+                })}
+              </Fragment>
             ))}
           </div>
         )}

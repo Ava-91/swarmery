@@ -59,8 +59,13 @@ func TestEstimateOnlyFieldsAreOptional(t *testing.T) {
 	}
 }
 
+// TestProviderJSONContract pins the card contract INCLUDING `account`, which is
+// not optional: with more than one account every card is named "Claude", so the
+// UI's identity is `account:name` and a card that shipped without the field
+// would collide with the default account's card.
 func TestProviderJSONContract(t *testing.T) {
 	raw, err := json.Marshal(Provider{
+		Account: "nabu-org",
 		Name:    providerName,
 		Status:  StatusOK,
 		Plan:    "Max",
@@ -70,7 +75,7 @@ func TestProviderJSONContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal provider: %v", err)
 	}
-	const want = `{"name":"Claude","status":"ok","plan":"Max","source":"oauth","windows":[]}`
+	const want = `{"account":"nabu-org","name":"Claude","status":"ok","plan":"Max","source":"oauth","windows":[]}`
 	if string(raw) != want {
 		t.Errorf("provider JSON =\n  %s\nwant\n  %s", raw, want)
 	}

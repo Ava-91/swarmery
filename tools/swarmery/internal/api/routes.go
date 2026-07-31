@@ -322,6 +322,13 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/stats/playbooks", h.statsPlaybooks)
 	mux.HandleFunc("GET /api/usage", h.usage)
 
+	// …plus the two POSTs that CONNECT an account whose credential the daemon
+	// cannot read on its own (usage_login.go) — the macOS non-default case. The
+	// browser does the authorization; the daemon holds the PKCE verifier and
+	// exchanges the pasted code. Same D4 origin hardening as every other write.
+	mux.HandleFunc("POST /api/usage/accounts/{account}/login/start", requireLocalOrigin(h.usageLoginStart))
+	mux.HandleFunc("POST /api/usage/accounts/{account}/login/complete", requireLocalOrigin(h.usageLoginComplete))
+
 	// fusion phase 17: agent hub — agent-centric READ-ONLY aggregation over the
 	// registry + retro scorecards + analytics cost + sessions (agent_hub.go).
 	// Two GETs, no new tables, no new write paths: the roster and the per-agent

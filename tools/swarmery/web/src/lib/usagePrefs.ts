@@ -26,14 +26,27 @@ export type UsageMode = 'used' | 'remaining';
 export interface UsagePrefs {
   mode: UsageMode;
   /**
-   * Hidden window keys per provider NAME, keyed on the server-supplied
-   * `window.key` — stable across refreshes, unlike the label (which is
-   * localised/renamed) or the array index (which shifts when the daemon adds a
-   * per-model window). That choice is what lets this module stay ~60 lines
-   * instead of carrying the reference implementation's label-versus-index
-   * migration shims (`getWindowIdentity` / `matchesHiddenWindowEntry`).
+   * Hidden window keys per CARD IDENTITY (`${account}:${name}` — see
+   * providerIdentity), keyed on the server-supplied `window.key` — stable
+   * across refreshes, unlike the label (which is localised/renamed) or the
+   * array index (which shifts when the daemon adds a per-model window). That
+   * choice is what lets this module stay short instead of carrying the
+   * reference implementation's label-versus-index migration shims
+   * (`getWindowIdentity` / `matchesHiddenWindowEntry`).
    */
   hidden: Record<string, string[]>;
+}
+
+/** The account key the daemon reports for the stock ~/.claude subscription. */
+const DEFAULT_ACCOUNT = 'default';
+
+/**
+ * A card's identity across the UI. The provider NAME alone is not unique once
+ * the daemon reads more than one account: every account contributes a card
+ * called "Claude", so hiding a window on one would hide it on all of them.
+ */
+export function providerIdentity(p: Pick<UsageProvider, 'account' | 'name'>): string {
+  return `${p.account}:${p.name}`;
 }
 
 export const DEFAULT_USAGE_PREFS: UsagePrefs = { mode: 'used', hidden: {} };
@@ -42,14 +55,25 @@ function isMode(v: unknown): v is UsageMode {
   return v === 'used' || v === 'remaining';
 }
 
-/** Accept only `Record<string, string[]>`; anything else degrades to `{}`. */
+/**
+ * Accept only `Record<string, string[]>`; anything else degrades to `{}`.
+ *
+ * Keys stored before the account dimension existed are bare provider names
+ * ("Claude"). They were written on a single-account machine, so they mean the
+ * default account and are migrated to `default:Claude` on read — an operator's
+ * collapsed windows must not silently reappear on upgrade. Migrated and native
+ * keys are unioned in case both are present.
+ */
 function parseHidden(v: unknown): Record<string, string[]> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return {};
   const out: Record<string, string[]> = {};
-  for (const [provider, keys] of Object.entries(v as Record<string, unknown>)) {
+  for (const [stored, keys] of Object.entries(v as Record<string, unknown>)) {
     if (!Array.isArray(keys)) continue;
     const clean = keys.filter((k): k is string => typeof k === 'string');
-    if (clean.length > 0) out[provider] = clean;
+    if (clean.length === 0) continue;
+    const id = stored.includes(':') ? stored : `${DEFAULT_ACCOUNT}:${stored}`;
+    const merged = new Set([...(out[id] ?? []), ...clean]);
+    out[id] = [...merged];
   }
   return out;
 }
@@ -90,9 +114,13 @@ export function writeUsagePrefs(prefs: UsagePrefs): void {
  * Drop hidden keys that no longer match a live window, so a window the daemon
  * stopped reporting cannot linger in storage and inflate `show hidden (N)`.
  *
- * Providers absent from the payload are left ALONE: a provider missing because
- * it is momentarily erroring must not silently lose the operator's choices.
- * Only a provider that IS present gets its key list intersected with reality.
+ * Cards absent from the payload are left ALONE: a card missing because it is
+ * momentarily erroring — or because its ACCOUNT is not in this payload (the
+ * operator unset SWARMERY_PROJECTS_ROOTS, or a config dir is temporarily gone)
+ * — must not silently lose the operator's choices. Only a card that IS present
+ * gets its key list intersected with reality.
+ *
+ * `providers` is every card across every account, matched on `${account}:${name}`.
  *
  * Returns the same object identity when nothing was pruned, so callers can use
  * it as a cheap "did anything change?" test and skip a redundant write.
@@ -103,15 +131,15 @@ export function pruneHiddenPrefs(
 ): Record<string, string[]> {
   let changed = false;
   const out: Record<string, string[]> = {};
-  for (const [name, keys] of Object.entries(hidden)) {
-    const provider = providers.find((p) => p.name === name);
+  for (const [id, keys] of Object.entries(hidden)) {
+    const provider = providers.find((p) => providerIdentity(p) === id);
     if (provider === undefined) {
-      out[name] = keys; // provider not in this payload — preserve as-is
+      out[id] = keys; // card not in this payload — preserve as-is
       continue;
     }
     const live = keys.filter((k) => provider.windows.some((w) => w.key === k));
     if (live.length !== keys.length) changed = true;
-    if (live.length > 0) out[name] = live;
+    if (live.length > 0) out[id] = live;
   }
   return changed ? out : hidden;
 }
