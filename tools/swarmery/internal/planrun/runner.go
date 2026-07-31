@@ -14,7 +14,8 @@ package planrun
 //     default. Pin full model IDs, not aliases — aliases re-resolve over time.
 //   - SWARMERY_PLANRUN_TIMEOUT Go duration bounding one plan run (default 8h).
 //     A whole plan is many phases of real work, so it gets far more room than a
-//     single phase's 60m — but it must not wedge a worktree forever.
+//     single phase (SWARMERY_PHASERUN_TIMEOUT, default 4h) — but it must not
+//     wedge a worktree forever.
 //
 // Binary resolution reuses planning.ClaudeBin (SWARMERY_CLAUDE_BIN override →
 // PATH → common install locations), so the spawn works under launchd's minimal

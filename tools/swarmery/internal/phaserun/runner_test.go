@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -110,6 +111,87 @@ func TestClaudeRunner_Start_Timeout(t *testing.T) {
 	}
 	if !run.TimedOut || run.ExitCode != -1 {
 		t.Errorf("run = %+v, want TimedOut with ExitCode -1", run)
+	}
+}
+
+// TestClaudeRunner_Start_KillsDescendantTree is the OD-238 regression: when a
+// run ends early (timeout or cancel — the same seam), its subprocess tree must
+// be gone by the time Start returns, because the service deletes the worktree
+// the moment it does. Driven by cancel-after-the-child-exists rather than a
+// short timeout: spawning a fresh script costs ~300 ms on macOS, so a deadline
+// tight enough to be quick would race the shell's first line.
+func TestClaudeRunner_Start_KillsDescendantTree(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	script := filepath.Join(dir, "spawner.sh")
+	body := "#!/bin/sh\nsleep 30 & echo $! > " + pidFile + "\nwait\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWARMERY_CLAUDE_BIN", script)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r := ClaudeRunner{Timeout: 30 * time.Second}
+		if _, err := r.Start(ctx, RunSpec{Prompt: "p", SessionUUID: "u6", Cwd: dir}); err != nil {
+			t.Errorf("Start: %v", err)
+		}
+	}()
+
+	pid := waitForPid(t, pidFile)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Start did not return after cancellation")
+	}
+
+	// Start returns only once the group is drained, so no polling is needed here.
+	if err := syscall.Kill(pid, 0); err == nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL) // don't leak from a failing test
+		t.Errorf("descendant %d survived the cancelled run", pid)
+	}
+}
+
+// waitForPid reads the pid a spawned child wrote, once the file is non-empty.
+func waitForPid(t *testing.T, file string) int {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(file)
+		if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if convErr != nil {
+				t.Fatalf("pid file %q: %v", raw, convErr)
+			}
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("child never wrote its pid to %s", file)
+	return 0
+}
+
+func TestTimeoutFromEnv(t *testing.T) {
+	tests := []struct {
+		name, env string
+		want      time.Duration
+	}{
+		{"unset", "", phaseRunTimeout},
+		{"override", "90m", 90 * time.Minute},
+		{"unparseable falls back", "soon", phaseRunTimeout},
+		{"non-positive falls back", "0s", phaseRunTimeout},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(timeoutEnv, tc.env)
+			if got := timeoutFromEnv(); got != tc.want {
+				t.Errorf("timeoutFromEnv() = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
