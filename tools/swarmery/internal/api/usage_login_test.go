@@ -470,3 +470,209 @@ func TestPendingLoginExpiry(t *testing.T) {
 		t.Error("an expired flow for another account survived the sweep")
 	}
 }
+
+// ── disconnect (DELETE …/login) ────────────────────────────────────────────
+
+// deleteLogin issues the disconnect and returns status + body.
+func deleteLogin(t *testing.T, url string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		t.Fatalf("new DELETE request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return resp.StatusCode, string(raw)
+}
+
+// connectAccount runs the two login steps for account and returns once its
+// credential is in the store — the precondition every disconnect test needs.
+func connectAccount(t *testing.T, srv *httptest.Server, account string) {
+	t.Helper()
+	status, body := postLogin(t, srv.URL+"/api/usage/accounts/"+account+"/login/start", "")
+	if status != http.StatusOK {
+		t.Fatalf("start status = %d, want 200\n%s", status, body)
+	}
+	var started struct {
+		AuthorizeURL string `json:"authorizeUrl"`
+	}
+	if err := json.Unmarshal([]byte(body), &started); err != nil {
+		t.Fatalf("decode start body: %v\n%s", err, body)
+	}
+	u, err := url.Parse(started.AuthorizeURL)
+	if err != nil {
+		t.Fatalf("parse authorizeUrl: %v", err)
+	}
+	status, body = postLogin(t, srv.URL+"/api/usage/accounts/"+account+"/login/complete",
+		`{"code":"`+loginTestCode+`#`+u.Query().Get("state")+`"}`)
+	if status != http.StatusOK {
+		t.Fatalf("complete status = %d, want 200\n%s", status, body)
+	}
+}
+
+// TestUsageDisconnectRemovesTheConnection is the happy path end to end: connect
+// an account through the API, then disconnect it. Three things must hold at
+// once — swarmery's own credential is gone, the CLI's credential for the SAME
+// account is untouched (it is the CLI's, and a dashboard button must never end
+// a terminal login), and the shared 30s usage cache is dropped so the modal
+// cannot keep serving the card the operator just removed.
+func TestUsageDisconnectRemovesTheConnection(t *testing.T) {
+	store := useTempCredentialStore(t)
+	_, srv := usageTestDB(t, "usage-disconnect.db", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	dirs := attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+	up := loginUpstream(t, http.StatusOK)
+	installLoginClient(t, usage.Source{Account: "nabu-org", ConfigDir: dirs["nabu-org"]}, up)
+
+	// The CLI's own credential for this account, which must survive untouched.
+	if err := os.MkdirAll(dirs["nabu-org"], 0o755); err != nil {
+		t.Fatalf("mkdir account config dir: %v", err)
+	}
+	cliCred := filepath.Join(dirs["nabu-org"], ".credentials.json")
+	const cliBody = `{"claudeAiOauth":{"accessToken":"NOT-A-REAL-TOKEN-cli-access"}}`
+	if err := os.WriteFile(cliCred, []byte(cliBody), 0o600); err != nil {
+		t.Fatalf("write CLI credential: %v", err)
+	}
+
+	connectAccount(t, srv, "nabu-org")
+	storeFile := filepath.Join(store, "nabu-org.json")
+	if _, err := os.Stat(storeFile); err != nil {
+		t.Fatalf("the account is not connected, so there is nothing to disconnect: %v", err)
+	}
+
+	// Prime the shared cache so its drop is observable rather than assumed.
+	resp, err := http.Get(srv.URL + "/api/usage")
+	if err != nil {
+		t.Fatalf("prime the usage cache: %v", err)
+	}
+	resp.Body.Close()
+	if _, ok := cachedUsage(); !ok {
+		t.Fatal("the usage cache was not primed; the drop below would prove nothing")
+	}
+
+	status, body := deleteLogin(t, srv.URL+"/api/usage/accounts/nabu-org/login")
+	if status != http.StatusOK {
+		t.Fatalf("disconnect status = %d, want 200\n%s", status, body)
+	}
+	if !strings.Contains(body, `"ok":true`) {
+		t.Errorf("body = %s, want {\"ok\":true}", body)
+	}
+
+	if _, err := os.Stat(storeFile); !os.IsNotExist(err) {
+		t.Errorf("swarmery's credential survived the disconnect (stat err = %v)", err)
+	}
+	got, err := os.ReadFile(cliCred)
+	if err != nil || string(got) != cliBody {
+		t.Errorf("the CLI's own credential was modified or removed (err = %v)", err)
+	}
+	if _, ok := cachedUsage(); ok {
+		t.Error("the usage cache survived the disconnect — the modal would keep the removed card")
+	}
+
+	// The response says whether it worked and nothing else: no credential
+	// material, and no hint of WHERE the store lives.
+	for _, banned := range []string{
+		loginTestAccess, loginTestRefresh, "sk-ant", "accessToken", "access_token",
+		"refreshToken", "refresh_token", "Bearer", "bearer",
+		store, storeFile, ".swarmery", "credentials", ".json",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("disconnect body contains %q:\n%s", banned, body)
+		}
+	}
+}
+
+// TestUsageDisconnectIsIdempotent: an account with nothing stored is already
+// disconnected, so the call answers 200 rather than 404 — the operator asked for
+// a state, not for a deletion receipt, and a retried click must not read as an
+// error.
+func TestUsageDisconnectIsIdempotent(t *testing.T) {
+	store := useTempCredentialStore(t)
+	_, srv := usageTestDB(t, "usage-disconnect-idem.db", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	dirs := attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+	up := loginUpstream(t, http.StatusOK)
+	installLoginClient(t, usage.Source{Account: "nabu-org", ConfigDir: dirs["nabu-org"]}, up)
+
+	for _, attempt := range []string{"never connected", "already disconnected"} {
+		status, body := deleteLogin(t, srv.URL+"/api/usage/accounts/nabu-org/login")
+		if status != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200\n%s", attempt, status, body)
+		}
+		if !strings.Contains(body, `"ok":true`) {
+			t.Errorf("%s: body = %s, want {\"ok\":true}", attempt, body)
+		}
+	}
+	if entries, err := os.ReadDir(store); err == nil && len(entries) != 0 {
+		t.Errorf("the store holds %d entries after two disconnects, want none", len(entries))
+	}
+}
+
+// TestUsageDisconnectRejectsUnknownAccounts: the disconnect carries the SAME
+// allow-list as the two login steps — an account nobody polls is a 404 here too,
+// so the route cannot be used to probe or remove files for arbitrary names.
+func TestUsageDisconnectRejectsUnknownAccounts(t *testing.T) {
+	useTempCredentialStore(t)
+	_, srv := usageTestDB(t, "usage-disconnect-unknown.db", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+
+	status, body := deleteLogin(t, srv.URL+"/api/usage/accounts/not-an-account/login")
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404\n%s", status, body)
+	}
+	if !strings.Contains(body, "unknown account") {
+		t.Errorf("body = %s, want an 'unknown account' error", body)
+	}
+}
+
+// TestUsageDisconnectHonoursTheKillSwitch: SWARMERY_USAGE_OAUTH=0 switches the
+// whole OAuth surface off, and the delete half is no exception — the credential
+// is left exactly where it was.
+func TestUsageDisconnectHonoursTheKillSwitch(t *testing.T) {
+	store := useTempCredentialStore(t)
+	_, srv := usageTestDB(t, "usage-disconnect-off.db", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	dirs := attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+	up := loginUpstream(t, http.StatusOK)
+	installLoginClient(t, usage.Source{Account: "nabu-org", ConfigDir: dirs["nabu-org"]}, up)
+
+	connectAccount(t, srv, "nabu-org")
+	t.Setenv("SWARMERY_USAGE_OAUTH", "0")
+
+	status, body := deleteLogin(t, srv.URL+"/api/usage/accounts/nabu-org/login")
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409\n%s", status, body)
+	}
+	if !strings.Contains(body, "SWARMERY_USAGE_OAUTH=0") {
+		t.Errorf("body = %s, want it to name the kill switch", body)
+	}
+	if _, err := os.Stat(filepath.Join(store, "nabu-org.json")); err != nil {
+		t.Errorf("a credential was removed while the OAuth surface was switched off: %v", err)
+	}
+}
+
+// TestUsageDisconnectRejectsCrossOrigin: deleting a credential is state-changing,
+// so it carries the same D4 origin hardening as the two login steps.
+func TestUsageDisconnectRejectsCrossOrigin(t *testing.T) {
+	useTempCredentialStore(t)
+	_, srv := usageTestDB(t, "usage-disconnect-origin.db", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	attachAccountRoots(t, ingest.DefaultAccount, "nabu-org")
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/usage/accounts/nabu-org/login", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Origin", "https://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 for a foreign origin", resp.StatusCode)
+	}
+}

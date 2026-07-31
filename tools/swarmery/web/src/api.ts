@@ -522,6 +522,22 @@ export async function completeUsageLogin(account: string, code: string): Promise
   if (!res.ok) throw new Error(await errBody(res, 'could not complete the connection'));
 }
 
+/**
+ * DELETE /api/usage/accounts/{account}/login — disconnect an account.
+ *
+ * Removes the credential swarmery's own store holds for it, and nothing else:
+ * the `claude` CLI's credential file and the macOS keychain item are untouched,
+ * and nothing is revoked upstream at Anthropic. Idempotent — an account that is
+ * already disconnected answers 200 too.
+ */
+export async function disconnectUsageAccount(account: string): Promise<void> {
+  if (MOCK) throw new Error('disconnecting an account is not available in mock mode');
+  const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not disconnect the account'));
+}
+
 // --- retro loop (per-agent scorecards + friction board) -----------------------
 
 /** Per-agent health scorecards + previous-window comparison (retro loop). */

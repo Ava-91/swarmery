@@ -18,21 +18,48 @@
 // order that means something.
 
 import type { UsageProvider } from '../../api/types';
+import type { ConnectVariant } from './UsageConnect';
 import { UsageConnect } from './UsageConnect';
+import { UsageDisconnect } from './UsageDisconnect';
 import { UsageSetupHint } from './UsageSetupHint';
 import { UsageWindowRow } from './UsageWindowRow';
 
 /**
- * Whether this card can offer the daemon's own OAuth connection (UsageConnect).
+ * Whether this card's credential is one swarmery itself holds — the daemon's own
+ * store, written by the Connect flow. It is the gate on both actions below: only
+ * our own connection may be deleted, and only our own connection is repaired by
+ * re-authorizing here.
+ */
+function isOurs(p: UsageProvider): boolean {
+  return p.connectedVia === 'swarmery';
+}
+
+/**
+ * Whether this card can offer the daemon's own OAuth flow (UsageConnect).
  *
- * Only a LIVE-quota card that is waiting on a login: the telemetry-estimate card
- * has no credential to connect, an `ok` card is already connected, and a card
- * that is opted out (SWARMERY_USAGE_OAUTH=0) or missing a scope needs a
- * different fix than a fresh authorization. Anything else keeps the card exactly
- * as it rendered before this existed.
+ * Only a LIVE-quota card that is waiting on a credential — the telemetry-estimate
+ * card has none to connect, and an `ok` card is already connected. Beyond that
+ * there are exactly two cases:
+ *
+ *   - a `login` hint: no credential at all, so offer to connect. Unchanged.
+ *   - any other credential-shaped failure on a card that is OURS: the daemon
+ *     already told us `claude` cannot fix it (that hint carries no command), so
+ *     the only remedy is to authorize again — the `scope` hint lands here.
+ *
+ * Everything else is deliberately excluded, because re-authorizing would not
+ * help: an opted-out card (SWARMERY_USAGE_OAUTH=0) needs an env change, and a
+ * `status: "error"` card — a 429, a non-200, an unparseable payload — is upstream
+ * trouble with a perfectly good credential. Those carry no hint at all.
  */
 function canConnect(p: UsageProvider): boolean {
-  return p.source === 'oauth' && p.status === 'no-auth' && p.hint?.kind === 'login';
+  if (p.source !== 'oauth' || p.status !== 'no-auth' || p.hint === undefined) return false;
+  if (p.hint.kind === 'opted-out') return false;
+  return p.hint.kind === 'login' || isOurs(p);
+}
+
+/** `Reconnect` when the broken credential is one we already hold. */
+function connectVariant(p: UsageProvider): ConnectVariant {
+  return isOurs(p) ? 'reconnect' : 'connect';
 }
 
 /**
@@ -150,8 +177,9 @@ export function UsageProviderCard({
 
       {/* The one-click alternative to the hint's CLI command, and the ONLY route
           for an account whose credential the daemon cannot read at all — the
-          normal state of a non-default account on macOS. */}
-      {canConnect(p) && <UsageConnect account={p.account} />}
+          normal state of a non-default account on macOS. On a card whose own
+          stored credential went bad it is also the only remedy that exists. */}
+      {canConnect(p) && <UsageConnect account={p.account} variant={connectVariant(p)} />}
 
       {p.windows.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
@@ -171,6 +199,11 @@ export function UsageProviderCard({
           <div className="mt-2 font-mono text-[10.5px] text-ink-dim">No usage data available</div>
         )
       )}
+
+      {/* Footer: the inverse of Connect, and only where there is something of
+          ours to remove — a card backed by the CLI's own credential has no
+          disconnect, because that credential is not this daemon's to delete. */}
+      {isOurs(p) && <UsageDisconnect account={p.account} />}
     </div>
   );
 }

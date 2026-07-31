@@ -240,6 +240,43 @@ func (c *Client) CompleteLogin(ctx context.Context, flow *LoginFlow, pasted stri
 	return nil
 }
 
+// Disconnect is CompleteLogin's exact inverse: it removes the credential
+// SWARMERY'S OWN store holds for this client's account, and nothing else.
+//
+// # What it deliberately does not touch
+//
+// The `claude` CLI's credential file and the macOS keychain item are the CLI's.
+// This package never writes to them (the provenance rule in types.go), and a
+// disconnect that reached into them would log the operator out of their terminal
+// from a dashboard button. After a disconnect the account simply falls back
+// through the rest of the resolution chain — usually to its "Connect" card.
+//
+// # It does not revoke anything upstream
+//
+// There is no revocation step in the flow this package drives, so the tokens
+// stay valid at Anthropic until they expire on their own. What ends here is THIS
+// daemon's ability to use them. Revoking the authorization itself is an account
+// action on claude.ai.
+//
+// The in-memory bearer goes with the file. Without that drop, resolveToken would
+// keep replaying a token the store no longer backs and the card would stay green
+// until the daemon restarted — the same trap authRejected clears.
+//
+// A missing file is success (see deleteStoredCreds): disconnecting an account
+// that was never connected is not an error, it is a no-op that leaves the caller
+// in the state it asked for. The kill switch refuses here as it does on both
+// login steps: SWARMERY_USAGE_OAUTH=0 turns the whole OAuth surface off.
+func (c *Client) Disconnect() error {
+	if oauthOptedOut() {
+		return ErrDisabled
+	}
+	if err := deleteStoredCreds(c.Src.Account); err != nil {
+		return err
+	}
+	c.cacheToken("")
+	return nil
+}
+
 // splitPastedCode parses the value the callback page shows, which is
 // "code#state" (the CLI splits it exactly this way). Both halves are required:
 // a value pasted without the fragment cannot be state-checked, and accepting it

@@ -36,7 +36,10 @@ credential under an arbitrary name.
 
 Every account first checks **swarmery's own store** — `~/.swarmery/credentials/<account>.json`,
 written by the dashboard's *Connect account* flow (dir `0700`, file `0600`, atomic writes).
-A store hit wins outright.
+A store hit wins outright. That file is swarmery's alone: *Reconnect* replaces it through the
+same atomic write, *Disconnect* removes it, and a card fed by it is marked
+`connectedVia: "swarmery"` in the payload — which is how the modal knows which cards those two
+actions belong on.
 
 After the store, resolution depends on the account:
 
@@ -100,6 +103,14 @@ value is the one configuration error that answers HTTP 500 rather than degrading
 - **Display mode** — `Used` / `Remaining` toggle. The bar's colour always tracks real usage:
   in `Remaining` mode a nearly-exhausted window still reads red, never "mostly empty,
   therefore green".
+- **Connect / Reconnect / Disconnect** — a card with no readable credential offers
+  `Connect account`: swarmery mints the PKCE authorization, you approve it in a browser and
+  paste back the `code#state` the callback page shows. A card whose *swarmery-stored*
+  credential has gone bad (refresh declined, token rejected, scope missing) offers the same
+  flow as `Reconnect` — and deliberately shows **no** `claude` command, because the CLI does
+  not write to swarmery's store and running it would change nothing. `disconnect`, in the card
+  footer, appears only on cards marked `connectedVia: "swarmery"` and asks for an inline
+  confirmation before it removes anything; see section 4 for exactly what it removes.
 - **Per-window hide** — the `◉` toggle collapses a window you do not care about;
   `show hidden (N)` restores them. Both preferences persist in `localStorage` under
   `swarmery.usage.prefs`, keyed per provider **name** plus the server's window `key`, and
@@ -190,7 +201,20 @@ The bearer token is the whole reason this surface needs a security section. The 
   credentials, it does not mutate them.
 - **`SWARMERY_USAGE_OAUTH=0` is a real off switch.** It short-circuits before any source is
   touched — no file read, no `security` invocation, no keychain prompt — and the card reads
-  `usage OAuth disabled (SWARMERY_USAGE_OAUTH=0)`.
+  `usage OAuth disabled (SWARMERY_USAGE_OAUTH=0)`. It covers the write half too: connecting,
+  reconnecting and disconnecting all answer `409` while it is set.
+- **Disconnect deletes one file, ours.** The card's `disconnect` removes
+  `~/.swarmery/credentials/<account>.json` and nothing else. It never touches
+  `<configDir>/.credentials.json` or the macOS keychain item — those are the `claude` CLI's,
+  the daemon does not write to them, and a dashboard button that could end your terminal
+  login would be a trap. The account simply falls back through the rest of the resolution
+  chain, usually to its `Connect` card. It is idempotent: disconnecting an account that is
+  already disconnected succeeds. The in-memory refreshed bearer is dropped with the file, so
+  the connection cannot outlive it until the next daemon restart.
+- **Disconnect does *not* revoke anything at Anthropic.** There is no revocation step in this
+  flow: the tokens stay valid upstream until they expire on their own. What ends is *this
+  daemon's* use of them. To revoke the authorization itself, do it from your account on
+  claude.ai.
 
 ## 5. Stability caveat
 
@@ -224,12 +248,23 @@ against a captured payload; do not paper over it with a computed guess.
 | `HTTP <code>: <snippet>` | error | upstream answered something unexpected — likely an endpoint change |
 | `Claude usage response was not valid JSON` | error | the payload shape changed; capture it and fix the parser |
 
+The remedy column assumes a CLI login. On a card marked `connectedVia: "swarmery"` every
+credential-shaped row above means *reconnect from the card instead* — the hint carries no
+command there, because `claude` writes to a store that credential never came from.
+
 ## 6. API reference
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/usage` | all provider cards; served from a 30-second process-wide cache |
 | `GET /api/usage?fresh=1` | bypass the cache **read** and fetch live (the result still repopulates the cache) |
+| `POST /api/usage/accounts/{account}/login/start` | begin an authorization; answers `{authorizeUrl}` and nothing else — the PKCE verifier and CSRF state stay in the daemon |
+| `POST /api/usage/accounts/{account}/login/complete` | finish it with `{"code":"<code>#<state>"}`; stores the credential and drops the usage cache |
+| `DELETE /api/usage/accounts/{account}/login` | disconnect: removes swarmery's own credential for the account (section 4), drops the usage cache, `{ok:true}` |
+
+The three write endpoints take the same guards: a local origin, an `{account}` the daemon
+actually polls (`404` otherwise — including on the DELETE, which is idempotent for a *known*
+account but never for an unknown one), and `409` while `SWARMERY_USAGE_OAUTH=0`.
 
 Unscoped — quota is an account-level fact, so there is no `project` parameter. The whole
 live fetch is bounded at 20 seconds (individual HTTP calls at 15s), with up to 3 attempts
@@ -343,6 +378,10 @@ A provider that failed carries `error` instead of populated `windows`:
 Field notes: `resetText`, `resetMs`, `resetAt`, `windowDurationMs` and `pace` are all
 omitted when unknown; `used` / `limit` appear on the estimate card only; the old top-level
 `configured` flag no longer exists — the estimate card's presence carries that information.
+A provider also carries `connectedVia: "swarmery"` when its credential came from swarmery's
+own store, on a healthy card and on a failing one alike — provenance only, never a token and
+never a path. Absent means the credential came from one of the CLI's sources, or that there
+is none.
 
 ## 7. Cadences
 

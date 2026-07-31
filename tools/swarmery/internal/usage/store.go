@@ -38,6 +38,7 @@ package usage
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,29 @@ func writeStoredCreds(account string, c *Creds) error {
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// deleteStoredCreds removes one account's swarmery-owned credential — the whole
+// of what disconnecting means on disk.
+//
+// It touches THIS store and nothing else. The CLI's own credential file and the
+// macOS keychain item are the CLI's (see the ownership note at the top of this
+// file); a disconnect that reached into them would take the operator's terminal
+// login down from a dashboard button.
+//
+// An already-absent file is success, not an error: disconnect is idempotent, and
+// an account that was never connected is already in the state being asked for.
+// The error, when there is one, is returned unwrapped for the caller to classify
+// — but it carries the store path, so no caller may put it in a response.
+func deleteStoredCreds(account string) error {
+	path := storePath(account)
+	if path == "" {
+		return errNoStore
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

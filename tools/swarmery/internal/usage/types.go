@@ -78,6 +78,14 @@ const (
 	SourceEstimate = "estimate"
 )
 
+// ConnectedViaSwarmery is the only value Provider.ConnectedVia takes today: the
+// card's credential came from SWARMERY'S OWN store (store.go), i.e. the operator
+// authorized this daemon through the dashboard rather than through the `claude`
+// CLI. A string rather than a bool because provenance is a question with more
+// than two possible answers — naming the store leaves room for a second one
+// without renaming the field the UI already reads.
+const ConnectedViaSwarmery = "swarmery"
+
 // Pace status values. Note the vocabulary, kept verbatim from Fusion so the
 // operator-visible strings match the reference: "ahead" means burning FASTER
 // than a linear burn of the window (rendered as a warning), "behind" means
@@ -154,6 +162,21 @@ type Provider struct {
 	Plan    string   `json:"plan,omitempty"` // "Max" | "Pro" | "Team"
 	Source  string   `json:"source"`         // "oauth" | "estimate"
 	Windows []Window `json:"windows"`
+	// ConnectedVia names the store this card's credential came from, but ONLY
+	// when that store is swarmery's own — the single value ConnectedViaSwarmery.
+	// Absent means the credential came from one of the `claude` CLI's sources,
+	// or that there is no credential at all.
+	//
+	// It is provenance, never material: not a token, not a path, nothing derived
+	// from the credential's content. The UI needs it for two decisions it cannot
+	// otherwise make honestly — which cards may offer a Disconnect (only the
+	// connections swarmery owns are swarmery's to delete), and whether a FAILING
+	// card should offer to re-authorize here instead of printing a `claude`
+	// command that writes to a store this credential never came from.
+	//
+	// Set as soon as the credential resolves, so a card that then fails to read
+	// its quota still carries it.
+	ConnectedVia string `json:"connectedVia,omitempty"`
 	// Hint is set only for a local-setup failure (StatusNoAuth); the UI renders
 	// it instead of the raw Error line.
 	Hint *Hint `json:"hint,omitempty"`
