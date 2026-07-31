@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,9 @@ import (
 // (mirroring writeManifest in internal/marketplace/marketplace_test.go), points
 // the project-plugins endpoints at it via AttachPluginCatalog, and restores the
 // global on cleanup.
-func seedPluginCatalog(t *testing.T, body string) {
+// It returns the claudeDir it created so a caller can drop a
+// known_marketplaces.json beside the clone; existing callers ignore it.
+func seedPluginCatalog(t *testing.T, body string) string {
 	t.Helper()
 	claudeDir := t.TempDir()
 	dir := filepath.Join(claudeDir, "plugins", "marketplaces", "swarmery", ".claude-plugin")
@@ -23,6 +26,7 @@ func seedPluginCatalog(t *testing.T, body string) {
 	}
 	AttachPluginCatalog(claudeDir)
 	t.Cleanup(func() { AttachPluginCatalog("") })
+	return claudeDir
 }
 
 const threePackManifest = `{
@@ -313,5 +317,139 @@ func TestPutPluginMalformedSettings(t *testing.T) {
 	}
 	if body := readDisk(t, settings); body != `{oops` {
 		t.Errorf("malformed settings.json must never be overwritten, got %q", body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Directory-source marketplaces. Every test above seeds the legacy clone layout
+// with no known_marketplaces.json — a github-marketplace machine — so those
+// staying green is the proof this endpoint did not change for them.
+// ---------------------------------------------------------------------------
+
+// registryEntry mirrors one value of <claudeDir>/plugins/known_marketplaces.json.
+// Marshalled rather than hand-written so temp-dir paths are escaped by
+// encoding/json instead of by string concatenation.
+type registryEntry struct {
+	Source struct {
+		Source string `json:"source"`
+		Path   string `json:"path,omitempty"`
+		Repo   string `json:"repo,omitempty"`
+	} `json:"source"`
+	InstallLocation string `json:"installLocation"`
+}
+
+func directoryEntry(root string) registryEntry {
+	var e registryEntry
+	e.Source.Source = "directory"
+	e.Source.Path = root
+	e.InstallLocation = root
+	return e
+}
+
+func githubEntry(repo, installLocation string) registryEntry {
+	var e registryEntry
+	e.Source.Source = "github"
+	e.Source.Repo = repo
+	e.InstallLocation = installLocation
+	return e
+}
+
+func writeKnownMarketplaces(t *testing.T, claudeDir string, entries map[string]registryEntry) {
+	t.Helper()
+	dir := filepath.Join(claudeDir, "plugins")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "known_marketplaces.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedPluginCatalogDirectorySource reproduces the machine that produced the
+// reported 404: the marketplace was added as a DIRECTORY source, so the manifest
+// lives in the operator's checkout and <claudeDir>/plugins/marketplaces/ is never
+// created at all. A second, unrelated registry entry proves lookup is by key.
+func seedPluginCatalogDirectorySource(t *testing.T, body string) {
+	t.Helper()
+	claudeDir := t.TempDir()
+	mktRoot := t.TempDir()
+	dir := filepath.Join(mktRoot, ".claude-plugin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "marketplace.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeKnownMarketplaces(t, claudeDir, map[string]registryEntry{
+		"swarmery": directoryEntry(mktRoot),
+		"nabu-org": githubEntry("nabu-org/packs", filepath.Join(claudeDir, "plugins", "marketplaces", "nabu-org")),
+	})
+	// Deliberately nothing under <claudeDir>/plugins/marketplaces/.
+	if _, err := os.Stat(filepath.Join(claudeDir, "plugins", "marketplaces")); !os.IsNotExist(err) {
+		t.Fatalf("stat plugins/marketplaces = %v, want it absent (that absence is the bug's precondition)", err)
+	}
+	AttachPluginCatalog(claudeDir)
+	t.Cleanup(func() { AttachPluginCatalog("") })
+}
+
+// The regression test for the reported 404. Assertions are deliberately
+// identical to TestProjectPluginsMergesCatalogAndState: a directory-source
+// machine must produce the very same response a github one does.
+func TestProjectPluginsResolvesDirectorySourceMarketplace(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	seedPluginCatalogDirectorySource(t, threePackManifest)
+	writeProjectSettings(t, projectPath(t, srv.URL, "1"), `{
+		"enabledPlugins": {"core@swarmery": true, "lsp-pack@swarmery": true}
+	}`)
+
+	resp := getPluginsResponse(t, srv.URL, "1")
+	if resp.MarketplaceVersion != "1.13.0" {
+		t.Errorf("marketplaceVersion = %q, want 1.13.0", resp.MarketplaceVersion)
+	}
+	want := []projectPluginDTO{
+		{Name: "core", Description: "the core plugin", Enabled: true, Locked: true, Status: "ok"},
+		{Name: "uav-pack", Description: "UAV domain pack", Enabled: false, Locked: false, Status: "unknown"},
+		{Name: "lsp-pack", Description: "LSP pack", Enabled: true, Locked: false, Status: "ok"},
+	}
+	if len(resp.Plugins) != len(want) {
+		t.Fatalf("plugins len = %d, want %d (%+v)", len(resp.Plugins), len(want), resp.Plugins)
+	}
+	for i, w := range want {
+		if resp.Plugins[i] != w {
+			t.Errorf("plugins[%d] = %+v, want %+v (manifest order)", i, resp.Plugins[i], w)
+		}
+	}
+}
+
+// A registry that does not mention our marketplace is not evidence against the
+// legacy clone — it must not be able to break the github path.
+func TestProjectPluginsRegistryWithoutEntryFallsBackToClone(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	claudeDir := seedPluginCatalog(t, threePackManifest)
+	writeKnownMarketplaces(t, claudeDir, map[string]registryEntry{
+		"nabu-org": githubEntry("nabu-org/packs", filepath.Join(claudeDir, "plugins", "marketplaces", "nabu-org")),
+	})
+	// Same settings normalisation as TestProjectPluginsMergesCatalogAndState, so
+	// the seeded fixture cannot append rows for packs outside this manifest.
+	writeProjectSettings(t, projectPath(t, srv.URL, "1"), `{
+		"enabledPlugins": {"core@swarmery": true, "lsp-pack@swarmery": true}
+	}`)
+
+	resp := getPluginsResponse(t, srv.URL, "1")
+	if resp.MarketplaceVersion != "1.13.0" {
+		t.Errorf("marketplaceVersion = %q, want 1.13.0", resp.MarketplaceVersion)
+	}
+	want := []string{"core", "uav-pack", "lsp-pack"}
+	if len(resp.Plugins) != len(want) {
+		t.Fatalf("plugins len = %d, want %d (%+v)", len(resp.Plugins), len(want), resp.Plugins)
+	}
+	for i, name := range want {
+		if resp.Plugins[i].Name != name {
+			t.Errorf("plugins[%d].Name = %q, want %q (the legacy clone's manifest order)", i, resp.Plugins[i].Name, name)
+		}
 	}
 }
