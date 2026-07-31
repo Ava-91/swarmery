@@ -1,0 +1,25 @@
+-- 0046: record the repository a phase declares it works in.
+--
+-- projects.path is the project ROOT, and for a multi-repo project that root is an
+-- umbrella directory holding N checkouts with no .git of its own. Handing it to git
+-- is what made every plan and phase run in such a project fail admission with
+-- "fatal: not a git repository (or any parent up to mount point …)" — the run died
+-- probing its own branch, before a worktree existed, so nothing in the message named
+-- the real cause (2026-07-30, task 48 / project Skygor: /Volumes/Work/Skygor holds
+-- 11 checkouts and is not itself a repo).
+--
+-- The plan format already names the repo per phase: the README sequencing table's
+-- `Repo` column and each phase doc's `| **Repo** | … |` header row. This column is
+-- where that statement lands.
+--
+-- The RAW cell text is stored, not a resolved path. The doc is the source of truth,
+-- and turning "`sk-next` (`/abs/sk-next`)" into a run root depends on the filesystem
+-- and on project.json — a decision the run surface makes at Start time
+-- (internal/repopath). A resolved path here would freeze one machine's layout into
+-- the index and go stale the moment a checkout moves.
+--
+-- No backfill: NULL means "this phase declares nothing", which is exactly what every
+-- existing row says today, and resolution then falls back to project.json's mainApp
+-- and finally to projects.path — the pre-existing behaviour every single-repo
+-- project depends on.
+ALTER TABLE epic_phases ADD COLUMN repo TEXT;

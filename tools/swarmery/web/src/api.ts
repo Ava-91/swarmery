@@ -1132,8 +1132,9 @@ export async function stopSession(id: number): Promise<void> {
  * headlessly (`claude -r <uuid> -p <text>`). Returns 202 immediately; the
  * resulting user + assistant turns arrive on the open detail via the WS bus
  * once the ingest watcher tails the transcript. Non-2xx (409 for a live
- * session, 503 when the claude binary is missing) throws with the server's
- * error text so the composer can surface it inline.
+ * session or for a session whose working directory is gone — a run's worktree
+ * is removed when the run ends — and 503 when the claude binary is missing)
+ * throws with the server's error text so the composer can surface it inline.
  */
 export async function sendSessionMessage(id: number, text: string): Promise<void> {
   if (MOCK) return; // no-op in mock mode

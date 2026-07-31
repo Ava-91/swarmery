@@ -3,6 +3,8 @@ package api_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +70,40 @@ func TestPostSessionMessage_NoCwd(t *testing.T) {
 	w := postMessage(t, h, "2", `{"text":"hello"}`)
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected 409 for missing cwd, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestPostSessionMessage_CwdGone pins the OD-238 case: a phase run's worktree is
+// removed when the run ends, so the session's recorded cwd is a path that no
+// longer exists. Resuming there would put the agent in a deleted directory —
+// refuse, and name the path so the operator can see why.
+func TestPostSessionMessage_CwdGone(t *testing.T) {
+	h := openMessageTestDB(t)
+	gone := filepath.Join(t.TempDir(), "worktrees", "phase-2350") // never created
+	h.DB.Exec(`INSERT INTO sessions (id, project_id, session_uuid, status, cwd, proc_state, started_at, source)
+		VALUES (3, 1, 'gone-uuid', 'active', ?, 'dead', '2024-01-01T00:00:00Z', 'jsonl')`, gone)
+	w := postMessage(t, h, "3", `{"text":"ok"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for a removed worktree, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "phase-2350") {
+		t.Errorf("error should name the missing directory; body: %s", w.Body.String())
+	}
+}
+
+// TestPostSessionMessage_CwdIsFile: a cwd that exists but is not a directory is
+// just as unusable as a missing one.
+func TestPostSessionMessage_CwdIsFile(t *testing.T) {
+	h := openMessageTestDB(t)
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.DB.Exec(`INSERT INTO sessions (id, project_id, session_uuid, status, cwd, proc_state, started_at, source)
+		VALUES (4, 1, 'file-uuid', 'active', ?, 'dead', '2024-01-01T00:00:00Z', 'jsonl')`, file)
+	w := postMessage(t, h, "4", `{"text":"ok"}`)
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 for a non-directory cwd, got %d; body: %s", w.Code, w.Body.String())
 	}
 }
 

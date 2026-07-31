@@ -1,8 +1,12 @@
 package phaserun
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 )
 
 // promptTemplate is the phase-run execution contract (interactive planning v2
@@ -24,7 +28,7 @@ The phase document below is your complete contract. Follow it exactly:
 - ENDING YOUR TURN ENDS THIS PROCESS, and any subagent still running dies with it — while the exit code stays 0, so the run is recorded as a clean success that landed nothing. Never dispatch helpers and then reply that you are waiting on them: that reply IS the kill. Await anything you dispatch inside the same turn, or do the work yourself.
 - If the document's premises don't match the code you find, STOP and end your reply with: PHASE BLOCKED: <one-line reason>. Otherwise end with: PHASE DONE.
 
-PHASE DOCUMENT ({{.DocRelPath}}):
+{{.RepoNote}}PHASE DOCUMENT ({{.DocRelPath}}):
 ----------------------------------------
 {{.DocContent}}
 ----------------------------------------`))
@@ -33,11 +37,42 @@ PHASE DOCUMENT ({{.DocRelPath}}):
 // execution on a fixed template with string data cannot fail, so the
 // (unreachable) error is ignored (same posture as planning.BuildPrompt).
 func BuildPrompt(docPath, docRelPath, docContent string) string {
+	return BuildPromptIn(docPath, docRelPath, docContent, "", "")
+}
+
+// BuildPromptIn is BuildPrompt with the run's repository context: repoRoot is the
+// resolved checkout the worktree was cut from, projectPath the project root.
+//
+// When they differ — a multi-repo project, where the run lives in ONE checkout
+// inside the umbrella — the prompt says so. Phase docs for such projects write
+// their paths from the project root ("sk-next/src/components/x.tsx"), and inside
+// the worktree that same file is "src/components/x.tsx"; without the note an
+// agent "fixes" the mismatch by creating a nested directory and writes the whole
+// phase into a tree nobody reads.
+func BuildPromptIn(docPath, docRelPath, docContent, repoRoot, projectPath string) string {
 	var b strings.Builder
 	_ = promptTemplate.Execute(&b, struct {
 		DocPath    string
 		DocRelPath string
 		DocContent string
-	}{docPath, docRelPath, docContent})
+		RepoNote   string
+	}{docPath, docRelPath, docContent, repoNote(repoRoot, projectPath)})
 	return b.String()
+}
+
+// repoNote renders the multi-repo orientation block, or "" when the run's
+// repository IS the project root (where the note would only add noise).
+func repoNote(repoRoot, projectPath string) string {
+	// repopath.SameDir, not a Clean comparison: the resolved root has been through
+	// EvalSymlinks and projects.path has not, so on a symlinked path a single-repo
+	// run would otherwise be handed a note telling it it is somewhere it is not.
+	if repoRoot == "" || projectPath == "" || repopath.SameDir(repoRoot, projectPath) {
+		return ""
+	}
+	name := filepath.Base(repoRoot)
+	return fmt.Sprintf(
+		"REPOSITORY: your worktree is a checkout of `%s` (%s), ONE repository inside the project root %s.\n"+
+			"Paths in this document may be written from the project root (e.g. `%s/src/...`); inside your worktree that same file is `src/...`. "+
+			"Do NOT create a `%s/` directory to make such a path resolve.\n\n",
+		name, repoRoot, projectPath, name, name)
 }

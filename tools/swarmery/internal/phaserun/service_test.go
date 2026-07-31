@@ -65,12 +65,13 @@ func (s *stubRunner) lastSpec() RunSpec {
 
 // stubWt is a scripted WorktreeManager recording Acquire/Remove/reclaim calls.
 type stubWt struct {
-	mu         sync.Mutex
-	acquired   []string // taskIDs handed to Acquire
-	removed    []worktree.Acquired
-	keepBranch []bool
-	acquireErr error
-	onRemove   func() // observed inside Remove, before it returns
+	mu           sync.Mutex
+	acquired     []string // taskIDs handed to Acquire
+	acquireRoots []string // repoRoots handed to Acquire — what proves WHERE a run went
+	removed      []worktree.Acquired
+	keepBranch   []bool
+	acquireErr   error
+	onRemove     func() // observed inside Remove, before it returns
 
 	reclaimed    []string // branches handed to ReclaimEmptyBranch, in order
 	reclaimAhead int      // commits-ahead ReclaimEmptyBranch reports (0 ⇒ reclaimed)
@@ -93,6 +94,7 @@ func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquire
 		return worktree.Acquired{}, w.acquireErr
 	}
 	w.acquired = append(w.acquired, taskID)
+	w.acquireRoots = append(w.acquireRoots, repoRoot)
 	return worktree.Acquired{
 		Path:   "/wt/" + projectSlug + "/" + taskID,
 		Branch: "swarm/" + taskID,
@@ -227,6 +229,10 @@ func newTestService(db *sql.DB, r Runner, wt *stubWt) *Service {
 	s := NewService(db, r, wt)
 	s.UUID = func() string { return "uuid-1" }
 	s.Go = func(fn func()) { fn() }
+	// Identity resolver: these fixtures use paths that are not checkouts. Repo
+	// resolution has its own tests, which assert the argument the worktree manager
+	// receives.
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	base, err := time.Parse(time.RFC3339, testEpoch)
 	if err != nil {
 		panic(err)
@@ -614,6 +620,7 @@ func TestStart_ClearsPriorEndedAt(t *testing.T) {
 	db, _, p1, _ := fixture(t)
 	r := &stubRunner{block: make(chan struct{})}
 	s := NewService(db, r, &stubWt{}) // real goroutine — run stays in flight
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	s.UUID = func() string { return "uuid-1" }
 	mustExec(t, db, `UPDATE epic_phases SET run_state='failed', run_ended_at='2026-01-01T00:00:00Z' WHERE id=?`, p1)
 
@@ -812,6 +819,7 @@ func TestStart_DoubleStart_ErrRunning(t *testing.T) {
 	db, _, p1, _ := fixture(t)
 	r := &stubRunner{block: make(chan struct{})}
 	s := NewService(db, r, &stubWt{}) // real goroutine — run stays in flight
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	s.UUID = func() string { return "uuid-1" }
 
 	if _, err := s.Start(p1); err != nil {
@@ -895,6 +903,7 @@ func TestStart_ResetsPriorCheckboxesAfter(t *testing.T) {
 
 	r := &stubRunner{block: make(chan struct{})}
 	s := NewService(db, r, &stubWt{}) // real goroutine — the run stays in flight
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	s.UUID = func() string { return "uuid-1" }
 
 	if _, err := s.Start(p1); err != nil {
@@ -1162,6 +1171,7 @@ func TestDeleteRunBranch_ErrRunning(t *testing.T) {
 	r := &stubRunner{block: make(chan struct{})}
 	wt := &stubWt{}
 	s := NewService(db, r, wt) // real goroutine — run stays in flight
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	s.UUID = func() string { return "uuid-1" }
 
 	if _, err := s.Start(p1); err != nil {
@@ -1211,6 +1221,7 @@ func TestCancel(t *testing.T) {
 	r := &stubRunner{block: make(chan struct{})}
 	wt := &stubWt{}
 	s := NewService(db, r, wt) // real goroutine
+	s.RepoRoot = func(p string, _ ...string) (string, error) { return p, nil }
 	s.UUID = func() string { return "uuid-1" }
 
 	if _, err := s.Start(p1); err != nil {
@@ -1309,3 +1320,12 @@ func TestNewUUID(t *testing.T) {
 }
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+
+func (w *stubWt) lastAcquireRoot() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.acquireRoots) == 0 {
+		return ""
+	}
+	return w.acquireRoots[len(w.acquireRoots)-1]
+}

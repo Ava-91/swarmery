@@ -171,6 +171,14 @@ func (h *Handler) PostSessionMessage(w http.ResponseWriter, r *http.Request) {
 	// The spawn body lives in resume.go so the planning-wizard endpoints share
 	// the exact same single-flight map, timeout, and session_updated edges.
 	started, err := startResume(id, sessionUUID, cwd.String, text, nil)
+	if errors.Is(err, errResumeCwdGone) {
+		// A run's worktree is removed when the run ends, so this is the normal
+		// end state of a finished phase/plan run — say what happened and what to
+		// do instead, rather than resuming into a directory that is not there.
+		writeClientErr(w, http.StatusConflict,
+			"this session ran in "+cwd.String+", which no longer exists — a run's worktree is removed when the run ends. Re-run the phase instead of resuming this session.")
+		return
+	}
 	if err != nil {
 		http.Error(w, `{"error":"claude executable not found (set SWARMERY_CLAUDE_BIN)"}`, http.StatusServiceUnavailable)
 		return

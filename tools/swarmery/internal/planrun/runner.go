@@ -14,7 +14,8 @@ package planrun
 //     default. Pin full model IDs, not aliases — aliases re-resolve over time.
 //   - SWARMERY_PLANRUN_TIMEOUT Go duration bounding one plan run (default 8h).
 //     A whole plan is many phases of real work, so it gets far more room than a
-//     single phase's 60m — but it must not wedge a worktree forever.
+//     single phase (SWARMERY_PHASERUN_TIMEOUT, default 4h) — but it must not
+//     wedge a worktree forever.
 //
 // Binary resolution reuses planning.ClaudeBin (SWARMERY_CLAUDE_BIN override →
 // PATH → common install locations), so the spawn works under launchd's minimal
@@ -43,6 +44,12 @@ type RunSpec struct {
 	SessionUUID string // daemon-generated; passed as --session-id (explicit link)
 	Cwd         string // the acquired worktree path — the process runs here
 	Agent       string // --agent; "" ⇒ omitted (the session's default agent)
+	// SettingsFile is passed as --settings when non-empty: the project's
+	// .claude/settings.json, lent to a run whose worktree cannot discover it
+	// (see repopath.InheritedSettings). It carries the project's enabled plugins,
+	// permissions and additionalDirectories — without it a multi-repo run has no
+	// core@swarmery, and the default agent does not exist.
+	SettingsFile string
 }
 
 // Run is the outcome of a completed plan-run process.
@@ -125,6 +132,11 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 	if m := strings.TrimSpace(os.Getenv(modelEnv)); m != "" {
 		args = append(args, "--model", m)
+	}
+	// Before --agent is resolved: the settings file is what enables the plugin the
+	// agent ships in.
+	if f := strings.TrimSpace(spec.SettingsFile); f != "" {
+		args = append(args, "--settings", f)
 	}
 
 	start := time.Now()
