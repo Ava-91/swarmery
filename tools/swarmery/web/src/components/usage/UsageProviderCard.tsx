@@ -125,8 +125,11 @@ export function UsageProviderCard({
       data-account={p.account}
       data-status={p.status}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-1.5">
+      {/* One wrapping flex row: the title cluster pushes the actions to the top
+          right via mr-auto, and UsageDisconnect's armed confirm strip / error
+          line are w-full children that wrap onto their own line below. */}
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2">
+        <span className="mr-auto flex min-w-0 items-center gap-1.5">
           <span aria-hidden="true" className="shrink-0 font-mono text-[11px] text-brand">
             ◆
           </span>
@@ -147,18 +150,22 @@ export function UsageProviderCard({
             </span>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-1.5">
-          {hiddenCount > 0 && (
-            <button
-              type="button"
-              onClick={onShowAllHidden}
-              className="rounded-[6px] border border-line px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap text-ink-dim transition-colors hover:bg-surface2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
-            >
-              show hidden ({hiddenCount})
-            </button>
-          )}
-          <StatusBadge p={p} />
-        </span>
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={onShowAllHidden}
+            className="shrink-0 rounded-[6px] border border-line px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap text-ink-dim transition-colors hover:bg-surface2 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
+          >
+            show hidden ({hiddenCount})
+          </button>
+        )}
+        <StatusBadge p={p} />
+        {/* Top-right corner: the inverse of Connect, and only where there is
+            something of ours to remove — a card backed by the CLI's own
+            credential has no disconnect, because that credential is not this
+            daemon's to delete. Idle it is one small button; armed, its confirm
+            strip wraps to a full-width line under the title. */}
+        {isOurs(p) && <UsageDisconnect account={p.account} />}
       </div>
 
       {/* A hint means "not connected yet", not "broken": it supersedes the raw
@@ -199,11 +206,6 @@ export function UsageProviderCard({
           <div className="mt-2 font-mono text-[10.5px] text-ink-dim">No usage data available</div>
         )
       )}
-
-      {/* Footer: the inverse of Connect, and only where there is something of
-          ours to remove — a card backed by the CLI's own credential has no
-          disconnect, because that credential is not this daemon's to delete. */}
-      {isOurs(p) && <UsageDisconnect account={p.account} />}
     </div>
   );
 }
