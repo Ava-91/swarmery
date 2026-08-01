@@ -241,6 +241,13 @@ func (p *Pipeline) tailOne(path string, logPickup bool) {
 	for _, id := range res.UpdatedEventIDs {
 		p.bus.Publish(Notification{Type: NoteEventAppended, SessionID: res.SessionID, EventID: id})
 	}
+	// Board cards captured from this batch's TodoWrite calls (capture.go hook
+	// A). The tail transaction has committed by now, so exactly one frame per
+	// card that really landed — a replayed transcript inserts nothing and
+	// therefore says nothing.
+	for _, id := range res.CapturedTaskIDs {
+		p.bus.Publish(Notification{Type: NoteTaskUpdated, SessionID: res.SessionID, TaskID: id})
+	}
 }
 
 // rescan is the 2s safety net: stat every discovered file and tail the ones
@@ -272,6 +279,16 @@ func (p *Pipeline) recomputeStatuses() {
 	for _, c := range changed {
 		if p.bus != nil {
 			p.bus.Publish(Notification{Type: NoteSessionUpdated, SessionID: c.ID})
+		}
+		// Board capture hook B (capture.go): a session that finished having
+		// captured no todos leaves one card built from its opening prompt. The
+		// status UPDATE above has already committed, and the 'sess:<uuid>' key
+		// makes a repeat call a no-op, so this is safe to run on every
+		// transition into 'completed'.
+		if c.Status == "completed" {
+			if taskID, inserted := CaptureSessionCard(p.db, c.ID); inserted && p.bus != nil {
+				p.bus.Publish(Notification{Type: NoteTaskUpdated, SessionID: c.ID, TaskID: taskID})
+			}
 		}
 		if c.Status == "completed" && p.cfg.OnSessionTerminal != nil {
 			var errs int

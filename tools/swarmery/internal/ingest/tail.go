@@ -25,6 +25,12 @@ type TailResult struct {
 	// Existing events whose duration was refined this pass (async subagent
 	// reconcile) — re-published so live clients replace their stale copies.
 	UpdatedEventIDs []int64
+	// Board cards REALLY inserted by capture this pass (capture.go hook A).
+	// They ride out on the result rather than publishing inline because the
+	// insert happens inside the tail transaction: a frame announcing a card
+	// that a rollback erased would be a lie the client could never correct.
+	// Replays contribute nothing here, so a re-tail publishes nothing.
+	CapturedTaskIDs []int64
 	StartOffset     int64  // byte offset the pass started reading from
 	NextOffset      int64  // byte offset persisted after the pass
 	Reset           bool   // offset was reset to 0 (recreated/truncated file)
@@ -139,6 +145,7 @@ func TailFile(db *sql.DB, path string, th Thresholds) (TailResult, error) {
 	res.Lines = len(recs)
 	res.NewEventIDs = ing.newEventIDs
 	res.UpdatedEventIDs = ing.updatedEventIDs
+	res.CapturedTaskIDs = ing.capturedTaskIDs
 	res.NextOffset = start + consumed
 	for i := len(recs) - 1; i >= 0; i-- {
 		if recs[i].Timestamp != "" {

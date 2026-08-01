@@ -19,7 +19,6 @@
 package api
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -33,6 +32,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskcap"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
@@ -93,17 +93,13 @@ func normalizePriority(token string) (int, error) {
 // validColumn reports whether c is in the closed board set. Pure; unit-tested.
 func validColumn(c string) bool { return boardColumns[c] }
 
-// boardOrigins is the closed set of task provenances (0048). 'manual' is the
-// default every hand-written card carries; 'session' and 'llm' are minted by
-// capture, which goes through insertCapturedTask rather than raw HTTP.
-var boardOrigins = map[string]bool{
-	"manual":  true,
-	"session": true,
-	"llm":     true,
-}
-
-// validOrigin reports whether o is in the closed provenance set. Pure; unit-tested.
-func validOrigin(o string) bool { return boardOrigins[o] }
+// validOrigin reports whether o is in the closed provenance set of task
+// provenances (0048): 'manual' for every hand-written card, 'session'/'llm' for
+// minted ones. The set itself lives in internal/taskcap — the capture write
+// path is shared with internal/ingest, and a second copy of the enum here is
+// exactly how the HTTP validation and the writer would drift apart. Pure;
+// unit-tested.
+func validOrigin(o string) bool { return taskcap.ValidOrigin(o) }
 
 // legalTransition enforces the two board rules from the phase doc: any→archived
 // is always allowed; done→in_progress is rejected (recovery rehome is
@@ -151,18 +147,9 @@ func unmarshalStringList(s string) ([]string, error) {
 
 // newBoardExternalID mints a "T-" + 6-char base36 card id. The tasks.id INTEGER
 // PK is autoincremented by SQLite; this string is the external_id (the shape the
-// dispatcher and commit trailers reference).
-func newBoardExternalID() (string, error) {
-	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-	buf := make([]byte, 6)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	for i := range buf {
-		buf[i] = alphabet[int(buf[i])%len(alphabet)]
-	}
-	return "T-" + string(buf), nil
-}
+// dispatcher and commit trailers reference). Minting lives in internal/taskcap
+// so captured cards minted from the ingest side carry identically-shaped ids.
+func newBoardExternalID() (string, error) { return taskcap.NewExternalID() }
 
 // boardTaskDTO is the full board task shape (POST/PATCH response, board list
 // item, and the task_updated WS payload). camelCase JSON, mirrored in
@@ -304,81 +291,33 @@ func (h *Handler) resolveAgentName(w http.ResponseWriter, projectID int64, name 
 }
 
 // capturedTaskInput is the payload of a capture insert: the parts a captured
-// card actually varies. Everything else is fixed (see insertCapturedTask).
-type capturedTaskInput struct {
-	ProjectID       int64
-	Title           string
-	Prompt          string
-	Origin          string // 'session' | 'llm' — 'manual' is not a capture
-	OriginSessionID *int64
-	CaptureKey      string // idempotency key; required
-}
+// card actually varies. Everything else is fixed (see taskcap.InsertCapturedTask).
+type capturedTaskInput = taskcap.Input
 
-// insertCapturedTask inserts a suggested board card; returns (id, inserted=false)
-// when capture_key already exists (idempotent replay).
+// insertCapturedTask is the API layer's capture entry point: it delegates the
+// row write to internal/taskcap and adds the one thing taskcap deliberately
+// does not do — publishing task_updated.
 //
-// This is the ONLY write path for non-manual cards: capture re-reads the same
-// transcript on every re-tail and restart, so "insert" has to mean "insert once
-// per capture_key" or a session would grow a fresh copy of its cards each
-// sweep. The dedupe is the partial unique index from 0048 rather than a
-// read-then-write check, so two capture passes racing on the same key can only
-// produce one row.
+// The row logic moved out because internal/ingest needs the identical write and
+// cannot reach this package: api imports ingest (AttachBus takes an
+// *ingest.Bus), so an ingest→api edge would be an import cycle. taskcap is the
+// shared, dependency-free bottom of that pair.
 //
-// Fixed by construction: source='queue' (board rows, disjoint from workspace
-// ingest), board_column='triage' (a suggestion is not yet accepted work),
-// normal priority, status='queued', minted external_id. It publishes
-// task_updated only on a real insert — a replay changed nothing, and a WS frame
-// for a no-op would make every re-tail look like board activity.
+// Publishing stays here rather than in taskcap because delivery rules differ per
+// caller: this path writes against the pool and is free to publish
+// synchronously, while ingest captures inside its tail transaction and must
+// hold the frame until that transaction commits. Either way, only a REAL insert
+// reaches the wire — a replay changed nothing, and a frame for a no-op would
+// make every re-tail look like live board activity.
 func insertCapturedTask(db *sql.DB, in capturedTaskInput) (int64, bool, error) {
-	title := strings.TrimSpace(in.Title)
-	prompt := strings.TrimSpace(in.Prompt)
-	key := strings.TrimSpace(in.CaptureKey)
-	if title == "" || prompt == "" {
-		return 0, false, errors.New("captured task: title and prompt are required")
-	}
-	if key == "" {
-		return 0, false, errors.New("captured task: captureKey is required")
-	}
-	if in.Origin == "manual" || !validOrigin(in.Origin) {
-		return 0, false, fmt.Errorf("captured task: invalid origin %q (want session|llm)", in.Origin)
-	}
-	extID, err := newBoardExternalID()
+	id, inserted, err := taskcap.InsertCapturedTask(db, in)
 	if err != nil {
 		return 0, false, err
 	}
-	now := time.Now().UTC().Format(boardTSFormat)
-	// The partial index's predicate must be repeated in the conflict target —
-	// SQLite needs it to know which index the upsert is aimed at.
-	res, err := db.Exec(`
-		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
-		                   source, external_id, board_column, file_scope, dependencies,
-		                   origin, origin_session_id, capture_key)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, 'triage', '[]', '[]', ?, ?, ?)
-		ON CONFLICT(capture_key) WHERE capture_key IS NOT NULL DO NOTHING`,
-		in.ProjectID, title, prompt, priorityLabels["normal"], now,
-		extID, in.Origin, in.OriginSessionID, key)
-	if err != nil {
-		return 0, false, err
+	if inserted {
+		publishTaskUpdated(id)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, false, err
-	}
-	if n == 0 {
-		// Replay: the card already exists. Hand back its id so the caller can
-		// still link to it (a re-capture is a no-op, not a failure).
-		var id int64
-		if err := db.QueryRow(`SELECT id FROM tasks WHERE capture_key = ?`, key).Scan(&id); err != nil {
-			return 0, false, err
-		}
-		return id, false, nil
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, false, err
-	}
-	publishTaskUpdated(id)
-	return id, true, nil
+	return id, inserted, nil
 }
 
 // GET /api/board/tasks?projectId=&boardColumn= — board rows (source='queue'),

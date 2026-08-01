@@ -251,5 +251,31 @@ func (h *Handler) KillSession(w http.ResponseWriter, r *http.Request) {
 	}
 	publishSessionUpdated(id)
 
+	// Board capture hook B (ingest/capture.go). 'killed' is a terminal status
+	// nothing else ever revisits: the ingest status ticker's RecomputeStatuses
+	// only scans `WHERE status IN ('active','idle')`, so a row this handler
+	// flipped to 'killed' can never re-enter it. That makes THIS the only site
+	// where the hook can fire for an operator-killed session — without it, a
+	// stuck session that produced no TodoWrite calls loses its context from the
+	// board permanently, with no later pass to retry.
+	//
+	// Three properties this call site depends on, all owned by CaptureSessionCard:
+	//   - it cannot fail the kill. It returns no error and swallows every
+	//     storage failure into a debug log, so the operator's primary intent
+	//     (the signal, already sent above) is never affected by a card;
+	//   - it is idempotent on 'sess:<uuid>', so killing the same session twice
+	//     mints one card, and publishing only on `inserted` keeps that at
+	//     exactly one task_updated frame — a repeat kill stays off the wire;
+	//   - it re-evaluates every skip rule itself (dispatched run, System
+	//     project, a session that already has todo: cards), so nothing is
+	//     duplicated or bypassed here.
+	//
+	// Runs against h.DB after the UPDATE has committed, never inside a
+	// transaction: store.Open caps the pool at one connection, so a query issued
+	// on this handle while a tx is open on it would deadlock.
+	if taskID, inserted := ingest.CaptureSessionCard(h.DB, id); inserted {
+		publishTaskUpdated(taskID)
+	}
+
 	w.WriteHeader(http.StatusAccepted)
 }
