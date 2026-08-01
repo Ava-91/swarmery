@@ -174,9 +174,13 @@ type ingester struct {
 
 	// board capture (see capture.go). skipCapture memoizes the per-session
 	// "this session never produces cards" verdict so a batch of 500 lines costs
-	// at most ONE skip query, not 500. capturedTaskIDs collects rows that were
-	// really inserted this batch — published as task_updated by the pipeline
-	// AFTER the transaction commits, so a rolled-back batch emits nothing.
+	// at most ONE skip query, not 500. capturedTaskIDs collects the board rows
+	// this batch really CHANGED — cards newly inserted, plus cards a completed
+	// todo moved to in_review (lifecycle signal 1) — published as task_updated
+	// by the pipeline AFTER the transaction commits, so a rolled-back batch
+	// emits nothing. Both kinds are the same frame to a client (the row
+	// changed, re-read it), which is why they share one list; a replay
+	// contributes neither.
 	skipCapture     *bool
 	capturedTaskIDs []int64
 }

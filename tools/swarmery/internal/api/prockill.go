@@ -251,6 +251,23 @@ func (h *Handler) KillSession(w http.ResponseWriter, r *http.Request) {
 	}
 	publishSessionUpdated(id)
 
+	// Board capture lifecycle signal 2 (ingest/capture.go). A kill ends the work
+	// this session's ACCEPTED cards stand for, so they move in_progress →
+	// in_review and wait for the user's verdict instead of sitting in a column
+	// that claims a dead session is still working on them. Same reasoning as the
+	// hook-B call below for why the kill path has to carry it: 'killed' is
+	// terminal and no later pass revisits the row.
+	//
+	// Cards the user never accepted (still 'triage'/'todo') are left alone —
+	// a suggestion does not expire when its session does — and dispatcher-owned
+	// rows are excluded by the sweep's own `origin != 'manual'` guard, so this
+	// can never collide with dispatch/service.go's exit routing. Like the call
+	// below it returns no error and cannot fail the kill; it runs on h.DB after
+	// the UPDATE committed and opens its own short transaction.
+	for _, taskID := range ingest.SweepSessionToReview(h.DB, id) {
+		publishTaskUpdated(taskID)
+	}
+
 	// Board capture hook B (ingest/capture.go). 'killed' is a terminal status
 	// nothing else ever revisits: the ingest status ticker's RecomputeStatuses
 	// only scans `WHERE status IN ('active','idle')`, so a row this handler

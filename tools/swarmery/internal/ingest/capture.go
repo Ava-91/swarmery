@@ -39,6 +39,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskcap"
 )
@@ -58,6 +59,22 @@ const (
 	// user_prompt event (payloadStrLimit).
 	todoPromptExcerpt  = 2000
 	sessionPromptLimit = 4000
+	// todoStatusCompleted is the TodoWrite status that ends a todo's life and
+	// therefore ends the life of the card captured from it (lifecycle signal 1).
+	// Matched verbatim, not case-folded: it is a literal the transcript writer
+	// emits, and a lenient match would only widen what can trip an auto-move.
+	todoStatusCompleted = "completed"
+	// captureTSFormat is the millisecond-Z stamp column_moved_at carries.
+	//
+	// It is a third copy of api.boardTSFormat / taskcap's tsFormat rather than a
+	// shared constant because internal/api imports internal/ingest, so the two
+	// existing copies sit on opposite sides of an import edge that cannot be
+	// closed here (internal/dispatch, internal/verify and internal/notify each
+	// keep their own for the same reason). The format has to agree: the board
+	// compares and sorts column_moved_at LEXICALLY, so an auto-move stamped in a
+	// different shape than the one a user drag writes would order wrong in the
+	// column it lands in.
+	captureTSFormat = "2006-01-02T15:04:05.000Z"
 )
 
 // todoWriteInput is the shape of a TodoWrite tool call's input. Decoded ONLY
@@ -128,13 +145,14 @@ func (in *ingester) captureTodos(b contentBlock, sidechain bool) {
 		if content == "" {
 			continue
 		}
+		key := todoCaptureKey(in.sessionUUID, content)
 		id, inserted, err := taskcap.InsertCapturedTask(in.tx, taskcap.Input{
 			ProjectID:       in.projectID,
 			Title:           clip(content, captureTitleLimit),
 			Prompt:          content + footer,
 			Origin:          "session",
 			OriginSessionID: &sessionID,
-			CaptureKey:      todoCaptureKey(in.sessionUUID, content),
+			CaptureKey:      key,
 		})
 		if err != nil {
 			// Errors here are schema- or storage-level, i.e. identical for every
@@ -145,8 +163,203 @@ func (in *ingester) captureTodos(b contentBlock, sidechain bool) {
 		}
 		if inserted {
 			in.capturedTaskIDs = append(in.capturedTaskIDs, id)
+			// A card minted a microsecond ago is in 'triage' by construction, so
+			// the lifecycle move below could only ever be a no-op on it — even
+			// when this very TodoWrite already reports the todo as completed
+			// (a session whose whole plan is done before the first tail sees it).
+			// Skipping it keeps the "one id appended per card per batch" property
+			// arithmetic rather than a claim about SQL.
+			continue
+		}
+		// Lifecycle signal 1 (phase 4): the source todo finished, so the card the
+		// user ACCEPTED from it is finished too — in_progress → in_review.
+		//
+		// This runs on in.tx, the tail transaction, and must: store.Open caps the
+		// pool at one connection, so reaching for the *sql.DB handle here would
+		// block on a connection this very transaction is holding. The move
+		// therefore commits or rolls back with the batch that observed it.
+		if td.Status == todoStatusCompleted {
+			if movedID, moved := moveCapturedToReview(in.tx, key); moved {
+				in.capturedTaskIDs = append(in.capturedTaskIDs, movedID)
+			}
 		}
 	}
+}
+
+// moveCapturedToReview moves ONE captured card in_progress → in_review, keyed by
+// its capture_key, and reports whether the row REALLY moved.
+//
+// It takes dbtx rather than *sql.DB, and that is load-bearing: hook A calls it
+// from inside the tail transaction (see captureTodos) while hook B's sweep runs
+// post-commit on a transaction of its own. store.Open caps the pool at a single
+// connection, so a *sql.DB parameter would force hook A to issue a query on a
+// handle whose only connection its own open transaction holds — a deadlock, not
+// an error. Both *sql.Tx and *sql.DB satisfy dbtx.
+//
+// The WHERE clause is the entire safety story of auto-move, and every conjunct
+// earns its place:
+//
+//   - capture_key = ?     — only a CAPTURED card; the key is NULL on every
+//     hand-written row and NULL never matches '='.
+//   - board_column =
+//     'in_progress'       — only work the user explicitly ACCEPTED. A card still
+//     in 'triage'/'todo' is an unreviewed suggestion and does
+//     not expire; one already in 'done'/'archived' is finished
+//     and must never be resurrected into a live column.
+//   - origin != 'manual'  — hand-written cards are untouchable. The dispatcher
+//     runs its own state machine over the rows this excludes
+//     (dispatch/service.go finishReview and friends). Belt and
+//     braces with the key predicate above, deliberately: it is
+//     asserted directly by
+//     TestMoveCapturedToReviewNeverTouchesManualOrigin.
+//   - worktree_path
+//     IS NULL             — and origin alone is NOT enough, because origin is
+//     immutable. A captured card the user reworks
+//     (in_review → todo) is re-admitted by the dispatcher
+//     (dispatch/service.go admit), which sets
+//     board_column='in_progress', status='running' and a
+//     worktree_path but CANNOT clear origin/capture_key/
+//     origin_session_id — api/tasks_board.go rejects patching
+//     them, by design: capture_key is the permanent idempotency
+//     key behind 0048's partial unique index and clearing it
+//     would let capture re-mint a duplicate card. So a live
+//     dispatcher run keeps looking like a captured card, and a
+//     re-tail of its source todo would flip it to in_review
+//     while status='running' and the worktree is still held.
+//     worktree_path is the dispatcher's OWN ownership marker:
+//     liveWorktreeCount (dispatch/service.go) defines a live
+//     slot as exactly `worktree_path IS NOT NULL AND
+//     board_column='in_progress'`, and admit writes the column
+//     in the same UPDATE that writes board_column, so there is
+//     no window in between. With board_column already pinned
+//     above, this conjunct makes the capture set the exact
+//     complement of that live set — the disjointness the
+//     origin bullet claims, now stated in the dispatcher's own
+//     terms. A card the user accepted but never dispatched has
+//     worktree_path NULL and still moves, which is the whole
+//     feature.
+//
+// Being a single guarded UPDATE also makes it race-safe against a user dragging
+// the same card concurrently (last write wins; the WS frame reconciles the UI)
+// and idempotent on replay — the second pass sees board_column='in_review',
+// matches nothing, reports changes()==0, and stays silent.
+func moveCapturedToReview(q dbtx, captureKey string) (int64, bool) {
+	res, err := q.Exec(`
+		UPDATE tasks
+		   SET board_column = 'in_review', column_moved_at = ?
+		 WHERE capture_key = ?
+		   AND board_column = 'in_progress'
+		   AND origin != 'manual'
+		   AND worktree_path IS NULL`,
+		time.Now().UTC().Format(captureTSFormat), captureKey)
+	if err != nil {
+		log.Printf("debug: ingest: capture move to review (%s): %v", captureKey, err)
+		return 0, false
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		// Replay, a card not yet accepted, a manual row, or a card the dispatcher
+		// is currently running in a worktree.
+		return 0, false
+	}
+	// capture_key is unique (0048's partial index), so this reads back the row
+	// just moved. A failure here loses only the frame, never the move — the
+	// dashboard's 60s reconcile picks the column up on its next pass.
+	var id int64
+	if err := q.QueryRow(`SELECT id FROM tasks WHERE capture_key = ?`, captureKey).Scan(&id); err != nil {
+		log.Printf("debug: ingest: capture move lookup (%s): %v", captureKey, err)
+		return 0, false
+	}
+	return id, true
+}
+
+// SweepSessionToReview is lifecycle signal 2: a session reached a terminal
+// status, so every card it captured AND the user accepted moves to in_review.
+// Returns the ids that really moved, in id order, so the caller publishes
+// exactly one task_updated per moved card and nothing at all for a no-op sweep.
+//
+// Exported for the same reason CaptureSessionCard is: a session becomes terminal
+// from two unrelated places — the ingest status ticker ages it to 'completed'
+// (pipeline.recomputeStatuses) and the operator kill path flips it to 'killed'
+// (internal/api.KillSession) — and neither should need more than a DB handle and
+// a session id.
+//
+// SELECT-then-UPDATE inside ONE transaction, because the caller needs the ids
+// and a guarded UPDATE cannot hand them back: doing the two reads outside a
+// transaction would let a concurrent drag move a card between them and produce a
+// frame for a row this sweep did not touch. The rows are drained and CLOSED
+// before the UPDATE is issued — same single-connection reason as above, applied
+// within the transaction rather than across it.
+//
+// Deliberately NOT gated on the skip rules CaptureSessionCard re-evaluates
+// (System project, dispatched run): those decide whether a card may be MINTED,
+// whereas this only ever touches rows a previous capture already minted and a
+// human then accepted. The WHERE clause below is the whole guard, and it is
+// strictly narrower than any skip rule could be.
+//
+// It carries `worktree_path IS NULL` for the same reason moveCapturedToReview
+// does, and this signal needs it MORE: origin_session_id is as immutable as
+// origin, so a captured card the user reworked and the dispatcher re-admitted
+// still answers to its old session — and every session eventually goes terminal,
+// so without this conjunct the sweep would flip a live dispatcher run to
+// in_review the moment the session that once suggested it completed.
+//
+// Never returns an error: a board move is a convenience, and no failure here may
+// disturb a status transition or fail an operator's kill.
+func SweepSessionToReview(db *sql.DB, sessionID int64) []int64 {
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("debug: ingest: review sweep begin (session %d): %v", sessionID, err)
+		return nil
+	}
+	defer tx.Rollback() // no-op once Commit below has succeeded
+
+	rows, err := tx.Query(`
+		SELECT id FROM tasks
+		 WHERE origin_session_id = ?
+		   AND board_column = 'in_progress'
+		   AND origin != 'manual'
+		   AND worktree_path IS NULL
+		 ORDER BY id`, sessionID)
+	if err != nil {
+		log.Printf("debug: ingest: review sweep select (session %d): %v", sessionID, err)
+		return nil
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			log.Printf("debug: ingest: review sweep scan (session %d): %v", sessionID, err)
+			return nil
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close() // MUST precede the Exec below: one connection, one user at a time
+	if err != nil {
+		log.Printf("debug: ingest: review sweep rows (session %d): %v", sessionID, err)
+		return nil
+	}
+	if len(ids) == 0 {
+		return nil // the common case: this session had nothing accepted
+	}
+	if _, err := tx.Exec(`
+		UPDATE tasks
+		   SET board_column = 'in_review', column_moved_at = ?
+		 WHERE origin_session_id = ?
+		   AND board_column = 'in_progress'
+		   AND origin != 'manual'
+		   AND worktree_path IS NULL`,
+		time.Now().UTC().Format(captureTSFormat), sessionID); err != nil {
+		log.Printf("debug: ingest: review sweep update (session %d): %v", sessionID, err)
+		return nil
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("debug: ingest: review sweep commit (session %d): %v", sessionID, err)
+		return nil // rolled back — announce nothing
+	}
+	return ids
 }
 
 // captureSkipped reports whether THIS session may never produce cards,

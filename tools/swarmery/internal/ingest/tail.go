@@ -25,11 +25,13 @@ type TailResult struct {
 	// Existing events whose duration was refined this pass (async subagent
 	// reconcile) — re-published so live clients replace their stale copies.
 	UpdatedEventIDs []int64
-	// Board cards REALLY inserted by capture this pass (capture.go hook A).
-	// They ride out on the result rather than publishing inline because the
-	// insert happens inside the tail transaction: a frame announcing a card
-	// that a rollback erased would be a lie the client could never correct.
-	// Replays contribute nothing here, so a re-tail publishes nothing.
+	// Board cards this pass REALLY changed (capture.go hook A): rows newly
+	// inserted, and rows a completed todo moved in_progress → in_review
+	// (lifecycle signal 1). They ride out on the result rather than publishing
+	// inline because both writes happen inside the tail transaction: a frame
+	// announcing a change that a rollback erased would be a lie the client
+	// could never correct. Replays contribute nothing here — the insert
+	// conflicts and the guarded move matches no row — so a re-tail is silent.
 	CapturedTaskIDs []int64
 	StartOffset     int64  // byte offset the pass started reading from
 	NextOffset      int64  // byte offset persisted after the pass
