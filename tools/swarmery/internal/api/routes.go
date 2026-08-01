@@ -50,6 +50,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// ranks the tools driving context growth (context_hogs.go). 404 when no
 	// transcript is on disk.
 	mux.HandleFunc("GET /api/sessions/{id}/context-hogs", h.getSessionContextHogs)
+	// on-demand LLM task extraction (extract.go): a paid model pass that turns a
+	// session into suggested Triage cards. Manual trigger only — nothing here is
+	// automatic, unlike ingest's deterministic capture.
+	mux.HandleFunc("POST /api/sessions/{id}/extract-tasks", requireLocalOrigin(h.extractSessionTasks))
 
 	// wave A: WS
 	mux.HandleFunc("GET /api/ws", h.ws)
