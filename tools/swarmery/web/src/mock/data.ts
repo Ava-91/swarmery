@@ -1279,6 +1279,9 @@ function boardTask(p: Partial<BoardTask> & Pick<BoardTask, 'id' | 'externalId' |
     retryCount: 0,
     verifyVerdict: null,
     verifyDetail: null,
+    agent: null,
+    origin: 'manual',
+    originSessionId: null,
     columnMovedAt: iso(30 * MIN),
     createdAt: iso(60 * MIN),
     ...p,
@@ -2247,6 +2250,7 @@ export const mockApi = {
     priority?: string;
     model?: string;
     playbook?: string;
+    agent?: string;
     fileScope?: string[];
     dependencies?: string[];
     boardColumn?: BoardColumn;
@@ -2268,6 +2272,7 @@ export const mockApi = {
       boardColumn: input.boardColumn ?? 'triage',
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.playbook !== undefined && input.playbook !== '' ? { playbook: input.playbook } : {}),
+      ...(input.agent !== undefined && input.agent !== '' ? { agent: input.agent } : {}),
       ...(input.fileScope !== undefined ? { fileScope: input.fileScope } : {}),
       ...(input.dependencies !== undefined ? { dependencies: input.dependencies } : {}),
       columnMovedAt: input.boardColumn !== undefined && input.boardColumn !== 'triage' ? iso(0) : null,
@@ -2284,6 +2289,7 @@ export const mockApi = {
     priority?: string;
     model?: string | null;
     playbook?: string | null;
+    agent?: string | null;
     fileScope?: string[];
     dependencies?: string[];
     paused?: boolean;
@@ -2307,6 +2313,7 @@ export const mockApi = {
       ...(patch.priority !== undefined ? { priority: patch.priority as BoardTask['priority'] } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}),
       ...(patch.playbook !== undefined ? { playbook: patch.playbook === '' ? null : patch.playbook } : {}),
+      ...(patch.agent !== undefined ? { agent: patch.agent === '' ? null : patch.agent } : {}),
       ...(patch.fileScope !== undefined ? { fileScope: patch.fileScope } : {}),
       ...(patch.dependencies !== undefined ? { dependencies: patch.dependencies } : {}),
       ...(patch.paused !== undefined ? { paused: patch.paused } : {}),

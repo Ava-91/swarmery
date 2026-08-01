@@ -26,6 +26,7 @@ var boardTaskKeys = []string{
 	"priority", "status", "boardColumn", "paused", "userPaused",
 	"dependencies", "model", "playbook", "fileScope", "branch", "worktreePath",
 	"dispatchError", "retryCount", "verifyVerdict", "verifyDetail",
+	"agent", "origin", "originSessionId",
 	"columnMovedAt", "createdAt",
 }
 

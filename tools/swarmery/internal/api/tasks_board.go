@@ -93,6 +93,18 @@ func normalizePriority(token string) (int, error) {
 // validColumn reports whether c is in the closed board set. Pure; unit-tested.
 func validColumn(c string) bool { return boardColumns[c] }
 
+// boardOrigins is the closed set of task provenances (0048). 'manual' is the
+// default every hand-written card carries; 'session' and 'llm' are minted by
+// capture, which goes through insertCapturedTask rather than raw HTTP.
+var boardOrigins = map[string]bool{
+	"manual":  true,
+	"session": true,
+	"llm":     true,
+}
+
+// validOrigin reports whether o is in the closed provenance set. Pure; unit-tested.
+func validOrigin(o string) bool { return boardOrigins[o] }
+
 // legalTransition enforces the two board rules from the phase doc: any→archived
 // is always allowed; done→in_progress is rejected (recovery rehome is
 // dispatcher-owned, not user-facing); everything else is permissive. Pure;
@@ -177,6 +189,14 @@ type boardTaskDTO struct {
 	RetryCount    int      `json:"retryCount"`
 	VerifyVerdict *string  `json:"verifyVerdict"`
 	VerifyDetail  *string  `json:"verifyDetail"`
+	// Agent is the registry agent name this card dispatches as (0048); null = a
+	// plain run. Origin/OriginSessionID are capture provenance: 'manual' for a
+	// hand-written card, 'session'/'llm' for one minted from a session. The
+	// idempotency key (capture_key) is deliberately NOT exposed — it is an
+	// internal write-path detail with no reader on the board.
+	Agent           *string `json:"agent"`
+	Origin          string  `json:"origin"` // manual|session|llm
+	OriginSessionID *int64  `json:"originSessionId"`
 	// Derived, never stored: whether a task that claims to be running actually is,
 	// and on what evidence. Computed per request by internal/staleness — a cached
 	// verdict would be stale exactly when it matters, since the state it reads
@@ -192,6 +212,7 @@ const boardTaskSelect = `
 	       t.priority, t.status, t.board_column, t.paused, t.user_paused,
 	       t.dependencies, t.model, t.playbook, t.file_scope, t.branch, t.worktree_path,
 	       t.dispatch_error, t.retry_count, t.verify_verdict, t.verify_detail,
+	       t.agent, t.origin, t.origin_session_id,
 	       t.column_moved_at, t.created_at
 	FROM tasks t JOIN projects p ON p.id = t.project_id`
 
@@ -206,6 +227,7 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 		&priority, &d.Status, &d.BoardColumn, &paused, &userPaused,
 		&deps, &d.Model, &d.Playbook, &scope, &d.Branch, &d.WorktreePath,
 		&d.DispatchError, &d.RetryCount, &d.VerifyVerdict, &d.VerifyDetail,
+		&d.Agent, &d.Origin, &d.OriginSessionID,
 		&d.ColumnMovedAt, &d.CreatedAt); err != nil {
 		return err
 	}
@@ -243,6 +265,120 @@ func publishTaskUpdated(id int64) {
 	if wsBus != nil {
 		wsBus.Publish(ingest.Notification{Type: ingest.NoteTaskUpdated, TaskID: id})
 	}
+}
+
+// resolveAgentName validates an optional agent selection against the agents
+// registry and returns the value to store (nil = no agent). Mirrors
+// resolvePlaybookName's shape: it writes its own 4xx and returns ok=false, so
+// callers just `if !ok { return }`.
+//
+// nil pointer → leave unset; empty string → clear the selection; a non-blank
+// name must resolve for THIS project, i.e. be a global agent or one scoped to
+// it. The `(scope = 'global' OR project_id = ?)` predicate is specific to this
+// validation — the Agent Hub roster query does no scope filtering at all, so
+// there is no existing query to mirror here. Soft-deleted rows
+// (deleted = 1) do not count — the registry re-scan tombstones an agent whose
+// file is gone, and dispatching to it would fail at spawn time.
+func (h *Handler) resolveAgentName(w http.ResponseWriter, projectID int64, name *string) (any, bool) {
+	if name == nil {
+		return nil, true
+	}
+	trimmed := strings.TrimSpace(*name)
+	if trimmed == "" {
+		return nil, true // clear → plain run, no agent
+	}
+	var one int
+	err := h.DB.QueryRow(`
+		SELECT 1 FROM agents
+		 WHERE deleted = 0 AND name = ? AND (scope = 'global' OR project_id = ?)
+		 LIMIT 1`, trimmed, projectID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeClientErr(w, http.StatusBadRequest, "unknown agent: "+trimmed)
+		return nil, false
+	}
+	if err != nil {
+		writeErr(w, err)
+		return nil, false
+	}
+	return trimmed, true
+}
+
+// capturedTaskInput is the payload of a capture insert: the parts a captured
+// card actually varies. Everything else is fixed (see insertCapturedTask).
+type capturedTaskInput struct {
+	ProjectID       int64
+	Title           string
+	Prompt          string
+	Origin          string // 'session' | 'llm' — 'manual' is not a capture
+	OriginSessionID *int64
+	CaptureKey      string // idempotency key; required
+}
+
+// insertCapturedTask inserts a suggested board card; returns (id, inserted=false)
+// when capture_key already exists (idempotent replay).
+//
+// This is the ONLY write path for non-manual cards: capture re-reads the same
+// transcript on every re-tail and restart, so "insert" has to mean "insert once
+// per capture_key" or a session would grow a fresh copy of its cards each
+// sweep. The dedupe is the partial unique index from 0048 rather than a
+// read-then-write check, so two capture passes racing on the same key can only
+// produce one row.
+//
+// Fixed by construction: source='queue' (board rows, disjoint from workspace
+// ingest), board_column='triage' (a suggestion is not yet accepted work),
+// normal priority, status='queued', minted external_id. It publishes
+// task_updated only on a real insert — a replay changed nothing, and a WS frame
+// for a no-op would make every re-tail look like board activity.
+func insertCapturedTask(db *sql.DB, in capturedTaskInput) (int64, bool, error) {
+	title := strings.TrimSpace(in.Title)
+	prompt := strings.TrimSpace(in.Prompt)
+	key := strings.TrimSpace(in.CaptureKey)
+	if title == "" || prompt == "" {
+		return 0, false, errors.New("captured task: title and prompt are required")
+	}
+	if key == "" {
+		return 0, false, errors.New("captured task: captureKey is required")
+	}
+	if in.Origin == "manual" || !validOrigin(in.Origin) {
+		return 0, false, fmt.Errorf("captured task: invalid origin %q (want session|llm)", in.Origin)
+	}
+	extID, err := newBoardExternalID()
+	if err != nil {
+		return 0, false, err
+	}
+	now := time.Now().UTC().Format(boardTSFormat)
+	// The partial index's predicate must be repeated in the conflict target —
+	// SQLite needs it to know which index the upsert is aimed at.
+	res, err := db.Exec(`
+		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
+		                   source, external_id, board_column, file_scope, dependencies,
+		                   origin, origin_session_id, capture_key)
+		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, 'triage', '[]', '[]', ?, ?, ?)
+		ON CONFLICT(capture_key) WHERE capture_key IS NOT NULL DO NOTHING`,
+		in.ProjectID, title, prompt, priorityLabels["normal"], now,
+		extID, in.Origin, in.OriginSessionID, key)
+	if err != nil {
+		return 0, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, err
+	}
+	if n == 0 {
+		// Replay: the card already exists. Hand back its id so the caller can
+		// still link to it (a re-capture is a no-op, not a failure).
+		var id int64
+		if err := db.QueryRow(`SELECT id FROM tasks WHERE capture_key = ?`, key).Scan(&id); err != nil {
+			return 0, false, err
+		}
+		return id, false, nil
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, false, err
+	}
+	publishTaskUpdated(id)
+	return id, true, nil
 }
 
 // GET /api/board/tasks?projectId=&boardColumn= — board rows (source='queue'),
@@ -322,8 +458,14 @@ func annotateStaleness(db *sql.DB, out []boardTaskDTO) {
 	}
 }
 
-// POST /api/board/tasks {projectId, title, prompt, priority?, model?,
+// POST /api/board/tasks {projectId, title, prompt, priority?, model?, agent?,
 // fileScope?, dependencies?, boardColumn?} → 201 DTO. requireLocalOrigin.
+//
+// This endpoint only ever mints origin='manual' cards. Captured cards
+// (origin session|llm, carrying a capture_key) are inserted by
+// insertCapturedTask, never over HTTP: the idempotency key is what makes
+// capture replay-safe, and an external caller with a free hand over it could
+// mint a card that permanently blocks the real capture of that same key.
 func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectID    int64    `json:"projectId"`
@@ -332,6 +474,8 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 		Priority     string   `json:"priority"`
 		Model        *string  `json:"model"`
 		Playbook     *string  `json:"playbook"`
+		Agent        *string  `json:"agent"`
+		Origin       string   `json:"origin"`
 		FileScope    []string `json:"fileScope"`
 		Dependencies []string `json:"dependencies"`
 		BoardColumn  string   `json:"boardColumn"`
@@ -352,6 +496,14 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validColumn(column) {
 		http.Error(w, `{"error":"unknown boardColumn"}`, http.StatusBadRequest)
+		return
+	}
+	// Origin is capture-owned: the only value this endpoint accepts is the one
+	// it would have used anyway. Rejecting loudly beats silently downgrading a
+	// caller that believes it is creating a captured card.
+	if body.Origin != "" && body.Origin != "manual" {
+		writeClientErr(w, http.StatusBadRequest,
+			"origin is capture-owned; only 'manual' may be created over HTTP")
 		return
 	}
 	priority, err := normalizePriority(body.Priority)
@@ -387,6 +539,12 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Agent (0048): optional registry agent name to dispatch as. Checked after
+	// the project lookup because the registry query is project-scoped.
+	agent, ok := h.resolveAgentName(w, body.ProjectID, body.Agent)
+	if !ok {
+		return
+	}
 	extID, err := newBoardExternalID()
 	if err != nil {
 		writeErr(w, err)
@@ -400,10 +558,10 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	res, err := h.DB.Exec(`
 		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
 		                   source, external_id, board_column, model, playbook, file_scope,
-		                   dependencies, column_moved_at)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?)`,
+		                   dependencies, column_moved_at, agent, origin)
+		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
 		body.ProjectID, title, prompt, priority, now,
-		extID, column, body.Model, playbook, scopeJSON, depsJSON, movedAt)
+		extID, column, body.Model, playbook, scopeJSON, depsJSON, movedAt, agent)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -439,13 +597,27 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		Priority     *string   `json:"priority"`
 		Model        *string   `json:"model"`
 		Playbook     *string   `json:"playbook"`
+		Agent        *string   `json:"agent"`
 		FileScope    *[]string `json:"fileScope"`
 		Dependencies *[]string `json:"dependencies"`
 		Paused       *bool     `json:"paused"`
 		UserPaused   *bool     `json:"userPaused"`
+		// Provenance is immutable through this endpoint — present only so an
+		// attempt to change it is a loud 400 rather than a silently dropped
+		// field. A card's origin is a statement about where it came from; it
+		// cannot be edited after the fact, and rewriting capture_key would
+		// re-open the duplicate a captured card exists to prevent.
+		Origin          *string `json:"origin"`
+		CaptureKey      *string `json:"captureKey"`
+		OriginSessionID *int64  `json:"originSessionId"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Origin != nil || body.CaptureKey != nil || body.OriginSessionID != nil {
+		writeClientErr(w, http.StatusBadRequest,
+			"origin, captureKey and originSessionId are capture-owned and cannot be patched")
 		return
 	}
 
@@ -520,6 +692,16 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		}
 		sets = append(sets, "playbook = ?")
 		args = append(args, playbook)
+	}
+	if body.Agent != nil {
+		// A blank string clears the selection (→ plain run); a non-blank name
+		// must resolve in the registry for this card's project.
+		agent, ok := h.resolveAgentName(w, cur.ProjectID, body.Agent)
+		if !ok {
+			return
+		}
+		sets = append(sets, "agent = ?")
+		args = append(args, agent)
 	}
 	if body.FileScope != nil {
 		scopeJSON, err := marshalStringList(*body.FileScope)

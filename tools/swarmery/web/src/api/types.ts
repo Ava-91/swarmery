@@ -1218,6 +1218,13 @@ export type BoardColumn =
 export type TaskPriority = 'urgent' | 'high' | 'normal' | 'low';
 
 /**
+ * Where a board card came from. 'manual' is a hand-written card (the default
+ * every pre-capture row carries); 'session' and 'llm' are minted by capture and
+ * are never creatable over HTTP — see insertCapturedTask in tasks_board.go.
+ */
+export type TaskOrigin = 'manual' | 'session' | 'llm';
+
+/**
  * A dispatchable board task — response of POST/PATCH /api/board/tasks, item of
  * GET /api/board/tasks, and the `task_updated` WS payload. Mirrors
  * boardTaskDTO in internal/api/tasks_board.go. Dispatcher-owned fields
@@ -1247,6 +1254,12 @@ export interface BoardTask {
   retryCount: number;
   verifyVerdict: string | null;
   verifyDetail: string | null;
+  /** Registry agent name this card dispatches as; null = a plain run. */
+  agent: string | null;
+  /** Where the card came from: hand-written, captured from a session, or LLM-suggested. */
+  origin: TaskOrigin;
+  /** Session a captured card was minted from; null for manual cards. */
+  originSessionId: number | null;
   columnMovedAt: string | null;
   createdAt: string;
 }

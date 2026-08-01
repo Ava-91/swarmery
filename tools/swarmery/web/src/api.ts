@@ -742,6 +742,8 @@ export interface CreateBoardTaskInput {
   model?: string;
   /** Selected execution recipe name (fusion phase 13); omit/empty = default. */
   playbook?: string;
+  /** Registry agent name to dispatch as; omit/empty = a plain run. */
+  agent?: string;
   fileScope?: string[];
   dependencies?: string[];
   boardColumn?: BoardColumn;
@@ -775,6 +777,8 @@ export interface PatchBoardTaskInput {
   model?: string | null;
   /** Selected recipe name; "" clears the selection back to the default. */
   playbook?: string | null;
+  /** Registry agent name; "" clears the selection back to a plain run. */
+  agent?: string | null;
   fileScope?: string[];
   dependencies?: string[];
   paused?: boolean;
