@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +44,14 @@ func (s *stubRunner) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.specs)
+}
+
+// spec returns the i-th recorded RunSpec, for assertions on what the service
+// handed the runner (model/agent field mapping).
+func (s *stubRunner) spec(i int) RunSpec {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.specs[i]
 }
 
 // stubWt is a scripted WorktreeManager: Acquire returns a deterministic path +
@@ -141,6 +150,7 @@ type taskOpts struct {
 	userPaused int
 	createdAt  string
 	projectID  int64
+	agent      string // registry agent name; "" leaves tasks.agent NULL
 }
 
 func insertTask(t *testing.T, db *sql.DB, extID string, o taskOpts) int64 {
@@ -174,6 +184,13 @@ func insertTask(t *testing.T, db *sql.DB, extID string, o taskOpts) int64 {
 		t.Fatalf("insert task %s: %v", extID, err)
 	}
 	id, _ := res.LastInsertId()
+	// Set as a follow-up so the shared INSERT above stays exactly as every
+	// pre-agent test knows it — an unset agent leaves the column NULL.
+	if o.agent != "" {
+		if _, err := db.Exec(`UPDATE tasks SET agent=? WHERE id=?`, o.agent, id); err != nil {
+			t.Fatalf("set agent on %s: %v", extID, err)
+		}
+	}
 	return id
 }
 
@@ -338,6 +355,79 @@ func TestSentinelBlockedRoutesToTodoPaused(t *testing.T) {
 	}
 	if wt.removedCount() != 0 {
 		t.Error("blocked task should keep its worktree")
+	}
+}
+
+// The service's whole job for agent selection is field mapping: tasks.agent →
+// RunSpec.Agent, with the prompt left ALONE. Asserting the absence of the
+// mention in spec.Prompt is what pins "exactly one code path" from this side —
+// ClaudeRunner.agentPrompt applies it, and a service that also did would
+// double it.
+func TestDispatchThreadsAgentIntoRunSpec(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{}
+	s := newTestService(t, db, r, &stubWt{})
+	insertTask(t, db, "T-ag", taskOpts{agent: "tech-lead"})
+
+	s.Schedule()
+
+	if r.count() != 1 {
+		t.Fatalf("runner started %d times, want 1", r.count())
+	}
+	spec := r.spec(0)
+	if spec.Agent != "tech-lead" {
+		t.Errorf("RunSpec.Agent = %q, want tech-lead", spec.Agent)
+	}
+	if strings.Contains(spec.Prompt, "@tech-lead") {
+		t.Errorf("service must not prefix the prompt (that is ClaudeRunner's single site); got %q", spec.Prompt)
+	}
+}
+
+// Regression: a card with no agent selected dispatches exactly as it did before
+// the feature — an empty Agent and an unmentioned prompt.
+func TestDispatchWithoutAgentLeavesRunSpecAgentEmpty(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{}
+	s := newTestService(t, db, r, &stubWt{})
+	insertTask(t, db, "T-noag", taskOpts{})
+
+	s.Schedule()
+
+	if r.count() != 1 {
+		t.Fatalf("runner started %d times, want 1", r.count())
+	}
+	spec := r.spec(0)
+	if spec.Agent != "" {
+		t.Errorf("RunSpec.Agent = %q, want empty for a task with no agent", spec.Agent)
+	}
+	if strings.Contains(spec.Prompt, "@") {
+		t.Errorf("prompt should carry no mention: %q", spec.Prompt)
+	}
+}
+
+// Exit routing is untouched by agent selection: an agent-prefixed run that
+// lands with no sentinel still routes to in_review and still keeps its
+// worktree, exactly like TestScheduleAdmitsAndRunsExit0.
+func TestAgentRunWithoutSentinelStillRoutesToInReview(t *testing.T) {
+	db := testDB(t)
+	wt := &stubWt{}
+	r := &stubRunner{run: func(spec RunSpec) (*Run, error) {
+		ingestSession(t, db, spec.SessionUUID, "Done, committed with the trailer.")
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(t, db, r, wt)
+	id := insertTask(t, db, "T-ag-review", taskOpts{agent: "tech-lead"})
+
+	s.Schedule()
+
+	if got := r.spec(0).Agent; got != "tech-lead" {
+		t.Fatalf("precondition: RunSpec.Agent = %q, want tech-lead", got)
+	}
+	if got := column(t, db, id); got != "in_review" {
+		t.Errorf("task column = %q, want in_review", got)
+	}
+	if wt.removedCount() != 0 {
+		t.Errorf("worktree removed %d times on clean exit; want 0 (kept for review)", wt.removedCount())
 	}
 }
 
