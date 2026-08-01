@@ -2,7 +2,7 @@
 // display labels, and the client-side derivation of the status-bar counts.
 // Kept pure so it is trivially unit-testable and shared by Board + StatusBar.
 
-import type { BoardColumn, BoardTask } from '../api/types';
+import type { BoardColumn, BoardTask, TaskPriority } from '../api/types';
 
 /** Left-to-right column order on the board. */
 export const BOARD_COLUMNS: BoardColumn[] = [
@@ -22,6 +22,16 @@ export const COLUMN_LABELS: Record<BoardColumn, string> = {
   done: 'Done',
   archived: 'Archived',
 };
+
+/**
+ * Model tokens the dispatcher passes to `claude --model`; 'default' means
+ * "inherit" and is stored as NULL. One list, used by every editor of a task's
+ * model (TaskDrawer, NewTaskModal) so the two can never drift apart.
+ */
+export const TASK_MODELS = ['default', 'fable', 'opus', 'sonnet', 'haiku'] as const;
+
+/** Selectable priorities, highest first — shared by the same two editors. */
+export const TASK_PRIORITIES: TaskPriority[] = ['urgent', 'high', 'normal', 'low'];
 
 export interface BoardCounts {
   waiting: number;

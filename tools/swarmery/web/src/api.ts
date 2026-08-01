@@ -749,7 +749,7 @@ export interface CreateBoardTaskInput {
   boardColumn?: BoardColumn;
 }
 
-/** POST /api/board/tasks → 201 BoardTask. QuickEntry sends {title,prompt=title}. */
+/** POST /api/board/tasks → 201 BoardTask. A title-only intake sends prompt=title. */
 export async function createBoardTask(input: CreateBoardTaskInput): Promise<BoardTask> {
   if (MOCK) return mockApi.createBoardTask(input);
   const res = await fetch('/api/board/tasks', {

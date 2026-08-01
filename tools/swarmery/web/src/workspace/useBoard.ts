@@ -24,7 +24,7 @@ export interface BoardState {
   moveTask: (id: number, to: BoardColumn) => void;
   /** Optimistic field edit (drawer). Resolves to the server row or rejects. */
   patchTask: (id: number, patch: PatchBoardTaskInput) => Promise<BoardTask>;
-  /** Insert a freshly-created task at the head (QuickEntry). */
+  /** Insert a freshly-created task at the head (the New-task modal). */
   addTask: (task: BoardTask) => void;
 }
 
