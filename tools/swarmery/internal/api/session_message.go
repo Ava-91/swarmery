@@ -5,17 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 )
 
@@ -83,30 +80,9 @@ func cancelResume(uuid string) bool {
 // that omits the npm/homebrew install dirs, so a bare `exec.LookPath("claude")`
 // fails under the service even though `claude` is on the user's interactive
 // PATH. Resolution order: explicit SWARMERY_CLAUDE_BIN override → PATH lookup →
-// probe the common install locations.
-func claudeBin() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("SWARMERY_CLAUDE_BIN")); v != "" {
-		return v, nil
-	}
-	if p, err := exec.LookPath("claude"); err == nil {
-		return p, nil
-	}
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		"/opt/homebrew/bin/claude",
-		"/usr/local/bin/claude",
-		filepath.Join(home, ".claude", "local", "claude"),
-		filepath.Join(home, ".local", "bin", "claude"),
-		filepath.Join(home, ".npm-global", "bin", "claude"),
-		filepath.Join(home, "bin", "claude"),
-	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("claude not found in PATH or common install locations")
-}
+// probe the common install locations. The implementation lives in
+// internal/claudebin, shared with planning.ClaudeBin and mcpcfg.
+func claudeBin() (string, error) { return claudebin.Resolve() }
 
 // PostSessionMessage implements POST /api/sessions/{id}/message.
 // Validation order keeps every reject path (400/404/409) BEFORE the claude

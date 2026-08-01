@@ -1278,9 +1278,39 @@ export async function serenaStop(id: number): Promise<void> {
 
 // --- connectors (MCP servers) --------------------------------------------------
 
-export function fetchConnectors(): Promise<ConnectorsResponse> {
+/**
+ * Thrown when the daemon cannot serve connectors at all (HTTP 503): the reader
+ * is not attached, or the `claude` CLI is not findable from the daemon's PATH.
+ * Distinct from a plain Error so the UI can degrade to a muted "unavailable"
+ * card instead of a red failure — this is a host condition, not a bug.
+ */
+export class ConnectorsUnavailableError extends Error {
+  /** The daemon's actionable remedy, when it sent one. */
+  readonly hint: string | null;
+
+  constructor(message: string, hint: string | null) {
+    super(message);
+    this.name = 'ConnectorsUnavailableError';
+    this.hint = hint;
+  }
+}
+
+/**
+ * GET /api/connectors. Deliberately does NOT use the shared `get<T>` helper:
+ * that one discards the response body, and the 503 body's `error`/`hint` is the
+ * whole point — it is what tells the operator how to fix an unfindable CLI.
+ */
+export async function fetchConnectors(): Promise<ConnectorsResponse> {
   if (MOCK) return mockApi.connectors();
-  return get<ConnectorsResponse>('/api/connectors');
+  const res = await fetch('/api/connectors');
+  if (res.status === 503) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string; hint?: string };
+    throw new ConnectorsUnavailableError(data.error ?? 'connectors unavailable', data.hint ?? null);
+  }
+  if (!res.ok) {
+    throw new Error(`GET /api/connectors: ${String(res.status)}`);
+  }
+  return (await res.json()) as ConnectorsResponse;
 }
 
 /** Add a stdio/http/sse MCP server; the daemon returns the refreshed list. */

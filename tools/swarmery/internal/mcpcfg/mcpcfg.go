@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"strings"
 	"unicode"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
 )
 
 // Transport is the MCP wire transport of a server.
@@ -102,17 +104,67 @@ func NewWithRunner(run func(ctx context.Context, args ...string) ([]byte, error)
 	return &Reader{run: run}
 }
 
+// ErrClaudeNotFound reports that the CLI this package shells to could not be
+// located. The API maps it to 503 (the host cannot serve connectors) rather
+// than 500 (the daemon is broken) — a missing CLI is not a server fault.
+var ErrClaudeNotFound = errors.New("claude CLI not found")
+
 // execRunner is the production launcher: `claude <args…>`, capturing stdout.
-// CombinedOutput folds stderr in so a non-zero exit still yields the CLI's
-// human-readable reason for the error message.
+// The binary is resolved through claudebin rather than relying on PATH, because
+// launchd starts the daemon with a minimal PATH that omits every install dir
+// claude actually lives in. CombinedOutput folds stderr in so a non-zero exit
+// still yields the CLI's human-readable reason for the error message.
+//
+// cmd.Dir is deliberately unset: the daemon's own working directory is what
+// `claude mcp list` reports from, and changing it would silently change which
+// servers are visible.
 func execRunner(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	bin, err := claudebin.Resolve()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrClaudeNotFound, err)
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return out, fmt.Errorf("claude %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return out, fmt.Errorf("claude %s: %w: %s",
+			strings.Join(args, " "), redactBin(err, bin), redactPath(strings.TrimSpace(string(out)), bin))
 	}
 	return out, nil
 }
+
+// redactPath rewrites every occurrence of the resolved executable path — an
+// absolute path, usually under the operator's home — to the literal "claude".
+func redactPath(s, bin string) string {
+	if bin == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, bin, "claude")
+}
+
+// redactBin applies redactPath to an error's message so nothing surfaced
+// through the API carries filesystem detail. exec.Error and fs.PathError both
+// embed the resolved path in their message — that is exactly the leak this
+// closes. The original error stays reachable through Unwrap, so errors.Is/As
+// over the chain (e.g. *exec.ExitError) behave as they did before redaction.
+func redactBin(err error, bin string) error {
+	if err == nil || bin == "" {
+		return err
+	}
+	msg := redactPath(err.Error(), bin)
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedErr{msg: msg, err: err}
+}
+
+// redactedErr carries a sanitized message over an intact error chain.
+type redactedErr struct {
+	msg string
+	err error
+}
+
+func (e *redactedErr) Error() string { return e.msg }
+func (e *redactedErr) Unwrap() error { return e.err }
 
 // List returns every configured MCP server via `claude mcp list`.
 func (r *Reader) List(ctx context.Context) ([]Server, error) {
