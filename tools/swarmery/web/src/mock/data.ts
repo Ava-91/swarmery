@@ -1723,6 +1723,8 @@ const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export interface MockFilters {
   project?: string;
   status?: string;
+  /** Workspace task id of a plan — mirrors the server's ?planTask= narrowing. */
+  planTask?: number;
 }
 
 export const mockApi = {
@@ -1829,6 +1831,7 @@ export const mockApi = {
       .filter((s) => {
         if (filters.project !== undefined && filters.project !== s.projectSlug) return false;
         if (filters.status !== undefined && filters.status !== s.status) return false;
+        if (filters.planTask !== undefined && s.planGroup?.taskId !== filters.planTask) return false;
         return true;
       })
       .map((s) => ({ ...s }));

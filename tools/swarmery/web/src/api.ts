@@ -100,6 +100,13 @@ export interface SessionFilters {
   /** Project slug or id (server matches either). */
   project?: string;
   status?: string;
+  /**
+   * Workspace task id of a plan — narrows the list to the sessions that plan
+   * run produced (its controller, every phase run, and the subagents resolved
+   * from the run worktree). Server-side, so the Plans panel and the Sessions
+   * page group by the same rule.
+   */
+  planTask?: number;
 }
 
 export function fetchProjects(includeArchived = false): Promise<ProjectsResponse> {
@@ -346,6 +353,7 @@ export function fetchSessions(
   const qs = new URLSearchParams();
   if (filters.project !== undefined) qs.set('project', filters.project);
   if (filters.status !== undefined) qs.set('status', filters.status);
+  if (filters.planTask !== undefined) qs.set('planTask', String(filters.planTask));
   if (page.limit !== undefined) qs.set('limit', String(page.limit));
   if (page.cursor !== undefined) qs.set('cursor', page.cursor);
   const query = qs.toString();
