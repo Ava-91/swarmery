@@ -38,7 +38,7 @@ export function useWorkspaceBoard(): BoardState {
   return ctx;
 }
 
-/** Lets deep children (TaskDrawer) open a terminal in a task's worktree. Null
+/** Lets deep children (TaskModal) open a terminal in a task's worktree. Null
  * outside a workspace layout — callers guard on it before rendering the action. */
 const WorkspaceTerminalContext = createContext<((taskLabel: string, worktreePath: string) => void) | null>(null);
 

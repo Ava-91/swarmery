@@ -33,8 +33,12 @@ type WSMessage =
   | { type: 'permission_resolved';  payload: PermissionRequest }
   // phase 4 — system registry (frozen at step-03):
   | { type: 'system_item_updated'; payload: SystemItemUpdate }
+  // fusion phase 1 — task board:
+  | { type: 'task_updated'; payload: BoardTask }
   // plans-page-lifecycle phase 1 — epics:
-  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } };
+  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } }
+  // board task delete:
+  | { type: 'task_deleted'; payload: { taskId: number; projectId: number } };
 ```
 
 `Session` and `Event` are byte-for-byte the same JSON DTOs the REST API
@@ -162,6 +166,26 @@ owning project.
 
 `web/src/api/types.ts` picks the union member up in phase 2 of the program.
 
+### `task_deleted`
+
+Added with the board's delete action; everything above is unchanged. Published
+by `DELETE /api/board/tasks/{id}` (`ingest.NoteTaskDeleted`) after the row is
+permanently removed — the escape hatch `archived` is not, since an archived task
+still sits in a column.
+
+This is the one board frame that carries **no data**: the row is gone by the
+time the frame is built, so it cannot be hydrated into a `BoardTask` the way
+`task_updated` is. Clients drop the card by `taskId`; `projectId` rides along on
+the notification (it cannot be looked up afterwards) so a board scoped to
+another project can ignore the frame.
+
+```json
+{"type":"task_deleted","payload":{"taskId":42,"projectId":1}}
+```
+
+A running task is refused with `409` instead of deleted, so no frame is emitted
+for it.
+
 ## Delivery semantics
 
 - **Hint stream, not a source of truth.** Delivery is at-most-once: a slow
@@ -190,3 +214,5 @@ owning project.
 | sysscan: config item created / new content version / soft-deleted (phase 4, WS wiring at step-05) | `system_item_updated` |
 | wsingest: a task's `plan/` content hash or location changed during a scan pass | `plan_updated` |
 | Epic lifecycle endpoint: pause / resume / archive / restore applied | `plan_updated` |
+| Board create / patch (column move, field edit, pause) | `task_updated` |
+| `DELETE /api/board/tasks/{id}`: a queue row permanently removed | `task_deleted` |

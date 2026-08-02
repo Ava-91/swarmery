@@ -2280,6 +2280,19 @@ export const mockApi = {
     return { ...created };
   },
 
+  async deleteBoardTask(id: number): Promise<void> {
+    await delay(90);
+    const cur = mockBoard.find((t) => t.id === id);
+    if (cur === undefined) throw new Error('task not found');
+    // Mirror the Go running guard so the demo surfaces the same 409 copy.
+    if (cur.status === 'running') {
+      throw new Error(
+        'task is running — move it to done or archived first (that stops it and reclaims the worktree)',
+      );
+    }
+    mockBoard = mockBoard.filter((t) => t.id !== id);
+  },
+
   async patchBoardTask(id: number, patch: {
     boardColumn?: BoardColumn;
     title?: string;

@@ -78,7 +78,7 @@ export function Explain({ id }: { id: ConceptId }): JSX.Element {
   // and the click that follows would then see open === false and reopen.
   //
   // Escape is listened for in the CAPTURE phase, and that phase is load-bearing.
-  // This chip is placed inside workspace/TaskDrawer.tsx (via PlaybookHint), a
+  // This chip is placed inside workspace/TaskModal.tsx (via PlaybookHint), a
   // drawer that closes itself on a document-level, bubble-phase Escape. In the
   // bubble phase a window listener runs AFTER every document one, so a
   // bubble-phase stopPropagation() here would fire too late and one Escape

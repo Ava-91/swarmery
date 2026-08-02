@@ -4,7 +4,7 @@
 // dispatch-error warning icon with tooltip, a paused badge, and a session link
 // glyph when a branch/worktree exists. Native HTML5 draggable; a keyboard
 // alternative (a "move to →" menu) lives on the card via ColumnMenu so drag is
-// never the only path (WCAG). Clicking the card body opens the TaskDrawer.
+// never the only path (WCAG). Clicking the card body opens the TaskModal.
 
 import type { BoardColumn, BoardTask, TaskPriority } from '../api/types';
 import { BOARD_COLUMNS, COLUMN_LABELS } from './boardModel';

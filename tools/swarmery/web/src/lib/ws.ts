@@ -163,8 +163,13 @@ export function applyPermissionMessage(
  * its query cache in place by id — NEVER a list refetch (no per-column
  * refetch storms). Idempotent by `id`: the client's own optimistic column
  * move reconciles against the authoritative frame that follows.
+ *
+ * `task_deleted` rides the same reducer (it is the board's other row-level
+ * frame): the row is gone server-side, so it is dropped by id. Idempotent —
+ * the deleting client already removed it optimistically.
  */
 export function applyBoardTaskMessage(tasks: BoardTask[], msg: WSMessage): BoardTask[] {
+  if (msg.type === 'task_deleted') return tasks.filter((t) => t.id !== msg.payload.taskId);
   if (msg.type !== 'task_updated') return tasks;
   const incoming = msg.payload;
   if (!incoming.id) return tasks; // defensive: malformed frame

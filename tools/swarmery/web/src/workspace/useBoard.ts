@@ -1,6 +1,6 @@
 // Board state hook (fusion phase 4): owns the project's board-task list, its
 // live WS patching, and the optimistic column-move with revert-on-error. The
-// Board page, StatusBar, and TaskDrawer all read the same instance passed down
+// Board page, StatusBar, and TaskModal all read the same instance passed down
 // as props so there is one source of truth per workspace mount.
 //
 // Liveness: subscribes to the shared WS via useLiveUpdates → task_updated
@@ -9,7 +9,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BoardColumn, BoardTask, WSMessage } from '../api/types';
-import { fetchBoardTasks, patchBoardTask, type PatchBoardTaskInput } from '../api';
+import {
+  deleteBoardTask,
+  fetchBoardTasks,
+  patchBoardTask,
+  type PatchBoardTaskInput,
+} from '../api';
 import { applyBoardTaskMessage, useLiveUpdates } from '../lib/ws';
 
 export interface BoardState {
@@ -24,8 +29,14 @@ export interface BoardState {
   moveTask: (id: number, to: BoardColumn) => void;
   /** Optimistic field edit (drawer). Resolves to the server row or rejects. */
   patchTask: (id: number, patch: PatchBoardTaskInput) => Promise<BoardTask>;
-  /** Insert a freshly-created task at the head (QuickEntry). */
+  /** Insert a freshly-created task at the head (NewTaskModal). */
   addTask: (task: BoardTask) => void;
+  /**
+   * Permanently delete a task. Resolves once the server confirms (204) and the
+   * row is dropped locally; rejects with the server's message — notably the 409
+   * on a running task — so the caller can keep its confirm dialog open.
+   */
+  deleteTask: (id: number) => Promise<void>;
 }
 
 export function useBoard(projectId: number | null): BoardState {
@@ -70,7 +81,10 @@ export function useBoard(projectId: number | null): BoardState {
   // Live board: patch by id in place; reconcile refetches the whole list.
   const onMessage = useCallback(
     (msg: WSMessage): void => {
-      if (msg.type !== 'task_updated') return;
+      // task_deleted rides the same reducer as task_updated (drop by id) so a
+      // card removed in another tab disappears here without waiting for the
+      // 60s reconcile.
+      if (msg.type !== 'task_updated' && msg.type !== 'task_deleted') return;
       // Ignore rows for other projects sharing the bus.
       if (projectId !== null && msg.payload.projectId !== projectId) return;
       setTasks((prev) => applyBoardTaskMessage(prev, msg));
@@ -109,6 +123,15 @@ export function useBoard(projectId: number | null): BoardState {
       });
   }, []);
 
+  // Deliberately NOT optimistic, unlike moveTask: a delete has no undo, so the
+  // card stays put until the server confirms. The 409 on a running task is a
+  // real outcome the user must see, not a state to roll back from.
+  const deleteTask = useCallback((id: number): Promise<void> => {
+    return deleteBoardTask(id).then(() => {
+      if (aliveRef.current) setTasks((prev) => prev.filter((t) => t.id !== id));
+    });
+  }, []);
+
   const patchTask = useCallback((id: number, patch: PatchBoardTaskInput): Promise<BoardTask> => {
     return patchBoardTask(id, patch).then((updated) => {
       if (aliveRef.current) setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
@@ -126,5 +149,6 @@ export function useBoard(projectId: number | null): BoardState {
     moveTask,
     patchTask,
     addTask,
+    deleteTask,
   };
 }

@@ -3,13 +3,14 @@
 // drag&drop (Fusion's choice — no dnd lib): dragstart serializes the task id,
 // a column drop issues an OPTIMISTIC PATCH that reverts on error (the revert +
 // toast live in useBoard). Every card also carries a keyboard "move to →" menu
-// so drag is never the only path. QuickEntry sits at the top of Triage; the
-// Done column is sorted by columnMovedAt desc; Archived is lazy — it loads
-// on first expand (boardColumn='archived' fetch) to keep the default view light.
+// so drag is never the only path. A "+ New task" button sits at the top of
+// Triage and opens the create modal; the Done column is sorted by columnMovedAt
+// desc; Archived is lazy — it loads on first expand (boardColumn='archived'
+// fetch) to keep the default view light.
 //
 // The board reads the shared BoardState from the workspace layout so the card,
-// the status bar, and the drawer all reflect one source of truth. Demo mode
-// (VITE_MOCK) renders a full board from fixtures.
+// the status bar, and the detail modal all reflect one source of truth. Demo
+// mode (VITE_MOCK) renders a full board from fixtures.
 
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -18,9 +19,9 @@ import { fetchBoardTasks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useWorkspaceBoard } from '../workspace/ProjectWorkspaceLayout';
 import { BOARD_COLUMNS, COLUMN_LABELS } from '../workspace/boardModel';
-import { QuickEntry } from '../workspace/QuickEntry';
+import { NewTaskButton } from '../workspace/NewTaskModal';
 import { TaskCard } from '../workspace/TaskCard';
-import { TaskDrawer } from '../workspace/TaskDrawer';
+import { TaskModal } from '../workspace/TaskModal';
 import { TaskGraph } from '../workspace/TaskGraph';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 
@@ -33,8 +34,8 @@ const EAGER_COLUMNS: BoardColumn[] = ['triage', 'todo', 'in_progress', 'in_revie
 export function Board(): JSX.Element {
   const { project, projectId, loading: projLoading } = useProjectWorkspace();
   const board = useWorkspaceBoard();
-  // Agent Hub "Run now" deep-links here with ?compose=@<agent>: — the Triage
-  // QuickEntry seeds from it so a task can be dispatched to that agent in one hop.
+  // Agent Hub "Run now" deep-links here with ?compose=@<agent>: — the create
+  // modal opens seeded from it so a task can be dispatched to that agent in one hop.
   const [searchParams] = useSearchParams();
   const compose = searchParams.get('compose') ?? '';
   const [openId, setOpenId] = useState<number | null>(null);
@@ -68,6 +69,14 @@ export function Board(): JSX.Element {
   };
 
   const openTask = openId !== null ? board.tasks.find((t) => t.id === openId) ?? null : null;
+
+  // The Archived column renders from its own lazy fetch, so a deleted row has to
+  // be dropped there too — the board list alone would leave the card on screen
+  // until the next expand.
+  const deleteTask = (id: number): Promise<void> =>
+    board.deleteTask(id).then(() => {
+      setArchived((prev) => (prev === null ? prev : prev.filter((t) => t.id !== id)));
+    });
 
   if (projLoading) return <Loading label="workspace…" />;
   if (project === null) {
@@ -163,7 +172,7 @@ export function Board(): JSX.Element {
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
                   {col === 'triage' && projectId !== null && (
-                    <QuickEntry projectId={projectId} onCreated={board.addTask} initialTitle={compose} />
+                    <NewTaskButton projectId={projectId} onCreated={board.addTask} initialTitle={compose} />
                   )}
                   {tasks.map((t) => (
                     <TaskCard
@@ -232,10 +241,11 @@ export function Board(): JSX.Element {
       )}
 
       {openTask !== null && (
-        <TaskDrawer
+        <TaskModal
           task={openTask}
           onClose={() => setOpenId(null)}
           onPatch={(patch) => board.patchTask(openTask.id, patch)}
+          onDelete={() => deleteTask(openTask.id)}
         />
       )}
     </div>

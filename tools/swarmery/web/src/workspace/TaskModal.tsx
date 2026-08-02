@@ -1,9 +1,19 @@
-// Task detail drawer (fusion phase 4): a right-side drawer over the board.
-// Editable: title, prompt, priority, model, file scope (chips), dependencies
-// (chips of T-ids). Actions: Move to Todo, Pause/Resume (user_paused), Archive.
-// Read-only (dispatcher-owned): branch, worktree path, dispatch error, verdict
-// + detail, and a link to the linked session's list. Every mutation goes
-// through the board's patchTask so the card + status bar stay in sync.
+// Task detail modal: the card's full editor, centred over the board. It used to
+// be a right-side drawer (fusion phase 4); a modal puts the task in the middle
+// of attention instead of squeezing it into a 420px rail next to the columns it
+// is about — and it matches every other detail surface in the dashboard.
+//
+// Editable: title, prompt, priority, model, playbook, file scope (chips),
+// dependencies (chips of T-ids). Actions: Move to Todo, Pause/Resume
+// (user_paused), Archive, Delete. Read-only (dispatcher-owned): branch,
+// worktree path, dispatch error, verdict + detail, and a link to the linked
+// session's list. Every mutation goes through the board's patchTask/deleteTask
+// so the card + status bar stay in sync.
+//
+// Delete vs Archive: Archive parks the task (it stays on the board, in the
+// dependency pickers, in the archive column); Delete removes it for good, for
+// the task that simply stopped being relevant. It is confirmed, never
+// optimistic, and the server refuses it for a running task.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { BoardTask, TaskPriority } from '../api/types';
@@ -11,12 +21,10 @@ import type { PatchBoardTaskInput } from '../api';
 import { fmtAgo } from '../lib/format';
 import { displaySlug, findProject } from '../lib/projectSlug';
 import { useScope } from '../lib/scope';
+import { ConfirmDialog } from '../components/ui';
+import { TASK_MODELS, TASK_PRIORITIES } from './boardModel';
 import { PlaybookHint, PlaybookSelect, usePlaybooks } from './PlaybookPicker';
 import { useWorkspaceTerminal } from './ProjectWorkspaceLayout';
-
-const PRIORITIES: TaskPriority[] = ['urgent', 'high', 'normal', 'low'];
-// Model tokens the dispatcher passes to `claude --model`; default = inherit.
-const MODELS = ['default', 'fable', 'opus', 'sonnet', 'haiku'] as const;
 
 /** An editable list-of-strings field rendered as removable chips + an add input. */
 function ChipEditor({
@@ -95,15 +103,19 @@ function ReadOnlyRow({ label, value }: { label: string; value: string }): JSX.El
   );
 }
 
-export function TaskDrawer({
+export function TaskModal({
   task,
   onClose,
   onPatch,
+  onDelete,
 }: {
   task: BoardTask;
   onClose: () => void;
-  /** Returns the patch promise so the drawer can surface a save error. */
+  /** Returns the patch promise so the modal can surface a save error. */
   onPatch: (patch: PatchBoardTaskInput) => Promise<BoardTask>;
+  /** Permanent delete. Rejects with the server's message (e.g. the 409 on a
+   * running task) so the confirm dialog can stay open and show it. */
+  onDelete: () => Promise<void>;
 }): JSX.Element {
   const [title, setTitle] = useState(task.title);
   const [prompt, setPrompt] = useState(task.prompt);
@@ -114,6 +126,9 @@ export function TaskDrawer({
   const [dependencies, setDependencies] = useState<string[]>(task.dependencies);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   const { playbooks } = usePlaybooks(task.projectId);
   const openTerminal = useWorkspaceTerminal();
@@ -124,7 +139,7 @@ export function TaskDrawer({
   const scopeSlug =
     scopeProject !== null ? displaySlug(scopeProject, projects) : task.projectSlug;
 
-  // Re-seed local edit state when a DIFFERENT task is opened into the drawer.
+  // Re-seed local edit state when a DIFFERENT task is opened into the modal.
   // Keyed on task.id rather than task: applyBoardTaskMessage (lib/ws.ts)
   // replaces the matched row wholesale, so every task_updated frame mints a new
   // object for the same task — and on [task] this effect would overwrite what
@@ -151,19 +166,22 @@ export function TaskDrawer({
   // Same split HistoryDrawer.tsx:49-67 uses.
   //
   // Keyed on task.id, not []: Board.tsx mounts this conditionally so every open
-  // is a fresh mount today, but if the drawer ever stays mounted across a task
+  // is a fresh mount today, but if the modal ever stays mounted across a task
   // swap, focus should follow the new task rather than stay where it was.
   useEffect(() => {
     closeRef.current?.focus();
   }, [task.id]);
 
+  // Escape closes the modal — but not while the delete confirmation is up, or
+  // one key would dismiss both layers and the user would lose the dialog they
+  // are reading (that dialog owns its own cancel).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !confirmDelete) onClose();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [onClose, confirmDelete]);
 
   const dirty = useMemo(
     () =>
@@ -201,17 +219,32 @@ export function TaskDrawer({
     });
   };
 
+  const remove = (): void => {
+    setDeleting(true);
+    setDeleteError(null);
+    onDelete()
+      // The row is gone — close the whole modal, not just the dialog.
+      .then(onClose)
+      .catch((e: unknown) => {
+        setDeleteError(e instanceof Error ? e.message : String(e));
+        setDeleting(false);
+      });
+  };
+
   const blocked = task.paused || task.userPaused;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true" aria-label="task detail">
-      <button
-        type="button"
-        aria-label="close drawer"
-        onClick={onClose}
-        className="flex-1 cursor-default bg-black/40"
-      />
-      <div className="flex h-full w-full max-w-[420px] flex-col overflow-y-auto border-l border-line bg-bg shadow-[0_0_40px_rgba(0,0,0,0.5)]">
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-bg/70 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="task detail"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <span className="font-mono text-[10.5px] text-ink-faint">{task.externalId}</span>
           {task.verifyVerdict !== null && (
@@ -228,7 +261,7 @@ export function TaskDrawer({
           </button>
         </div>
 
-        <div className="flex flex-col gap-4 px-4 py-4">
+        <div className="flex flex-col gap-4 overflow-y-auto px-4 py-4">
           <div>
             <FieldLabel>title</FieldLabel>
             <input
@@ -260,7 +293,7 @@ export function TaskDrawer({
                 aria-label="priority"
                 className="w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-ink-dim"
               >
-                {PRIORITIES.map((p) => (
+                {TASK_PRIORITIES.map((p) => (
                   <option key={p} value={p}>
                     {p}
                   </option>
@@ -275,7 +308,7 @@ export function TaskDrawer({
                 aria-label="model"
                 className="w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-ink-dim"
               >
-                {MODELS.map((m) => (
+                {TASK_MODELS.map((m) => (
                   <option key={m} value={m}>
                     {m}
                   </option>
@@ -342,7 +375,41 @@ export function TaskDrawer({
                 Archive
               </button>
             )}
+            {/* Sits apart from the reversible actions: this one has no undo. */}
+            <button
+              type="button"
+              disabled={busy || deleting}
+              onClick={() => {
+                setDeleteError(null);
+                setConfirmDelete(true);
+              }}
+              className="ml-auto rounded-lg border border-red/40 bg-red/5 px-3 py-1.5 text-[12px] text-red transition-colors hover:bg-red/15 disabled:opacity-40"
+            >
+              Delete
+            </button>
           </div>
+
+          <ConfirmDialog
+            open={confirmDelete}
+            title={`Delete ${task.externalId}?`}
+            confirmLabel="delete"
+            danger
+            busy={deleting}
+            onConfirm={remove}
+            onCancel={() => {
+              setConfirmDelete(false);
+              setDeleteError(null);
+            }}
+          >
+            <span className="font-mono text-[12px] text-ink">{task.title}</span> is removed
+            permanently — this cannot be undone. To keep it out of the way without losing it, use{' '}
+            <span className="font-mono">Archive</span> instead.
+            {deleteError !== null && (
+              <div className="mt-2.5 rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[11px] text-red">
+                {deleteError}
+              </div>
+            )}
+          </ConfirmDialog>
 
           {/* Read-only dispatcher-owned state. */}
           <div className="mt-1 border-t border-line pt-3">

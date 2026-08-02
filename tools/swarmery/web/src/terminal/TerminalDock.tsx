@@ -18,7 +18,7 @@ export interface TermTab {
   cwd: string;
 }
 
-/** Dock state the layout owns (so the TaskDrawer can push a worktree tab). */
+/** Dock state the layout owns (so the TaskModal can push a worktree tab). */
 export interface DockState {
   open: boolean;
   tabs: TermTab[];
@@ -104,7 +104,7 @@ export function TerminalDock({
   const newProjectTab = (): void => {
     const id = `t-${Date.now().toString(36)}`;
     // A "+" tab always opens in the project root (worktree tabs come from the
-    // TaskDrawer). Fall back to the first tab's cwd only if the path is unknown.
+    // TaskModal). Fall back to the first tab's cwd only if the path is unknown.
     const cwd = projectPath !== '' ? projectPath : (state.tabs[0]?.cwd ?? '');
     openTab({ id, label: `shell ${state.tabs.length + 1}`, cwd });
   };
