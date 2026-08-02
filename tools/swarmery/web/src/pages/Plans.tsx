@@ -45,13 +45,22 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import type { BoardColumn, Epic, EpicPhase, PhaseRunOutcome, WSMessage } from '../api/types';
+import type {
+  BoardColumn,
+  Epic,
+  EpicPhase,
+  PhaseRunOutcome,
+  Session,
+  SessionStatus,
+  WSMessage,
+} from '../api/types';
 import {
   cancelEpicPhaseRun,
   cancelEpicPlanRun,
   epicLifecycle,
   fetchEpics,
   fetchPlanDoc,
+  fetchSessions,
   runEpicPhase,
   runEpicPlan,
   savePlanDoc,
@@ -64,7 +73,7 @@ import type { PlanRunMode } from '../api/types';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useLiveUpdates } from '../lib/ws';
 import { Markdown } from '../lib/markdown';
-import { fmtElapsed } from '../lib/format';
+import { fmtCost, fmtDateTime, fmtElapsed } from '../lib/format';
 import { useSessionHref } from '../lib/sessionHref';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { RunOutcomeModal } from '../components/RunOutcomeModal';
@@ -903,44 +912,187 @@ function EpicDetail({
         </div>
       )}
 
-      {detail !== null ? (
-        <>
-          {detail.kind === 'phase' ? (
-            <PhaseDetailPanel
+      {/* Phases on the left, the sessions they produced on the right — the
+          sessions column stays put while the phase area swaps between the
+          timeline and a phase/plan detail, so a transcript is one click away
+          from whatever is being read. */}
+      <div className="flex min-w-0 items-start gap-4">
+        <div className="min-w-0 flex-1">
+          {detail !== null ? (
+            <>
+              {detail.kind === 'phase' ? (
+                <PhaseDetailPanel
+                  epic={epic}
+                  phase={detail.phase}
+                  tab={detail.tab}
+                  onTab={(t) => onOpenPhase(detail.phase.seq, t)}
+                  runBusy={runBusy}
+                  planRunning={planRunning}
+                  onRetry={() => onRun(detail.phase.id)}
+                  onCancelRun={() => onCancelRun(detail.phase.id)}
+                  onOpenOutcome={() => onOpenOutcome(detail.phase.id)}
+                  onDocChanged={onDocChanged}
+                />
+              ) : (
+                <PlanDetailPanel
+                  epic={epic}
+                  tab={detail.tab}
+                  onTab={onOpenPlan}
+                  onDocChanged={onDocChanged}
+                />
+              )}
+            </>
+          ) : (
+            <PhaseList
               epic={epic}
-              phase={detail.phase}
-              tab={detail.tab}
-              onTab={(t) => onOpenPhase(detail.phase.seq, t)}
+              resolvedSeqs={resolvedSeqs}
+              now={now}
               runBusy={runBusy}
               planRunning={planRunning}
-              onRetry={() => onRun(detail.phase.id)}
-              onCancelRun={() => onCancelRun(detail.phase.id)}
-              onOpenOutcome={() => onOpenOutcome(detail.phase.id)}
-              onDocChanged={onDocChanged}
-            />
-          ) : (
-            <PlanDetailPanel
-              epic={epic}
-              tab={detail.tab}
-              onTab={onOpenPlan}
-              onDocChanged={onDocChanged}
+              onOpenPhase={onOpenPhase}
+              onRun={onRun}
+              onCancelRun={onCancelRun}
+              onOpenOutcome={onOpenOutcome}
             />
           )}
-        </>
-      ) : (
-        <PhaseList
+        </div>
+        <PlanSessions
           epic={epic}
-          resolvedSeqs={resolvedSeqs}
-          now={now}
-          runBusy={runBusy}
-          planRunning={planRunning}
-          onOpenPhase={onOpenPhase}
-          onRun={onRun}
-          onCancelRun={onCancelRun}
-          onOpenOutcome={onOpenOutcome}
+          activePhaseId={detail !== null && detail.kind === 'phase' ? detail.phase.id : null}
         />
-      )}
+      </div>
     </div>
+  );
+}
+
+const SESSION_DOT: Record<SessionStatus, string> = {
+  active: 'bg-green',
+  waiting_approval: 'bg-amber',
+  idle: 'bg-ink-faint',
+  completed: 'bg-brand/60',
+  killed: 'bg-red/70',
+};
+
+/** Controller sessions sort above the phases; a phase sorts by its seq. */
+function planSessionOrder(s: Session): number {
+  if (s.planGroup?.role === 'phase') return s.planGroup.phaseSeq ?? Number.MAX_SAFE_INTEGER;
+  return -1;
+}
+
+/** Every session the plan produced, to the RIGHT of the phase timeline: the
+ * plan-run controller, each phase run, and the subagents under them — resolved
+ * server-side from the stamped run branch / worktree cwd (?planTask=, see
+ * internal/api/session_plan_group.go), the same rule the Sessions page groups by.
+ *
+ * The phase rows themselves link a session only WHILE a run is live, so on a
+ * finished plan — the common case, e.g. an archived 72/72 plan — the transcripts
+ * of everything that shipped were unreachable from the plan page. This column is
+ * that missing link, and it is the only place a subagent transcript surfaces at
+ * all: subagents never stamp a phase row. */
+function PlanSessions({
+  epic,
+  activePhaseId,
+}: {
+  epic: Epic;
+  /** The phase whose details are open, so its sessions read as selected. */
+  activePhaseId: number | null;
+}): JSX.Element {
+  const sessionHref = useSessionHref();
+  const [sessions, setSessions] = useState<Session[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Run edges (start, cancel, finish) mint and end sessions. `epic` is already
+  // refetched on the plan_updated WS frame, so a fingerprint of its run state is
+  // the cheapest live trigger there is — no second subscription.
+  const runFingerprint =
+    epic.phases.map((p) => `${p.id}:${p.runState}:${p.runSessionUuid ?? ''}`).join('|') +
+    `#${epic.planRun?.runState ?? ''}:${epic.planRun?.runSessionUuid ?? ''}`;
+
+  useEffect(() => {
+    let alive = true;
+    setErr(null);
+    fetchSessions({ planTask: epic.taskId }, { limit: 200 })
+      .then((page) => {
+        if (alive) setSessions(page.sessions);
+      })
+      .catch((e: unknown) => {
+        if (alive) setErr(e instanceof Error ? e.message : String(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [epic.taskId, runFingerprint]);
+
+  // Plan order, not recency: the controller heads the column and the phases
+  // follow the timeline they sit next to. Ties (subagents of one phase) keep
+  // chronological order.
+  const ordered = useMemo(
+    () =>
+      [...(sessions ?? [])].sort(
+        (a, b) => planSessionOrder(a) - planSessionOrder(b) || a.startedAt.localeCompare(b.startedAt),
+      ),
+    [sessions],
+  );
+
+  return (
+    <aside className="hidden w-[264px] shrink-0 flex-col lg:flex" aria-label="plan sessions">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-dim">sessions</span>
+        {sessions !== null && (
+          <span className="font-mono text-[10px] text-ink-faint">{sessions.length}</span>
+        )}
+      </div>
+      {err !== null ? (
+        <ErrorBox message={err} />
+      ) : sessions === null ? (
+        <Loading />
+      ) : ordered.length === 0 ? (
+        <Empty>no sessions ran this plan</Empty>
+      ) : (
+        <ol className="space-y-1">
+          {ordered.map((s) => {
+            const g = s.planGroup ?? null;
+            const label = g?.role === 'phase' ? `#${String(g.phaseSeq ?? '?')}` : 'plan';
+            const selected = g?.role === 'phase' && g.phaseId === activePhaseId;
+            return (
+              <li key={s.id}>
+                <Link
+                  to={sessionHref(s.sessionUuid)}
+                  data-tip={g?.phaseName ?? undefined}
+                  className={`block rounded-lg border px-2 py-1.5 transition-colors ${
+                    selected
+                      ? 'border-line-strong bg-surface2'
+                      : 'border-line bg-surface/40 hover:border-line-strong'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${SESSION_DOT[s.status]} ${
+                        s.status === 'active' ? 'animate-pulse' : ''
+                      }`}
+                    />
+                    <span
+                      className={`shrink-0 rounded border px-1 py-px font-mono text-[9px] ${
+                        g?.role === 'phase' ? 'border-line text-ink-dim' : 'border-brand/40 text-brand'
+                      }`}
+                    >
+                      {label}
+                    </span>
+                    <span className="truncate text-[11.5px] text-ink">
+                      {s.title ?? s.why ?? s.sessionUuid.slice(0, 8)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[9.5px] text-ink-faint">
+                    {fmtDateTime(s.startedAt)} · {s.status}
+                    {s.costUsd != null ? ` · ${fmtCost(s.costUsd)}` : ''}
+                  </div>
+                </Link>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </aside>
   );
 }
 

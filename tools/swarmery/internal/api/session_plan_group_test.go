@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -218,5 +219,56 @@ func TestSessionPlanGroupPhaseSurvivesRowIDChange(t *testing.T) {
 	}
 	if g.PhaseSeq == nil || *g.PhaseSeq != 3 {
 		t.Errorf("phaseSeq = %v, want 3", g.PhaseSeq)
+	}
+}
+
+// planTaskUUIDs fetches ?planTask=<id> and returns the session uuids it kept,
+// in list order.
+func planTaskUUIDs(t *testing.T, srv *httptest.Server, planTask string) []string {
+	t.Helper()
+	var page planGroupEnvelope
+	getJSON(t, srv.URL+"/api/sessions?planTask="+planTask, &page)
+	out := make([]string, 0, len(page.Sessions))
+	for _, s := range page.Sessions {
+		out = append(out, s.SessionUUID)
+	}
+	return out
+}
+
+// TestSessionsFilterByPlanTask: the plan panel asks for one plan's sessions and
+// gets exactly the three the run produced — controller, phase and subagent —
+// while the interactive and malformed-branch rows stay out.
+func TestSessionsFilterByPlanTask(t *testing.T) {
+	got := planTaskUUIDs(t, planGroupServer(t), "72")
+	want := map[string]bool{"ctl": true, "phase": true, "subagent": true}
+	if len(got) != len(want) {
+		t.Fatalf("sessions = %v, want the 3 sessions of plan 72", got)
+	}
+	for _, uuid := range got {
+		if !want[uuid] {
+			t.Errorf("session %q leaked into the plan-72 list", uuid)
+		}
+	}
+}
+
+// A plan nobody ran filters to an empty list rather than to everything — the
+// predicate must not be dropped when it matches no row.
+func TestSessionsFilterByPlanTaskUnknownIsEmpty(t *testing.T) {
+	if got := planTaskUUIDs(t, planGroupServer(t), "999"); len(got) != 0 {
+		t.Errorf("sessions = %v, want none for a plan with no runs", got)
+	}
+}
+
+// A non-numeric planTask is a client error, never a 500 and never an unfiltered
+// list (which would read as "this plan spawned every session on the machine").
+func TestSessionsFilterByPlanTaskInvalid(t *testing.T) {
+	srv := planGroupServer(t)
+	res, err := http.Get(srv.URL + "/api/sessions?planTask=abc")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", res.StatusCode)
 	}
 }
