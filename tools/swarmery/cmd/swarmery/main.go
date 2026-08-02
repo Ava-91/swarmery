@@ -37,6 +37,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/economics"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/extract"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/evals"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/handoff"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookcfg"
@@ -1257,6 +1258,12 @@ func cmdServe(args []string) error {
 	}
 	api.AttachVerify(verifySvc)
 	dispatchSvc.Verifier = verifySvc
+
+	// On-demand LLM task extraction (POST /api/sessions/{id}/extract-tasks).
+	// Purely operator-triggered — no ticker, no startup heal, nothing to reap:
+	// an extraction lives entirely inside one request, so unlike verify there is
+	// no interrupted-run state a crash could leave behind.
+	api.AttachExtract(extract.NewService(db))
 
 	// fusion phase 7: routines (scheduled automation). A 60s scheduler ticks due
 	// cron routines and runs their typed steps (command / ai-prompt / create-task)

@@ -1,0 +1,101 @@
+package extract
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Runner executes one extraction prompt and returns the model's raw stdout.
+// Mocked in every test — no real claude invocation outside production.
+type Runner interface {
+	Run(ctx context.Context, prompt string) (string, error)
+}
+
+// claudeTimeout bounds one extraction run. Shorter than internal/improve's 10
+// minutes because this one is INTERACTIVE: an operator is holding a button and
+// the HTTP response carries the count (see Service.ExtractTasks). A pass that
+// has not classified a ≤16KB digest in five minutes is stuck, not slow.
+const claudeTimeout = 5 * time.Minute
+
+// defaultModel pins headless runs that carry no explicit override: without
+// --model the CLI inherits the account default (Fable-5 here — 2× the Opus
+// price). Full ID, not an alias — aliases re-resolve over time. Same pin as
+// internal/improve, internal/provision, internal/planning and internal/verify.
+const defaultModel = "claude-opus-5"
+
+// stderrTailBytes caps how much captured stderr lands in the error (and thus in
+// the 502 detail the operator sees).
+const stderrTailBytes = 4096
+
+// ClaudeRunner runs `claude -p --output-format text` with the prompt on stdin.
+// Binary resolution is a plain PATH lookup — the same pattern as
+// internal/improve's twin (the daemon's launchd/service PATH must contain the
+// claude binary).
+type ClaudeRunner struct {
+	// Timeout overrides claudeTimeout when > 0 (tests shrink it).
+	Timeout time.Duration
+	// Model overrides defaultModel when non-empty.
+	Model string
+}
+
+// isDir reports whether path exists and is a directory.
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
+	timeout := r.Timeout
+	if timeout <= 0 {
+		timeout = claudeTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	model := r.Model
+	if model == "" {
+		model = defaultModel
+	}
+	// --setting-sources project,local: skip user-level settings (global plugin
+	// stack) — headless runs don't need them; project plugins and OAuth are
+	// unaffected. Keep the flag order identical to the improve/trajjudge twins.
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text", "--setting-sources", "project,local")
+	// System home, not the inherited launchd cwd "/": transcripts then attribute
+	// to the deliberate "System" project (see internal/ingest) — which is also
+	// what keeps THIS run from capturing itself, since CaptureSkipReason refuses
+	// System-project sessions. Only when the dir actually exists: a missing dir
+	// would fail the spawn with chdir ENOENT, and losing attribution beats not
+	// running at all (the daemon owns ~/.swarmery, so in production it is there).
+	if home, err := os.UserHomeDir(); err == nil {
+		if dir := filepath.Join(home, ".swarmery"); isDir(dir) {
+			cmd.Dir = dir
+		}
+	}
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("claude -p timed out after %s; stderr: %s", timeout, tail(stderr.String(), stderrTailBytes))
+		}
+		return "", fmt.Errorf("claude -p: %w; stderr: %s", err, tail(stderr.String(), stderrTailBytes))
+	}
+	return stdout.String(), nil
+}
+
+// tail returns the last ≤ n bytes of s, trimmed.
+func tail(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		s = s[len(s)-n:]
+	}
+	return s
+}

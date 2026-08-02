@@ -1131,6 +1131,30 @@ export async function putPermissionPreset(
   return (await res.json()) as PermissionPresetView;
 }
 
+/**
+ * POST /api/sessions/{id}/extract-tasks — run one model pass over a session and
+ * put the tasks it names on the board as suggested Triage cards (origin='llm').
+ *
+ * Resolves with the number of cards REALLY inserted, which is what the caller
+ * shows: a re-run over an unchanged session is idempotent and legitimately
+ * reports 0. Rejects with the server's own detail on 409 (the session cannot
+ * produce cards, or a run is already in flight) and 502 (the model answered
+ * something unusable) — both are things the operator needs to read, not a
+ * silent zero.
+ *
+ * Slow by nature: the request is held for the whole headless run (bounded
+ * server-side at 5 minutes), so callers must show a pending state.
+ */
+export async function extractSessionTasks(id: number): Promise<number> {
+  if (MOCK) return 0; // no-op in mock mode — never spend tokens from a demo
+  const res = await fetch(`/api/sessions/${String(id)}/extract-tasks`, { method: 'POST' });
+  const data = (await res.json().catch(() => ({}))) as { error?: string; inserted?: number };
+  if (!res.ok) {
+    throw new Error(data.error ?? `extract failed: ${String(res.status)}`);
+  }
+  return data.inserted ?? 0;
+}
+
 /** POST /api/sessions/{id}/kill — send SIGTERM (force=false) or SIGKILL (force=true). */
 export async function killSession(id: number, force = false): Promise<void> {
   if (MOCK) return; // no-op in mock mode

@@ -428,6 +428,42 @@ func hasExplicitDispatchLink(q dbtx, sessionUUID string, sessionID int64) bool {
 	}
 }
 
+// CaptureSkipReason reports whether a session may NEVER mint captured cards,
+// and why — the same two rules the live hooks apply (System project, dispatched
+// run), resolved from a session id alone rather than from an in-flight
+// ingester's memoized state.
+//
+// Exported for the on-demand LLM extraction endpoint (internal/api →
+// internal/extract, phase 6): an operator-triggered pass has to be refused
+// exactly where automatic capture is refused, and the endpoint sits in a package
+// that cannot see computeCaptureSkip. Re-stating the rules there would let the
+// two drift the first time either one changes, so this is the single predicate
+// both paths ask.
+//
+// Returns ("", false) when capture is allowed. A session that cannot be resolved
+// or classified is SKIPPED with a reason, matching computeCaptureSkip's "cannot
+// classify → do not put cards on the board" — the endpoint turns that into a
+// 409 rather than guessing.
+func CaptureSkipReason(db *sql.DB, sessionID int64) (string, bool) {
+	var (
+		sessionUUID string
+		path        string
+	)
+	if err := db.QueryRow(`
+		SELECT s.session_uuid, p.path
+		  FROM sessions s JOIN projects p ON p.id = s.project_id
+		 WHERE s.id = ?`, sessionID).Scan(&sessionUUID, &path); err != nil {
+		return "session cannot be classified for capture", true
+	}
+	if isSystemProjectPath(path) {
+		return "System-project sessions are the daemon's own bookkeeping", true
+	}
+	if hasExplicitDispatchLink(db, sessionUUID, sessionID) {
+		return "this session is a dispatched run of a board task", true
+	}
+	return "", false
+}
+
 // clip caps s at n RUNES, unlike the package's byte-wise truncate. Captured
 // titles are rendered verbatim on the board, and the operator writes prompts in
 // languages where a byte split lands mid-rune and shows as a replacement
