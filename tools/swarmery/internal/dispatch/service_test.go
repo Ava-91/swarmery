@@ -151,6 +151,13 @@ type taskOpts struct {
 	createdAt  string
 	projectID  int64
 	agent      string // registry agent name; "" leaves tasks.agent NULL
+	// origin: "" leaves the schema default ('manual', migration 0048). Set
+	// "session" to model a card internal/taskcap captured from a session.
+	origin string
+	// worktreePath: "" leaves tasks.worktree_path NULL — i.e. a row the
+	// dispatcher does NOT own. Set it to model an admitted dispatcher run
+	// (admit() writes it in the same UPDATE as board_column='in_progress').
+	worktreePath string
 }
 
 func insertTask(t *testing.T, db *sql.DB, extID string, o taskOpts) int64 {
@@ -189,6 +196,16 @@ func insertTask(t *testing.T, db *sql.DB, extID string, o taskOpts) int64 {
 	if o.agent != "" {
 		if _, err := db.Exec(`UPDATE tasks SET agent=? WHERE id=?`, o.agent, id); err != nil {
 			t.Fatalf("set agent on %s: %v", extID, err)
+		}
+	}
+	if o.origin != "" {
+		if _, err := db.Exec(`UPDATE tasks SET origin=? WHERE id=?`, o.origin, id); err != nil {
+			t.Fatalf("set origin on %s: %v", extID, err)
+		}
+	}
+	if o.worktreePath != "" {
+		if _, err := db.Exec(`UPDATE tasks SET worktree_path=? WHERE id=?`, o.worktreePath, id); err != nil {
+			t.Fatalf("set worktree_path on %s: %v", extID, err)
 		}
 	}
 	return id
@@ -730,7 +747,9 @@ func TestSameTaskSingleFlight(t *testing.T) {
 func TestHealStaleReclaimsInProgress(t *testing.T) {
 	db := testDB(t)
 	s := newTestService(t, db, &stubRunner{}, &stubWt{})
-	id := insertTask(t, db, "T-stuck", taskOpts{column: "in_progress"})
+	// A dispatcher-owned run: admit() always leaves a worktree_path behind, which
+	// is what marks the row as the dispatcher's to reclaim.
+	id := insertTask(t, db, "T-stuck", taskOpts{column: "in_progress", worktreePath: "/wt/T-stuck"})
 
 	if err := s.HealStale(); err != nil {
 		t.Fatal(err)

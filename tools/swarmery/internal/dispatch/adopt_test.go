@@ -13,8 +13,8 @@ import (
 func TestHealStale_AdoptsSurvivingRun(t *testing.T) {
 	db := testDB(t)
 	s := newTestService(t, db, &stubRunner{}, &stubWt{})
-	live := insertTask(t, db, "T-live", taskOpts{column: "in_progress"})
-	dead := insertTask(t, db, "T-dead", taskOpts{column: "in_progress"})
+	live := insertTask(t, db, "T-live", taskOpts{column: "in_progress", worktreePath: "/wt/T-live"})
+	dead := insertTask(t, db, "T-dead", taskOpts{column: "in_progress", worktreePath: "/wt/T-dead"})
 	mustSetUUID(t, db, live, "live-uuid")
 	mustSetUUID(t, db, dead, "dead-uuid")
 
@@ -57,7 +57,7 @@ func TestHealStale_AdoptsSurvivingRun(t *testing.T) {
 func TestHealStale_NoUUIDIsHealed(t *testing.T) {
 	db := testDB(t)
 	s := newTestService(t, db, &stubRunner{}, &stubWt{})
-	id := insertTask(t, db, "T-nouuid", taskOpts{column: "in_progress"})
+	id := insertTask(t, db, "T-nouuid", taskOpts{column: "in_progress", worktreePath: "/wt/T-nouuid"})
 	s.FindRun = func(string) (int, bool) { t.Error("must not probe without a uuid"); return 0, false }
 	s.adoptPoll = time.Millisecond
 
