@@ -28,9 +28,9 @@ export const TASK_PRIORITIES: TaskPriority[] = ['urgent', 'high', 'normal', 'low
 
 /**
  * Model tokens the dispatcher passes to `claude --model`. 'default' is the UI's
- * name for "inherit" and maps to a null `model` on the wire — the create and
- * detail modals both depend on that mapping, so it lives here rather than in
- * either of them.
+ * name for "inherit" and maps to a null `model` on the wire — every editor of a
+ * task's model (the create modal, the detail modal) reads this one
+ * list so they can never drift apart.
  */
 export const TASK_MODELS = ['default', 'fable', 'opus', 'sonnet', 'haiku'] as const;
 

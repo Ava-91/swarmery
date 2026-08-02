@@ -3,12 +3,13 @@
 // of attention instead of squeezing it into a 420px rail next to the columns it
 // is about — and it matches every other detail surface in the dashboard.
 //
-// Editable: title, prompt, priority, model, playbook, file scope (chips),
+// Editable: title, prompt, priority, model, agent, playbook, file scope (chips),
 // dependencies (chips of T-ids). Actions: Move to Todo, Pause/Resume
 // (user_paused), Archive, Delete. Read-only (dispatcher-owned): branch,
-// worktree path, dispatch error, verdict + detail, and a link to the linked
-// session's list. Every mutation goes through the board's patchTask/deleteTask
-// so the card + status bar stay in sync.
+// worktree path, dispatch error, verdict + detail, a link to the linked
+// session's list, and — on a captured card — a link to the session it was
+// minted from. Every mutation goes through the board's patchTask/deleteTask so
+// the card + status bar stay in sync.
 //
 // Delete vs Archive: Archive parks the task (it stays on the board, in the
 // dependency pickers, in the archive column); Delete removes it for good, for
@@ -16,83 +17,18 @@
 // optimistic, and the server refuses it for a running task.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { BoardTask, TaskPriority } from '../api/types';
 import type { PatchBoardTaskInput } from '../api';
 import { fmtAgo } from '../lib/format';
 import { displaySlug, findProject } from '../lib/projectSlug';
 import { useScope } from '../lib/scope';
 import { ConfirmDialog } from '../components/ui';
+import { AgentHint, AgentSelect, useAgentRoster } from './AgentPicker';
 import { TASK_MODELS, TASK_PRIORITIES } from './boardModel';
 import { PlaybookHint, PlaybookSelect, usePlaybooks } from './PlaybookPicker';
 import { useWorkspaceTerminal } from './ProjectWorkspaceLayout';
-
-/** An editable list-of-strings field rendered as removable chips + an add input. */
-function ChipEditor({
-  label,
-  values,
-  placeholder,
-  onChange,
-}: {
-  label: string;
-  values: string[];
-  placeholder: string;
-  onChange: (next: string[]) => void;
-}): JSX.Element {
-  const [draft, setDraft] = useState('');
-  const add = (): void => {
-    const v = draft.trim();
-    if (v === '' || values.includes(v)) {
-      setDraft('');
-      return;
-    }
-    onChange([...values, v]);
-    setDraft('');
-  };
-  return (
-    <div>
-      <FieldLabel>{label}</FieldLabel>
-      <div className="flex flex-wrap gap-1.5">
-        {values.map((v) => (
-          <span
-            key={v}
-            className="flex items-center gap-1 rounded-full border border-line bg-field px-2 py-0.5 font-mono text-[10.5px] text-ink-2"
-          >
-            {v}
-            <button
-              type="button"
-              aria-label={`remove ${v}`}
-              onClick={() => onChange(values.filter((x) => x !== v))}
-              className="text-ink-faint transition-colors hover:text-red"
-            >
-              ×
-            </button>
-          </span>
-        ))}
-      </div>
-      <input
-        type="text"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            add();
-          }
-        }}
-        onBlur={add}
-        placeholder={placeholder}
-        aria-label={label}
-        className="mt-1.5 w-full rounded-[8px] border border-line bg-field px-2.5 py-1.5 font-mono text-[11px] text-ink outline-none placeholder:text-ink-faint focus:border-ink-dim"
-      />
-    </div>
-  );
-}
-
-function FieldLabel({ children }: { children: string }): JSX.Element {
-  return (
-    <div className="mb-1 font-mono text-[10px] tracking-[0.1em] text-ink-faint uppercase">{children}</div>
-  );
-}
+import { ChipEditor, FieldLabel } from './TaskFields';
 
 function ReadOnlyRow({ label, value }: { label: string; value: string }): JSX.Element {
   return (
@@ -122,6 +58,7 @@ export function TaskModal({
   const [priority, setPriority] = useState<TaskPriority>(task.priority);
   const [model, setModel] = useState<string>(task.model ?? 'default');
   const [playbook, setPlaybook] = useState<string>(task.playbook ?? '');
+  const [agent, setAgent] = useState<string>(task.agent ?? '');
   const [fileScope, setFileScope] = useState<string[]>(task.fileScope);
   const [dependencies, setDependencies] = useState<string[]>(task.dependencies);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -131,6 +68,7 @@ export function TaskModal({
   const [deleting, setDeleting] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   const { playbooks } = usePlaybooks(task.projectId);
+  const { agents } = useAgentRoster(task.projectId, task.projectSlug);
   const openTerminal = useWorkspaceTerminal();
   const { projects } = useScope();
   // Linked-sessions scope link: the task row carries the DB path slug — use
@@ -150,6 +88,7 @@ export function TaskModal({
     setPriority(task.priority);
     setModel(task.model ?? 'default');
     setPlaybook(task.playbook ?? '');
+    setAgent(task.agent ?? '');
     setFileScope(task.fileScope);
     setDependencies(task.dependencies);
     setSaveError(null);
@@ -190,9 +129,10 @@ export function TaskModal({
       priority !== task.priority ||
       (model === 'default' ? task.model !== null : model !== task.model) ||
       playbook !== (task.playbook ?? '') ||
+      agent !== (task.agent ?? '') ||
       JSON.stringify(fileScope) !== JSON.stringify(task.fileScope) ||
       JSON.stringify(dependencies) !== JSON.stringify(task.dependencies),
-    [title, prompt, priority, model, playbook, fileScope, dependencies, task],
+    [title, prompt, priority, model, playbook, agent, fileScope, dependencies, task],
   );
 
   const run = (patch: PatchBoardTaskInput): void => {
@@ -214,6 +154,7 @@ export function TaskModal({
       priority,
       model: model === 'default' ? null : model,
       playbook, // "" clears back to the default recipe
+      agent, // "" clears back to a plain run
       fileScope,
       dependencies,
     });
@@ -315,6 +256,12 @@ export function TaskModal({
                 ))}
               </select>
             </div>
+          </div>
+
+          <div>
+            <FieldLabel>agent</FieldLabel>
+            <AgentSelect agents={agents} value={agent} onChange={setAgent} />
+            <AgentHint agents={agents} value={agent} />
           </div>
 
           <div>
@@ -447,6 +394,16 @@ export function TaskModal({
               >
                 ❯ linked sessions →
               </a>
+            )}
+            {/* Capture provenance: the session this card was minted from. The
+             * detail route takes a numeric session id as well as a uuid. */}
+            {task.origin !== 'manual' && task.originSessionId !== null && (
+              <Link
+                to={`/sessions/${String(task.originSessionId)}`}
+                className="mt-1.5 block font-mono text-[10.5px] text-ink-dim underline transition-colors hover:text-ink"
+              >
+                ❯ source session →
+              </Link>
             )}
             <div className="mt-2 font-mono text-[10px] text-ink-faint">created {fmtAgo(task.createdAt)}</div>
           </div>

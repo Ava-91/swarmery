@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +75,74 @@ func TestClaudeRunnerModelFlag(t *testing.T) {
 		if !contains(got, want) {
 			t.Errorf("args %q missing %q", got, want)
 		}
+	}
+}
+
+// spawnArgs runs ClaudeRunner against a fake claude that echoes its argv into a
+// file, and returns that argv line. Shared by the agent-prefix tests.
+func spawnArgs(t *testing.T, spec RunSpec) string {
+	t.Helper()
+	fakeClaude(t, `echo "$@" > "$PWD/args.txt"; exit 0`)
+	cwd := t.TempDir()
+	spec.Cwd = cwd
+	if _, err := (ClaudeRunner{}).Start(context.Background(), spec); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	out, err := os.ReadFile(filepath.Join(cwd, "args.txt"))
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	return string(out)
+}
+
+// A task carrying an agent must reach `claude -p` as "@<agent>: <prompt>" —
+// ONCE. The count assertion is the real contract: the prefix has exactly one
+// application site (agentPrompt), so a service that also prefixed would show up
+// here as two.
+func TestClaudeRunnerAgentPrefixesPromptOnce(t *testing.T) {
+	got := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u6", Agent: "tech-lead"})
+	if !contains(got, "@tech-lead: hello") {
+		t.Errorf("args %q missing the agent-prefixed prompt", got)
+	}
+	if n := strings.Count(got, "@tech-lead: "); n != 1 {
+		t.Errorf("prefix applied %d times, want exactly 1 (args %q)", n, got)
+	}
+	// Model/session flags are untouched by the prefix.
+	for _, want := range []string{"--session-id", "u6", "--setting-sources", "project,local"} {
+		if !contains(got, want) {
+			t.Errorf("args %q missing %q", got, want)
+		}
+	}
+}
+
+// Regression: a task with no agent dispatches byte-identically to pre-feature
+// behavior — the prompt is passed through with no mention of any kind.
+func TestClaudeRunnerNoAgentLeavesPromptUnchanged(t *testing.T) {
+	got := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u7"})
+	if !contains(got, "-p hello ") {
+		t.Errorf("args %q should carry the bare prompt", got)
+	}
+	if contains(got, "@") {
+		t.Errorf("args %q must contain no agent mention when Agent is unset", got)
+	}
+}
+
+// agentPrompt is the single prefix site; pin its whole closed set of behaviors
+// here so the argv tests above only have to prove the wiring.
+func TestAgentPromptSingleSite(t *testing.T) {
+	for _, tc := range []struct{ name, agent, prompt, want string }{
+		{"unset", "", "do the thing", "do the thing"},
+		{"whitespace only is no agent", "   ", "do the thing", "do the thing"},
+		{"set", "tech-lead", "do the thing", "@tech-lead: do the thing"},
+		{"trimmed", "  tech-lead  ", "do the thing", "@tech-lead: do the thing"},
+		{"prompt already mentioning someone is not re-owned",
+			"tech-lead", "ask @qa about it", "@tech-lead: ask @qa about it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentPrompt(RunSpec{Agent: tc.agent, Prompt: tc.prompt}); got != tc.want {
+				t.Errorf("agentPrompt = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

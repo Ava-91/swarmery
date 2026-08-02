@@ -1,139 +1,158 @@
-// New-task entry: a "+ New task" button at the top of the Triage column that
-// opens a create modal. It replaces the inline quick-entry input the column used
-// to carry — that input could only ever send {title, prompt=title}, so every
-// task needed a second trip through the detail view to get its real prompt,
-// priority, model or recipe. The modal sets all of them in one pass.
+// New-task modal — the board's creation form, replacing the inline quick-entry
+// input it grew out of (title + recipe only). Everything the dispatcher acts
+// on is settable at intake: prompt, the registry agent to dispatch as, model,
+// priority, playbook, file scope, dependencies, and the landing column (Triage
+// to park it, Todo to have the dispatcher pick it up immediately).
 //
-// Landing column is part of the form: Triage parks the task for a human pass,
-// Todo makes it immediately dispatchable (POST already accepts boardColumn and
-// pokes the dispatcher on a todo create).
-//
-// The Agent Hub "Run now" deep-link (?compose=@<agent>:) opens this modal on
-// mount with the title seeded, so that flow stays one hop.
+// Deep link: Agent Hub "Run now" still navigates to /p/{slug}/board?compose=@<agent>:
+// — Board passes that text in as `initialText` and the modal resolves the
+// leading "@<name>:" against the loaded roster: a hit pre-selects the agent and
+// the remainder becomes the title; an unknown name is left in the text so
+// nothing is silently dropped.
 
 import { useEffect, useRef, useState } from 'react';
-import type { BoardColumn, BoardTask, TaskPriority } from '../api/types';
+import type { AgentRosterRow, BoardColumn, BoardTask, TaskPriority } from '../api/types';
 import { createBoardTask } from '../api';
-import { TASK_MODELS, TASK_PRIORITIES } from './boardModel';
+import { AgentHint, AgentSelect, useAgentRoster } from './AgentPicker';
+import { COLUMN_LABELS, TASK_MODELS, TASK_PRIORITIES } from './boardModel';
 import { PlaybookHint, PlaybookSelect, usePlaybooks } from './PlaybookPicker';
+import { ChipEditor, FieldLabel } from './TaskFields';
 
-/** The two columns a human may create into; the rest are dispatcher-owned. */
-const LANDING: { column: BoardColumn; label: string; hint: string }[] = [
-  { column: 'triage', label: 'Triage', hint: 'park it for a pass over the queue' },
-  { column: 'todo', label: 'Todo', hint: 'dispatchable as soon as a slot frees' },
-];
+/** Columns a fresh card may land in: park it, or hand it to the dispatcher. */
+const TARGET_COLUMNS: BoardColumn[] = ['triage', 'todo'];
 
-const FIELD =
-  'w-full rounded-lg border border-line bg-bg px-2.5 py-1.5 text-[12.5px] text-ink outline-none focus:border-line-strong';
+const COLUMN_HINT: Record<string, string> = {
+  triage: 'parked — dispatch it later from the board',
+  todo: 'start immediately — the dispatcher picks it up',
+};
 
-function Label({ children }: { children: React.ReactNode }): JSX.Element {
-  return (
-    <div className="mb-1 font-mono text-[10.5px] tracking-[0.12em] text-ink-dim uppercase">
-      {children}
-    </div>
-  );
+/**
+ * Split a `?compose=` seed into an agent selection + the remaining title.
+ * The longest matching roster name wins so plugin-qualified names
+ * ("pack:agent") are not truncated at their first colon. Unknown names stay in
+ * the title verbatim.
+ */
+export function parseCompose(
+  text: string,
+  agents: AgentRosterRow[],
+): { agent: string; title: string } {
+  const raw = text.trimStart();
+  if (!raw.startsWith('@')) return { agent: '', title: text.trim() };
+  const body = raw.slice(1);
+  const hit = agents
+    .filter((a) => body.startsWith(`${a.name}:`))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  if (hit === undefined) return { agent: '', title: text.trim() };
+  return { agent: hit.name, title: body.slice(hit.name.length + 1).trim() };
 }
 
-export function NewTaskButton({
+export function NewTaskModal({
   projectId,
-  onCreated,
-  initialTitle = '',
-}: {
-  projectId: number;
-  /** Called with the created row so the board can insert it optimistically. */
-  onCreated: (task: BoardTask) => void;
-  /** Seed value (Agent Hub "Run now" prefills `@<agent>: `); opens on mount when
-   * non-empty. Read once — reopening the modal starts from a blank form. */
-  initialTitle?: string;
-}): JSX.Element {
-  const [open, setOpen] = useState(initialTitle !== '');
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="w-full rounded-lg border border-dashed border-line bg-transparent px-2.5 py-2 text-left text-[12px] text-ink-dim transition-colors hover:border-line-strong hover:bg-surface2/50 hover:text-ink"
-      >
-        + New task
-      </button>
-      {open && (
-        <NewTaskModal
-          projectId={projectId}
-          initialTitle={initialTitle}
-          onCreated={(t) => {
-            onCreated(t);
-            setOpen(false);
-          }}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
-function NewTaskModal({
-  projectId,
-  initialTitle,
+  projectSlug,
+  initialText = '',
   onCreated,
   onClose,
 }: {
   projectId: number;
-  initialTitle: string;
+  /** DB slug of the project — scopes the agent roster to what the API accepts. */
+  projectSlug: string | null;
+  /** `?compose=` seed; parsed into agent + title once the roster resolves. */
+  initialText?: string;
+  /** Called with the created row so the board can insert it optimistically. */
   onCreated: (task: BoardTask) => void;
   onClose: () => void;
 }): JSX.Element {
-  const [title, setTitle] = useState(initialTitle);
+  const [title, setTitle] = useState(initialText.trim());
   const [prompt, setPrompt] = useState('');
-  const [priority, setPriority] = useState<TaskPriority>('normal');
+  const [agent, setAgent] = useState('');
   const [model, setModel] = useState<string>('default');
+  const [priority, setPriority] = useState<TaskPriority>('normal');
   const [playbook, setPlaybook] = useState('');
+  const [fileScope, setFileScope] = useState<string[]>([]);
+  const [dependencies, setDependencies] = useState<string[]>([]);
   const [column, setColumn] = useState<BoardColumn>('triage');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { playbooks } = usePlaybooks(projectId);
-  const titleRef = useRef<HTMLInputElement>(null);
 
-  // Focus the title with the caret at the end, so a seeded "@agent: " reads as
-  // a prefix the user types after rather than as selected text they overwrite.
+  const { playbooks } = usePlaybooks(projectId);
+  const { agents, loading: rosterLoading } = useAgentRoster(projectId, projectSlug);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const composeApplied = useRef(false);
+
+  // Resolve the compose seed ONCE, after the roster lands — before that no
+  // "@name:" can be validated, and re-running it would fight the user's edits.
   useEffect(() => {
-    const el = titleRef.current;
-    if (el === null) return;
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
+    if (composeApplied.current || rosterLoading || initialText === '') return;
+    composeApplied.current = true;
+    const parsed = parseCompose(initialText, agents);
+    if (parsed.agent === '') return;
+    setAgent(parsed.agent);
+    setTitle(parsed.title);
+  }, [rosterLoading, agents, initialText]);
+
+  useEffect(() => {
+    titleRef.current?.focus();
   }, []);
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && !busy) onClose();
     };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onClose]);
 
-  // The prompt is what the agent actually receives; leaving it blank keeps the
-  // old quick-entry behaviour (prompt = title) instead of failing validation.
-  const effectivePrompt = prompt.trim() !== '' ? prompt.trim() : title.trim();
-  const canSubmit = title.trim() !== '' && !busy;
+  // Focus trap: Tab cycles inside the dialog instead of escaping to the board
+  // behind it. Queried live so controls that appear/disable mid-edit count.
+  const trapTab = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Tab') return;
+    const root = dialogRef.current;
+    if (root === null) return;
+    const focusable = [
+      ...root.querySelectorAll<HTMLElement>('input, select, textarea, button, a[href]'),
+    ].filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined) return;
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   const submit = (): void => {
-    if (!canSubmit) return;
+    const t = title.trim();
+    if (t === '' || busy) {
+      if (t === '') setError('title is required');
+      return;
+    }
+    const p = prompt.trim();
     setBusy(true);
     setError(null);
     createBoardTask({
       projectId,
-      title: title.trim(),
-      prompt: effectivePrompt,
+      title: t,
+      // An empty prompt means "the title is the request" — the intake contract
+      // the board has always had.
+      prompt: p === '' ? t : p,
       priority,
       boardColumn: column,
+      fileScope,
+      dependencies,
       ...(model !== 'default' ? { model } : {}),
       ...(playbook !== '' ? { playbook } : {}),
+      ...(agent !== '' ? { agent } : {}),
     })
-      .then(onCreated)
-      .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
-        setBusy(false);
-      });
+      .then((task) => {
+        onCreated(task);
+        onClose();
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
   };
 
   return (
@@ -145,129 +164,149 @@ function NewTaskModal({
       onClick={busy ? undefined : onClose}
     >
       <div
-        className="max-h-full w-full max-w-md overflow-y-auto rounded-xl border border-line bg-surface px-4 py-4"
+        ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
-        // ⌘/Ctrl+Enter submits from anywhere in the form — the keyboard path the
-        // one-line quick entry used to give for free.
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            submit();
-          }
-        }}
+        onKeyDown={trapTab}
+        className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl border border-line bg-surface px-4 py-4"
       >
-        <div className="font-display text-[14px] font-bold text-ink">New task</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-ink-dim">
-          Queued for this project&apos;s board. The dispatcher picks it up from Todo.
-        </div>
-
-        <div className="mt-3.5">
-          <Label>title</Label>
-          <input
-            ref={titleRef}
-            value={title}
+        <div className="flex items-center gap-2">
+          <span className="font-display text-[14px] font-bold text-ink">New task</span>
+          <button
+            type="button"
+            onClick={onClose}
             disabled={busy}
-            onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="what should be done"
-            aria-label="task title"
-            className={FIELD}
-          />
+            aria-label="close"
+            className="ml-auto text-[15px] leading-none text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
+          >
+            ×
+          </button>
         </div>
 
-        <div className="mt-3">
-          <Label>prompt</Label>
-          <textarea
-            value={prompt}
-            disabled={busy}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={4}
-            placeholder="blank → the title is used as the prompt"
-            aria-label="task prompt"
-            className={`${FIELD} resize-y font-mono text-[11.5px] leading-relaxed`}
-          />
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-3">
+        <div className="mt-3 flex flex-col gap-3.5">
           <div>
-            <Label>priority</Label>
-            <select
-              value={priority}
+            <FieldLabel>title</FieldLabel>
+            <input
+              ref={titleRef}
+              type="text"
+              value={title}
               disabled={busy}
-              onChange={(e) => setPriority(e.target.value as TaskPriority)}
-              aria-label="priority"
-              className={`${FIELD} font-mono text-[11px]`}
-            >
-              {TASK_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              placeholder="what should happen"
+              aria-label="title"
+              className="w-full rounded-[8px] border border-line bg-field px-2.5 py-1.5 text-[13px] text-ink outline-none placeholder:text-ink-faint focus:border-ink-dim disabled:opacity-50"
+            />
           </div>
+
           <div>
-            <Label>model</Label>
-            <select
-              value={model}
+            <FieldLabel>prompt</FieldLabel>
+            <textarea
+              value={prompt}
               disabled={busy}
-              onChange={(e) => setModel(e.target.value)}
-              aria-label="model"
-              className={`${FIELD} font-mono text-[11px]`}
-            >
-              {TASK_MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={4}
+              placeholder="the full request (empty = use the title)"
+              aria-label="prompt"
+              className="w-full resize-y rounded-[8px] border border-line bg-field px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus:border-ink-dim disabled:opacity-50"
+            />
           </div>
-        </div>
 
-        <div className="mt-3">
-          <Label>playbook</Label>
-          <PlaybookSelect playbooks={playbooks} value={playbook} onChange={setPlaybook} disabled={busy} />
-          <PlaybookHint playbooks={playbooks} value={playbook} />
-        </div>
+          <div>
+            <FieldLabel>agent</FieldLabel>
+            <AgentSelect agents={agents} value={agent} onChange={setAgent} disabled={busy} />
+            <AgentHint agents={agents} value={agent} />
+          </div>
 
-        <div className="mt-3">
-          <Label>create into</Label>
-          <div className="flex gap-1.5" role="group" aria-label="landing column">
-            {LANDING.map(({ column: c, label, hint }) => (
-              <button
-                key={c}
-                type="button"
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel>priority</FieldLabel>
+              <select
+                value={priority}
                 disabled={busy}
-                onClick={() => setColumn(c)}
-                aria-pressed={column === c}
-                data-tip={hint}
-                className={`rounded-lg border px-2.5 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
-                  column === c
-                    ? 'border-brand/50 bg-brand/10 text-brand'
-                    : 'border-line text-ink-dim hover:bg-surface2'
-                }`}
+                onChange={(e) => setPriority(e.target.value as TaskPriority)}
+                aria-label="priority"
+                className="w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-ink-dim disabled:opacity-50"
               >
-                {label}
-              </button>
-            ))}
+                {TASK_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <FieldLabel>model</FieldLabel>
+              <select
+                value={model}
+                disabled={busy}
+                onChange={(e) => setModel(e.target.value)}
+                aria-label="model"
+                className="w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-ink-dim disabled:opacity-50"
+              >
+                {TASK_MODELS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="mt-1 font-mono text-[10.5px] text-ink-faint">
-            {LANDING.find((l) => l.column === column)?.hint}
+
+          <div>
+            <FieldLabel>playbook</FieldLabel>
+            <PlaybookSelect playbooks={playbooks} value={playbook} onChange={setPlaybook} disabled={busy} />
+            <PlaybookHint playbooks={playbooks} value={playbook} />
           </div>
+
+          <ChipEditor
+            label="file scope"
+            values={fileScope}
+            placeholder="add a path glob + Enter"
+            disabled={busy}
+            onChange={setFileScope}
+          />
+          <ChipEditor
+            label="dependencies"
+            values={dependencies}
+            placeholder="add a T-id + Enter"
+            disabled={busy}
+            onChange={setDependencies}
+          />
+
+          <div>
+            <FieldLabel>column</FieldLabel>
+            <select
+              value={column}
+              disabled={busy}
+              onChange={(e) => setColumn(e.target.value as BoardColumn)}
+              aria-label="column"
+              className="w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink outline-none focus:border-ink-dim disabled:opacity-50"
+            >
+              {TARGET_COLUMNS.map((c) => (
+                <option key={c} value={c}>
+                  {COLUMN_LABELS[c]}
+                </option>
+              ))}
+            </select>
+            <div className="mt-1 font-mono text-[10px] text-ink-faint">{COLUMN_HINT[column] ?? ''}</div>
+          </div>
+
+          {error !== null && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[11px] text-red"
+            >
+              {error}
+            </div>
+          )}
         </div>
 
-        {error !== null && (
-          <div className="mt-3 rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[11px] text-red">
-            {error}
-          </div>
-        )}
-
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <span className="mr-auto font-mono text-[10px] text-ink-faint">⌘↵ to create</span>
+        <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
@@ -279,10 +318,10 @@ function NewTaskModal({
           <button
             type="button"
             onClick={submit}
-            disabled={!canSubmit}
-            className="rounded-lg border border-green/40 bg-green/10 px-3.5 py-1.5 font-mono text-[11.5px] font-semibold text-green transition-colors hover:bg-green/20 disabled:opacity-50"
+            disabled={busy || title.trim() === ''}
+            className="rounded-lg border border-brand/50 bg-brand/10 px-3.5 py-1.5 font-mono text-[11.5px] font-semibold text-brand transition-colors hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {busy ? '…' : 'create'}
+            {busy ? '…' : 'create task'}
           </button>
         </div>
       </div>

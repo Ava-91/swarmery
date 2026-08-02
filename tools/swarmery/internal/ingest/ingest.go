@@ -143,6 +143,10 @@ type ingester struct {
 
 	projectID int64
 	sessionID int64
+	// sessionUUID is the transcript's sessionId — the stable, cross-restart
+	// identity capture_key is built from (sessions.id is local to this
+	// database). Set by upsertProjectAndSession; "" when no record carried one.
+	sessionUUID string
 
 	// live-pipeline bookkeeping (consumed by the event bus after commit).
 	sessionCreated bool
@@ -167,6 +171,18 @@ type ingester struct {
 	// batch-local — flushed to turns.text by flushTurnTexts (extend rule).
 	turnTexts     map[int64][]string
 	turnTextOrder []int64
+
+	// board capture (see capture.go). skipCapture memoizes the per-session
+	// "this session never produces cards" verdict so a batch of 500 lines costs
+	// at most ONE skip query, not 500. capturedTaskIDs collects the board rows
+	// this batch really CHANGED — cards newly inserted, plus cards a completed
+	// todo moved to in_review (lifecycle signal 1) — published as task_updated
+	// by the pipeline AFTER the transaction commits, so a rolled-back batch
+	// emits nothing. Both kinds are the same frame to a client (the row
+	// changed, re-read it), which is why they share one list; a replay
+	// contributes neither.
+	skipCapture     *bool
+	capturedTaskIDs []int64
 }
 
 type pendingTool struct {
@@ -238,6 +254,7 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 	if sessionUUID == "" {
 		return fmt.Errorf("no sessionId found in transcript")
 	}
+	in.sessionUUID = sessionUUID
 	// title holds an ai-title here (authoritative, may overwrite on update);
 	// firstPrompt is only an initial fallback — a tail batch's "first" prompt
 	// is NOT the session's first prompt, so it never overwrites (see below).
@@ -529,6 +546,12 @@ func (in *ingester) processRecords(recs []record, path string, sidechain bool, s
 				if err := in.openToolCall(r, b, dedup, curTurnID, parentEventID, sidechain); err != nil {
 					return err
 				}
+				// Board capture hook A (capture.go). Placed on the raw block,
+				// not on openToolCall's decoded input: that map has been through
+				// truncateStrings, and a clipped todo would hash to a different
+				// capture_key than the same todo read whole. Returns after one
+				// string compare for every tool that is not TodoWrite.
+				in.captureTodos(b, sidechain)
 			}
 
 		case "system":

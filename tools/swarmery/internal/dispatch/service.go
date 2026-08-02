@@ -304,6 +304,7 @@ type candidate struct {
 	ProjectPath  string // repo root for worktree.Acquire
 	Prompt       string
 	Model        sql.NullString
+	Agent        sql.NullString // registry agent name (NULL ⇒ plain run, no mention)
 	Playbook     sql.NullString // selected recipe name (NULL ⇒ default 'standard')
 	Priority     int
 	CreatedAt    string
@@ -318,7 +319,7 @@ type candidate struct {
 func (s *Service) candidates() ([]candidate, error) {
 	rows, err := s.DB.Query(`
 		SELECT t.id, COALESCE(t.external_id,''), t.project_id, p.slug, p.path,
-		       t.prompt, t.model, t.playbook, t.priority, t.created_at, t.file_scope, t.dependencies
+		       t.prompt, t.model, t.agent, t.playbook, t.priority, t.created_at, t.file_scope, t.dependencies
 		  FROM tasks t JOIN projects p ON p.id = t.project_id
 		 WHERE t.source='queue' AND t.board_column='todo'
 		   AND t.paused=0 AND t.user_paused=0`)
@@ -332,7 +333,7 @@ func (s *Service) candidates() ([]candidate, error) {
 		var c candidate
 		var scopeJSON, depsJSON string
 		if err := rows.Scan(&c.ID, &c.ExternalID, &c.ProjectID, &c.ProjectSlug,
-			&c.ProjectPath, &c.Prompt, &c.Model, &c.Playbook, &c.Priority, &c.CreatedAt,
+			&c.ProjectPath, &c.Prompt, &c.Model, &c.Agent, &c.Playbook, &c.Priority, &c.CreatedAt,
 			&scopeJSON, &depsJSON); err != nil {
 			return nil, err
 		}
@@ -663,7 +664,11 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resol
 		if model == "" {
 			model = defaultModel
 		}
-		spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path, Model: model}
+		// Agent is carried, never applied: ClaudeRunner.agentPrompt owns the single
+		// "@<agent>: " prefix site. Every stage of a playbook runs as the same agent
+		// — the selection belongs to the card, not to one recipe step.
+		spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path, Model: model,
+			Agent: c.Agent.String}
 
 		run, err := s.runStage(spec)
 		if err != nil {

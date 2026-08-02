@@ -1,6 +1,7 @@
 // "Run now" — the Agent Hub's dispatch shortcut. Per the phase spec it lands on
 // a project board with the create modal open and prefilled `@<agent>: ` (Board
-// reads ?compose= and seeds NewTaskButton with it).
+// reads ?compose= and seeds NewTaskButton with it; the modal then resolves the
+// "@name:" prefix into its agent picker).
 // When a project scope is active (workspace mount, or the fleet scope switcher
 // is set) it navigates straight there; otherwise it opens a small project
 // picker first (the spec's "ask to pick a project" step), reusing the shared

@@ -750,12 +750,17 @@ export interface CreateBoardTaskInput {
   model?: string;
   /** Selected execution recipe name (fusion phase 13); omit/empty = default. */
   playbook?: string;
+  /** Registry agent name to dispatch as; omit/empty = a plain run. */
+  agent?: string;
   fileScope?: string[];
   dependencies?: string[];
   boardColumn?: BoardColumn;
 }
 
-/** POST /api/board/tasks → 201 BoardTask (sent by the board's create modal). */
+/**
+ * POST /api/board/tasks → 201 BoardTask (sent by the board's create modal).
+ * A title-only intake sends prompt=title.
+ */
 export async function createBoardTask(input: CreateBoardTaskInput): Promise<BoardTask> {
   if (MOCK) return mockApi.createBoardTask(input);
   const res = await fetch('/api/board/tasks', {
@@ -783,6 +788,8 @@ export interface PatchBoardTaskInput {
   model?: string | null;
   /** Selected recipe name; "" clears the selection back to the default. */
   playbook?: string | null;
+  /** Registry agent name; "" clears the selection back to a plain run. */
+  agent?: string | null;
   fileScope?: string[];
   dependencies?: string[];
   paused?: boolean;

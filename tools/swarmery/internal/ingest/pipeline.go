@@ -241,6 +241,14 @@ func (p *Pipeline) tailOne(path string, logPickup bool) {
 	for _, id := range res.UpdatedEventIDs {
 		p.bus.Publish(Notification{Type: NoteEventAppended, SessionID: res.SessionID, EventID: id})
 	}
+	// Board cards this batch's TodoWrite calls changed (capture.go hook A):
+	// newly captured cards, and accepted cards a completed todo moved to
+	// in_review. The tail transaction has committed by now, so exactly one
+	// frame per row that really changed — a replayed transcript inserts
+	// nothing and moves nothing, and therefore says nothing.
+	for _, id := range res.CapturedTaskIDs {
+		p.bus.Publish(Notification{Type: NoteTaskUpdated, SessionID: res.SessionID, TaskID: id})
+	}
 }
 
 // rescan is the 2s safety net: stat every discovered file and tail the ones
@@ -272,6 +280,26 @@ func (p *Pipeline) recomputeStatuses() {
 	for _, c := range changed {
 		if p.bus != nil {
 			p.bus.Publish(Notification{Type: NoteSessionUpdated, SessionID: c.ID})
+		}
+		// Board capture hook B (capture.go): a session that finished having
+		// captured no todos leaves one card built from its opening prompt. The
+		// status UPDATE above has already committed, and the 'sess:<uuid>' key
+		// makes a repeat call a no-op, so this is safe to run on every
+		// transition into 'completed'.
+		if c.Status == "completed" {
+			// Board capture lifecycle signal 2 (capture.go): the session that
+			// produced these cards is over, so everything the user accepted from
+			// it moves on to in_review. Runs BEFORE the fallback card below only
+			// for readability — sweep what exists, then mint; a card minted below
+			// is brand-new and in 'triage', which the sweep never matches.
+			for _, taskID := range SweepSessionToReview(p.db, c.ID) {
+				if p.bus != nil {
+					p.bus.Publish(Notification{Type: NoteTaskUpdated, SessionID: c.ID, TaskID: taskID})
+				}
+			}
+			if taskID, inserted := CaptureSessionCard(p.db, c.ID); inserted && p.bus != nil {
+				p.bus.Publish(Notification{Type: NoteTaskUpdated, SessionID: c.ID, TaskID: taskID})
+			}
 		}
 		if c.Status == "completed" && p.cfg.OnSessionTerminal != nil {
 			var errs int

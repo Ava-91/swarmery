@@ -1,8 +1,7 @@
 // Playbook picker (fusion phase 13): a <select> of the project's playbooks,
-// shared by the create modal and the task detail modal (both with a description
-// line). The `compact` variant is kept for callers that need it inline —
-// nothing uses it since the Triage quick-entry input became a modal.
-// The list is fetched once per project (built-ins overlaid by project overrides);
+// shared by the board's task editors — the create modal (intake) and the task
+// detail modal (edit), both pairing it with the description line below. The
+// list is fetched once per project (built-ins overlaid by project overrides);
 // the empty value maps to the default recipe ('standard'). Fully keyboard-native
 // (a plain <select>), labelled for WCAG.
 
@@ -49,20 +48,18 @@ export function usePlaybooks(projectId: number | null): {
 /**
  * A <select> bound to a playbook name. `value` is the selected name ("" = the
  * default recipe); `onChange` receives the new name ("" when the default is
- * picked). `compact` shrinks it to fit inside a single card/row.
+ * picked).
  */
 export function PlaybookSelect({
   playbooks,
   value,
   onChange,
-  compact = false,
   disabled = false,
   id,
 }: {
   playbooks: Playbook[];
   value: string;
   onChange: (name: string) => void;
-  compact?: boolean;
   disabled?: boolean;
   id?: string;
 }): JSX.Element {
@@ -70,9 +67,8 @@ export function PlaybookSelect({
   // named option. If the current value is a name not in the list (e.g. a stored
   // project playbook the fetch has not returned yet) it still renders selected.
   const known = playbooks.some((p) => p.name === value);
-  const base = compact
-    ? 'rounded-md border border-line bg-field px-1.5 py-1 font-mono text-[10px] text-ink-dim'
-    : 'w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink';
+  const base =
+    'w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink';
   return (
     <select
       id={id}
@@ -83,7 +79,7 @@ export function PlaybookSelect({
       onChange={(e) => onChange(e.target.value)}
       className={`${base} outline-none transition-colors hover:border-line-strong focus:border-ink-dim disabled:opacity-50`}
     >
-      <option value="">{compact ? 'standard' : 'standard (default)'}</option>
+      <option value="">standard (default)</option>
       {value !== '' && !known && <option value={value}>{value}</option>}
       {playbooks
         .filter((p) => p.name !== DEFAULT_PLAYBOOK)
