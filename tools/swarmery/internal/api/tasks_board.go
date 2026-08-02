@@ -245,6 +245,16 @@ func publishTaskUpdated(id int64) {
 	}
 }
 
+// publishTaskDeleted notifies WS subscribers a board task row is gone. The
+// project id rides along because the row can no longer be read back.
+func publishTaskDeleted(id, projectID int64) {
+	if wsBus != nil {
+		wsBus.Publish(ingest.Notification{
+			Type: ingest.NoteTaskDeleted, TaskID: id, ProjectID: projectID,
+		})
+	}
+}
+
 // GET /api/board/tasks?projectId=&boardColumn= — board rows (source='queue'),
 // newest first. Both filters optional. Distinct from GET /api/tasks (the
 // workspace 14-day summary).
@@ -591,6 +601,94 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 	}
 	pokeDispatch()
 	writeJSON(w, d, nil)
+}
+
+// DELETE /api/board/tasks/{id} → 204. Permanently removes a board row the user
+// no longer wants — the escape hatch Archive is not: an archived task still
+// shows up in the column and in every dependency picker. Board-scoped: only
+// source='queue' rows are deletable (a workspace-ingested task is owned by the
+// disk, deleting the row would just resurrect it on the next scan) — anything
+// else is a 404.
+//
+// A RUNNING task is refused with 409 rather than force-killed: the row is the
+// only handle the daemon has on a live headless agent (its process group, its
+// worktree, its session link), so dropping it would orphan all three. Stop it
+// first by moving it to done/archived, which reclaims the worktree.
+func (h *Handler) deleteBoardTask(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, `{"error":"invalid task id"}`, http.StatusBadRequest)
+		return
+	}
+	var source, status string
+	var projectID int64
+	var worktreePath sql.NullString
+	err = h.DB.QueryRow(
+		`SELECT source, status, project_id, worktree_path FROM tasks WHERE id = ?`, id).
+		Scan(&source, &status, &projectID, &worktreePath)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if source != "queue" {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
+	if status == "running" {
+		http.Error(w,
+			`{"error":"task is running — move it to done or archived first (that stops it and reclaims the worktree)"}`,
+			http.StatusConflict)
+		return
+	}
+	// Reclaim a worktree the row still holds. A task can carry one without being
+	// running (a failed admission, a crash before the terminal move) and the row
+	// is about to stop being reachable, so this is the last chance to free it.
+	// Best-effort: a failed removal is logged inside the dispatcher and must not
+	// block the delete, otherwise a stale worktree makes the card undeletable.
+	if dispatchSvc != nil && strings.TrimSpace(worktreePath.String) != "" {
+		dispatchSvc.RemoveWorktreeFor(id)
+	}
+
+	tx, err := h.DB.Begin()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+	// task_sessions predates ON DELETE CASCADE (0006_workspaces.sql) and the
+	// store opens SQLite with foreign_keys(1), so its link rows must go first or
+	// the row delete fails on a task that ever ran. Every other child table
+	// (retro, verification, epic_phases, plan_runs) declares CASCADE.
+	if _, err := tx.Exec(`DELETE FROM task_sessions WHERE task_id = ?`, id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	// epic_phases.activated_board_task_id is a soft reference (no FK), so it
+	// would dangle. Clearing it releases the phase to be activated again.
+	if _, err := tx.Exec(
+		`UPDATE epic_phases SET activated_board_task_id = NULL WHERE activated_board_task_id = ?`, id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := tx.Exec(`DELETE FROM tasks WHERE id = ? AND source = 'queue'`, id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	publishTaskDeleted(id, projectID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // badRequest writes a 400 with the error's message as JSON.

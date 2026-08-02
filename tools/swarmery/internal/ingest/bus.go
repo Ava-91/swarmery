@@ -23,6 +23,11 @@ const (
 	// when a task's plan/ content hash changes, and by the epic lifecycle
 	// endpoint after a pause/resume/archive/restore. Reuses Notification.TaskID.
 	NotePlanUpdated = "plan_updated"
+	// board task delete (additive): published by internal/api when a board row is
+	// permanently removed. Unlike task_updated the payload CANNOT be hydrated —
+	// the row is gone by the time the frame is built — so it carries ids only
+	// (Notification.TaskID + ProjectID) and the client drops the card by id.
+	NoteTaskDeleted = "task_deleted"
 )
 
 // Notification is one ingest event on the internal bus. It carries row ids
@@ -38,6 +43,10 @@ type Notification struct {
 	ItemID int64  // row id in the corresponding registry table
 	// fusion phase 1 — task board (additive): set for task_updated only.
 	TaskID int64 // tasks.id
+	// board task delete (additive): set for task_deleted only. The deleted row
+	// cannot be re-read, so its owning project rides along on the notification
+	// instead of being looked up by the WS layer.
+	ProjectID int64 // projects.id
 }
 
 // Bus is a minimal fan-out pub/sub channel for ingest notifications.

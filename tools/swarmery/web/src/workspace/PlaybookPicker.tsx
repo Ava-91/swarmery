@@ -1,6 +1,8 @@
 // Playbook picker (fusion phase 13): a <select> of the project's playbooks,
-// shared by QuickEntry (compact) and TaskDrawer (with a description line). The
-// list is fetched once per project (built-ins overlaid by project overrides);
+// shared by the create modal and the task detail modal (both with a description
+// line). The `compact` variant is kept for callers that need it inline —
+// nothing uses it since the Triage quick-entry input became a modal.
+// The list is fetched once per project (built-ins overlaid by project overrides);
 // the empty value maps to the default recipe ('standard'). Fully keyboard-native
 // (a plain <select>), labelled for WCAG.
 
@@ -47,7 +49,7 @@ export function usePlaybooks(projectId: number | null): {
 /**
  * A <select> bound to a playbook name. `value` is the selected name ("" = the
  * default recipe); `onChange` receives the new name ("" when the default is
- * picked). `compact` shrinks it for the QuickEntry row.
+ * picked). `compact` shrinks it to fit inside a single card/row.
  */
 export function PlaybookSelect({
   playbooks,
@@ -110,11 +112,21 @@ export function PlaybookHint({
     // The row stays items-start so the description keeps its top alignment
     // against a multi-line wrap; the pair re-centres the 15px trigger on the
     // py-px chip it explains rather than top-aligning the two.
+    //
+    // shrink-0 / min-w-0 are load-bearing: both of the pair's own children are
+    // shrink-0, so when the long description made the row overflow, the pair
+    // box was the one that gave — it collapsed to the chip's width and the "?"
+    // trigger spilled out on top of the first words of the description. The
+    // description is the part that should absorb the pressure, by wrapping.
     <div className="mt-1 flex items-start gap-1.5">
-      <ExplainPair id="verify-knob">
-        <VerifyChip verify={pb.verify} />
-      </ExplainPair>
-      <span className="font-mono text-[10px] leading-snug text-ink-faint">{pb.description}</span>
+      <span className="shrink-0">
+        <ExplainPair id="verify-knob">
+          <VerifyChip verify={pb.verify} />
+        </ExplainPair>
+      </span>
+      <span className="min-w-0 font-mono text-[10px] leading-snug text-ink-faint">
+        {pb.description}
+      </span>
     </div>
   );
 }

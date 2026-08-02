@@ -396,3 +396,191 @@ func TestWSTaskUpdatedShape(t *testing.T) {
 		t.Errorf("task_updated payload = %+v, want hydrated board task %d", bt, created.ID)
 	}
 }
+
+func deleteBoard(t *testing.T, url string, id int64) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/board/tasks/%d", url, id), nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// createdBoardTask posts a minimal task and returns its row id.
+func createdBoardTask(t *testing.T, url, title string) int64 {
+	t.Helper()
+	resp := postBoard(t, url, fmt.Sprintf(`{"projectId":1,"title":%q,"prompt":"p"}`, title))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create %q status = %d, want 201", title, resp.StatusCode)
+	}
+	var d boardTaskDTO
+	json.NewDecoder(resp.Body).Decode(&d)
+	if d.ID == 0 {
+		t.Fatalf("create %q returned no id", title)
+	}
+	return d.ID
+}
+
+// TestBoardTaskDelete: the permanent-removal path — 204 + gone from the list,
+// 404 on a repeat, 404 for a non-board (workspace) row, 409 while running, and
+// the task_sessions link rows cleaned up (foreign_keys(1) would otherwise
+// refuse the delete of any task that ever ran).
+func TestBoardTaskDelete(t *testing.T) {
+	srv, db := testServerWithDB(t)
+
+	// --- Happy path: created → deleted → gone from the board list ---
+	id := createdBoardTask(t, srv.URL, "no longer relevant")
+	resp := deleteBoard(t, srv.URL, id)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+	var list []boardTaskDTO
+	getJSON(t, srv.URL+"/api/board/tasks?projectId=1", &list)
+	for _, d := range list {
+		if d.ID == id {
+			t.Fatalf("task %d still listed after delete", id)
+		}
+	}
+
+	// --- Repeat delete and an unknown id are 404 ---
+	for _, target := range []int64{id, 987654} {
+		r := deleteBoard(t, srv.URL, target)
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound {
+			t.Errorf("delete %d = %d, want 404", target, r.StatusCode)
+		}
+	}
+	// A malformed id is a 400.
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/board/tasks/abc", nil)
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Errorf("delete bad id = %d, want 400", r.StatusCode)
+	}
+
+	// --- A running task is refused (409) until it leaves running ---
+	running := createdBoardTask(t, srv.URL, "in flight")
+	if _, err := db.Exec(
+		`UPDATE tasks SET status='running', board_column='in_progress' WHERE id=?`, running); err != nil {
+		t.Fatal(err)
+	}
+	r = deleteBoard(t, srv.URL, running)
+	r.Body.Close()
+	if r.StatusCode != http.StatusConflict {
+		t.Fatalf("delete running = %d, want 409", r.StatusCode)
+	}
+	var stillThere int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE id=?`, running).Scan(&stillThere); err != nil {
+		t.Fatal(err)
+	}
+	if stillThere != 1 {
+		t.Fatal("409 must not delete the row")
+	}
+
+	// --- Linked sessions are unlinked so the FK does not block the delete ---
+	var sessionID int64
+	if err := db.QueryRow(`SELECT id FROM sessions LIMIT 1`).Scan(&sessionID); err != nil {
+		t.Fatalf("fixture session: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO task_sessions(task_id, session_id, link_source, confidence)
+		 VALUES(?,?, 'explicit', 1.0)`, running, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET status='done', board_column='done' WHERE id=?`, running); err != nil {
+		t.Fatal(err)
+	}
+	r = deleteBoard(t, srv.URL, running)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete after stop = %d, want 204", r.StatusCode)
+	}
+	var links int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM task_sessions WHERE task_id=?`, running).Scan(&links); err != nil {
+		t.Fatal(err)
+	}
+	if links != 0 {
+		t.Errorf("task_sessions links left behind: %d", links)
+	}
+
+	// --- A workspace-ingested row is not board-deletable ---
+	res, err := db.Exec(
+		`INSERT INTO tasks(project_id, title, prompt, status, created_at, source, external_id)
+		 VALUES(1,'disk task','p','queued','2026-01-01T00:00:00.000Z','workspace','2026-01-01-disk')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsID, _ := res.LastInsertId()
+	r = deleteBoard(t, srv.URL, wsID)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Errorf("delete workspace row = %d, want 404", r.StatusCode)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE id=?`, wsID).Scan(&stillThere); err != nil {
+		t.Fatal(err)
+	}
+	if stillThere != 1 {
+		t.Error("workspace row must survive a board delete")
+	}
+}
+
+// TestBoardTaskDeleteCrossOrigin: DELETE carries the same origin hardening as
+// the other board writes.
+func TestBoardTaskDeleteCrossOrigin(t *testing.T) {
+	srv, _ := testServerWithDB(t)
+	id := createdBoardTask(t, srv.URL, "origin guard")
+	req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/board/tasks/%d", srv.URL, id), nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-origin DELETE = %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestWSTaskDeletedShape: the delete frame is the thin {taskId, projectId} hint
+// (the row is gone, so nothing can be hydrated) and it is emitted by the
+// endpoint itself.
+func TestWSTaskDeletedShape(t *testing.T) {
+	bus := ingest.NewBus()
+	AttachBus(bus)
+	t.Cleanup(func() { AttachBus(nil) })
+
+	srv, _ := testServerWithDB(t)
+	id := createdBoardTask(t, srv.URL, "doomed")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	wsURL := strings.Replace(srv.URL, "http://", "ws://", 1) + "/api/ws"
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial %s: %v", wsURL, err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	readFrame := newFrameReader(t, ctx, c, func() {
+		bus.Publish(ingest.Notification{Type: ingest.NoteTaskDeleted, TaskID: id, ProjectID: 1})
+	})
+	frame := readFrame()
+	assertEnvelope(t, frame, "task_deleted")
+	assertPayloadKeys(t, frame, []string{"taskId", "projectId"})
+	var p struct {
+		TaskID    int64 `json:"taskId"`
+		ProjectID int64 `json:"projectId"`
+	}
+	if err := json.Unmarshal(frame["payload"], &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.TaskID != id || p.ProjectID != 1 {
+		t.Errorf("task_deleted payload = %+v, want {%d 1}", p, id)
+	}
+}

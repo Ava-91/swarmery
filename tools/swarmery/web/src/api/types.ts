@@ -1190,7 +1190,8 @@ export type WSMessageType =
   | 'permission_resolved'
   | 'system_item_updated'
   | 'task_updated'
-  | 'plan_updated';
+  | 'plan_updated'
+  | 'task_deleted';
 
 /** Messages pushed over /api/ws — see docs/ws-protocol.md. */
 export type WSMessage =
@@ -1201,7 +1202,9 @@ export type WSMessage =
   | { type: 'permission_resolved'; payload: PermissionRequest }
   | { type: 'system_item_updated'; payload: SystemItemUpdate }
   | { type: 'task_updated'; payload: BoardTask }
-  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } };
+  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } }
+  /** A board row was permanently deleted — ids only, the row cannot be hydrated. */
+  | { type: 'task_deleted'; payload: { taskId: number; projectId: number } };
 
 // --- Fusion phase 1: task board — additive contracts --------------------------
 

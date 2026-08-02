@@ -117,6 +117,9 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/board/tasks", h.listBoardTasks)
 	mux.HandleFunc("POST /api/board/tasks", requireLocalOrigin(h.createBoardTask))
 	mux.HandleFunc("PATCH /api/board/tasks/{id}", requireLocalOrigin(h.patchBoardTask))
+	// Permanent removal of a queue row (a task that stopped being relevant).
+	// Archive keeps it on the board; this drops it. Same D4 origin hardening.
+	mux.HandleFunc("DELETE /api/board/tasks/{id}", requireLocalOrigin(h.deleteBoardTask))
 
 	// fusion phase 3: dispatcher control — status + pause/resume (global or
 	// per-project). The pause write carries the same D4 origin hardening.

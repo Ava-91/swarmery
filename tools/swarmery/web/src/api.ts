@@ -747,7 +747,7 @@ export interface CreateBoardTaskInput {
   boardColumn?: BoardColumn;
 }
 
-/** POST /api/board/tasks → 201 BoardTask. QuickEntry sends {title,prompt=title}. */
+/** POST /api/board/tasks → 201 BoardTask (sent by the board's create modal). */
 export async function createBoardTask(input: CreateBoardTaskInput): Promise<BoardTask> {
   if (MOCK) return mockApi.createBoardTask(input);
   const res = await fetch('/api/board/tasks', {
@@ -794,6 +794,20 @@ export async function patchBoardTask(id: number, patch: PatchBoardTaskInput): Pr
     throw new Error(data.error ?? `patch task failed: ${String(res.status)}`);
   }
   return (await res.json()) as BoardTask;
+}
+
+/**
+ * DELETE /api/board/tasks/{id} → 204. Permanent removal of a task that stopped
+ * being relevant (Archive only parks it). A RUNNING task is refused with 409 —
+ * the thrown message is the server's explanation, shown as-is in the UI.
+ */
+export async function deleteBoardTask(id: number): Promise<void> {
+  if (MOCK) return mockApi.deleteBoardTask(id);
+  const res = await fetch(`/api/board/tasks/${String(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `delete task failed: ${String(res.status)}`);
+  }
 }
 
 /** GET /api/dispatch — dispatcher status snapshot (503 when not attached). */
