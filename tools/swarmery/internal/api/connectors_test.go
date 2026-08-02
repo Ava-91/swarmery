@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -281,6 +282,61 @@ func TestConnectorsListError(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("list-error status = %d, want 500", resp.StatusCode)
+	}
+}
+
+// TestConnectorsClaudeNotFound503 pins the contract the web layer degrades on:
+// a claude binary the daemon cannot locate is 503 + {error, hint} on ALL three
+// verbs — the same "unavailable" class as an unattached reader — and the hint
+// names the escape hatch. A missing CLI is a host condition, not a 500.
+func TestConnectorsClaudeNotFound503(t *testing.T) {
+	notFound := fmt.Errorf("%w: boom", mcpcfg.ErrClaudeNotFound)
+
+	newReq := func(t *testing.T, srv *httptest.Server) []*http.Request {
+		t.Helper()
+		get, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/connectors", nil)
+		post, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/connectors",
+			strings.NewReader(`{"name":"x","transport":"http","url":"https://e.example.com/mcp","scope":"user"}`))
+		post.Header.Set("Content-Type", "application/json")
+		del, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/connectors/x?scope=user", nil)
+		return []*http.Request{get, post, del}
+	}
+
+	rr := &recordingRunner{err: notFound}
+	srv := connectorsTestServer(t, rr)
+
+	for _, req := range newReq(t, srv) {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", req.Method, err)
+		}
+		var body map[string]string
+		decErr := json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s status = %d, want 503", req.Method, resp.StatusCode)
+		}
+		if decErr != nil {
+			t.Fatalf("%s body decode: %v", req.Method, decErr)
+		}
+		if body["error"] == "" {
+			t.Errorf("%s: empty error field in %v", req.Method, body)
+		}
+		if body["hint"] == "" {
+			t.Errorf("%s: empty hint field in %v", req.Method, body)
+		}
+		if !strings.Contains(body["hint"], "SWARMERY_CLAUDE_BIN") {
+			t.Errorf("%s hint = %q, want it to name SWARMERY_CLAUDE_BIN", req.Method, body["hint"])
+		}
+		// The 503 body is static: it must not carry filesystem detail.
+		for _, leak := range []string{"/Users/", "/home/"} {
+			for k, v := range body {
+				if strings.Contains(v, leak) {
+					t.Errorf("%s: field %q leaks %q: %q", req.Method, k, leak, v)
+				}
+			}
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -17,7 +18,13 @@ import (
 
 // Config tunes the live ingest pipeline. Zero values fall back to defaults.
 type Config struct {
-	ProjectsRoot   string        // e.g. ~/.claude/projects
+	// ProjectsRoots are the Claude Code transcript roots to ingest, in
+	// priority order. Plural because ONE machine can run several Claude Code
+	// subscriptions side by side (CLAUDE_CONFIG_DIR): every config dir
+	// ~/.claude, ~/.claude-<account>, … owns its own projects/ subtree, and a
+	// single-root daemon is blind to all but one of them. A one-element list
+	// behaves exactly like the old single root.
+	ProjectsRoots  []string      // e.g. [~/.claude/projects, ~/.claude-work/projects]
 	RescanInterval time.Duration // fallback full rescan cadence (default 2s)
 	StatusInterval time.Duration // session-status ticker cadence (default 10s)
 	Thresholds     Thresholds    // active/idle windows (default 2m/30m)
@@ -40,6 +47,27 @@ func (c Config) withDefaults() Config {
 	}
 	c.Thresholds = c.Thresholds.orDefaults()
 	return c
+}
+
+// ErrNoProjectsRoots is returned when NOT ONE configured projects root exists
+// on this machine — the multi-root spelling of the old single-root "projects
+// root: no such file or directory" refusal. Individually missing roots are
+// only warnings (see Pipeline.Run).
+var ErrNoProjectsRoots = errors.New("no configured projects root exists")
+
+// ExistingRoots partitions configured projects roots into the ones that are
+// directories on this machine and the ones that are not. Shared by the daemon
+// (Pipeline.Run) and the one-shot `swarmery backfill` so both apply the same
+// tolerate-some / refuse-all rule.
+func ExistingRoots(roots []string) (present, missing []string) {
+	for _, r := range roots {
+		if fi, err := os.Stat(r); err == nil && fi.IsDir() {
+			present = append(present, r)
+			continue
+		}
+		missing = append(missing, r)
+	}
+	return present, missing
 }
 
 // Metrics are cumulative pipeline counters (logged periodically).
@@ -95,33 +123,68 @@ func (p *Pipeline) Metrics() Metrics {
 	return p.metrics
 }
 
-// discover lists every transcript under the projects root: main transcripts
-// first, then sidechains — so parent subagent_start events exist before their
-// sidechain files are ingested (§1/§7 layout). Excluded project dirs are
-// dropped here, covering both the backfill and the rescan safety net.
-func (p *Pipeline) discover() []string {
-	root := p.cfg.ProjectsRoot
-	mains, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
-	sides, _ := filepath.Glob(filepath.Join(root, "*", "*", "subagents", "agent-*.jsonl"))
-	sort.Strings(mains)
-	sort.Strings(sides)
-	all := append(mains, sides...)
-	if len(p.cfg.Exclude) == 0 {
-		return all
-	}
-	kept := all[:0]
-	for _, f := range all {
-		if !p.excluded(f) {
-			kept = append(kept, f)
-		}
-	}
-	return kept
+// scanned is one discovered transcript together with the projects root it was
+// found under. The root is the ACCOUNT dimension on a multi-subscription
+// machine (see Config.ProjectsRoots) and has to travel with the path: two
+// roots can hold same-named project dirs, and the file path alone does not say
+// which subscription produced it.
+type scanned struct {
+	path string
+	root string
 }
 
-// excluded reports whether a transcript path lives under an excluded project
-// dir (first path element below the projects root, flattened-name match).
-func (p *Pipeline) excluded(path string) bool {
-	rel, err := filepath.Rel(p.cfg.ProjectsRoot, path)
+// discover lists every transcript under every projects root: per root, main
+// transcripts first, then sidechains — so parent subagent_start events exist
+// before their sidechain files are ingested (§1/§7 layout). Roots are walked
+// in configured order and never interleave, so the ordering guarantee holds
+// per root, which is all it ever needed (a sidechain lives under its main
+// transcript's root by construction). Excluded project dirs are dropped here,
+// covering both the backfill and the rescan safety net.
+func (p *Pipeline) discover() []scanned {
+	var out []scanned
+	for _, root := range p.cfg.ProjectsRoots {
+		mains, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
+		sides, _ := filepath.Glob(filepath.Join(root, "*", "*", "subagents", "agent-*.jsonl"))
+		sort.Strings(mains)
+		sort.Strings(sides)
+		for _, f := range append(mains, sides...) {
+			if p.excludedUnder(root, f) {
+				continue
+			}
+			out = append(out, scanned{path: f, root: root})
+		}
+	}
+	return out
+}
+
+// rootFor resolves which configured projects root a path came from. fsnotify
+// hands us bare paths (no scan context), so the mapping must be recoverable
+// from the path alone; the LONGEST matching root wins, so a root nested inside
+// another one still attributes its own files. "" when the path is under none
+// of the roots.
+func (p *Pipeline) rootFor(path string) string {
+	best := ""
+	for _, root := range p.cfg.ProjectsRoots {
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if len(root) > len(best) {
+			best = root
+		}
+	}
+	return best
+}
+
+// excludedUnder reports whether a transcript path lives under an excluded
+// project dir (first path element below ITS projects root, flattened-name
+// match). An empty root (path under no configured root) is never excluded —
+// the same posture the single-root code had for out-of-root paths.
+func (p *Pipeline) excludedUnder(root, path string) bool {
+	if root == "" || len(p.cfg.Exclude) == 0 {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return false
 	}
@@ -154,7 +217,7 @@ func (p *Pipeline) Backfill(ctx context.Context) Metrics {
 	// unchanged transcripts are offset no-ops, so the per-batch upsert heal
 	// would never see them again — re-attribute from the transcript files and
 	// emit session_updated so open dashboards converge.
-	if ids, err := HealStubSessions(p.db, p.cfg.ProjectsRoot, p.cfg.Exclude); err != nil {
+	if ids, err := HealStubSessions(p.db, p.cfg.ProjectsRoots, p.cfg.Exclude); err != nil {
 		log.Printf("warn: ingest: heal stub sessions: %v", err)
 	} else if len(ids) > 0 {
 		log.Printf("ingest: healed %d stub session(s) from transcripts", len(ids))
@@ -169,18 +232,21 @@ func (p *Pipeline) Backfill(ctx context.Context) Metrics {
 		if ctx.Err() != nil {
 			break
 		}
-		p.tailOne(f, false)
+		p.tailOne(f.path, false)
 	}
 	m := p.Metrics()
 	log.Printf("ingest: backfill of %s done in %s — scanned=%d %s",
-		p.cfg.ProjectsRoot, time.Since(start).Round(time.Millisecond), len(files), m)
+		strings.Join(p.cfg.ProjectsRoots, ", "), time.Since(start).Round(time.Millisecond), len(files), m)
 	return m
 }
 
 // tailOne incrementally ingests a single file and publishes bus notifications
 // for whatever it produced. Safe to call for unchanged files (cheap no-op).
 func (p *Pipeline) tailOne(path string, logPickup bool) {
-	if p.excluded(path) {
+	// Resolve the origin root once: it gates exclusion, tags the ingest with
+	// the account dimension, and shortens the log line.
+	root := p.rootFor(path)
+	if p.excludedUnder(root, path) {
 		return // fsnotify can deliver excluded paths directly — filter here too
 	}
 	p.mu.Lock()
@@ -190,7 +256,7 @@ func (p *Pipeline) tailOne(path string, logPickup bool) {
 	}
 	p.mu.Unlock()
 
-	res, err := TailFile(p.db, path, p.cfg.Thresholds)
+	res, err := TailFile(p.db, path, root, p.cfg.Thresholds)
 	now := time.Now()
 
 	p.mu.Lock()
@@ -220,7 +286,7 @@ func (p *Pipeline) tailOne(path string, logPickup bool) {
 	}
 	if res.Lines > 0 && logPickup {
 		log.Printf("ingest: %s: +%d lines, +%d events (lag %s)",
-			shortPath(path, p.cfg.ProjectsRoot), res.Lines, len(res.NewEventIDs),
+			shortPath(path, root), res.Lines, len(res.NewEventIDs),
 			lagFrom(res.LastTS, now).Round(time.Millisecond))
 	}
 
@@ -255,17 +321,17 @@ func (p *Pipeline) tailOne(path string, logPickup bool) {
 // whose size or inode disagree with the cached offset state.
 func (p *Pipeline) rescan() {
 	for _, f := range p.discover() {
-		fi, err := os.Stat(f)
+		fi, err := os.Stat(f.path)
 		if err != nil {
 			continue // vanished mid-scan — next rescan sorts it out
 		}
 		p.mu.Lock()
-		st, ok := p.state[f]
+		st, ok := p.state[f.path]
 		p.mu.Unlock()
 		if ok && st.offset == fi.Size() && st.inode == inodeOf(fi) {
 			continue
 		}
-		p.tailOne(f, true)
+		p.tailOne(f.path, true)
 	}
 }
 
@@ -321,8 +387,16 @@ func (p *Pipeline) recomputeStatuses() {
 // fsnotify watches (best-effort; macOS kqueue needs per-directory watches and
 // can hit fd limits on big roots) with the periodic rescan as the safety net.
 func (p *Pipeline) Run(ctx context.Context) error {
-	if _, err := os.Stat(p.cfg.ProjectsRoot); err != nil {
-		return fmt.Errorf("projects root: %w", err)
+	// A configured root that is not on THIS machine is logged and skipped, not
+	// fatal: a roots list is shared across machines (dotfiles, launchd plists)
+	// and names config dirs only some of them have. All roots missing keeps
+	// the single-root contract verbatim — a hard error.
+	present, missing := ExistingRoots(p.cfg.ProjectsRoots)
+	for _, r := range missing {
+		log.Printf("warn: ingest: projects root %s does not exist — skipped", r)
+	}
+	if len(present) == 0 {
+		return fmt.Errorf("projects root: %w", ErrNoProjectsRoots)
 	}
 	p.Backfill(ctx)
 
@@ -407,20 +481,26 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 }
 
-// addWatchTree registers the root plus every existing project, session
-// companion, and subagents directory. Failures are logged once and tolerated.
+// addWatchTree registers EVERY root plus its existing project, session
+// companion, and subagents directories. Failures are logged once and
+// tolerated. Missing roots are skipped silently — Run already named them.
 func (p *Pipeline) addWatchTree(w *fsnotify.Watcher) {
-	p.watchDir(w, p.cfg.ProjectsRoot)
 	levels := [][]string{
 		{"*"},                   // project dirs
 		{"*", "*"},              // session companion dirs
 		{"*", "*", "subagents"}, // sidechain dirs
 	}
-	for _, lvl := range levels {
-		dirs, _ := filepath.Glob(filepath.Join(append([]string{p.cfg.ProjectsRoot}, lvl...)...))
-		for _, d := range dirs {
-			if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-				p.watchDir(w, d)
+	for _, root := range p.cfg.ProjectsRoots {
+		if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+			continue
+		}
+		p.watchDir(w, root)
+		for _, lvl := range levels {
+			dirs, _ := filepath.Glob(filepath.Join(append([]string{root}, lvl...)...))
+			for _, d := range dirs {
+				if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+					p.watchDir(w, d)
+				}
 			}
 		}
 	}

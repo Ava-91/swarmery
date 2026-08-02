@@ -398,7 +398,7 @@ func TestCaptureTodosPublishesOncePerInsert(t *testing.T) {
 	path := filepath.Join(dir, "todo-capture-session.jsonl")
 	copyFixtureFile(t, "todo-capture-session.jsonl", path)
 
-	res, err := TailFile(db, path, Thresholds{})
+	res, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatalf("first tail: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestCaptureTodosPublishesOncePerInsert(t *testing.T) {
 	if _, err := db.Exec(`DELETE FROM file_offsets`); err != nil {
 		t.Fatal(err)
 	}
-	res2, err := TailFile(db, path, Thresholds{})
+	res2, err := TailFile(db, path, "", Thresholds{})
 	if err != nil {
 		t.Fatalf("replay tail: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestCaptureSessionCardOnStatusTicker(t *testing.T) {
 	notes, cancel := bus.Subscribe(32)
 	defer cancel()
 
-	p := NewPipeline(db, Config{ProjectsRoot: t.TempDir()}, bus)
+	p := NewPipeline(db, Config{ProjectsRoots: []string{t.TempDir()}}, bus)
 	p.recomputeStatuses()
 
 	var status string

@@ -33,6 +33,7 @@ import type {
   OnboardConfig,
   PlaybookRollup,
   ProductivityResp,
+  UsageLoginStart,
   UsageResp,
   OnboardRequest,
   OnboardResponse,
@@ -498,6 +499,51 @@ export function fetchPlaybookStats(range: AnalyticsRange = {}): Promise<Playbook
 export function fetchUsage(fresh = false): Promise<UsageResp> {
   if (MOCK) return mockApi.usage();
   return get(`/api/usage${fresh ? '?fresh=1' : ''}`);
+}
+
+/**
+ * POST /api/usage/accounts/{account}/login/start — begin connecting an account
+ * swarmery cannot read a credential for. Returns the URL to open in a browser;
+ * the PKCE verifier and CSRF state stay in the daemon.
+ */
+export async function startUsageLogin(account: string): Promise<UsageLoginStart> {
+  if (MOCK) throw new Error('connecting an account is not available in mock mode');
+  const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login/start`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not start the connection'));
+  return (await res.json()) as UsageLoginStart;
+}
+
+/**
+ * POST /api/usage/accounts/{account}/login/complete — finish the connection with
+ * the "code#state" value the callback page shows. The daemon exchanges it and
+ * stores the credential; nothing is echoed back.
+ */
+export async function completeUsageLogin(account: string, code: string): Promise<void> {
+  if (MOCK) throw new Error('connecting an account is not available in mock mode');
+  const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not complete the connection'));
+}
+
+/**
+ * DELETE /api/usage/accounts/{account}/login — disconnect an account.
+ *
+ * Removes the credential swarmery's own store holds for it, and nothing else:
+ * the `claude` CLI's credential file and the macOS keychain item are untouched,
+ * and nothing is revoked upstream at Anthropic. Idempotent — an account that is
+ * already disconnected answers 200 too.
+ */
+export async function disconnectUsageAccount(account: string): Promise<void> {
+  if (MOCK) throw new Error('disconnecting an account is not available in mock mode');
+  const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not disconnect the account'));
 }
 
 // --- retro loop (per-agent scorecards + friction board) -----------------------
@@ -1285,9 +1331,39 @@ export async function serenaStop(id: number): Promise<void> {
 
 // --- connectors (MCP servers) --------------------------------------------------
 
-export function fetchConnectors(): Promise<ConnectorsResponse> {
+/**
+ * Thrown when the daemon cannot serve connectors at all (HTTP 503): the reader
+ * is not attached, or the `claude` CLI is not findable from the daemon's PATH.
+ * Distinct from a plain Error so the UI can degrade to a muted "unavailable"
+ * card instead of a red failure — this is a host condition, not a bug.
+ */
+export class ConnectorsUnavailableError extends Error {
+  /** The daemon's actionable remedy, when it sent one. */
+  readonly hint: string | null;
+
+  constructor(message: string, hint: string | null) {
+    super(message);
+    this.name = 'ConnectorsUnavailableError';
+    this.hint = hint;
+  }
+}
+
+/**
+ * GET /api/connectors. Deliberately does NOT use the shared `get<T>` helper:
+ * that one discards the response body, and the 503 body's `error`/`hint` is the
+ * whole point — it is what tells the operator how to fix an unfindable CLI.
+ */
+export async function fetchConnectors(): Promise<ConnectorsResponse> {
   if (MOCK) return mockApi.connectors();
-  return get<ConnectorsResponse>('/api/connectors');
+  const res = await fetch('/api/connectors');
+  if (res.status === 503) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string; hint?: string };
+    throw new ConnectorsUnavailableError(data.error ?? 'connectors unavailable', data.hint ?? null);
+  }
+  if (!res.ok) {
+    throw new Error(`GET /api/connectors: ${String(res.status)}`);
+  }
+  return (await res.json()) as ConnectorsResponse;
 }
 
 /** Add a stdio/http/sse MCP server; the daemon returns the refreshed list. */

@@ -698,6 +698,224 @@ func TestFetchAcceptsCredsWithoutScopes(t *testing.T) {
 	}
 }
 
+// ── provenance: which store this card's credential came from ───────────────
+
+// TestFetchCarriesCredentialProvenance: a card read with a credential from
+// SWARMERY'S OWN store says so, and one read from the CLI's file says nothing.
+// Two UI decisions hang off it — whether the card may offer to delete the
+// connection (only ours are ours to delete), and whether a FAILING card should
+// offer to re-authorize here rather than print a `claude` command.
+func TestFetchCarriesCredentialProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fromStore bool
+		want      string
+	}{
+		{"connected through swarmery", true, ConnectedViaSwarmery},
+		{"logged in with the CLI", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStub(t, serveJSON(fixture(t, "usage-full.json")), nil)
+			creds := testCreds()
+			creds.FromStore = tc.fromStore
+			c, _ := newClient(s, creds)
+
+			p := c.Fetch(context.Background())
+			if p.Status != StatusOK {
+				t.Fatalf("status = %q (%s), want ok", p.Status, p.Error)
+			}
+			if p.ConnectedVia != tc.want {
+				t.Errorf("connectedVia = %q, want %q", p.ConnectedVia, tc.want)
+			}
+		})
+	}
+}
+
+// TestStoreCredentialFailuresPointAtTheDashboard is the reconnect contract. When
+// a credential from swarmery's own store goes bad, `claude` cannot fix it — the
+// CLI does not write to that store — so the hint must carry NO command and say
+// where the real remedy is. The same failure on a CLI-sourced credential keeps
+// the command it has always had; that is the control, and it is what makes this
+// test about provenance rather than about wording.
+func TestStoreCredentialFailuresPointAtTheDashboard(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// setup builds the failing upstream plus the credential it fails with.
+		setup    func(t *testing.T) (*stub, *Creds)
+		kind     string
+		wantMsg  string
+		wantCard bool // still marked as ours (the no-credential case is not)
+	}{
+		{
+			name: "refresh declined",
+			setup: func(t *testing.T) (*stub, *Creds) {
+				s := newStub(t, serveJSON([]byte(`{}`)),
+					func(_ int, w http.ResponseWriter) { w.WriteHeader(http.StatusBadRequest) })
+				creds := testCreds()
+				creds.ExpiresAt = testNow.Add(-time.Hour).UnixMilli()
+				return s, creds
+			},
+			kind: HintLogin, wantMsg: "refresh failed", wantCard: true,
+		},
+		{
+			name: "token rejected",
+			setup: func(t *testing.T) (*stub, *Creds) {
+				s := newStub(t, func(_ int, w http.ResponseWriter) {
+					w.WriteHeader(http.StatusUnauthorized)
+				}, nil)
+				return s, testCreds()
+			},
+			kind: HintLogin, wantMsg: "auth rejected", wantCard: true,
+		},
+		{
+			name: "expired with nothing to refresh",
+			setup: func(t *testing.T) (*stub, *Creds) {
+				s := newStub(t, serveJSON([]byte(`{}`)), nil)
+				creds := testCreds()
+				creds.ExpiresAt = testNow.Add(-time.Hour).UnixMilli()
+				creds.RefreshToken = ""
+				return s, creds
+			},
+			kind: HintLogin, wantMsg: "expired", wantCard: true,
+		},
+		{
+			name: "missing user:profile scope",
+			setup: func(t *testing.T) (*stub, *Creds) {
+				s := newStub(t, serveJSON([]byte(`{}`)), nil)
+				creds := testCreds()
+				creds.Scopes = []string{"user:inference"}
+				return s, creds
+			},
+			kind: HintScope, wantMsg: "user:profile", wantCard: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("connected through swarmery", func(t *testing.T) {
+				s, creds := tc.setup(t)
+				creds.FromStore = true
+				c, _ := newClient(s, creds)
+
+				p := c.Fetch(context.Background())
+				if p.Status != StatusNoAuth || p.Hint == nil {
+					t.Fatalf("status = %q hint = %v, want a setup card", p.Status, p.Hint)
+				}
+				if p.Hint.Kind != tc.kind {
+					t.Errorf("hint kind = %q, want %q", p.Hint.Kind, tc.kind)
+				}
+				if tc.wantCard && p.ConnectedVia != ConnectedViaSwarmery {
+					t.Errorf("connectedVia = %q, want %q — the UI cannot offer a reconnect without it",
+						p.ConnectedVia, ConnectedViaSwarmery)
+				}
+				if p.Hint.Command != "" {
+					t.Errorf("hint command = %q, want none — `claude` does not write to swarmery's store",
+						p.Hint.Command)
+				}
+				if !strings.Contains(p.Hint.Detail, "reconnect") {
+					t.Errorf("hint detail = %q, want it to point at reconnecting from the card", p.Hint.Detail)
+				}
+			})
+
+			t.Run("logged in with the CLI", func(t *testing.T) {
+				s, creds := tc.setup(t)
+				c, _ := newClient(s, creds)
+
+				p := c.Fetch(context.Background())
+				wantSetupCard(t, p, tc.kind, tc.wantMsg)
+				if p.Hint.Command != "claude" {
+					t.Errorf("hint command = %q, want the CLI login", p.Hint.Command)
+				}
+				if strings.Contains(p.Hint.Detail, "reconnect") {
+					t.Errorf("hint detail = %q, want no dashboard-reconnect wording for a CLI credential",
+						p.Hint.Detail)
+				}
+				if p.ConnectedVia != "" {
+					t.Errorf("connectedVia = %q, want empty for a CLI credential", p.ConnectedVia)
+				}
+			})
+		})
+	}
+}
+
+// TestNoCredentialKeepsTheCLIRemedy: with nothing resolved at all there is no
+// swarmery connection to repair, so the card keeps pointing at the CLI login —
+// the reconnect wording is for credentials we own, not for empty accounts.
+func TestNoCredentialKeepsTheCLIRemedy(t *testing.T) {
+	s := newStub(t, serveJSON([]byte(`{}`)), nil)
+	c, _ := newClient(s, nil)
+
+	p := c.Fetch(context.Background())
+	wantSetupCard(t, p, HintLogin, "No Claude credentials")
+	if p.ConnectedVia != "" {
+		t.Errorf("connectedVia = %q, want empty when no credential resolved", p.ConnectedVia)
+	}
+	if p.Hint.Command != "claude" {
+		t.Errorf("hint command = %q, want the CLI login", p.Hint.Command)
+	}
+}
+
+// TestDisconnectStopsTheReplayedBearer is the client-reset half of a disconnect,
+// and the reason Disconnect is a Client method rather than a bare store call:
+// the daemon caches a refreshed bearer in memory for its lifetime, so removing
+// the file alone would leave the account still reading its quota with a token
+// the operator just disconnected — until the daemon restarted.
+//
+// The account keeps a CLI credential here, so the next poll still succeeds. That
+// is what makes the assertion sharp: the bearer it sends must be the CLI's, and
+// never the one the disconnected session refreshed.
+func TestDisconnectStopsTheReplayedBearer(t *testing.T) {
+	useTempStore(t)
+	const cliToken = "NOT-A-REAL-TOKEN-cli-access"
+	cliDir := filepath.Join(t.TempDir(), ".claude-nabu-org")
+	writeCredFileAt(t, cliDir, cliToken, testNow.Add(8*time.Hour))
+	if err := writeStoredCreds("nabu-org", storeFixtureCreds()); err != nil {
+		t.Fatalf("writeStoredCreds: %v", err)
+	}
+
+	body := fixture(t, "usage-full.json")
+	// One 401 forces exactly one refresh, which is what puts a bearer in the
+	// in-memory cache; everything after that is a normal 200.
+	s := newStub(t, func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		serveJSON(body)(attempt, w)
+	}, nil) // nil refresh handler mints "refreshed-token"
+
+	c := &Client{
+		HTTP:     s.srv.Client(),
+		Now:      func() time.Time { return testNow },
+		APIBase:  s.srv.URL,
+		AuthBase: s.srv.URL,
+		Src:      Source{Account: "nabu-org", ConfigDir: cliDir},
+	}
+
+	if p := c.Fetch(context.Background()); p.Status != StatusOK {
+		t.Fatalf("connected fetch = %q (%s), want ok", p.Status, p.Error)
+	}
+	if c.cachedToken() == "" {
+		t.Fatal("no bearer was cached; the replay this test guards against never happened")
+	}
+
+	if err := c.Disconnect(); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if p := c.Fetch(context.Background()); p.Status != StatusOK {
+		t.Fatalf("post-disconnect fetch = %q (%s), want ok from the CLI credential", p.Status, p.Error)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.bearers) < 3 {
+		t.Fatalf("bearers = %d, want the two connected calls plus the one after the disconnect", len(s.bearers))
+	}
+	for _, b := range s.bearers[2:] {
+		if b != "Bearer "+cliToken {
+			t.Errorf("post-disconnect bearer is not the CLI credential's token (got a %d-char value)", len(b))
+		}
+	}
+}
+
 // TestFetchHonoursOptOutEndToEnd exercises the real LoadCreds (not the seam):
 // with SWARMERY_USAGE_OAUTH=0 and a perfectly good credential file on disk,
 // Fetch must still return no-auth.
@@ -728,6 +946,68 @@ func TestFetchHonoursOptOutEndToEnd(t *testing.T) {
 	p := c.Fetch(context.Background())
 	if p.Status != StatusNoAuth || !strings.Contains(p.Error, "SWARMERY_USAGE_OAUTH=0") {
 		t.Errorf("provider = %q / %q, want the opt-out card", p.Status, p.Error)
+	}
+}
+
+// TestFetchScopedAccountSpeaksForItsOwnAccount exercises the real per-account
+// resolution (no LoadCreds seam). A client pointed at an account's config dir
+// must, when that account has no credential, render a CONNECT card for THAT
+// account: its own key on the card, its own dir as the only place looked, and a
+// command that actually logs THAT account in — a bare `claude` would re-login
+// the default account and leave the card exactly as it was. Both decoys (the
+// default account's file and CLAUDE_CONFIG_DIR) are populated, so any leak
+// would show up here as a healthy card.
+func TestFetchScopedAccountSpeaksForItsOwnAccount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeCredFile(t, filepath.Join(home, ".claude"))
+	t.Setenv(configDirEnv, filepath.Join(home, ".claude"))
+	stubKeychain(t, func(context.Context) *Creds {
+		t.Error("keychain consulted for a scoped account — that item is the default account's login")
+		return nil
+	})
+
+	dir := filepath.Join(home, ".claude-nabu-org")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir account config dir: %v", err)
+	}
+	s := newStub(t, serveJSON(fixture(t, "usage-full.json")), nil)
+	c := &Client{
+		HTTP:     s.srv.Client(),
+		Now:      func() time.Time { return testNow },
+		APIBase:  s.srv.URL,
+		AuthBase: s.srv.URL,
+		Src:      Source{Account: "nabu-org", ConfigDir: dir},
+	}
+
+	p := c.Fetch(context.Background())
+	wantSetupCard(t, p, HintLogin, "No Claude credentials")
+	if p.Account != "nabu-org" {
+		t.Errorf("card account = %q, want nabu-org", p.Account)
+	}
+	if want := configDirEnv + "=" + dir + " claude"; p.Hint.Command != want {
+		t.Errorf("hint command = %q, want %q", p.Hint.Command, want)
+	}
+	// The account's own config-dir file, preceded only by its swarmery-store
+	// path (rung 2's Connect target) — and never the keychain, which holds the
+	// DEFAULT account's login.
+	wantSources := []string{
+		filepath.Join(home, ".swarmery", "credentials", "nabu-org.json"),
+		filepath.Join(dir, credentialsFile),
+	}
+	if len(p.Hint.Sources) != len(wantSources) {
+		t.Fatalf("hint sources = %v, want %v", p.Hint.Sources, wantSources)
+	}
+	for i := range wantSources {
+		if p.Hint.Sources[i] != wantSources[i] {
+			t.Errorf("hint sources[%d] = %q, want %q", i, p.Hint.Sources[i], wantSources[i])
+		}
+	}
+
+	// …and once that account HAS logged in, the same client reads its quota.
+	writeCredFile(t, dir)
+	if got := c.Fetch(context.Background()); got.Status != StatusOK || got.Account != "nabu-org" {
+		t.Errorf("after login: status %q account %q (%s), want ok/nabu-org", got.Status, got.Account, got.Error)
 	}
 }
 

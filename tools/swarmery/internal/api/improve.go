@@ -34,6 +34,24 @@ var improveRepoRoot string
 
 // AttachImproveRepo points the apply/PR pipeline at the marketplace clone under
 // claudeDir. Call with the same resolved --claude-dir the sys scanner uses.
+//
+// DELIBERATELY NOT RESOLVED through internal/marketplace's catalogRoot, even
+// though that function now reads the same marketplace's real location out of
+// plugins/known_marketplaces.json. The divergence is the point, not an
+// oversight — do not "fix the inconsistency".
+//
+// internal/marketplace is a READER: the worst a wrong root costs it is a stale
+// or missing catalog. This root is a WRITE target. internal/improve/apply.go
+// runs `git fetch origin main` (apply.go:137), `git worktree add -f <tmp>
+// origin/main -b <branch>` (:140), `git commit` (:209) and `git push
+// --force-with-lease -u origin <branch>` (:212) against it.
+//
+// For a directory-source marketplace, installLocation is the operator's LIVE
+// DEVELOPMENT CHECKOUT (e.g. ~/projects/<repo>) — not a throwaway clone.
+// Repointing this variable would aim branch creation, worktree add and a
+// force-push at the tree the operator is working in. Left hardcoded, the path
+// simply does not exist on such a machine and every git op fails harmlessly,
+// which is the safe failure mode.
 func AttachImproveRepo(claudeDir string) {
 	if claudeDir == "" {
 		return

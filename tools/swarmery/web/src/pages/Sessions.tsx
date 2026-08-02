@@ -14,6 +14,7 @@ import { fetchSessions } from '../api';
 import { liveActionText } from '../lib/payload';
 import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
+import { accountKey, accountKeys } from '../lib/sessionAccount';
 import { applySessionMessage, useLiveUpdates } from '../lib/ws';
 import { ExplainPair } from '../components/Explain';
 import { PageSearchInput } from '../components/PageSearchInput';
@@ -79,6 +80,41 @@ function StatusChips({
       {STATUSES.map((s) => (
         <FilterChip key={s} selected={status === s} onClick={() => onStatus(status === s ? null : s)}>
           {counts[s] > 0 ? `${STATUS_LABELS[s]} · ${String(counts[s])}` : STATUS_LABELS[s]}
+        </FilterChip>
+      ))}
+    </>
+  );
+}
+
+/** Subscription chips (migration 0047) — rendered ONLY when the loaded list
+ * spans more than one Claude Code account. A one-subscription machine (the
+ * common case) gets no extra control: a filter whose every value selects the
+ * whole list is a decoration, not a filter.
+ *
+ * Client-side like the status chips, and for the same reason: the API's
+ * ?account= filter would shrink the loaded window, and the chip counts are
+ * computed over exactly the rows this page holds. */
+function AccountChips({
+  keys,
+  account,
+  onAccount,
+  counts,
+}: {
+  keys: string[];
+  account: string | null;
+  onAccount: (a: string | null) => void;
+  counts: Record<string, number>;
+}): JSX.Element | null {
+  if (keys.length < 2) return null;
+  return (
+    <>
+      {keys.map((k) => (
+        <FilterChip
+          key={k}
+          selected={account === k}
+          onClick={() => onAccount(account === k ? null : k)}
+        >
+          {`${k} · ${String(counts[k] ?? 0)}`}
         </FilterChip>
       ))}
     </>
@@ -251,6 +287,8 @@ export function Sessions(): JSX.Element {
   const effectiveScope = slug !== undefined ? scope : null;
   const query = usePageSearch();
   const [status, setStatus] = useState<SessionStatus | null>(null);
+  // null = every subscription (migration 0047); a key narrows to one account.
+  const [account, setAccount] = useState<string | null>(null);
   // null = follow the default (grouped whenever the result set HAS a plan
   // group); a boolean is the operator's explicit override for this visit.
   const [groupPref, setGroupPref] = useState<boolean | null>(null);
@@ -377,10 +415,20 @@ export function Sessions(): JSX.Element {
   };
   for (const s of loaded) counts[s.status] += 1;
 
-  // Status filtering happens HERE, before either grouping pass, so both views
-  // show exactly the same rows — only their arrangement differs.
+  // Subscription tallies over the same pre-status list, so switching status
+  // never changes what the account chips offer.
+  const accounts = accountKeys(loaded);
+  const accountCounts: Record<string, number> = {};
+  for (const s of loaded) {
+    const k = accountKey(s);
+    accountCounts[k] = (accountCounts[k] ?? 0) + 1;
+  }
+
+  // Status + account filtering happens HERE, before either grouping pass, so
+  // both views show exactly the same rows — only their arrangement differs.
   const sorted = loaded
     .filter((s) => status === null || s.status === status)
+    .filter((s) => account === null || accountKey(s) === account)
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const groups = groupByDay(sorted);
 
@@ -419,6 +467,12 @@ export function Sessions(): JSX.Element {
           filtering lives in the sidebar scope switcher; ⌘K opens global search. */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
         <StatusChips status={status} onStatus={setStatus} counts={counts} />
+        <AccountChips
+          keys={accounts}
+          account={account}
+          onAccount={setAccount}
+          counts={accountCounts}
+        />
         {/* Offered only when the loaded list actually holds a plan run —
             otherwise the toggle would promise an arrangement it cannot make. */}
         {hasPlanGroups && (
@@ -437,6 +491,8 @@ export function Sessions(): JSX.Element {
             <>no sessions match the current filter — try a different search or clear it</>
           ) : status !== null ? (
             <>no {STATUS_LABELS[status]} sessions — clear the status filter to see the rest</>
+          ) : account !== null ? (
+            <>no sessions from the {account} account — clear the account filter to see the rest</>
           ) : (
             <>
               no sessions yet — run{' '}

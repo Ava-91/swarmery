@@ -598,10 +598,12 @@ into a plugin** (policy: [docs/NEUTRALITY.md](docs/NEUTRALITY.md), enforced in C
 | Variable | Default | Effect |
 |---|---|---|
 | `SWARMERY_PORT` | `7777` | Listen port. |
-| `SWARMERY_PROJECTS_ROOT` | `~/.claude/projects` | Where transcripts are watched. |
+| `SWARMERY_PROJECTS_ROOTS` | `~/.claude/projects` | Comma-separated transcript roots — one per Claude Code config dir, for machines running several subscriptions via `CLAUDE_CONFIG_DIR`. `auto` = every `~/.claude*/projects` that exists. A root that is missing on this machine is logged and skipped. Each session is stamped with the account its root names (`~/.claude-nabu-org` → `nabu-org`, plain `~/.claude` → the default), so the sessions list can filter by subscription and `GET /api/stats/breakdown?by=account` splits cost per plan. |
+| `SWARMERY_PROJECTS_ROOT` | *(unset)* | Legacy singular form of the above; honored as a one-element list. |
 | `SWARMERY_WORKSPACE_ROOT` | `~/swarmery-workspace` | Private workspace repo root (plans, tasks). |
 | `SWARMERY_EXCLUDE` | `/tmp/*,/private/tmp/*` | Comma-separated project paths to ignore. |
 | `SWARMERY_ONBOARD_ROOTS` | *(empty — disabled)* | Allow-list of parents the dashboard may onboard under. |
+| `SWARMERY_SETTINGS_OVERLAYS` | `~/.swarmery/overlays.json` | Path to a descriptor of settings files that also apply to given project roots — for projects whose plugin set is injected at CLI precedence (`claude --settings <file>`) instead of being committed to the repo. See [Settings overlays](#settings-overlays) below. A missing or malformed file silently degrades to repo-only detection. |
 | `SWARMERY_SYSTEM_READONLY` | `0` | `1` refuses **all** config and memory writes — safe for shared machines. |
 | `SWARMERY_DISPATCH` | on | `0`/`false`/`off` disables the board→agent dispatcher. |
 | `SWARMERY_AUTOVERIFY` / `SWARMERY_ROUTINES` / `SWARMERY_AUTOPROVISION` | on | Kill-switches for verification, routines, pack auto-provisioning. |
@@ -613,6 +615,38 @@ into a plugin** (policy: [docs/NEUTRALITY.md](docs/NEUTRALITY.md), enforced in C
 `swarmery install` bakes any `SWARMERY_*` you have exported into the launchd plist.
 Flags mirror most of these (`--port`, `--bind`, `--exclude-projects`, `--workspace-root`, …);
 run `swarmery help` for the full list.
+
+<a id="settings-overlays"></a>
+**Settings overlays.** swarmery normally decides whether a project is *managed*
+(and which packs it runs) from that project's own `.claude/settings.json`. If you
+start Claude Code through a launcher that injects a settings file at CLI
+precedence — `claude --settings <file>` — and deliberately keep `enabledPlugins`
+out of the repo, the daemon would report `managed: false` for a project running
+the full plugin set in every session.
+
+Declare the extra settings file and the roots it applies to, and the dashboard
+merges it on top of the repo's own settings (the overlay wins on a key conflict,
+matching real session precedence):
+
+```jsonc
+// ~/.swarmery/overlays.json
+{
+  "overlays": [
+    {
+      "name": "acme",                                    // label echoed as provenance
+      "settingsPath": "~/launcher/orgs/acme/settings.json",
+      "roots": ["~/work/acme"]                           // this project and everything under it
+    }
+  ]
+}
+```
+
+`~` expands to your home directory. The affected API responses gain an
+`overlaySources` field naming the overlays that contributed, so a `managed: true`
+is always traceable to where it came from. Plugin **drift** detection stays
+repo-scoped on purpose (its repair writes the repo's `settings.json`), so a
+plugin enabled only by an overlay reports status `unknown` rather than a green
+`ok` — nothing checked it.
 
 </details>
 

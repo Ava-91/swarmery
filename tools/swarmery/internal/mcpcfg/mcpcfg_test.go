@@ -3,7 +3,10 @@ package mcpcfg
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -278,5 +281,71 @@ func TestNewUsesRealExec(t *testing.T) {
 	r := New()
 	if _, err := r.List(context.Background()); err != nil {
 		t.Fatalf("real List failed: %v", err)
+	}
+}
+
+// TestRedactBin is the path-leak guard: the resolved binary is an absolute path
+// under the operator's home, and exec/fs errors embed it in their message. No
+// surfaced error may carry it, because these errors reach an API response body.
+func TestRedactBin(t *testing.T) {
+	for _, bin := range []string{
+		"/Users/tester/.local/bin/claude",
+		"/home/tester/.npm-global/bin/claude",
+	} {
+		raw := fmt.Errorf("fork/exec %s: permission denied", bin)
+		got := redactBin(raw, bin)
+		msg := got.Error()
+
+		if want := "fork/exec claude: permission denied"; msg != want {
+			t.Errorf("redactBin(%q) = %q, want %q", bin, msg, want)
+		}
+		for _, leak := range []string{bin, "/Users/", "/home/"} {
+			if strings.Contains(msg, leak) {
+				t.Errorf("redacted error %q still leaks %q", msg, leak)
+			}
+		}
+		if !errors.Is(got, raw) {
+			t.Errorf("redactBin must preserve the error chain; errors.Is failed for %q", bin)
+		}
+	}
+
+	// The real home of whoever runs this must never appear either.
+	if home, err := os.UserHomeDir(); err == nil && len(home) > 1 {
+		bin := filepath.Join(home, ".local", "bin", "claude")
+		msg := redactBin(fmt.Errorf("exec %s: no such file or directory", bin), bin).Error()
+		if strings.Contains(msg, home) {
+			t.Errorf("redacted error %q leaks the real home dir", msg)
+		}
+	}
+
+	// Pass-throughs: nothing to redact, nothing changed.
+	if redactBin(nil, "/x/claude") != nil {
+		t.Error("a nil error must stay nil")
+	}
+	unrelated := errors.New("claude mcp list: context deadline exceeded")
+	if got := redactBin(unrelated, "/x/claude"); got != unrelated {
+		t.Errorf("an error without the path must pass through unchanged, got %v", got)
+	}
+}
+
+// TestExecRunnerRedactsResolvedPath drives the production runner end to end
+// against a resolved-but-missing binary (SWARMERY_CLAUDE_BIN is honoured
+// verbatim, no stat), proving the redaction is wired into execRunner itself and
+// not just available as a helper. Hermetic: no real claude involved.
+func TestExecRunnerRedactsResolvedPath(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	t.Setenv("SWARMERY_CLAUDE_BIN", bin)
+
+	_, err := execRunner(context.Background(), "mcp", "list")
+	if err == nil {
+		t.Fatal("execRunner against a missing binary must fail")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, bin) || strings.Contains(msg, dir) {
+		t.Errorf("execRunner leaked the resolved path: %q", msg)
+	}
+	if !strings.HasPrefix(msg, "claude mcp list: ") {
+		t.Errorf("execRunner error = %q, want it to keep the `claude <args>: …` shape", msg)
 	}
 }

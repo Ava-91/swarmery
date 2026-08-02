@@ -195,6 +195,15 @@ export interface Session {
   endedAt: string | null;
   title: string | null;
   source: SessionSource;
+  /**
+   * Claude Code subscription this session ran under (migration 0047), derived
+   * at ingest from its transcript root's config dir: '' or 'default' for the
+   * stock ~/.claude, otherwise the suffix ('nabu-org' for ~/.claude-nabu-org).
+   * Additive optional — absent on responses from an older daemon. Only
+   * NON-default values are surfaced (accountLabel), so a single-subscription
+   * machine sees no account UI at all.
+   */
+  account?: string;
   /** Aggregate SUM(turns.tokens_in + tokens_out) — parity wave; optional until backend lands. */
   tokens?: number | null;
   /** Aggregate SUM(turns.cost_usd) — parity wave; optional until backend lands. */
@@ -766,6 +775,12 @@ export interface UsageHint {
  * separates "you have not connected this yet" from "this is broken".
  */
 export interface UsageProvider {
+  /**
+   * The account key this card belongs to ("default", "nabu-org", …). Every
+   * account contributes a card called "Claude", so card identity across the UI
+   * — React keys, hidden-window prefs — is `${account}:${name}`, never `name`.
+   */
+  account: string;
   name: string;
   status: 'ok' | 'error' | 'no-auth';
   error?: string;
@@ -775,6 +790,30 @@ export interface UsageProvider {
   windows: UsageWindow[];
   /** Set only on a `no-auth` provider — see UsageHint. */
   hint?: UsageHint;
+  /**
+   * Present — as `'swarmery'` — when this card's credential came from swarmery's
+   * OWN store, i.e. the account was connected from this panel rather than with
+   * the `claude` CLI. Absent for a CLI credential and for an account with no
+   * credential at all. Provenance only: never a token, never a path.
+   *
+   * Two decisions read it. Only a card marked here may offer `Disconnect` (the
+   * CLI's credentials are not ours to delete), and only a card marked here turns
+   * a credential failure into `Reconnect` — for a store swarmery owns, a `claude`
+   * login writes to the wrong place and would change nothing.
+   */
+  connectedVia?: 'swarmery';
+}
+
+/**
+ * One subscription's row in the usage payload. `error` is NOT how a failed quota
+ * read surfaces — that is a per-provider error/hint card — it is the daemon
+ * reporting that this account's lookup could not produce cards at all, so one
+ * account can never blank the others.
+ */
+export interface UsageAccount {
+  account: string;
+  providers: UsageProvider[];
+  error?: string;
 }
 
 /**
@@ -782,10 +821,30 @@ export interface UsageProvider {
  * their own local credential via internal/usage) plus an optional
  * telemetry-estimate card, present only when SWARMERY_USAGE_LIMITS is set.
  * The estimate card's presence replaces the old top-level `configured` flag.
+ *
+ * `accounts` is the payload: one row per subscription the daemon can see (on a
+ * stock config that is exactly one, and the UI is identical to single-account).
+ * `providers` is a deliberate ALIAS of the DEFAULT account's row, so the header
+ * chip — which speaks for one account — needs no scan on every render.
  */
 export interface UsageResp {
   generatedAt: string;
   providers: UsageProvider[];
+  accounts: UsageAccount[];
+}
+
+/**
+ * POST /api/usage/accounts/{account}/login/start — begin connecting an account
+ * whose credential the daemon cannot read on its own (the usual state of a
+ * non-default account on macOS, where the CLI keeps its credential in the login
+ * Keychain under an undocumented per-config-dir name).
+ *
+ * The response carries ONLY the URL to open. The PKCE verifier and the CSRF
+ * state stay in the daemon; the browser never sees them, and the completing
+ * request sends back just the code the callback page displays.
+ */
+export interface UsageLoginStart {
+  authorizeUrl: string;
 }
 
 // --- Retro loop (GET /api/retro/{agents,friction}) ---------------------------

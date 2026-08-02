@@ -1,7 +1,7 @@
 // Command swarmery is the control-plane daemon CLI:
 //
 //	swarmery ingest <file.jsonl>   parse one transcript into the local DB
-//	swarmery backfill              one-shot full scan of the projects root
+//	swarmery backfill              one-shot full scan of every projects root
 //	swarmery serve                 serve the API/SPA + live ingest pipeline
 //	swarmery recost                recompute cost_usd for all turns
 //	swarmery economics             five token-economy metrics (read-only)
@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -56,6 +57,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/routines"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/settingsoverlay"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysedit"
@@ -193,17 +195,51 @@ func usage() {
                                    re-enable a detached project: merge the swarmery entries back
                                    into settings.json, restore project.json from .bak, reinstall
                                    hooks (idempotent; the inverse of offboard)
-  env: SWARMERY_PORT, SWARMERY_PROJECTS_ROOT, SWARMERY_PRICING, SWARMERY_EXCLUDE, SWARMERY_WORKSPACE_ROOT
+  env: SWARMERY_PORT, SWARMERY_PRICING, SWARMERY_EXCLUDE, SWARMERY_WORKSPACE_ROOT
+       SWARMERY_PROJECTS_ROOTS (comma-separated transcript roots, one per Claude Code config dir;
+       'auto' = every ~/.claude*/projects that exists — legacy singular: SWARMERY_PROJECTS_ROOT)
        SWARMERY_ONBOARD_ROOTS (comma-separated allow-list; enables POST /api/projects/onboard), SWARMERY_STATUSLINE_SRC
+       SWARMERY_SETTINGS_OVERLAYS (descriptor of settings files that also apply to given project
+       roots; default ~/.swarmery/overlays.json — missing = repo-only plugin detection)
        SWARMERY_NOTIFY_URL, SWARMERY_NOTIFY_EVENTS, SWARMERY_NOTIFY_TEMPLATE, SWARMERY_NOTIFY_TELEGRAM_CHAT`)
 }
 
-// defaultProjectsRoot resolves SWARMERY_PROJECTS_ROOT, falling back to
-// ~/.claude/projects.
-func defaultProjectsRoot() string {
-	if v := os.Getenv("SWARMERY_PROJECTS_ROOT"); v != "" {
-		return v
+// autoProjectsRoots is the SWARMERY_PROJECTS_ROOTS value that means "find them
+// yourself": every ~/.claude*/projects that exists. It covers the
+// CLAUDE_CONFIG_DIR convention (~/.claude, ~/.claude-<account>, …) without the
+// user having to enumerate accounts that differ per machine.
+const autoProjectsRoots = "auto"
+
+// defaultProjectsRoots resolves the ingest roots, in this order:
+//
+//  1. SWARMERY_PROJECTS_ROOTS (plural, comma-separated). The literal value
+//     "auto" globs $HOME/.claude*/projects, keeps the existing dirs, sorted.
+//  2. SWARMERY_PROJECTS_ROOT (singular, legacy) as a one-element list.
+//  3. ~/.claude/projects alone.
+//
+// Configure nothing and you get exactly rule 3 — byte-identical to the
+// single-root daemon this replaced.
+func defaultProjectsRoots() []string {
+	if v := os.Getenv("SWARMERY_PROJECTS_ROOTS"); v != "" {
+		if v == autoProjectsRoots {
+			// An auto scan that finds nothing falls through to the plain
+			// default so failures name a concrete path ("~/.claude/projects
+			// does not exist") instead of an empty list.
+			if roots := globClaudeProjectsRoots(); len(roots) > 0 {
+				return roots
+			}
+		} else if roots := splitRoots(v); len(roots) > 0 {
+			return roots
+		}
 	}
+	if v := os.Getenv("SWARMERY_PROJECTS_ROOT"); v != "" {
+		return []string{v}
+	}
+	return []string{defaultClaudeProjectsRoot()}
+}
+
+// defaultClaudeProjectsRoot is the stock single root: ~/.claude/projects.
+func defaultClaudeProjectsRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".claude/projects"
@@ -211,10 +247,80 @@ func defaultProjectsRoot() string {
 	return home + "/.claude/projects"
 }
 
+// globClaudeProjectsRoots discovers every Claude Code config dir's transcript
+// tree under $HOME — ~/.claude/projects plus each ~/.claude-<account>/projects
+// a CLAUDE_CONFIG_DIR setup creates. Only existing directories survive; Glob
+// already returns sorted matches, so the order is stable across runs.
+func globClaudeProjectsRoots() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(home, ".claude*", "projects"))
+	var roots []string
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && fi.IsDir() {
+			roots = append(roots, m)
+		}
+	}
+	return roots
+}
+
+// splitRoots parses a comma-separated roots list: blanks dropped, order kept,
+// duplicates collapsed (a doubled root would scan and log everything twice).
+func splitRoots(v string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
+// rootsFlag is the --projects-root flag value: comma-separated AND repeatable.
+// The FIRST Set call REPLACES the env/HOME-derived default (an explicit flag
+// must never silently inherit an env root), every later one appends — so
+// `--projects-root a,b --projects-root c` yields [a b c].
+type rootsFlag struct {
+	vals     *[]string
+	fromFlag bool
+}
+
+func (r *rootsFlag) String() string {
+	if r == nil || r.vals == nil {
+		return ""
+	}
+	return strings.Join(*r.vals, ",")
+}
+
+func (r *rootsFlag) Set(v string) error {
+	parts := splitRoots(v)
+	if len(parts) == 0 {
+		return fmt.Errorf("--projects-root: no path in %q", v)
+	}
+	if !r.fromFlag {
+		*r.vals = nil
+		r.fromFlag = true
+	}
+	for _, p := range parts {
+		if !slices.Contains(*r.vals, p) {
+			*r.vals = append(*r.vals, p)
+		}
+	}
+	return nil
+}
+
 func pipelineFlags(fs *flag.FlagSet) *ingest.Config {
-	cfg := &ingest.Config{Exclude: defaultExclude()}
-	fs.StringVar(&cfg.ProjectsRoot, "projects-root", defaultProjectsRoot(),
-		"Claude Code projects root to ingest (env: SWARMERY_PROJECTS_ROOT)")
+	cfg := &ingest.Config{Exclude: defaultExclude(), ProjectsRoots: defaultProjectsRoots()}
+	fs.Var(&rootsFlag{vals: &cfg.ProjectsRoots}, "projects-root",
+		"Claude Code projects root(s) to ingest — comma-separated, repeatable "+
+			"(env: SWARMERY_PROJECTS_ROOTS, 'auto' = every ~/.claude*/projects; "+
+			"legacy singular: SWARMERY_PROJECTS_ROOT)")
 	fs.DurationVar(&cfg.RescanInterval, "rescan", 2*time.Second, "fallback rescan interval")
 	fs.DurationVar(&cfg.StatusInterval, "status-tick", 10*time.Second, "session-status recompute interval")
 	fs.DurationVar(&cfg.Thresholds.Active, "active-window", 2*time.Minute, "session considered active within this window")
@@ -499,13 +605,26 @@ func cmdBackfill(args []string) error {
 	}
 	defer db.Close()
 
-	if _, err := os.Stat(cfg.ProjectsRoot); err != nil {
-		return fmt.Errorf("projects root: %w", err)
+	// Backfill runs HealProjectAttribution too — feed it the onboard roots
+	// before the pipeline touches the DB, or a manual backfill could re-merge
+	// projects into an onboard-root row (the exact bug SetOnboardRoots fixes).
+	ingest.SetOnboardRoots(onboardRoots())
+
+	// Same tolerate-some / refuse-all rule the daemon applies (ingest.Run): a
+	// roots list is shared across machines and may name a config dir this one
+	// does not have.
+	present, missing := ingest.ExistingRoots(cfg.ProjectsRoots)
+	for _, r := range missing {
+		log.Printf("warn: projects root %s does not exist — skipped", r)
+	}
+	if len(present) == 0 {
+		return fmt.Errorf("projects root: %w (configured: %s)",
+			ingest.ErrNoProjectsRoots, strings.Join(cfg.ProjectsRoots, ", "))
 	}
 	if *rebuildText {
-		stats := ingest.RebuildText(context.Background(), db, cfg.ProjectsRoot)
+		stats := ingest.RebuildText(context.Background(), db, present)
 		fmt.Printf("rebuild-text %s\n  transcripts re-read: %d\n  errors: %d\n",
-			cfg.ProjectsRoot, stats.Files, stats.Errors)
+			strings.Join(present, ", "), stats.Files, stats.Errors)
 		return nil
 	}
 	ingest.NewPipeline(db, *cfg, nil).Backfill(context.Background())
@@ -923,6 +1042,14 @@ func cmdServe(args []string) error {
 		}
 	}
 
+	// Attribution needs the onboarding roots before the pipeline starts: an
+	// onboarding root is a parent dir of many repos, and the pipeline's first
+	// Backfill runs HealProjectAttribution, which would otherwise fold every
+	// repo under such a root into it. api.AttachOnboard below fences the
+	// onboarding endpoint with the same list — same source, wired twice
+	// because the ingest package must not import api.
+	ingest.SetOnboardRoots(onboardRoots())
+
 	var bus *ingest.Bus
 	var sys *sysscan.Scanner
 	if !*noIngest {
@@ -934,7 +1061,8 @@ func cmdServe(args []string) error {
 				log.Printf("error: ingest pipeline stopped: %v", err)
 			}
 		}()
-		log.Printf("swarmery ingest pipeline watching %s (rescan %s)", cfg.ProjectsRoot, cfg.RescanInterval)
+		log.Printf("swarmery ingest pipeline watching %s (rescan %s)",
+			strings.Join(cfg.ProjectsRoots, ", "), cfg.RescanInterval)
 
 		// phase 3.5: workspaces — read-only periodic scan of the agent-work.sh
 		// workspace repo (tasks + task↔session links). Missing root is not
@@ -1149,6 +1277,12 @@ func cmdServe(args []string) error {
 	// dir the sys scanner/editor uses so --claude-dir overrides apply here too.
 	api.AttachPluginCatalog(sysCfg.ClaudeDir)
 
+	// settings overlays: an operator can DECLARE settings files that also apply
+	// to given project roots, for projects whose plugin set is injected at CLI
+	// precedence instead of being committed to the repo. Always attached — a
+	// missing descriptor is the normal case and degrades to repo-only detection.
+	api.AttachSettingsOverlays(settingsoverlay.New(os.Getenv("SWARMERY_SETTINGS_OVERLAYS")))
+
 	// fusion phase 18: System Hub — GET /api/system/templates scans the plugin
 	// cache (<claude-dir>/plugins/cache) + each project's .claude/templates on
 	// demand. Wire the same resolved dir so --claude-dir applies here too.
@@ -1329,9 +1463,10 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Wire the projects root into the on-demand transcript-parsing endpoints
-	// (GET /api/sessions/{id}/context-hogs resolves uuid→transcript under it).
-	api.AttachProjectsRoot(cfg.ProjectsRoot)
+	// Wire the projects roots into the on-demand transcript-parsing endpoints
+	// (GET /api/sessions/{id}/context-hogs resolves uuid→transcript under them,
+	// searching every configured root the way the ingest heal does).
+	api.AttachProjectsRoots(cfg.ProjectsRoots)
 	bootLog.Info(logbuf.Phasef("api.build", time.Since(buildStart)))
 	addr := net.JoinHostPort(*bind, strconv.Itoa(*port))
 	log.Printf("swarmery serving on http://%s (db: %s)", addr, *dbPath)

@@ -32,7 +32,7 @@ import {
   type ReactNode,
 } from 'react';
 import { fetchUsage } from '../api';
-import type { UsageProvider } from '../api/types';
+import type { UsageAccount, UsageProvider } from '../api/types';
 
 /** Cadence while only the chip is mounted. */
 const CHIP_POLL_MS = 120_000;
@@ -46,6 +46,12 @@ const MODAL_POLL_MS = 30_000;
 const FRESH_SKIP_MS = 5_000;
 
 export interface UsageState {
+  /** One row per subscription the daemon can see; the modal renders all of them. */
+  accounts: UsageAccount[];
+  /**
+   * The DEFAULT account's cards — the daemon's own alias, not a derived value.
+   * The chip speaks for one account and reads this; the modal reads `accounts`.
+   */
   providers: UsageProvider[];
   error: string | null;
   loading: boolean;
@@ -61,6 +67,7 @@ export interface UsageState {
 }
 
 const UsageDataContext = createContext<UsageState>({
+  accounts: [],
   providers: [],
   error: null,
   loading: false,
@@ -70,6 +77,7 @@ const UsageDataContext = createContext<UsageState>({
 });
 
 export function UsageDataProvider({ children }: { children: ReactNode }): JSX.Element {
+  const [accounts, setAccounts] = useState<UsageAccount[]>([]);
   const [providers, setProviders] = useState<UsageProvider[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -112,6 +120,7 @@ export function UsageDataProvider({ children }: { children: ReactNode }): JSX.El
       .then((resp) => {
         if (!current()) return;
         const stamp = Date.now();
+        setAccounts(resp.accounts);
         setProviders(resp.providers);
         setError(null);
         setLastUpdated(stamp);
@@ -190,8 +199,8 @@ export function UsageDataProvider({ children }: { children: ReactNode }): JSX.El
   }, [load]);
 
   const value = useMemo<UsageState>(
-    () => ({ providers, error, loading, lastUpdated, refresh, setModalOpen }),
-    [providers, error, loading, lastUpdated, refresh, setModalOpen],
+    () => ({ accounts, providers, error, loading, lastUpdated, refresh, setModalOpen }),
+    [accounts, providers, error, loading, lastUpdated, refresh, setModalOpen],
   );
   return <UsageDataContext.Provider value={value}>{children}</UsageDataContext.Provider>;
 }

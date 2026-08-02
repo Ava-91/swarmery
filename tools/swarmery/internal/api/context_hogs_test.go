@@ -39,9 +39,9 @@ func ctxHogsTestServer(t *testing.T) (*httptest.Server, *sql.DB, string) {
 	// Point the endpoint at a temp projects root and isolate the global from
 	// other tests by restoring it on cleanup.
 	root := t.TempDir()
-	prev := transcriptsRoot
-	AttachProjectsRoot(root)
-	t.Cleanup(func() { AttachProjectsRoot(prev) })
+	prev := transcriptsRoots
+	AttachProjectsRoots([]string{root})
+	t.Cleanup(func() { AttachProjectsRoots(prev) })
 
 	h, err := NewServer(db, false)
 	if err != nil {
@@ -106,6 +106,40 @@ func TestGetSessionContextHogs200(t *testing.T) {
 		if got.TotalEst != 10 {
 			t.Errorf("id=%s totalEst = %d, want 10", idArg, got.TotalEst)
 		}
+	}
+}
+
+// TestGetSessionContextHogsSearchesEveryRoot: on a multi-subscription machine
+// (~/.claude + ~/.claude-<account>) the transcript may live under any config
+// dir, so the uuid→transcript lookup must sweep every configured root — not
+// only the first one.
+func TestGetSessionContextHogsSearchesEveryRoot(t *testing.T) {
+	srv, _, first := ctxHogsTestServer(t)
+
+	// Second root, added AFTER the helper's single-root wiring; the transcript
+	// exists only there while `first` stays empty.
+	second := t.TempDir()
+	prev := transcriptsRoots
+	AttachProjectsRoots([]string{first, second})
+	t.Cleanup(func() { AttachProjectsRoots(prev) })
+	writeCtxHogsTranscript(t, second, "u-ch-1")
+
+	resp, err := http.Get(srv.URL + "/api/sessions/u-ch-1/context-hogs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a transcript under the second root", resp.StatusCode)
+	}
+	var got struct {
+		TotalEst int64 `json:"totalEst"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.TotalEst != 10 {
+		t.Errorf("totalEst = %d, want 10 (the second root's transcript)", got.TotalEst)
 	}
 }
 

@@ -65,7 +65,7 @@ func TestTailHealsHeaderOnlyStub(t *testing.T) {
 	if err := os.WriteFile(path, []byte(header), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := TailFile(db, path, DefaultThresholds()); err != nil {
+	if _, err := TailFile(db, path, "", DefaultThresholds()); err != nil {
 		t.Fatalf("tail header batch: %v", err)
 	}
 	projectPath, cwd, startedAt, _, _ := sessionRow(t, db, simpleUUID)
@@ -82,7 +82,7 @@ func TestTailHealsHeaderOnlyStub(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Close()
-	if _, err := TailFile(db, path, DefaultThresholds()); err != nil {
+	if _, err := TailFile(db, path, "", DefaultThresholds()); err != nil {
 		t.Fatalf("tail rest batch: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestHealStubSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	healed, err := HealStubSessions(db, root, nil)
+	healed, err := HealStubSessions(db, []string{root}, nil)
 	if err != nil {
 		t.Fatalf("heal: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestHealStubSessions(t *testing.T) {
 		`DELETE FROM sessions WHERE session_uuid = 'aaaaaaaa-0000-4000-8000-000000000001'`); err != nil {
 		t.Fatal(err)
 	}
-	healed, err = HealStubSessions(db, root, nil)
+	healed, err = HealStubSessions(db, []string{root}, nil)
 	if err != nil {
 		t.Fatalf("heal (2nd pass): %v", err)
 	}

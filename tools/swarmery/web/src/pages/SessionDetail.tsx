@@ -18,6 +18,7 @@ import {
   sendSessionMessage,
 } from '../api';
 import { fmtAgo, fmtCost, fmtSpan, fmtTokens } from '../lib/format';
+import { accountLabel } from '../lib/sessionAccount';
 import { sessionState, useNowMs } from '../lib/sessionState';
 import { useLiveUpdates } from '../lib/ws';
 import { ExplainPair } from '../components/Explain';
@@ -533,6 +534,13 @@ export function SessionDetailPage(): JSX.Element {
               <LiveStateChip session={detail} />
               <Kv label="status" value={detail.status} tone={STATUS_TONES[detail.status]} />
               {detail.model !== null && <Kv label="model" value={detail.model} />}
+              {/* Subscription this session ran under (migration 0047) — shown
+                  only when it is NOT the default one, the same rule the list's
+                  account badge follows: on a one-account machine the row would
+                  read "account default" on every single session. */}
+              {accountLabel(detail) !== null && (
+                <Kv label="account" value={accountLabel(detail) ?? ''} />
+              )}
               <Kv
                 label={detail.endedAt !== null ? 'duration' : 'running'}
                 value={fmtSpan(detail.startedAt, detail.endedAt)}

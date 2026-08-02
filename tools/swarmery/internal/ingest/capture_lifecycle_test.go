@@ -290,7 +290,7 @@ func TestSweepSessionToReviewOnStatusTicker(t *testing.T) {
 	notes, cancel := bus.Subscribe(32)
 	defer cancel()
 
-	p := NewPipeline(db, Config{ProjectsRoot: t.TempDir()}, bus)
+	p := NewPipeline(db, Config{ProjectsRoots: []string{t.TempDir()}}, bus)
 	p.recomputeStatuses()
 
 	if got := cardByID(t, db, cardID); got.column != "in_review" {

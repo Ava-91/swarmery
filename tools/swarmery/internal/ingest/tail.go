@@ -50,9 +50,13 @@ type TailResult struct {
 // transaction as the ingested rows, so a crash between read and commit
 // re-reads the batch and the dedup_key scheme absorbs the replay.
 //
+// originRoot is the projects root the transcript was discovered under — the
+// account dimension on a multi-subscription machine (see ingester.originRoot).
+// "" when the caller has no root context.
+//
 // Unlike File it never touches sidechain companions (they are independent
 // tail targets) and an empty/partial-line-only file is a successful no-op.
-func TailFile(db *sql.DB, path string, th Thresholds) (TailResult, error) {
+func TailFile(db *sql.DB, path, originRoot string, th Thresholds) (TailResult, error) {
 	var res TailResult
 
 	absPath, err := filepath.Abs(path)
@@ -107,7 +111,7 @@ func TailFile(db *sql.DB, path string, th Thresholds) (TailResult, error) {
 	}
 	defer tx.Rollback()
 
-	ing := &ingester{tx: tx, stats: &stats, thresholds: th}
+	ing := &ingester{tx: tx, stats: &stats, thresholds: th, originRoot: originRoot}
 	if len(recs) > 0 {
 		sidechain, scope, parentEventID, agentType := sidechainContext(tx, absPath, recs)
 		if err := ing.upsertProjectAndSession(recs, fi.ModTime(), sidechain); err != nil {

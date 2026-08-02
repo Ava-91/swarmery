@@ -10,10 +10,13 @@
 //   Auto-approve  — PermissionPresets is per-project (requires a projectId), so
 //                    this is an explanatory note pointing at a project's Settings.
 //   Daemon        — health + version from the shared useHealth poll.
+//   Connectors    — read-only list of the MCP servers Claude Code has configured
+//                    on this host (ConnectorsSection self-fetches /api/connectors).
 //
 // Chrome mirrors ProjectSettings (font-display heading, mono SectionTitle
 // eyebrows, hairline cards).
 
+import { ConnectorsSection } from '../components/ConnectorsSection';
 import { NotifySettings } from '../components/NotifySettings';
 import { SectionTitle } from '../components/ui';
 import { useHealth, shortVersion } from '../lib/health';
@@ -59,6 +62,13 @@ export function Settings(): JSX.Element {
         {daemonOk ? 'daemon healthy' : 'daemon unreachable'}
         {health !== null ? ` · ${shortVersion(health.version)} · :7777` : ''}
       </div>
+
+      {/* Connectors — the MCP servers Claude Code has configured on THIS host,
+          read through the daemon. Host-level like the daemon card above, not
+          project-scoped: `claude mcp list` reports the user/claudeai/plugin
+          scopes, which belong to the machine, not to any one project. */}
+      <SectionTitle>connectors</SectionTitle>
+      <ConnectorsSection />
     </div>
   );
 }
