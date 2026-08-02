@@ -956,12 +956,33 @@ func (s *Service) HealStale() error {
 		// Best-effort: a failed probe must not leave tasks stuck in_progress.
 		log.Printf("error: swarmery dispatch: adoption probe: %v", err)
 	}
+	// worktree_path IS NOT NULL is the dispatcher-OWNERSHIP guard, and it is load
+	// bearing: source='queue' alone stopped meaning "a dispatcher run" once
+	// internal/taskcap began minting captured session cards on the board with that
+	// same source. A card the user ACCEPTED (triage → in_progress) has no worktree
+	// and no run behind it, so requeuing it here would stamp a bogus
+	// dispatch_error='daemon restart' on it AND hand it to candidates() — which
+	// selects exactly source='queue' AND board_column='todo' — turning every daemon
+	// restart into a silent auto-dispatch of work the user only agreed to look at.
+	//
+	// worktree_path, NOT origin, is the discriminator. origin is immutable by design
+	// (api/tasks_board.go refuses to patch origin/capture_key/origin_session_id
+	// because capture_key is 0048's permanent idempotency key), so a captured card
+	// the user reworks (in_review → todo) and the dispatcher then re-admits is
+	// genuinely dispatcher-owned while still reading origin='session'; guarding on
+	// origin would strand that row in_progress forever after a crash. admit() writes
+	// worktree_path in the SAME UPDATE as board_column='in_progress', so a
+	// dispatcher-owned row is never transiently NULL here, and this predicate makes
+	// the healed set exactly liveWorktreeCount's live set. It is the mirror of the
+	// `worktree_path IS NULL` guard capture uses for the same disjointness.
+	//
 	// NOT IN () is invalid SQL and `x NOT IN (NULL)` is never true, so the
 	// exclusion clause exists only when there is something to exclude.
 	q := `UPDATE tasks
 		   SET board_column='todo', status='queued', dispatch_error='daemon restart',
 		       column_moved_at=?
-		 WHERE source='queue' AND board_column='in_progress'`
+		 WHERE source='queue' AND board_column='in_progress'
+		   AND worktree_path IS NOT NULL`
 	args := []any{s.ts()}
 	if len(adopted) > 0 {
 		q += ` AND id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
