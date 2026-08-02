@@ -1,12 +1,13 @@
 // Board task card (fusion phase 4): the draggable unit on the kanban board.
-// Shows title, the T-xxxx id chip, a priority dot, a model chip (when set), a
+// Shows title, the T-xxxx id chip, a priority dot, a model chip (when set), an
+// origin badge on cards the capture pipeline minted rather than a human, a
 // verdict badge (pass/fail/inconclusive — phase 6 fills verifyVerdict), a
 // dispatch-error warning icon with tooltip, a paused badge, and a session link
 // glyph when a branch/worktree exists. Native HTML5 draggable; a keyboard
 // alternative (a "move to →" menu) lives on the card via ColumnMenu so drag is
-// never the only path (WCAG). Clicking the card body opens the TaskDrawer.
+// never the only path (WCAG). Clicking the card body opens the TaskModal.
 
-import type { BoardColumn, BoardTask, TaskPriority } from '../api/types';
+import type { BoardColumn, BoardTask, TaskOrigin, TaskPriority } from '../api/types';
 import { BOARD_COLUMNS, COLUMN_LABELS } from './boardModel';
 
 const PRIORITY_DOT: Record<TaskPriority, string> = {
@@ -27,6 +28,26 @@ function VerdictBadge({ verdict }: { verdict: string }): JSX.Element {
   return (
     <span className={`rounded-full border px-1.5 py-[1px] font-mono text-[9px] uppercase ${style}`}>
       {verdict}
+    </span>
+  );
+}
+
+/** Provenance badge for a card the user did not write by hand: capture mints
+ * 'session' cards from a session's todos, 'llm' cards from a suggestion. Manual
+ * cards (the overwhelming majority) carry no badge. */
+const ORIGIN_BADGE: Record<Exclude<TaskOrigin, 'manual'>, { label: string; tip: string }> = {
+  session: { label: 'from session', tip: 'captured from a session todo' },
+  llm: { label: 'suggested', tip: 'suggested by a model, not hand-written' },
+};
+
+function OriginBadge({ origin }: { origin: Exclude<TaskOrigin, 'manual'> }): JSX.Element {
+  const { label, tip } = ORIGIN_BADGE[origin];
+  return (
+    <span
+      data-tip={tip}
+      className="rounded-full border border-ink-faint/40 bg-field px-1.5 py-[1px] font-mono text-[9px] text-ink-dim"
+    >
+      ⟲ {label}
     </span>
   );
 }
@@ -134,6 +155,7 @@ export function TaskCard({
             ▤ {task.playbook}
           </span>
         )}
+        {task.origin !== 'manual' && <OriginBadge origin={task.origin} />}
         {task.verifyVerdict !== null && <VerdictBadge verdict={task.verifyVerdict} />}
         {blocked && (
           <span className="rounded-full border border-amber/40 bg-amber/10 px-1.5 py-[1px] font-mono text-[9px] text-amber">

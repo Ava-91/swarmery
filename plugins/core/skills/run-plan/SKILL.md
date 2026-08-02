@@ -1,7 +1,7 @@
 ---
 name: run-plan
 description: "EXECUTES an existing @implementation-planner/@task-planner plan -- parses the phase DAG, dispatches per-phase implement+review loops, preserving ASK gates. NOT for creating plans; NOT usable from inside a subagent."
-version: "1.1.0"
+version: "1.2.0"
 owner: "swarmery-core"
 ---
 
@@ -97,7 +97,8 @@ Route modifiers, any route:
      `<task-dir>/reports/phase-<N>-report.md`; final message ≤2k tokens (status:
      DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED, files+LOC, test counts,
      deviations). **Do not commit** — implement, test, leave the tree dirty; the
-     controller owns commits (they are ASK-gated).
+     controller owns commits (they are ASK-gated). That reports/ file is the long
+     form for you, NOT the operator's summary — see the Summary contract below.
 3. Review: produce a diff file (`git -C <worktree> diff BASE` plus `--stat` to
    `<task-dir>/reports/phase-<N>-diff.txt`) and dispatch a fresh reviewer subagent
    (spec compliance against the phase's §5 Acceptance criteria + code quality; two
@@ -106,7 +107,9 @@ Route modifiers, any route:
 4. Tick the phase doc's satisfied acceptance-criteria checkboxes (Edit, in the
    workspace plan dir) — "review clean" INCLUDES this tick; the ledger line
    `phase N: review clean …` may only be written after the tick is on disk.
-5. Ledger line (see Durable progress), then next phase.
+5. Write the phase's `## Completion Report` into the same phase doc (Summary
+   contract below) — also part of "review clean", also before the ledger line.
+6. Ledger line (see Durable progress), then next phase.
 
 ## Route P — parallel group
 
@@ -150,6 +153,22 @@ subagent, YOU tick the boxes as part of acceptance. The platform derives all
 plan progress from these checkboxes; untracked completion = invisible completion.
 Criteria that were NOT satisfied stay unticked — never tick to "close out" a phase.
 
+**Summary contract (hard gate).** Ticks say WHICH criteria are met; they never say
+what was built. The prose account goes into the phase doc's own
+`## Completion Report` section — fill the planner's stub, or append the section at
+the end of the doc when the plan has no stub. Contents: what shipped, files and
+commits (SHAs), verification output, deviations from the plan's design, and
+anything DEFERRED. Keep it under ~50 lines.
+
+That section is the ONLY per-phase summary the platform surfaces: it parses
+`## Completion Report` out of the doc and renders it as the phase's Summary tab.
+A report living in `<task-dir>/reports/phase-<N>-report.md`, in the run ledger, or
+in a subagent's final message is invisible there — the operator sees "no summary
+of the work written" over a phase that shipped. Write both: the reports/ file is
+the long form and the working record, the doc section is the summary. When you
+accept a subagent's work, YOU write the doc section as part of acceptance, the
+same way you own the ticks. A phase without a Completion Report is not done.
+
 # Invariants (all routes)
 
 - ASK gates are the controller's: commits, pushes, MRs, migrations, deploys are
@@ -173,3 +192,4 @@ Criteria that were NOT satisfied stay unticked — never tick to "close out" a p
 | Merge conflict on route P integration | git merge fails | Dedicated fix dispatch in the integration worktree; re-run phase verification |
 | Context compacted mid-run | ledger has entries you don't remember | Resume from ledger + `git log`; never restart phase 1 |
 | Plan cites files that no longer exist | executor reports drift | Halt phase; send plan back for revision (planner or user) |
+| Phase shipped but its Summary tab is empty | dashboard shows "no summary of the work written" | The doc has no `## Completion Report`; write it now from `reports/phase-<N>-report.md` + the phase's commits — do not leave it for the end of the run |

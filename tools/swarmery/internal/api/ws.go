@@ -71,6 +71,14 @@ type wsEventPayload struct {
 	Event     *eventDTO `json:"event"`
 }
 
+// wsTaskDeletedPayload is the task_deleted payload: ids only. A deleted board
+// row cannot be hydrated back into a boardTaskDTO, so this frame is the one
+// board message that carries no data — clients drop the card by taskId.
+type wsTaskDeletedPayload struct {
+	TaskID    int64 `json:"taskId"`
+	ProjectID int64 `json:"projectId"`
+}
+
 // GET /api/ws — upgrades to WebSocket and streams WSMessage JSON text frames.
 func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 	if wsBus == nil {
@@ -171,6 +179,11 @@ func (h *Handler) buildWSMessage(n ingest.Notification) ([]byte, error) {
 			return nil, nil
 		}
 		payload = bt
+	case ingest.NoteTaskDeleted:
+		// board task delete: the row is gone, so there is nothing to hydrate —
+		// the frame is a thin {taskId, projectId} hint and the client drops the
+		// card by id (see docs/ws-protocol.md).
+		payload = wsTaskDeletedPayload{TaskID: n.TaskID, ProjectID: n.ProjectID}
 	case ingest.NotePlanUpdated:
 		// plans-page-lifecycle phase 1: intentionally thin {taskId, projectId}
 		// hint — the client refetches the epic list, same pattern the Plans

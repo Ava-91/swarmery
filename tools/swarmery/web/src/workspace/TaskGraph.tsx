@@ -2,7 +2,7 @@
 // the board's task DAG — nodes = tasks (colored by column, with a verdict
 // badge), edges = the `dependencies` (external_id) links. Layout is computed by
 // the pure layoutGraph helper (layered left-to-right by dependency depth), NOT
-// by xyflow. Clicking a node opens the same TaskDrawer as the board.
+// by xyflow. Clicking a node opens the same TaskModal as the board.
 //
 // Accessibility: xyflow's canvas is not keyboard-reachable, so a visually
 // hidden but screen-reader-available <ul> mirrors every node with its column

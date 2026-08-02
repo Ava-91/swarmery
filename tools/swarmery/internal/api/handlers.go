@@ -56,8 +56,8 @@ type projectDTO struct {
 	// Dashboard meta (migration 0015): pinned floats the project to the top of
 	// the list and the global scope switcher; tags is the decoded JSON array —
 	// [] when untagged, never null.
-	Pinned   bool     `json:"pinned"`
-	Tags     []string `json:"tags"`
+	Pinned bool     `json:"pinned"`
+	Tags   []string `json:"tags"`
 	// IsSystem marks the deliberate System project (path = ~/.swarmery) that
 	// aggregates daemon-spawned telemetry runs; the dashboard demotes it out
 	// of the main project list.
@@ -76,9 +76,9 @@ type projectDTO struct {
 // projectDetailDTO is GET /api/projects/{id}: the enriched row plus its local
 // component inventory and headline stats (recent sessions).
 type projectDetailDTO struct {
-	Project    projectDTO             `json:"project"`
+	Project    projectDTO              `json:"project"`
 	Components *projectscan.Components `json:"components"`
-	Stats      projectStatsDTO        `json:"stats"`
+	Stats      projectStatsDTO         `json:"stats"`
 }
 
 type projectStatsDTO struct {
@@ -508,12 +508,15 @@ func decodeSessionCursor(cursor string) (startedAt string, id int64, err error) 
 	return startedAt, id, nil
 }
 
-// GET /api/sessions?project=<slug|id>&status=<status>&account=<key>&limit=<n>&cursor=<opaque>
+// GET /api/sessions?project=<slug|id>&status=<status>&account=<key>&planTask=<id>&limit=<n>&cursor=<opaque>
 //
 // Keyset pagination: rows are ordered by (started_at DESC, id DESC); the
 // cursor is the opaque position of the last row of the previous page. The
 // response is ALWAYS the {sessions, nextCursor} envelope (default limit 100,
 // max 500); nextCursor is null on the last page.
+//
+// &planTask=<workspace task id> narrows the list to the sessions one plan run
+// spawned — see the predicate below.
 func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 	limit := defaultSessionsLimit
 	if q := r.URL.Query().Get("limit"); q != "" {
@@ -557,6 +560,20 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 			query += ` AND s.account = ?`
 		}
 		args = append(args, account)
+	}
+	// ?planTask=<workspace task id> — only the sessions ONE plan produced: its
+	// controller (swarm/plan-<taskId>), every phase run of it, and the subagents
+	// located by worktree cwd. The predicate reads the same LEFT JOINs the list
+	// already carries (session_plan_group.go), so the plan panel and the Sessions
+	// page can never disagree about who belongs to a plan.
+	if planTask := r.URL.Query().Get("planTask"); planTask != "" {
+		id, err := strconv.ParseInt(planTask, 10, 64)
+		if err != nil || id < 1 {
+			http.Error(w, `{"error":"invalid planTask"}`, http.StatusBadRequest)
+			return
+		}
+		query += ` AND (plan_task.id = ? OR phase_task.id = ?)`
+		args = append(args, id, id)
 	}
 	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
 		startedAt, id, err := decodeSessionCursor(cursor)

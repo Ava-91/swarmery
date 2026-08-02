@@ -1279,6 +1279,9 @@ function boardTask(p: Partial<BoardTask> & Pick<BoardTask, 'id' | 'externalId' |
     retryCount: 0,
     verifyVerdict: null,
     verifyDetail: null,
+    agent: null,
+    origin: 'manual',
+    originSessionId: null,
     columnMovedAt: iso(30 * MIN),
     createdAt: iso(60 * MIN),
     ...p,
@@ -1723,6 +1726,8 @@ const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export interface MockFilters {
   project?: string;
   status?: string;
+  /** Workspace task id of a plan — mirrors the server's ?planTask= narrowing. */
+  planTask?: number;
 }
 
 export const mockApi = {
@@ -1829,6 +1834,7 @@ export const mockApi = {
       .filter((s) => {
         if (filters.project !== undefined && filters.project !== s.projectSlug) return false;
         if (filters.status !== undefined && filters.status !== s.status) return false;
+        if (filters.planTask !== undefined && s.planGroup?.taskId !== filters.planTask) return false;
         return true;
       })
       .map((s) => ({ ...s }));
@@ -2247,6 +2253,7 @@ export const mockApi = {
     priority?: string;
     model?: string;
     playbook?: string;
+    agent?: string;
     fileScope?: string[];
     dependencies?: string[];
     boardColumn?: BoardColumn;
@@ -2268,6 +2275,7 @@ export const mockApi = {
       boardColumn: input.boardColumn ?? 'triage',
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.playbook !== undefined && input.playbook !== '' ? { playbook: input.playbook } : {}),
+      ...(input.agent !== undefined && input.agent !== '' ? { agent: input.agent } : {}),
       ...(input.fileScope !== undefined ? { fileScope: input.fileScope } : {}),
       ...(input.dependencies !== undefined ? { dependencies: input.dependencies } : {}),
       columnMovedAt: input.boardColumn !== undefined && input.boardColumn !== 'triage' ? iso(0) : null,
@@ -2277,6 +2285,19 @@ export const mockApi = {
     return { ...created };
   },
 
+  async deleteBoardTask(id: number): Promise<void> {
+    await delay(90);
+    const cur = mockBoard.find((t) => t.id === id);
+    if (cur === undefined) throw new Error('task not found');
+    // Mirror the Go running guard so the demo surfaces the same 409 copy.
+    if (cur.status === 'running') {
+      throw new Error(
+        'task is running — move it to done or archived first (that stops it and reclaims the worktree)',
+      );
+    }
+    mockBoard = mockBoard.filter((t) => t.id !== id);
+  },
+
   async patchBoardTask(id: number, patch: {
     boardColumn?: BoardColumn;
     title?: string;
@@ -2284,6 +2305,7 @@ export const mockApi = {
     priority?: string;
     model?: string | null;
     playbook?: string | null;
+    agent?: string | null;
     fileScope?: string[];
     dependencies?: string[];
     paused?: boolean;
@@ -2307,6 +2329,7 @@ export const mockApi = {
       ...(patch.priority !== undefined ? { priority: patch.priority as BoardTask['priority'] } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}),
       ...(patch.playbook !== undefined ? { playbook: patch.playbook === '' ? null : patch.playbook } : {}),
+      ...(patch.agent !== undefined ? { agent: patch.agent === '' ? null : patch.agent } : {}),
       ...(patch.fileScope !== undefined ? { fileScope: patch.fileScope } : {}),
       ...(patch.dependencies !== undefined ? { dependencies: patch.dependencies } : {}),
       ...(patch.paused !== undefined ? { paused: patch.paused } : {}),

@@ -1,5 +1,7 @@
 // "Run now" — the Agent Hub's dispatch shortcut. Per the phase spec it lands on
-// a project board with QuickEntry prefilled `@<agent>: ` (Board reads ?compose=).
+// a project board with the create modal open and prefilled `@<agent>: ` (Board
+// reads ?compose= and seeds NewTaskButton with it; the modal then resolves the
+// "@name:" prefix into its agent picker).
 // When a project scope is active (workspace mount, or the fleet scope switcher
 // is set) it navigates straight there; otherwise it opens a small project
 // picker first (the spec's "ask to pick a project" step), reusing the shared
@@ -10,7 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { displaySlug } from '../../lib/projectSlug';
 import { useScope } from '../../lib/scope';
 
-/** Build the board deep-link that prefills QuickEntry with `@<agent>: `. */
+/** Build the board deep-link that opens the create modal on `@<agent>: `. */
 function composeHref(slug: string, agentName: string): string {
   const prompt = `@${agentName}: `;
   return `/p/${encodeURIComponent(slug)}/board?compose=${encodeURIComponent(prompt)}`;

@@ -19,7 +19,6 @@
 package api
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -33,6 +32,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskcap"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
@@ -93,6 +93,14 @@ func normalizePriority(token string) (int, error) {
 // validColumn reports whether c is in the closed board set. Pure; unit-tested.
 func validColumn(c string) bool { return boardColumns[c] }
 
+// validOrigin reports whether o is in the closed provenance set of task
+// provenances (0048): 'manual' for every hand-written card, 'session'/'llm' for
+// minted ones. The set itself lives in internal/taskcap — the capture write
+// path is shared with internal/ingest, and a second copy of the enum here is
+// exactly how the HTTP validation and the writer would drift apart. Pure;
+// unit-tested.
+func validOrigin(o string) bool { return taskcap.ValidOrigin(o) }
+
 // legalTransition enforces the two board rules from the phase doc: any→archived
 // is always allowed; done→in_progress is rejected (recovery rehome is
 // dispatcher-owned, not user-facing); everything else is permissive. Pure;
@@ -139,18 +147,9 @@ func unmarshalStringList(s string) ([]string, error) {
 
 // newBoardExternalID mints a "T-" + 6-char base36 card id. The tasks.id INTEGER
 // PK is autoincremented by SQLite; this string is the external_id (the shape the
-// dispatcher and commit trailers reference).
-func newBoardExternalID() (string, error) {
-	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-	buf := make([]byte, 6)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	for i := range buf {
-		buf[i] = alphabet[int(buf[i])%len(alphabet)]
-	}
-	return "T-" + string(buf), nil
-}
+// dispatcher and commit trailers reference). Minting lives in internal/taskcap
+// so captured cards minted from the ingest side carry identically-shaped ids.
+func newBoardExternalID() (string, error) { return taskcap.NewExternalID() }
 
 // boardTaskDTO is the full board task shape (POST/PATCH response, board list
 // item, and the task_updated WS payload). camelCase JSON, mirrored in
@@ -177,6 +176,14 @@ type boardTaskDTO struct {
 	RetryCount    int      `json:"retryCount"`
 	VerifyVerdict *string  `json:"verifyVerdict"`
 	VerifyDetail  *string  `json:"verifyDetail"`
+	// Agent is the registry agent name this card dispatches as (0048); null = a
+	// plain run. Origin/OriginSessionID are capture provenance: 'manual' for a
+	// hand-written card, 'session'/'llm' for one minted from a session. The
+	// idempotency key (capture_key) is deliberately NOT exposed — it is an
+	// internal write-path detail with no reader on the board.
+	Agent           *string `json:"agent"`
+	Origin          string  `json:"origin"` // manual|session|llm
+	OriginSessionID *int64  `json:"originSessionId"`
 	// Derived, never stored: whether a task that claims to be running actually is,
 	// and on what evidence. Computed per request by internal/staleness — a cached
 	// verdict would be stale exactly when it matters, since the state it reads
@@ -192,6 +199,7 @@ const boardTaskSelect = `
 	       t.priority, t.status, t.board_column, t.paused, t.user_paused,
 	       t.dependencies, t.model, t.playbook, t.file_scope, t.branch, t.worktree_path,
 	       t.dispatch_error, t.retry_count, t.verify_verdict, t.verify_detail,
+	       t.agent, t.origin, t.origin_session_id,
 	       t.column_moved_at, t.created_at
 	FROM tasks t JOIN projects p ON p.id = t.project_id`
 
@@ -206,6 +214,7 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 		&priority, &d.Status, &d.BoardColumn, &paused, &userPaused,
 		&deps, &d.Model, &d.Playbook, &scope, &d.Branch, &d.WorktreePath,
 		&d.DispatchError, &d.RetryCount, &d.VerifyVerdict, &d.VerifyDetail,
+		&d.Agent, &d.Origin, &d.OriginSessionID,
 		&d.ColumnMovedAt, &d.CreatedAt); err != nil {
 		return err
 	}
@@ -243,6 +252,82 @@ func publishTaskUpdated(id int64) {
 	if wsBus != nil {
 		wsBus.Publish(ingest.Notification{Type: ingest.NoteTaskUpdated, TaskID: id})
 	}
+}
+
+// publishTaskDeleted notifies WS subscribers a board task row is gone. The
+// project id rides along because the row can no longer be read back.
+func publishTaskDeleted(id, projectID int64) {
+	if wsBus != nil {
+		wsBus.Publish(ingest.Notification{
+			Type: ingest.NoteTaskDeleted, TaskID: id, ProjectID: projectID,
+		})
+	}
+}
+
+// resolveAgentName validates an optional agent selection against the agents
+// registry and returns the value to store (nil = no agent). Mirrors
+// resolvePlaybookName's shape: it writes its own 4xx and returns ok=false, so
+// callers just `if !ok { return }`.
+//
+// nil pointer → leave unset; empty string → clear the selection; a non-blank
+// name must resolve for THIS project, i.e. be a global agent or one scoped to
+// it. The `(scope = 'global' OR project_id = ?)` predicate is specific to this
+// validation — the Agent Hub roster query does no scope filtering at all, so
+// there is no existing query to mirror here. Soft-deleted rows
+// (deleted = 1) do not count — the registry re-scan tombstones an agent whose
+// file is gone, and dispatching to it would fail at spawn time.
+func (h *Handler) resolveAgentName(w http.ResponseWriter, projectID int64, name *string) (any, bool) {
+	if name == nil {
+		return nil, true
+	}
+	trimmed := strings.TrimSpace(*name)
+	if trimmed == "" {
+		return nil, true // clear → plain run, no agent
+	}
+	var one int
+	err := h.DB.QueryRow(`
+		SELECT 1 FROM agents
+		 WHERE deleted = 0 AND name = ? AND (scope = 'global' OR project_id = ?)
+		 LIMIT 1`, trimmed, projectID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeClientErr(w, http.StatusBadRequest, "unknown agent: "+trimmed)
+		return nil, false
+	}
+	if err != nil {
+		writeErr(w, err)
+		return nil, false
+	}
+	return trimmed, true
+}
+
+// capturedTaskInput is the payload of a capture insert: the parts a captured
+// card actually varies. Everything else is fixed (see taskcap.InsertCapturedTask).
+type capturedTaskInput = taskcap.Input
+
+// insertCapturedTask is the API layer's capture entry point: it delegates the
+// row write to internal/taskcap and adds the one thing taskcap deliberately
+// does not do — publishing task_updated.
+//
+// The row logic moved out because internal/ingest needs the identical write and
+// cannot reach this package: api imports ingest (AttachBus takes an
+// *ingest.Bus), so an ingest→api edge would be an import cycle. taskcap is the
+// shared, dependency-free bottom of that pair.
+//
+// Publishing stays here rather than in taskcap because delivery rules differ per
+// caller: this path writes against the pool and is free to publish
+// synchronously, while ingest captures inside its tail transaction and must
+// hold the frame until that transaction commits. Either way, only a REAL insert
+// reaches the wire — a replay changed nothing, and a frame for a no-op would
+// make every re-tail look like live board activity.
+func insertCapturedTask(db *sql.DB, in capturedTaskInput) (int64, bool, error) {
+	id, inserted, err := taskcap.InsertCapturedTask(db, in)
+	if err != nil {
+		return 0, false, err
+	}
+	if inserted {
+		publishTaskUpdated(id)
+	}
+	return id, inserted, nil
 }
 
 // GET /api/board/tasks?projectId=&boardColumn= — board rows (source='queue'),
@@ -322,8 +407,14 @@ func annotateStaleness(db *sql.DB, out []boardTaskDTO) {
 	}
 }
 
-// POST /api/board/tasks {projectId, title, prompt, priority?, model?,
+// POST /api/board/tasks {projectId, title, prompt, priority?, model?, agent?,
 // fileScope?, dependencies?, boardColumn?} → 201 DTO. requireLocalOrigin.
+//
+// This endpoint only ever mints origin='manual' cards. Captured cards
+// (origin session|llm, carrying a capture_key) are inserted by
+// insertCapturedTask, never over HTTP: the idempotency key is what makes
+// capture replay-safe, and an external caller with a free hand over it could
+// mint a card that permanently blocks the real capture of that same key.
 func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectID    int64    `json:"projectId"`
@@ -332,6 +423,8 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 		Priority     string   `json:"priority"`
 		Model        *string  `json:"model"`
 		Playbook     *string  `json:"playbook"`
+		Agent        *string  `json:"agent"`
+		Origin       string   `json:"origin"`
 		FileScope    []string `json:"fileScope"`
 		Dependencies []string `json:"dependencies"`
 		BoardColumn  string   `json:"boardColumn"`
@@ -352,6 +445,14 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validColumn(column) {
 		http.Error(w, `{"error":"unknown boardColumn"}`, http.StatusBadRequest)
+		return
+	}
+	// Origin is capture-owned: the only value this endpoint accepts is the one
+	// it would have used anyway. Rejecting loudly beats silently downgrading a
+	// caller that believes it is creating a captured card.
+	if body.Origin != "" && body.Origin != "manual" {
+		writeClientErr(w, http.StatusBadRequest,
+			"origin is capture-owned; only 'manual' may be created over HTTP")
 		return
 	}
 	priority, err := normalizePriority(body.Priority)
@@ -387,6 +488,12 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Agent (0048): optional registry agent name to dispatch as. Checked after
+	// the project lookup because the registry query is project-scoped.
+	agent, ok := h.resolveAgentName(w, body.ProjectID, body.Agent)
+	if !ok {
+		return
+	}
 	extID, err := newBoardExternalID()
 	if err != nil {
 		writeErr(w, err)
@@ -400,10 +507,10 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	res, err := h.DB.Exec(`
 		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
 		                   source, external_id, board_column, model, playbook, file_scope,
-		                   dependencies, column_moved_at)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?)`,
+		                   dependencies, column_moved_at, agent, origin)
+		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
 		body.ProjectID, title, prompt, priority, now,
-		extID, column, body.Model, playbook, scopeJSON, depsJSON, movedAt)
+		extID, column, body.Model, playbook, scopeJSON, depsJSON, movedAt, agent)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -439,13 +546,27 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		Priority     *string   `json:"priority"`
 		Model        *string   `json:"model"`
 		Playbook     *string   `json:"playbook"`
+		Agent        *string   `json:"agent"`
 		FileScope    *[]string `json:"fileScope"`
 		Dependencies *[]string `json:"dependencies"`
 		Paused       *bool     `json:"paused"`
 		UserPaused   *bool     `json:"userPaused"`
+		// Provenance is immutable through this endpoint — present only so an
+		// attempt to change it is a loud 400 rather than a silently dropped
+		// field. A card's origin is a statement about where it came from; it
+		// cannot be edited after the fact, and rewriting capture_key would
+		// re-open the duplicate a captured card exists to prevent.
+		Origin          *string `json:"origin"`
+		CaptureKey      *string `json:"captureKey"`
+		OriginSessionID *int64  `json:"originSessionId"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+	if body.Origin != nil || body.CaptureKey != nil || body.OriginSessionID != nil {
+		writeClientErr(w, http.StatusBadRequest,
+			"origin, captureKey and originSessionId are capture-owned and cannot be patched")
 		return
 	}
 
@@ -521,6 +642,16 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "playbook = ?")
 		args = append(args, playbook)
 	}
+	if body.Agent != nil {
+		// A blank string clears the selection (→ plain run); a non-blank name
+		// must resolve in the registry for this card's project.
+		agent, ok := h.resolveAgentName(w, cur.ProjectID, body.Agent)
+		if !ok {
+			return
+		}
+		sets = append(sets, "agent = ?")
+		args = append(args, agent)
+	}
 	if body.FileScope != nil {
 		scopeJSON, err := marshalStringList(*body.FileScope)
 		if err != nil {
@@ -591,6 +722,94 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 	}
 	pokeDispatch()
 	writeJSON(w, d, nil)
+}
+
+// DELETE /api/board/tasks/{id} → 204. Permanently removes a board row the user
+// no longer wants — the escape hatch Archive is not: an archived task still
+// shows up in the column and in every dependency picker. Board-scoped: only
+// source='queue' rows are deletable (a workspace-ingested task is owned by the
+// disk, deleting the row would just resurrect it on the next scan) — anything
+// else is a 404.
+//
+// A RUNNING task is refused with 409 rather than force-killed: the row is the
+// only handle the daemon has on a live headless agent (its process group, its
+// worktree, its session link), so dropping it would orphan all three. Stop it
+// first by moving it to done/archived, which reclaims the worktree.
+func (h *Handler) deleteBoardTask(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, `{"error":"invalid task id"}`, http.StatusBadRequest)
+		return
+	}
+	var source, status string
+	var projectID int64
+	var worktreePath sql.NullString
+	err = h.DB.QueryRow(
+		`SELECT source, status, project_id, worktree_path FROM tasks WHERE id = ?`, id).
+		Scan(&source, &status, &projectID, &worktreePath)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if source != "queue" {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
+	if status == "running" {
+		http.Error(w,
+			`{"error":"task is running — move it to done or archived first (that stops it and reclaims the worktree)"}`,
+			http.StatusConflict)
+		return
+	}
+	// Reclaim a worktree the row still holds. A task can carry one without being
+	// running (a failed admission, a crash before the terminal move) and the row
+	// is about to stop being reachable, so this is the last chance to free it.
+	// Best-effort: a failed removal is logged inside the dispatcher and must not
+	// block the delete, otherwise a stale worktree makes the card undeletable.
+	if dispatchSvc != nil && strings.TrimSpace(worktreePath.String) != "" {
+		dispatchSvc.RemoveWorktreeFor(id)
+	}
+
+	tx, err := h.DB.Begin()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
+	// task_sessions predates ON DELETE CASCADE (0006_workspaces.sql) and the
+	// store opens SQLite with foreign_keys(1), so its link rows must go first or
+	// the row delete fails on a task that ever ran. Every other child table
+	// (retro, verification, epic_phases, plan_runs) declares CASCADE.
+	if _, err := tx.Exec(`DELETE FROM task_sessions WHERE task_id = ?`, id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	// epic_phases.activated_board_task_id is a soft reference (no FK), so it
+	// would dangle. Clearing it releases the phase to be activated again.
+	if _, err := tx.Exec(
+		`UPDATE epic_phases SET activated_board_task_id = NULL WHERE activated_board_task_id = ?`, id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	res, err := tx.Exec(`DELETE FROM tasks WHERE id = ? AND source = 'queue'`, id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	publishTaskDeleted(id, projectID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // badRequest writes a 400 with the error's message as JSON.

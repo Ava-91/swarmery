@@ -9,7 +9,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type { SessionDetail, SessionOutcome, SessionStatus, WSMessage } from '../api/types';
-import { MOCK, fetchSession, patchSessionOutcome, renameSession, sendSessionMessage } from '../api';
+import {
+  MOCK,
+  extractSessionTasks,
+  fetchSession,
+  patchSessionOutcome,
+  renameSession,
+  sendSessionMessage,
+} from '../api';
 import { fmtAgo, fmtCost, fmtSpan, fmtTokens } from '../lib/format';
 import { accountLabel } from '../lib/sessionAccount';
 import { sessionState, useNowMs } from '../lib/sessionState';
@@ -417,6 +424,36 @@ export function SessionDetailPage(): JSX.Element {
   );
 
   // Optimistic outcome toggle; revert on API failure.
+  // "Extract tasks": one paid model pass over this session, turning what it
+  // left behind into suggested Triage cards. Manual by design — nothing here is
+  // automatic, and the button is the only trigger the feature has.
+  //
+  // The request is held for the whole headless run (minutes), so `extracting`
+  // drives a real pending state rather than an optimistic flash. The result is
+  // a sentence, not a row the page can show: the cards land on the BOARD, and
+  // they arrive there over the WS bus without this page doing anything.
+  const [extracting, setExtracting] = useState(false);
+  const [extractNote, setExtractNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+  const runExtract = (): void => {
+    if (detail === null || extracting) return;
+    setExtracting(true);
+    setExtractNote(null);
+    extractSessionTasks(detail.id)
+      .then((inserted) => {
+        setExtractNote({
+          tone: 'ok',
+          text:
+            inserted === 0
+              ? 'No new tasks — this session had nothing left to suggest.'
+              : `${String(inserted)} task${inserted === 1 ? '' : 's'} suggested on the board.`,
+        });
+      })
+      .catch((e: unknown) => {
+        setExtractNote({ tone: 'err', text: e instanceof Error ? e.message : String(e) });
+      })
+      .finally(() => setExtracting(false));
+  };
+
   const setOutcome = (next: SessionOutcome | null): void => {
     if (detail === null) return;
     const prev = detail.outcome ?? null;
@@ -522,7 +559,36 @@ export function SessionDetailPage(): JSX.Element {
               <ExplainPair id="session-outcome">
                 <OutcomePicker value={detail.outcome ?? null} onChange={setOutcome} />
               </ExplainPair>
+              <button
+                type="button"
+                onClick={runExtract}
+                disabled={extracting}
+                data-tip="run a model pass over this session and suggest board tasks from what it left behind"
+                className="inline-flex items-center gap-1.5 rounded border border-line px-1.5 py-px font-mono text-[10px] text-ink-dim transition-colors hover:border-brand/50 hover:text-brand disabled:cursor-progress disabled:opacity-60"
+              >
+                {extracting ? 'extracting…' : 'extract tasks'}
+              </button>
             </div>
+            {extractNote !== null && (
+              <div
+                role="status"
+                className={`mt-2 flex items-start gap-2 rounded border px-2 py-1 font-mono text-[11px] ${
+                  extractNote.tone === 'ok'
+                    ? 'border-green/40 bg-green/10 text-green'
+                    : 'border-red/40 bg-red/10 text-red'
+                }`}
+              >
+                <span className="min-w-0 flex-1 break-words">{extractNote.text}</span>
+                <button
+                  type="button"
+                  onClick={() => setExtractNote(null)}
+                  aria-label="dismiss"
+                  className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
           <div className="flex shrink-0 flex-wrap gap-[22px]">
             <HeadStat value={fmtTokens(facts.tokens)} label="tokens" />

@@ -34,7 +34,7 @@ PHASE A — INTERVIEW (every turn until you receive the PROCEED instruction):
 
 PHASE B — PLAN (only after the operator sends the PROCEED instruction):
 - Stop asking questions. Choose the planning agent that fits the scope: @task-planner approach for < ~1 week / <=3 phases, @implementation-planner for larger multi-phase work.
-- Write the plan to the PRIVATE WORKSPACE, never into a code repo, following the workspace convention you already know (CLAUDE.md section 11 / core pack): task dir with plan/README.md (objective, real file paths, phase sequencing table, risks, Definition of Done) plus phase-N docs, each with a self-contained copy-paste agent prompt and measurable acceptance criteria. Honor every decision and the final running plan from the interview.
+- Write the plan to the PRIVATE WORKSPACE, never into a code repo, following the workspace convention you already know (CLAUDE.md section 11 / core pack): task dir with plan/README.md (objective, real file paths, phase sequencing table, risks, Definition of Done) plus phase-N docs, each with a self-contained copy-paste agent prompt, measurable acceptance criteria, and — as the doc's LAST section — an empty ` + "`## Completion Report`" + ` stub for the executor to fill at phase end (the dashboard renders exactly that section as the phase's summary, so a doc without the stub leaves the operator with "no summary of the work written"). Honor every decision and the final running plan from the interview.
 - Do NOT implement anything and do NOT create git branches — planning only.
 - Finish your FINAL message with this exact line on its own:
   PLAN SAVED: <absolute path to the plan dir>

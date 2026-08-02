@@ -101,6 +101,13 @@ export interface SessionFilters {
   /** Project slug or id (server matches either). */
   project?: string;
   status?: string;
+  /**
+   * Workspace task id of a plan — narrows the list to the sessions that plan
+   * run produced (its controller, every phase run, and the subagents resolved
+   * from the run worktree). Server-side, so the Plans panel and the Sessions
+   * page group by the same rule.
+   */
+  planTask?: number;
 }
 
 export function fetchProjects(includeArchived = false): Promise<ProjectsResponse> {
@@ -347,6 +354,7 @@ export function fetchSessions(
   const qs = new URLSearchParams();
   if (filters.project !== undefined) qs.set('project', filters.project);
   if (filters.status !== undefined) qs.set('status', filters.status);
+  if (filters.planTask !== undefined) qs.set('planTask', String(filters.planTask));
   if (page.limit !== undefined) qs.set('limit', String(page.limit));
   if (page.cursor !== undefined) qs.set('cursor', page.cursor);
   const query = qs.toString();
@@ -788,12 +796,17 @@ export interface CreateBoardTaskInput {
   model?: string;
   /** Selected execution recipe name (fusion phase 13); omit/empty = default. */
   playbook?: string;
+  /** Registry agent name to dispatch as; omit/empty = a plain run. */
+  agent?: string;
   fileScope?: string[];
   dependencies?: string[];
   boardColumn?: BoardColumn;
 }
 
-/** POST /api/board/tasks → 201 BoardTask. QuickEntry sends {title,prompt=title}. */
+/**
+ * POST /api/board/tasks → 201 BoardTask (sent by the board's create modal).
+ * A title-only intake sends prompt=title.
+ */
 export async function createBoardTask(input: CreateBoardTaskInput): Promise<BoardTask> {
   if (MOCK) return mockApi.createBoardTask(input);
   const res = await fetch('/api/board/tasks', {
@@ -821,6 +834,8 @@ export interface PatchBoardTaskInput {
   model?: string | null;
   /** Selected recipe name; "" clears the selection back to the default. */
   playbook?: string | null;
+  /** Registry agent name; "" clears the selection back to a plain run. */
+  agent?: string | null;
   fileScope?: string[];
   dependencies?: string[];
   paused?: boolean;
@@ -840,6 +855,20 @@ export async function patchBoardTask(id: number, patch: PatchBoardTaskInput): Pr
     throw new Error(data.error ?? `patch task failed: ${String(res.status)}`);
   }
   return (await res.json()) as BoardTask;
+}
+
+/**
+ * DELETE /api/board/tasks/{id} → 204. Permanent removal of a task that stopped
+ * being relevant (Archive only parks it). A RUNNING task is refused with 409 —
+ * the thrown message is the server's explanation, shown as-is in the UI.
+ */
+export async function deleteBoardTask(id: number): Promise<void> {
+  if (MOCK) return mockApi.deleteBoardTask(id);
+  const res = await fetch(`/api/board/tasks/${String(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `delete task failed: ${String(res.status)}`);
+  }
 }
 
 /** GET /api/dispatch — dispatcher status snapshot (503 when not attached). */
@@ -1146,6 +1175,30 @@ export async function putPermissionPreset(
     throw new Error(data.error ?? `set preset failed: ${String(res.status)}`);
   }
   return (await res.json()) as PermissionPresetView;
+}
+
+/**
+ * POST /api/sessions/{id}/extract-tasks — run one model pass over a session and
+ * put the tasks it names on the board as suggested Triage cards (origin='llm').
+ *
+ * Resolves with the number of cards REALLY inserted, which is what the caller
+ * shows: a re-run over an unchanged session is idempotent and legitimately
+ * reports 0. Rejects with the server's own detail on 409 (the session cannot
+ * produce cards, or a run is already in flight) and 502 (the model answered
+ * something unusable) — both are things the operator needs to read, not a
+ * silent zero.
+ *
+ * Slow by nature: the request is held for the whole headless run (bounded
+ * server-side at 5 minutes), so callers must show a pending state.
+ */
+export async function extractSessionTasks(id: number): Promise<number> {
+  if (MOCK) return 0; // no-op in mock mode — never spend tokens from a demo
+  const res = await fetch(`/api/sessions/${String(id)}/extract-tasks`, { method: 'POST' });
+  const data = (await res.json().catch(() => ({}))) as { error?: string; inserted?: number };
+  if (!res.ok) {
+    throw new Error(data.error ?? `extract failed: ${String(res.status)}`);
+  }
+  return data.inserted ?? 0;
 }
 
 /** POST /api/sessions/{id}/kill — send SIGTERM (force=false) or SIGKILL (force=true). */

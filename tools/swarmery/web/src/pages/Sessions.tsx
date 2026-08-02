@@ -280,6 +280,11 @@ export function Sessions(): JSX.Element {
   // filter comes from the contextual header search input.
   const { scope, scopeProject } = useScope();
   const { slug } = useParams<{ slug?: string }>();
+  // Fleet Sessions (no :slug) is cross-project by contract — App.tsx drops the
+  // rail's project selector there, so honouring a scope set on some other page
+  // would filter the list by an invisible, unreachable control. Workspace
+  // Sessions keeps the scope: its project IS the URL.
+  const effectiveScope = slug !== undefined ? scope : null;
   const query = usePageSearch();
   const [status, setStatus] = useState<SessionStatus | null>(null);
   // null = every subscription (migration 0047); a key narrows to one account.
@@ -308,7 +313,7 @@ export function Sessions(): JSX.Element {
   const load = useCallback((): void => {
     const gen = genRef.current;
     const filters: { project?: string } = {};
-    if (scope !== null) filters.project = scope;
+    if (effectiveScope !== null) filters.project = effectiveScope;
     fetchSessions(filters, { limit: PAGE_LIMIT })
       .then((page) => {
         if (gen !== genRef.current) return; // stale — filter changed mid-flight
@@ -320,7 +325,7 @@ export function Sessions(): JSX.Element {
         if (gen !== genRef.current) return;
         setError(String(e));
       });
-  }, [scope]);
+  }, [effectiveScope]);
 
   useEffect(() => {
     genRef.current += 1; // invalidate in-flight responses for the old filter
@@ -335,7 +340,7 @@ export function Sessions(): JSX.Element {
     loadingMoreRef.current = true;
     const gen = genRef.current;
     const filters: { project?: string } = {};
-    if (scope !== null) filters.project = scope;
+    if (effectiveScope !== null) filters.project = effectiveScope;
     fetchSessions(filters, { limit: PAGE_LIMIT, cursor: nextCursor })
       .then((page) => {
         if (gen !== genRef.current) return; // stale — would leak old-project rows
@@ -352,7 +357,7 @@ export function Sessions(): JSX.Element {
       .finally(() => {
         loadingMoreRef.current = false;
       });
-  }, [nextCursor, scope]);
+  }, [nextCursor, effectiveScope]);
 
   // Infinite scroll: a sentinel row after the last day group fetches the next
   // page while one exists (rootMargin prefetches before it is visible).
@@ -372,8 +377,9 @@ export function Sessions(): JSX.Element {
   // Rows carry the DB path slug, while scope may be the pretty name slug —
   // compare against the resolved project's slug (raw scope as fallback).
   const matchesProject = useCallback(
-    (s: Session): boolean => scope === null || s.projectSlug === (scopeProject?.slug ?? scope),
-    [scope, scopeProject],
+    (s: Session): boolean =>
+      effectiveScope === null || s.projectSlug === (scopeProject?.slug ?? effectiveScope),
+    [effectiveScope, scopeProject],
   );
 
   const onMessage = useCallback(
@@ -513,7 +519,7 @@ export function Sessions(): JSX.Element {
                       session={s}
                       now={nowById[s.id] ?? null}
                       flat
-                      hideProject={scope !== null}
+                      hideProject={effectiveScope !== null}
                       label={planRowLabel(s)}
                     />
                   ))}
@@ -541,7 +547,7 @@ export function Sessions(): JSX.Element {
                         session={s}
                         now={nowById[s.id] ?? null}
                         flat
-                        hideProject={scope !== null}
+                        hideProject={effectiveScope !== null}
                       />
                     ))}
                   </div>
@@ -561,7 +567,7 @@ export function Sessions(): JSX.Element {
                   session={s}
                   now={nowById[s.id] ?? null}
                   flat
-                  hideProject={scope !== null}
+                  hideProject={effectiveScope !== null}
                 />
               ))}
             </div>

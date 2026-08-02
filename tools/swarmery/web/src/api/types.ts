@@ -1249,7 +1249,8 @@ export type WSMessageType =
   | 'permission_resolved'
   | 'system_item_updated'
   | 'task_updated'
-  | 'plan_updated';
+  | 'plan_updated'
+  | 'task_deleted';
 
 /** Messages pushed over /api/ws — see docs/ws-protocol.md. */
 export type WSMessage =
@@ -1260,7 +1261,9 @@ export type WSMessage =
   | { type: 'permission_resolved'; payload: PermissionRequest }
   | { type: 'system_item_updated'; payload: SystemItemUpdate }
   | { type: 'task_updated'; payload: BoardTask }
-  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } };
+  | { type: 'plan_updated'; payload: { taskId: number; projectId: number } }
+  /** A board row was permanently deleted — ids only, the row cannot be hydrated. */
+  | { type: 'task_deleted'; payload: { taskId: number; projectId: number } };
 
 // --- Fusion phase 1: task board — additive contracts --------------------------
 
@@ -1275,6 +1278,13 @@ export type BoardColumn =
 
 /** Accepted task priority tokens (mapped to the INTEGER priority column server-side). */
 export type TaskPriority = 'urgent' | 'high' | 'normal' | 'low';
+
+/**
+ * Where a board card came from. 'manual' is a hand-written card (the default
+ * every pre-capture row carries); 'session' and 'llm' are minted by capture and
+ * are never creatable over HTTP — see insertCapturedTask in tasks_board.go.
+ */
+export type TaskOrigin = 'manual' | 'session' | 'llm';
 
 /**
  * A dispatchable board task — response of POST/PATCH /api/board/tasks, item of
@@ -1306,6 +1316,12 @@ export interface BoardTask {
   retryCount: number;
   verifyVerdict: string | null;
   verifyDetail: string | null;
+  /** Registry agent name this card dispatches as; null = a plain run. */
+  agent: string | null;
+  /** Where the card came from: hand-written, captured from a session, or LLM-suggested. */
+  origin: TaskOrigin;
+  /** Session a captured card was minted from; null for manual cards. */
+  originSessionId: number | null;
   columnMovedAt: string | null;
   createdAt: string;
 }

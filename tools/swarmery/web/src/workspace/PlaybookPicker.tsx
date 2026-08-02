@@ -1,5 +1,6 @@
 // Playbook picker (fusion phase 13): a <select> of the project's playbooks,
-// shared by QuickEntry (compact) and TaskDrawer (with a description line). The
+// shared by the board's task editors — the create modal (intake) and the task
+// detail modal (edit), both pairing it with the description line below. The
 // list is fetched once per project (built-ins overlaid by project overrides);
 // the empty value maps to the default recipe ('standard'). Fully keyboard-native
 // (a plain <select>), labelled for WCAG.
@@ -47,20 +48,18 @@ export function usePlaybooks(projectId: number | null): {
 /**
  * A <select> bound to a playbook name. `value` is the selected name ("" = the
  * default recipe); `onChange` receives the new name ("" when the default is
- * picked). `compact` shrinks it for the QuickEntry row.
+ * picked).
  */
 export function PlaybookSelect({
   playbooks,
   value,
   onChange,
-  compact = false,
   disabled = false,
   id,
 }: {
   playbooks: Playbook[];
   value: string;
   onChange: (name: string) => void;
-  compact?: boolean;
   disabled?: boolean;
   id?: string;
 }): JSX.Element {
@@ -68,9 +67,8 @@ export function PlaybookSelect({
   // named option. If the current value is a name not in the list (e.g. a stored
   // project playbook the fetch has not returned yet) it still renders selected.
   const known = playbooks.some((p) => p.name === value);
-  const base = compact
-    ? 'rounded-md border border-line bg-field px-1.5 py-1 font-mono text-[10px] text-ink-dim'
-    : 'w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink';
+  const base =
+    'w-full rounded-[8px] border border-line bg-field px-2 py-1.5 font-mono text-[11px] text-ink';
   return (
     <select
       id={id}
@@ -81,7 +79,7 @@ export function PlaybookSelect({
       onChange={(e) => onChange(e.target.value)}
       className={`${base} outline-none transition-colors hover:border-line-strong focus:border-ink-dim disabled:opacity-50`}
     >
-      <option value="">{compact ? 'standard' : 'standard (default)'}</option>
+      <option value="">standard (default)</option>
       {value !== '' && !known && <option value={value}>{value}</option>}
       {playbooks
         .filter((p) => p.name !== DEFAULT_PLAYBOOK)
@@ -110,11 +108,21 @@ export function PlaybookHint({
     // The row stays items-start so the description keeps its top alignment
     // against a multi-line wrap; the pair re-centres the 15px trigger on the
     // py-px chip it explains rather than top-aligning the two.
+    //
+    // shrink-0 / min-w-0 are load-bearing: both of the pair's own children are
+    // shrink-0, so when the long description made the row overflow, the pair
+    // box was the one that gave — it collapsed to the chip's width and the "?"
+    // trigger spilled out on top of the first words of the description. The
+    // description is the part that should absorb the pressure, by wrapping.
     <div className="mt-1 flex items-start gap-1.5">
-      <ExplainPair id="verify-knob">
-        <VerifyChip verify={pb.verify} />
-      </ExplainPair>
-      <span className="font-mono text-[10px] leading-snug text-ink-faint">{pb.description}</span>
+      <span className="shrink-0">
+        <ExplainPair id="verify-knob">
+          <VerifyChip verify={pb.verify} />
+        </ExplainPair>
+      </span>
+      <span className="min-w-0 font-mono text-[10px] leading-snug text-ink-faint">
+        {pb.description}
+      </span>
     </div>
   );
 }

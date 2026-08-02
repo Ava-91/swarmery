@@ -50,6 +50,10 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// ranks the tools driving context growth (context_hogs.go). 404 when no
 	// transcript is on disk.
 	mux.HandleFunc("GET /api/sessions/{id}/context-hogs", h.getSessionContextHogs)
+	// on-demand LLM task extraction (extract.go): a paid model pass that turns a
+	// session into suggested Triage cards. Manual trigger only — nothing here is
+	// automatic, unlike ingest's deterministic capture.
+	mux.HandleFunc("POST /api/sessions/{id}/extract-tasks", requireLocalOrigin(h.extractSessionTasks))
 
 	// wave A: WS
 	mux.HandleFunc("GET /api/ws", h.ws)
@@ -117,6 +121,9 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/board/tasks", h.listBoardTasks)
 	mux.HandleFunc("POST /api/board/tasks", requireLocalOrigin(h.createBoardTask))
 	mux.HandleFunc("PATCH /api/board/tasks/{id}", requireLocalOrigin(h.patchBoardTask))
+	// Permanent removal of a queue row (a task that stopped being relevant).
+	// Archive keeps it on the board; this drops it. Same D4 origin hardening.
+	mux.HandleFunc("DELETE /api/board/tasks/{id}", requireLocalOrigin(h.deleteBoardTask))
 
 	// fusion phase 3: dispatcher control — status + pause/resume (global or
 	// per-project). The pause write carries the same D4 origin hardening.
