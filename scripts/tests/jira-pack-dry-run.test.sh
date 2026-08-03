@@ -29,9 +29,16 @@ else
   ok "check1: no .mcp.json under plugins/jira-pack/"
 fi
 
-# ── 2. Both MCP tool-prefix examples always appear together, per file ──────
+# ── 2. Both MCP tool-prefix examples always appear together, per file, AND
+#      co-occurrence alone is not enough -- neither prefix may be presented
+#      as the one true/authoritative tool to call ──────────────────────────
 prefix_a='mcp__plugin_atlassian_atlassian__'
 prefix_b='mcp__claude_ai_Atlassian_Rovo__'
+# A line naming a prefix may not also read as "this is the tool to call",
+# unless that same line is clearly part of the "why we do NOT hardcode this"
+# explanation (a negation cue sitting alongside the marker word).
+markers='\b(call|calls|calling|use|uses|using|invoke|invokes|invoking|required|canonical|must|always)\b'
+negations='\b(never|not|cannot|don.t|won.t|shouldn.t|isn.t|aren.t|doesn.t)\b'
 files_with_either="$(grep -rlE "${prefix_a}|${prefix_b}" "$PACK" 2>/dev/null || true)"
 check2_bad=0
 if [ -z "$files_with_either" ]; then
@@ -46,9 +53,16 @@ else
       bad "check2: ${f#"$ROOT"/} mentions only one MCP prefix, not both"
       check2_bad=1
     fi
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      if grep -qiE "$markers" <<< "$line" && ! grep -qiE "$negations" <<< "$line"; then
+        bad "check2: ${f#"$ROOT"/} presents an MCP prefix as the authoritative tool to call: ${line:0:120}"
+        check2_bad=1
+      fi
+    done <<< "$(grep -E "${prefix_a}|${prefix_b}" "$f" || true)"
   done <<< "$files_with_either"
 fi
-[ "$check2_bad" -eq 0 ] && ok "check2: every file mentioning an MCP prefix mentions both, together (illustrative only)"
+[ "$check2_bad" -eq 0 ] && ok "check2: every file mentioning an MCP prefix mentions both together, and neither is ever presented as the authoritative tool to call"
 
 # ── 3. swarmery-board-card never sets boardColumn to todo in a real body ───
 board_card="$PACK/skills/swarmery-board-card/SKILL.md"
@@ -63,8 +77,11 @@ if ! grep -qF 'never sets `boardColumn: "todo"`' "$board_card"; then
 fi
 [ "$check3_bad" -eq 0 ] && ok "check3: todo is never a real boardColumn value; the prohibition is explicit"
 
-# ── 4. All six dry-run markers are documented somewhere in the pack ────────
-markers=(
+# ── 4. Each dry-run marker is documented in the specific file that owns it ─
+# (not just "somewhere under the pack" -- a marker deleted from the doc that
+# must actually emit it, but still surviving in some other file, e.g. a
+# README, used to pass this check silently).
+dryrun_markers=(
   "DRY-RUN board POST"
   "DRY-RUN board PATCH"
   "DRY-RUN jira comment"
@@ -72,14 +89,27 @@ markers=(
   "DRY-RUN git"
   "DRY-RUN gh pr create"
 )
+dryrun_owners=(
+  "$PACK/skills/swarmery-board-card/SKILL.md"
+  "$PACK/skills/swarmery-board-card/SKILL.md"
+  "$PACK/skills/jira-writeback/SKILL.md"
+  "$PACK/skills/jira-writeback/SKILL.md"
+  "$PACK/skills/jira-delivery/SKILL.md"
+  "$PACK/skills/jira-delivery/SKILL.md"
+)
 check4_bad=0
-for m in "${markers[@]}"; do
-  if ! grep -rqF "$m" "$PACK"; then
-    bad "check4: marker '$m' not found anywhere in the pack"
+for i in "${!dryrun_markers[@]}"; do
+  m="${dryrun_markers[$i]}"
+  owner="${dryrun_owners[$i]}"
+  if [ ! -f "$owner" ]; then
+    bad "check4: owning file ${owner#"$ROOT"/} for marker '$m' does not exist"
+    check4_bad=1
+  elif ! grep -qF "$m" "$owner"; then
+    bad "check4: marker '$m' not found in its owning file ${owner#"$ROOT"/}"
     check4_bad=1
   fi
 done
-[ "$check4_bad" -eq 0 ] && ok "check4: all six dry-run markers are documented"
+[ "$check4_bad" -eq 0 ] && ok "check4: all six dry-run markers are documented in the specific file that owns them"
 
 # ── 5. jira-writeback fixes the comment-then-transition order ──────────────
 writeback="$PACK/skills/jira-writeback/SKILL.md"

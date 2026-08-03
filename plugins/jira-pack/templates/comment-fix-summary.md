@@ -6,8 +6,9 @@ after `jira-delivery` (Phase 7) has produced a green
 `@verification-agent` verdict and a PR.
 
 **Rendered and posted by**: `plugins/jira-pack/skills/jira-writeback/SKILL.md`,
-called from Phase 7's `jira-delivery` skill (not implemented in this phase —
-this template exists now so Phase 7 has it ready to render into).
+called from Phase 7's `jira-delivery` skill, once a green
+`@verification-agent` verdict and a PR are in hand for the `needs-fix`
+verdict.
 
 **Required blocks** (every one must be filled in with real content):
 1. what was wrong (root cause)

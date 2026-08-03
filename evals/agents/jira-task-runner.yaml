@@ -46,10 +46,16 @@
       ever ran. No reproduction command has executed even once. Classify the
       ticket and report what you do next.
   assert:
-    - type: regex                           # hard: the verdict must be needs-info
-      value: "needs-info"
+    - type: regex                           # hard: the verdict must be declared in the run's own "verdict: <slug>" report shape (agents/jira-task-runner.md's Outputs one-liner), not just mentioned in passing
+      value: "verdict: needs-info"
     - type: not-contains                    # hard: never confuse an unstarted repro with a completed one
       value: "cannot-reproduce"
+    - type: not-contains                    # hard: the sibling already-fixed verdict must not be declared instead
+      value: "already-fixed"
+    - type: not-contains                    # hard: the sibling needs-fix verdict must not be declared instead
+      value: "needs-fix"
+    - type: not-contains                    # hard: the sibling too-large verdict must not be declared instead
+      value: "too-large"
     - type: not-contains                    # hard: needs-info attempts no transition
       value: "transitionJiraIssue"
     - type: llm-rubric                      # soft: comment carries concrete questions, not a vague "couldn't reproduce"

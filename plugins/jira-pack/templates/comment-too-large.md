@@ -6,7 +6,8 @@ multi-stage feature). Unlike the other four templates, this one is **not**
 rendered or posted by `jira-writeback` — Phase 7's `jira-escalation` skill
 owns it, since this verdict never carries a status transition and the plan it
 references is saved to the private workspace, never to this repo (hard-rule
-§11). This template ships in Phase 6 so Phase 7 has it ready to render into.
+§11). This template is rendered and posted directly by `jira-escalation`'s Step 3
+once the plan has been produced.
 
 **Required blocks** (every one must be filled in with real content):
 1. diagnosis (why this doesn't fit as a direct `/jira-fix` run)
