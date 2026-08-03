@@ -14,7 +14,10 @@
 //                          answer endpoint (questionId "" + otherText — the
 //                          endpoint owns the resume, NOT sendSessionMessage).
 //  · done                — "Plan ready" + link to the Plans page (the plan→board
-//                          activation flow was removed in phase 4).
+//                          activation flow was removed in phase 4) + "Start
+//                          another plan", which re-opens the intake in place
+//                          (Service.Start accepts a new run over a done row —
+//                          markCancelled only supersedes OPEN wizards).
 //  · failed              — error card + intake prefilled to start again.
 //
 // Frozen WS bus: session_updated/task_updated → refetch, plus a 4s reconcile
@@ -72,10 +75,15 @@ export function PlanningMode(): JSX.Element {
   const [rawAnswer, setRawAnswer] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
+  // Done-state escape hatch: the plan landed and the user wants another one.
+  // Re-opens the intake under the "Plan ready" card without losing the link
+  // to the plan that just shipped.
+  const [newPlanMode, setNewPlanMode] = useState(false);
   // 1s tick that drives the elapsed timer while the planner is thinking.
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const aliveRef = useRef(true);
+  const ideaRef = useRef<HTMLTextAreaElement | null>(null);
   // Monotonic counter incremented on every optimistic state flip (answer,
   // refine, proceed, start). Each loadStatus() call captures the counter at
   // launch time; if the counter advanced by the time the response arrives the
@@ -171,6 +179,13 @@ export function PlanningMode(): JSX.Element {
       window.clearInterval(t);
     };
   }, [projectId, dbSlug, wstatus, plan, status?.startedAt]);
+
+  // The "start another plan" intake belongs to the done state only — once a new
+  // run (or any other status) takes over, drop the flag so the normal branches
+  // decide what renders.
+  useEffect(() => {
+    if (wstatus !== 'done') setNewPlanMode(false);
+  }, [wstatus]);
 
   // Live nudges: session_updated / task_updated → refresh the wizard DTO.
   const onMessage = useCallback(
@@ -309,7 +324,7 @@ export function PlanningMode(): JSX.Element {
 
   // Idle, cancelled AND failed all land here — failed shows the error card
   // above an intake prefilled with the same idea.
-  const showIntake = !wizardOpen && wstatus !== 'done';
+  const showIntake = !wizardOpen && (wstatus !== 'done' || newPlanMode);
 
   /** Shared run header: pulse dot, started-ago, session link, History, cancel. */
   const runHeader = (label: string, pulse: boolean): JSX.Element => (
@@ -398,10 +413,89 @@ export function PlanningMode(): JSX.Element {
         </Card>
       )}
 
-      {/* IDLE / FAILED — idea intake */}
+      {/* DONE — plan ready. Rendered ABOVE the intake so "Start another plan"
+          drops the next idea box underneath this card, not above it. */}
+      {wstatus === 'done' && (
+        <Card>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="inline-block h-[7px] w-[7px] shrink-0 rounded-full bg-green" aria-hidden="true" />
+            <span className="text-[13px] font-semibold text-ink">Plan ready</span>
+            {plan !== null ? (
+              <Link
+                to={`/p/${slug}/plans`}
+                className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
+              >
+                {plan.title}
+              </Link>
+            ) : (
+              <Link
+                to={`/p/${slug}/plans`}
+                className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
+              >
+                open Plans →
+              </Link>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {history.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen(true)}
+                  className="rounded-lg border border-line px-3 py-1 font-mono text-[11px] text-ink-dim transition-colors hover:bg-surface2 hover:text-ink"
+                >
+                  History
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={newPlanMode}
+                onClick={() => {
+                  setIdea('');
+                  setError(null);
+                  setNewPlanMode(true);
+                  // Let the intake mount before we reach for it.
+                  window.setTimeout(() => ideaRef.current?.focus(), 0);
+                }}
+                className="rounded-lg border border-brand/45 bg-brand/12 px-3 py-1 font-mono text-[11px] font-semibold text-brand transition-colors hover:bg-brand/20 disabled:opacity-50"
+              >
+                Start another plan
+              </button>
+            </div>
+          </div>
+          <div className="mt-2 font-mono text-[11px] text-ink-dim">
+            {status?.planDir != null && status.planDir !== '' ? (
+              <>
+                plan saved at <span className="text-ink">{status.planDir}</span>
+              </>
+            ) : (
+              'the plan directory is being picked up by the workspace scan…'
+            )}
+            {plan !== null && (
+              <>
+                {' '}
+                — tracked as <span className="text-ink">{plan.externalId}</span>
+              </>
+            )}
+          </div>
+          <div className="mt-2 text-[12.5px] leading-relaxed text-ink-2">
+            Review it on the{' '}
+            <Link to={`/p/${slug}/plans`} className="text-brand hover:underline">
+              Plans page
+            </Link>{' '}
+            — phases run from there.
+          </div>
+        </Card>
+      )}
+
+      {/* IDLE / FAILED / "start another plan" — idea intake */}
       {showIntake && (
         <div className="mt-5 max-w-[80ch]">
+          {newPlanMode && (
+            <div className="mb-1.5 font-mono text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">
+              next idea
+            </div>
+          )}
           <textarea
+            ref={ideaRef}
             value={idea}
             onChange={(e) => setIdea(e.target.value)}
             rows={5}
@@ -525,62 +619,6 @@ export function PlanningMode(): JSX.Element {
                 reply
               </button>
             </form>
-          </div>
-        </Card>
-      )}
-
-      {/* DONE — plan ready */}
-      {wstatus === 'done' && (
-        <Card>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="inline-block h-[7px] w-[7px] shrink-0 rounded-full bg-green" aria-hidden="true" />
-            <span className="text-[13px] font-semibold text-ink">Plan ready</span>
-            {plan !== null ? (
-              <Link
-                to={`/p/${slug}/plans`}
-                className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
-              >
-                {plan.title}
-              </Link>
-            ) : (
-              <Link
-                to={`/p/${slug}/plans`}
-                className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
-              >
-                open Plans →
-              </Link>
-            )}
-            {history.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setHistoryOpen(true)}
-                className="ml-auto rounded-lg border border-line px-3 py-1 font-mono text-[11px] text-ink-dim transition-colors hover:bg-surface2 hover:text-ink"
-              >
-                History
-              </button>
-            )}
-          </div>
-          <div className="mt-2 font-mono text-[11px] text-ink-dim">
-            {status?.planDir != null && status.planDir !== '' ? (
-              <>
-                plan saved at <span className="text-ink">{status.planDir}</span>
-              </>
-            ) : (
-              'the plan directory is being picked up by the workspace scan…'
-            )}
-            {plan !== null && (
-              <>
-                {' '}
-                — tracked as <span className="text-ink">{plan.externalId}</span>
-              </>
-            )}
-          </div>
-          <div className="mt-2 text-[12.5px] leading-relaxed text-ink-2">
-            Review it on the{' '}
-            <Link to={`/p/${slug}/plans`} className="text-brand hover:underline">
-              Plans page
-            </Link>{' '}
-            — phases run from there.
           </div>
         </Card>
       )}
