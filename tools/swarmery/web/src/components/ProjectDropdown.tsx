@@ -125,13 +125,15 @@ export function ProjectDropdown({
             : 'flex max-w-[200px] items-center gap-1.5 rounded-full border border-line-strong px-[11px] py-[5px] font-mono text-[10.5px] whitespace-nowrap text-ink-dim transition-colors hover:text-ink aria-expanded:border-[#4a4e58] aria-expanded:bg-surface2 aria-expanded:text-ink'
         }
       >
-        {block && (
-          <span
-            aria-hidden="true"
-            className={`h-[8px] w-[8px] shrink-0 rounded-full ${value === null ? 'bg-line-strong' : ''}`}
-            style={value !== null ? { backgroundColor: colorFor(selected?.slug ?? value) } : undefined}
-          />
-        )}
+        {/* The project dot renders in BOTH trigger shapes: the pill is now a
+            filter chip in a page's filter row ("● all projects ▾"), sitting
+            beside status chips that carry no dot — the dot is what says "this
+            one selects a project". */}
+        <span
+          aria-hidden="true"
+          className={`shrink-0 rounded-full ${block ? 'h-[8px] w-[8px]' : 'h-[7px] w-[7px]'} ${value === null ? 'bg-line-strong' : ''}`}
+          style={value !== null ? { backgroundColor: colorFor(selected?.slug ?? value) } : undefined}
+        />
         <span
           className={block ? 'min-w-0 flex-1 truncate text-[13px] font-semibold text-ink' : 'truncate'}
           style={!block && value !== null ? { color: colorFor(selected?.slug ?? value) } : undefined}

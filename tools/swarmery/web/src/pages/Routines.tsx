@@ -18,6 +18,7 @@ import {
 } from '../api';
 import { fmtAgo } from '../lib/format';
 import { findProject } from '../lib/projectSlug';
+import { ScopeChip } from '../components/ScopeChip';
 import { useScope } from '../lib/scope';
 import { ConfirmDialog, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
@@ -666,6 +667,13 @@ export function Routines(): JSX.Element {
         >
           + New routine
         </button>
+      </div>
+
+      {/* This page has no filter row of its own — the scope chip gets its own
+          line under the header rather than being stranded in the middle of the
+          justify-between title bar. `scope` already narrows fetchRoutines. */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <ScopeChip />
       </div>
 
       <div className="mt-5">

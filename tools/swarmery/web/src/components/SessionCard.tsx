@@ -179,26 +179,50 @@ function RowChip({ tone, suffix }: { tone: CanvasTone; suffix: string }): JSX.El
   );
 }
 
+/* Column templates for the ≥900px flat row. Enumerated as whole literals (not
+ * assembled) so Tailwind's source scan can see every class it must emit. */
+const FLAT_GRID = {
+  full: 'grid-cols-[15px_130px_minmax(0,1fr)_150px_90px]',
+  noProject: 'grid-cols-[15px_minmax(0,1fr)_150px_90px]',
+  tagged: 'grid-cols-[15px_40px_130px_minmax(0,1fr)_150px_90px]',
+  taggedNoProject: 'grid-cols-[15px_40px_minmax(0,1fr)_150px_90px]',
+} as const;
+
+function flatGrid(hideProject: boolean, tagged: boolean): string {
+  if (tagged) return hideProject ? FLAT_GRID.taggedNoProject : FLAT_GRID.tagged;
+  return hideProject ? FLAT_GRID.noProject : FLAT_GRID.full;
+}
+
 export function SessionCard({
   session,
   now = null,
   flat = false,
+  dense = false,
   hideProject = false,
   label = null,
+  roleTag = null,
+  subline = null,
 }: {
   session: Session;
   /** Live "now: <last action>" line, fed by event_appended WS messages. */
   now?: string | null;
   /** Row inside a grouped list card (no own border — hover fill instead). */
   flat?: boolean;
+  /** Tighter padding for a fan-out row nested inside a card (PlanRunCard). */
+  dense?: boolean;
   /** Drop the project cell — redundant when the list is already scoped to one
    * project (project-mode /p/:slug/sessions). */
   hideProject?: boolean;
-  /** Replaces the session title as the row's headline. The grouped Sessions
-   * view passes `#<seq> <phase name>`, because every phase run of one plan
-   * carries the same truncated prompt and the title tells them apart from
+  /** Replaces the session title as the row's headline. Plan fan-out rows pass
+   * the phase name / "plan controller", because every session of one plan run
+   * carries the same boilerplate prompt as its title — it tells them apart from
    * nothing. */
   label?: string | null;
+  /** Mono role tag in its own leading column (`ctl`, `#5`) — plan fan-out rows. */
+  roleTag?: string | null;
+  /** Replaces the dim meta line (model · branch · time) with an explanatory
+   * one-liner — "dispatches phases in dependency order", retry attempts, … */
+  subline?: string | null;
 }): JSX.Element {
   const navigate = useNavigate();
   // Preserve the mode when opening a session: in project mode (/p/:slug/…) stay
@@ -211,6 +235,19 @@ export function SessionCard({
     navigate(sessionHref(session.id));
   };
   const headline = label ?? session.title;
+
+  /* Plan fan-out rows (roleTag set) have an AUTHORITATIVE sub-line. Every
+   * session of a plan run carries the same boilerplate prompt as its title AND
+   * as its `why` preview ("You are executing ONE phase of an approved
+   * implementation plan, headlessly, in an isolated git worktree…"), so falling
+   * back to either would reprint the exact text this row exists to replace.
+   * Precedence: the caller's note (controller explainer / retry attempt) →
+   * the live action line → nothing at all. */
+  const planRow = roleTag !== null;
+  const liveLine = liveNow ? `now: ${now ?? ''}` : null;
+  const rowSubline: string | null = planRow
+    ? (subline ?? liveLine)
+    : (liveLine ?? subline ?? session.why ?? meta(session));
 
   /* Action slot: stuck rows with a confirmed-alive process keep the hard
    * Kill; any other live tone offers the graceful Stop (no PID needed);
@@ -254,10 +291,17 @@ export function SessionCard({
         )}
         <RowChip tone={tone} suffix={chipSuffix(session, tone)} />
       </div>
-      <div className="mt-px mb-[3px] truncate text-[13.5px] font-semibold">
-        {headline ?? session.sessionUuid}
+      <div className="mt-px mb-[3px] flex min-w-0 items-baseline gap-1.5">
+        {roleTag !== null && (
+          <span className="shrink-0 font-mono text-[10.5px] text-ink-faint">{roleTag}</span>
+        )}
+        <span className="min-w-0 truncate text-[13.5px] font-semibold">
+          {headline ?? session.sessionUuid}
+        </span>
       </div>
-      <div className="truncate font-mono text-[11px] text-ink-dim">{meta(session)}</div>
+      <div className="truncate font-mono text-[11px] text-ink-dim">
+        {subline ?? meta(session)}
+      </div>
       {session.taskExternalId != null && (
         <div className="mt-[3px] flex min-w-0">
           <TaskChip
@@ -311,17 +355,16 @@ export function SessionCard({
       onKeyDown={(e) => { if (e.key === 'Enter') goToDetail(); }}
       className="block cursor-pointer transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand"
     >
-      <div className="px-3.5 py-[11px] desk:hidden">{card}</div>
+      <div className={`desk:hidden ${dense ? 'px-3 py-2' : 'px-3.5 py-[11px]'}`}>{card}</div>
       <div
-        className={`hidden items-center gap-3.5 px-1 py-3 desk:grid ${
-          hideProject
-            ? 'grid-cols-[15px_minmax(0,1fr)_150px_90px]'
-            : 'grid-cols-[15px_130px_minmax(0,1fr)_150px_90px]'
-        }`}
+        className={`hidden items-center gap-3.5 px-1 desk:grid ${dense ? 'py-2' : 'py-3'} ${flatGrid(hideProject, roleTag !== null)}`}
       >
         <span className="flex justify-center">
           <RowDot tone={tone} />
         </span>
+        {roleTag !== null && (
+          <span className="truncate font-mono text-[10.5px] text-ink-faint">{roleTag}</span>
+        )}
         {!hideProject && (
           <span className="flex min-w-0 items-center">
             <ProjectName
@@ -354,8 +397,10 @@ export function SessionCard({
             <ContextBadge session={session} />
             <HandoffChip session={session} />
           </span>
+          {/* Non-breaking space when there is no sub-line: the row keeps its
+              height, so a fan-out with mixed notes does not shear. */}
           <span className="mt-0.5 block truncate text-[12px] text-ink-dim">
-            {liveNow ? `now: ${now}` : (session.why ?? meta(session))}
+            {rowSubline ?? ' '}
           </span>
           {(session.taskExternalId != null || action !== null) && (
             <span className="mt-[3px] flex min-w-0 items-center gap-1.5">

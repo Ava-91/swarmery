@@ -16,7 +16,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import type { SystemHubSummary } from '../api/types';
 import { fetchSystemHubSummary } from '../api/systemHub';
-import { useScope } from '../lib/scope';
+import { ScopeChip } from '../components/ScopeChip';
+import { useProjectIdParam, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { AgentHub } from './AgentHub';
 import { SystemHub } from './SystemHub';
@@ -46,7 +47,10 @@ export function SystemShell(): JSX.Element {
   // mode keeps the full catalog + the all/global/project chips.
   const slug = params.slug;
   const projectScoped = slug !== undefined;
-  const scopeSlug = slug ?? scope;
+  // Numeric project id, not the pretty slug: this shell's own summary fetch and
+  // every embedded hub it feeds hit /api/system/* endpoints whose template
+  // matcher accepts the DB path slug or the id only (see useProjectIdParam).
+  const scopeSlug = useProjectIdParam(slug ?? scope);
   const base = projectScoped ? `/p/${slug}/system` : '/system';
 
   // Active tab = first path segment after the base (params['*'] is the splat).
@@ -112,9 +116,15 @@ export function SystemShell(): JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col px-4 pt-6 desk:px-10 desk:pt-[34px]">
-      <h1 className="mb-4 font-display text-[30px] leading-tight font-medium tracking-[-0.01em]">
+      <h1 className="mb-3 font-display text-[30px] leading-tight font-medium tracking-[-0.01em]">
         System
       </h1>
+      {/* Own row, NOT inside the tablist below: a non-tab child would break
+          that element's role contract. This shell resolves scopeSlug for every
+          embedded hub, so the chip belongs here rather than in each hub. */}
+      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
+        <ScopeChip />
+      </div>
       <div
         className="mb-4 flex gap-1 overflow-x-auto border-b border-line [-webkit-overflow-scrolling:touch]"
         role="tablist"

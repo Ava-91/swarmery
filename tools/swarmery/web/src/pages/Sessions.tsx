@@ -1,44 +1,61 @@
-// Sessions list (design §3.3): status chip row with live counts, live updates
-// over WS. Project filtering comes from the GLOBAL header scope switcher
-// (useScope) — pushed to the API as a query param; text search lives in the
-// header ⌘K palette; status is filtered CLIENT-side so the chip counts always
-// reflect the scoped list.
-// Redesign layout: status chips (wrapping row), sessions grouped by day under
-// mono eyebrow rules, each day one navy list card — aligned table columns at
-// ≥900px.
+// Sessions list — LAYOUT CONTRACT (redesign: day-first timeline).
+//
+// Structure. The ONLY top-level structure is the day timeline: `today · sat,
+// aug 2`, `fri, aug 1`, … under mono eyebrow rules. Nothing is hoisted above it.
+// A plan run does NOT get its own section: it renders INSIDE its day, positioned
+// by its newest session, as ONE collapsed PlanRunCard row that fans out on
+// click. Ordinary sessions render as flat SessionCard rows in the same day.
+// (The old "plan groups on top + Other sessions below" split is gone: with a few
+// plan runs it opened the page on a wall of boilerplate controller prompts and
+// pushed the day list the operator wants far below the fold.)
+//
+// Views. `timeline` (default) is the above. `plan runs` is an audit view: only
+// the run cards, still day-grouped, all expanded. It is offered only when the
+// loaded window actually holds a plan run.
+//
+// Filters row (in page order): search · project scope chip · divider · status
+// chips (+ account chips when the machine has >1 subscription) · view segment.
+// The project scope chip is the SAME useScope() context the sidebar switcher
+// used to drive — the control moved into the page, the scoping did not change.
+//
+// Data flow (unchanged). Only the project scope goes to the API (?project=);
+// text search and status are filtered CLIENT-side so the chip counts always
+// reflect the loaded, scoped list. WS keeps that window live; a request
+// generation drops stale in-flight pages when the scope changes; an
+// IntersectionObserver sentinel appends the next page. All arrangement is pure
+// and lives in lib/sessionsView.ts (incl. merge-by-taskId, which is what keeps a
+// fan-out split across a page boundary from becoming two cards).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import type { Session, SessionStatus, WSMessage } from '../api/types';
 import { fetchSessions } from '../api';
 import { liveActionText } from '../lib/payload';
 import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
 import { accountKey, accountKeys } from '../lib/sessionAccount';
+import {
+  buildDays,
+  countRuns,
+  countSessions,
+  matchesQuery,
+  runsOnly,
+  STATUS_LABELS,
+  STATUSES,
+  type DayBucket,
+} from '../lib/sessionsView';
 import { applySessionMessage, useLiveUpdates } from '../lib/ws';
 import { ExplainPair } from '../components/Explain';
 import { PageSearchInput } from '../components/PageSearchInput';
+import { PlanRunCard } from '../components/PlanRunCard';
+import { ScopeChip } from '../components/ScopeChip';
 import { SessionCard } from '../components/SessionCard';
 import { Empty, ErrorBox, GroupHeader, Loading } from '../components/ui';
 
 const PAGE_LIMIT = 100;
 
-/** Case-insensitive substring match over title / project / slug / branch. */
-function matchesQuery(s: Session, q: string): boolean {
-  if (q === '') return true;
-  return [s.title, s.projectName, s.projectSlug, s.gitBranch].some(
-    (v) => v != null && v.toLowerCase().includes(q),
-  );
-}
-
-const STATUSES: SessionStatus[] = ['active', 'waiting_approval', 'idle', 'completed', 'killed'];
-const STATUS_LABELS: Record<SessionStatus, string> = {
-  active: 'active',
-  waiting_approval: 'waiting',
-  idle: 'idle',
-  completed: 'done',
-  killed: 'killed',
-};
+/** How the list is arranged. `runs` is the audit view (run cards only). */
+type View = 'timeline' | 'runs';
 
 function FilterChip({
   selected,
@@ -65,7 +82,7 @@ function FilterChip({
   );
 }
 
-/** Status chip row (page body) — text search lives in the header ⌘K palette. */
+/** Status chip row — `all` clears the filter, then one chip per status. */
 function StatusChips({
   status,
   onStatus,
@@ -77,6 +94,9 @@ function StatusChips({
 }): JSX.Element {
   return (
     <>
+      <FilterChip selected={status === null} onClick={() => onStatus(null)}>
+        all
+      </FilterChip>
       {STATUSES.map((s) => (
         <FilterChip key={s} selected={status === s} onClick={() => onStatus(status === s ? null : s)}>
           {counts[s] > 0 ? `${STATUS_LABELS[s]} · ${String(counts[s])}` : STATUS_LABELS[s]}
@@ -121,178 +141,55 @@ function AccountChips({
   );
 }
 
-/* ----- day grouping (presentation only — Redesign "today · sun, jul 6") ----- */
-
-interface DayGroup {
-  label: string;
-  rows: Session[];
-}
-
-function dayLabel(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return 'unknown day';
-  const name = d
-    .toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
-    .toLowerCase();
-  return d.toDateString() === new Date().toDateString() ? `today · ${name}` : name;
-}
-
-function groupByDay(sorted: Session[]): DayGroup[] {
-  const groups: DayGroup[] = [];
-  for (const s of sorted) {
-    const label = dayLabel(s.startedAt);
-    const last = groups[groups.length - 1];
-    if (last !== undefined && last.label === label) last.rows.push(s);
-    else groups.push({ label, rows: [s] });
-  }
-  return groups;
-}
-
-/* ----- plan grouping -------------------------------------------------------
- * A plan run fans out into a controller session plus one session per phase,
- * and every one of them opens with the same boilerplate prompt ("You are
- * executing ONE phase of an approved implementation plan…"). Flat, those rows
- * are indistinguishable. The server resolves the owning plan from the run
- * branch it stamped (session.planGroup), so this view can stack a plan's whole
- * fan-out under one header instead. */
-
-interface PlanGroup {
-  taskId: number;
-  title: string;
-  /** Project of the group's newest row — the Plans page is project-scoped. */
-  projectSlug: string;
-  rows: Session[];
-}
-
-/** Controller (0) → phases (1) → anything else the run pulled in (2). */
-function planRank(s: Session): number {
-  const role = s.planGroup?.role;
-  if (role === 'controller') return 0;
-  if (role === 'phase') return 1;
-  return 2;
-}
-
-/** In-group order: controller first, then phases by seq, then start time desc. */
-function comparePlanRows(a: Session, b: Session): number {
-  const ra = planRank(a);
-  const rb = planRank(b);
-  if (ra !== rb) return ra - rb;
-  if (ra === 1) {
-    // A phase with no seq sorts after the numbered ones rather than at 0.
-    const sa = a.planGroup?.phaseSeq ?? Number.MAX_SAFE_INTEGER;
-    const sb = b.planGroup?.phaseSeq ?? Number.MAX_SAFE_INTEGER;
-    if (sa !== sb) return sa - sb;
-  }
-  return b.startedAt.localeCompare(a.startedAt);
-}
-
-/**
- * Split an already-sorted (newest-first) list into plan groups plus the
- * leftovers. Nothing is dropped: every row lands in exactly one bucket.
- */
-function groupByPlan(sorted: Session[]): { plans: PlanGroup[]; other: Session[] } {
-  const byTask = new Map<number, PlanGroup>();
-  const other: Session[] = [];
-  for (const s of sorted) {
-    const g = s.planGroup;
-    if (g == null) {
-      other.push(s);
-      continue;
-    }
-    const existing = byTask.get(g.taskId);
-    if (existing === undefined) {
-      byTask.set(g.taskId, { taskId: g.taskId, title: g.title, projectSlug: s.projectSlug, rows: [s] });
-    } else {
-      existing.rows.push(s);
-    }
-  }
-  // Input order is newest-first, so each group's FIRST row is its newest
-  // session — order the groups by that before re-sorting rows inside them.
-  const plans = [...byTask.values()];
-  plans.sort((a, b) => (b.rows[0]?.startedAt ?? '').localeCompare(a.rows[0]?.startedAt ?? ''));
-  for (const p of plans) p.rows.sort(comparePlanRows);
-  return { plans, other };
-}
-
-/** `#<seq> <name>` for a phase row; null keeps the session's own title. */
-function planRowLabel(s: Session): string | null {
-  const g = s.planGroup;
-  if (g == null || g.role !== 'phase' || g.phaseSeq == null || g.phaseName == null) return null;
-  return `#${String(g.phaseSeq)} ${g.phaseName}`;
-}
-
-/** Per-status tallies for a group header, in the page's chip vocabulary. */
-function statusSummary(rows: Session[]): string {
-  const counts: Record<SessionStatus, number> = {
-    active: 0,
-    waiting_approval: 0,
-    idle: 0,
-    completed: 0,
-    killed: 0,
-  };
-  for (const s of rows) counts[s.status] += 1;
-  return STATUSES.filter((s) => counts[s] > 0)
-    .map((s) => `${STATUS_LABELS[s]} ${String(counts[s])}`)
-    .join(' · ');
-}
-
-/** Collapsible header for one plan's fan-out. */
-function PlanGroupHeader({
-  group,
-  collapsed,
-  onToggle,
-  slug,
+/** Two-option segmented control: the day timeline vs the plan-run audit view. */
+function ViewSegment({
+  view,
+  onView,
 }: {
-  group: PlanGroup;
-  collapsed: boolean;
-  onToggle: () => void;
-  /** Project slug of the surrounding route, when the page is project-scoped. */
-  slug: string | undefined;
+  view: View;
+  onView: (v: View) => void;
 }): JSX.Element {
-  const plansHref = `/p/${slug ?? group.projectSlug}/plans?plan=${String(group.taskId)}`;
+  const seg = (v: View, text: string): JSX.Element => (
+    <button
+      type="button"
+      onClick={() => onView(v)}
+      aria-pressed={view === v}
+      className={`shrink-0 rounded-full px-[11px] py-1 font-mono text-[10.5px] whitespace-nowrap transition-colors ${
+        view === v ? 'bg-surface2 text-ink' : 'text-ink-dim hover:text-ink'
+      }`}
+    >
+      {text}
+    </button>
+  );
   return (
-    <div className="mt-6 mb-1.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        className="flex min-w-0 items-baseline gap-2 text-left focus-visible:outline-2 focus-visible:outline-brand"
-      >
-        <span className="font-mono text-[10.5px] text-ink-faint">{collapsed ? '▸' : '▾'}</span>
-        <span className="min-w-0 truncate text-[13.5px] font-semibold">{group.title}</span>
-        <span className="shrink-0 font-mono text-[10.5px] text-ink-faint">
-          {group.rows.length} session{group.rows.length === 1 ? '' : 's'}
-        </span>
-      </button>
-      <span className="font-mono text-[10.5px] text-ink-dim">{statusSummary(group.rows)}</span>
-      <Link
-        to={plansHref}
-        className="ml-auto shrink-0 font-mono text-[10.5px] text-ink-dim hover:text-brand"
-      >
-        open plan →
-      </Link>
+    <div
+      role="group"
+      aria-label="list arrangement"
+      className="flex shrink-0 items-center gap-0.5 rounded-full border border-line-strong p-0.5"
+    >
+      {seg('timeline', 'timeline')}
+      {seg('runs', 'plan runs')}
     </div>
   );
 }
 
 export function Sessions(): JSX.Element {
-  // Project filtering comes from the global header scope switcher; the title
-  // filter comes from the contextual header search input.
+  // Project filtering comes from the in-page scope chip (global useScope
+  // context); the title/plan filter comes from the in-page search input.
   const { scope, scopeProject } = useScope();
   const { slug } = useParams<{ slug?: string }>();
-  // Fleet Sessions (no :slug) is cross-project by contract — App.tsx drops the
-  // rail's project selector there, so honouring a scope set on some other page
-  // would filter the list by an invisible, unreachable control. Workspace
-  // Sessions keeps the scope: its project IS the URL.
-  const effectiveScope = slug !== undefined ? scope : null;
+  // Project mode (/p/:slug/sessions) pins the scope to the URL project
+  // (ProjectWorkspaceProvider), so reading the context covers both modes — and
+  // the scope chip is hidden there, the URL already IS the project filter.
+  const effectiveScope = scope;
   const query = usePageSearch();
   const [status, setStatus] = useState<SessionStatus | null>(null);
   // null = every subscription (migration 0047); a key narrows to one account.
   const [account, setAccount] = useState<string | null>(null);
-  // null = follow the default (grouped whenever the result set HAS a plan
-  // group); a boolean is the operator's explicit override for this visit.
-  const [groupPref, setGroupPref] = useState<boolean | null>(null);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(new Set());
+  const [view, setView] = useState<View>('timeline');
+  // EXPANDED, not collapsed: plan runs default to one collapsed row, so a run
+  // that arrives over WS shows up folded like every other one.
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -403,7 +300,7 @@ export function Sessions(): JSX.Element {
   );
   useLiveUpdates(onMessage, load);
 
-  // Chip counts come from the scoped + title-filtered list (pre-status), over
+  // Chip counts come from the scoped + text-filtered list (pre-status), over
   // the LOADED pages only — deeper history loads on scroll.
   const loaded = (sessions ?? []).filter((s) => matchesQuery(s, query));
   const counts: Record<SessionStatus, number> = {
@@ -424,22 +321,26 @@ export function Sessions(): JSX.Element {
     accountCounts[k] = (accountCounts[k] ?? 0) + 1;
   }
 
-  // Status + account filtering happens HERE, before either grouping pass, so
-  // both views show exactly the same rows — only their arrangement differs.
+  // Account filtering happens here; STATUS filtering happens inside the
+  // grouping pass, because a run card is kept whole when ANY of its rows
+  // matches — filtering must never split a fan-out (lib/sessionsView).
   const sorted = loaded
-    .filter((s) => status === null || s.status === status)
     .filter((s) => account === null || accountKey(s) === account)
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  const groups = groupByDay(sorted);
 
+  // Offered only when the loaded window actually holds a plan run — otherwise
+  // the segment would promise an arrangement it cannot make. Computed
+  // pre-status so a status chip never yanks the control out from under a click.
   const hasPlanGroups = sorted.some((s) => s.planGroup != null);
-  const grouped = hasPlanGroups && (groupPref ?? true);
-  const { plans, other } = grouped
-    ? groupByPlan(sorted)
-    : { plans: [] as PlanGroup[], other: [] as Session[] };
-  const otherGroups = groupByDay(other);
-  const toggleGroup = (taskId: number): void => {
-    setCollapsed((prev) => {
+  const activeView: View = hasPlanGroups ? view : 'timeline';
+
+  const timelineDays = buildDays(sorted, status);
+  const days: DayBucket[] = activeView === 'runs' ? runsOnly(timelineDays) : timelineDays;
+  const shownSessions = countSessions(days);
+  const shownRuns = countRuns(days);
+
+  const toggleRun = (taskId: number): void => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(taskId)) next.delete(taskId);
       else next.add(taskId);
@@ -460,12 +361,16 @@ export function Sessions(): JSX.Element {
         <ExplainPair id="kill-vs-stop">Sessions</ExplainPair>
       </h1>
       <div className="mt-1.5 font-mono text-[11px] text-ink-dim">
-        {sorted.length} match · newest first
+        {shownSessions} sessions
+        {shownRuns > 0 && ` · ${String(shownRuns)} plan runs`} · newest first
       </div>
 
-      {/* Status chips + in-page title search (moved out of the header). Project
-          filtering lives in the sidebar scope switcher; ⌘K opens global search. */}
+      {/* search · project scope · | · status chips · view segment */}
       <div className="mt-5 flex flex-wrap items-center gap-2">
+        <PageSearchInput />
+        {/* Renders null in project mode — the guard lives inside ScopeChip. */}
+        <ScopeChip />
+        <span aria-hidden="true" className="hidden h-4 w-px shrink-0 bg-line sm:block" />
         <StatusChips status={status} onStatus={setStatus} counts={counts} />
         <AccountChips
           keys={accounts}
@@ -473,19 +378,12 @@ export function Sessions(): JSX.Element {
           onAccount={setAccount}
           counts={accountCounts}
         />
-        {/* Offered only when the loaded list actually holds a plan run —
-            otherwise the toggle would promise an arrangement it cannot make. */}
-        {hasPlanGroups && (
-          <FilterChip selected={grouped} onClick={() => setGroupPref(!grouped)}>
-            group by plan
-          </FilterChip>
-        )}
-        <PageSearchInput className="sm:ml-auto" />
+        {hasPlanGroups && <ViewSegment view={activeView} onView={setView} />}
       </div>
 
       {error !== null && <ErrorBox message={error} onRetry={load} />}
       {sessions === null && error === null && <Loading label="sessions…" />}
-      {sessions !== null && sorted.length === 0 && (
+      {sessions !== null && days.length === 0 && (
         <Empty>
           {query !== '' ? (
             <>no sessions match the current filter — try a different search or clear it</>
@@ -501,79 +399,41 @@ export function Sessions(): JSX.Element {
           )}
         </Empty>
       )}
-      {grouped ? (
-        <>
-          {plans.map((g) => (
-            <section key={g.taskId}>
-              <PlanGroupHeader
-                group={g}
-                collapsed={collapsed.has(g.taskId)}
-                onToggle={() => toggleGroup(g.taskId)}
-                slug={slug}
-              />
-              {!collapsed.has(g.taskId) && (
-                <div className="divide-y divide-line-soft">
-                  {g.rows.map((s) => (
-                    <SessionCard
-                      key={s.id}
-                      session={s}
-                      now={nowById[s.id] ?? null}
-                      flat
-                      hideProject={effectiveScope !== null}
-                      label={planRowLabel(s)}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          ))}
-          {/* Everything a plan did not spawn keeps its day grouping and stays
-              fully visible — grouping rearranges the list, it never hides it. */}
-          {other.length > 0 && (
-            <>
-              <div className="mt-7 flex flex-wrap items-baseline gap-x-2.5 border-t border-line pt-5">
-                <span className="text-[13.5px] font-semibold">Other sessions</span>
-                <span className="font-mono text-[10.5px] text-ink-faint">
-                  {other.length} not spawned by a plan
-                </span>
-              </div>
-              {otherGroups.map((g) => (
-                <section key={g.label}>
-                  <GroupHeader>{g.label}</GroupHeader>
-                  <div className="divide-y divide-line-soft">
-                    {g.rows.map((s) => (
-                      <SessionCard
-                        key={s.id}
-                        session={s}
-                        now={nowById[s.id] ?? null}
-                        flat
-                        hideProject={effectiveScope !== null}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))}
-            </>
-          )}
-        </>
-      ) : (
-        groups.map((g) => (
-          <section key={g.label}>
-            <GroupHeader>{g.label}</GroupHeader>
-            <div className="divide-y divide-line-soft">
-              {g.rows.map((s) => (
-                <SessionCard
-                  key={s.id}
-                  session={s}
-                  now={nowById[s.id] ?? null}
-                  flat
+      {days.map((day) => (
+        <section key={day.label}>
+          <GroupHeader>{day.label}</GroupHeader>
+          {/* No `divide-y` on the container: a run renders as its OWN bordered
+              card, so the row hairlines belong to the flat session rows only. */}
+          <div>
+            {day.items.map((item) =>
+              item.kind === 'run' ? (
+                <PlanRunCard
+                  key={`run-${String(item.group.taskId)}`}
+                  run={item.group}
+                  // The audit view exists to READ the runs — everything open.
+                  expanded={activeView === 'runs' || expanded.has(item.group.taskId)}
+                  onToggle={() => toggleRun(item.group.taskId)}
+                  slug={slug}
                   hideProject={effectiveScope !== null}
+                  nowById={nowById}
                 />
-              ))}
-            </div>
-          </section>
-        ))
-      )}
+              ) : (
+                <div
+                  key={item.session.id}
+                  className="border-b border-line-soft last:border-b-0"
+                >
+                  <SessionCard
+                    session={item.session}
+                    now={nowById[item.session.id] ?? null}
+                    flat
+                    hideProject={effectiveScope !== null}
+                  />
+                </div>
+              ),
+            )}
+          </div>
+        </section>
+      ))}
       {nextCursor !== null && (
         <div ref={sentinelRef} className="py-6 text-center font-mono text-[11px] text-ink-faint">
           loading more…

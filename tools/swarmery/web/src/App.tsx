@@ -24,7 +24,6 @@ import { fetchSystemSummary } from './api/system';
 import { CommandPalette } from './components/CommandPalette';
 import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
-import { ProjectDropdown } from './components/ProjectDropdown';
 import { ThemeToggle } from './components/ThemeToggle';
 import { UsageChip } from './components/usage/UsageChip';
 import { isoDay } from './lib/format';
@@ -32,7 +31,6 @@ import { useHealth, shortVersion } from './lib/health';
 import { PluginDriftBadge } from './components/PluginDriftBadge';
 import { loadPrefs, useBrowserNotifications, type NotifyPrefs } from './lib/notifications';
 import { NotifyPrefsContext } from './lib/notifyPrefsContext';
-import { useScope } from './lib/scope';
 import { useLiveUpdates } from './lib/ws';
 
 interface NavItem {
@@ -54,22 +52,12 @@ interface NavSection {
 
 const DOCS_NAV: NavItem = { to: '/docs', glyph: '❐', label: 'Docs' };
 
-/** Global project scope switcher — GitHub-org-switcher pattern. Projects come
- * from the ScopeProvider's shared fetch. Rendered `block` at the top of the
- * session-mode sidebar (mirrors the project-mode ProjectSwitcher placement). */
-function ScopeSwitcher({ block = false }: { block?: boolean }): JSX.Element {
-  const { scope, setScope, projects } = useScope();
-  return (
-    <ProjectDropdown
-      projects={projects}
-      value={scope}
-      onChange={setScope}
-      allLabel="All projects"
-      groupByTag
-      block={block}
-    />
-  );
-}
+/* The global project-scope dropdown no longer lives in this rail. It was a
+ * shell-level control for a page-level filter: it sat above the nav on every
+ * screen, including ones it could not filter, and on Sessions it had to be
+ * hidden outright. The scope control now renders inside the filter row of the
+ * page that uses it (pages/Sessions.tsx → ScopeChip), driving the same
+ * useScope() context. */
 
 export function App(): JSX.Element {
   // ScopeProvider + PageSearchProvider now live one level up (RootProviders in
@@ -137,10 +125,6 @@ function AppShell(): JSX.Element {
   useEffect(syncProposed, [syncProposed]); // one-shot mount fetch
   const { pathname } = useLocation();
   const onRetro = pathname.startsWith('/retro');
-  // Fleet Sessions is a cross-project view by contract, so the rail drops its
-  // project selector there. Only the fleet route matters: /p/:slug/sessions
-  // renders under ProjectWorkspaceLayout, which never mounts this rail.
-  const onSessions = pathname.startsWith('/sessions');
   const prevOnRetro = useRef(onRetro);
   useEffect(() => {
     if (prevOnRetro.current === onRetro) return;
@@ -304,16 +288,6 @@ function AppShell(): JSX.Element {
         {/* Desktop sidebar — static labelled panel (248px), no collapse.
             Settings is pinned to the bottom via mt-auto. */}
         <nav className="hidden w-[248px] shrink-0 flex-col border-r border-line px-3 py-4 desk:flex">
-          {/* Project scope switcher at the top of the rail — mirrors the
-              project-mode ProjectSwitcher placement (moved out of the header).
-              Hidden on Sessions: that view is deliberately cross-project (see
-              Sessions.tsx), so a project selector there would be a control that
-              changes nothing. */}
-          {!onSessions && (
-            <div className="mb-3">
-              <ScopeSwitcher block />
-            </div>
-          )}
           {sections
             .filter((section) => section.items.length > 0)
             .map((section) => (

@@ -53,6 +53,7 @@ import { useScope } from '../lib/scope';
 import { sessionState, useNowMs } from '../lib/sessionState';
 import { applyPermissionMessage, applySessionMessage, useLiveUpdates } from '../lib/ws';
 import { PageSearchInput } from '../components/PageSearchInput';
+import { ScopeChip } from '../components/ScopeChip';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
 
@@ -1211,8 +1212,14 @@ export function Overview(): JSX.Element {
           />
         )}
 
-        {/* In-page session-title filter (moved out of the header). */}
-        <PageSearchInput className="mt-9" />
+        {/* In-page session-title filter (moved out of the header) + the project
+            scope chip, in the Sessions filter-row order: search, then scope.
+            The chip is this page's only way back to "all projects" now that the
+            sidebar switcher is gone. */}
+        <div className="mt-9 flex flex-wrap items-center gap-2">
+          <PageSearchInput />
+          <ScopeChip />
+        </div>
         {error !== null && <ErrorBox message={error} onRetry={loadSessions} />}
         {sessions === null && error === null ? (
           <Loading label="sessions…" />

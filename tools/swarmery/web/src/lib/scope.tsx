@@ -109,3 +109,28 @@ export function ScopeProvider({ children }: { children: ReactNode }): JSX.Elemen
 export function useScope(): ScopeValue {
   return useContext(ScopeContext);
 }
+
+/**
+ * Resolve any project reference — the pretty name slug carried by `scope` and
+ * by /p/:slug URLs, a legacy DB path slug, or a numeric id — to the NUMERIC id
+ * as a string, for use as a `?projectId=` / `?project=` query value.
+ *
+ * Why the id and not the slug the caller already holds: the server's scope
+ * matchers are NOT uniform. Most (`projectMatchExpr`, internal/api/scope.go)
+ * accept slug OR id OR kebab-cased name, so the pretty slug works. But
+ * `effectiveTemplates` (internal/api/system_hub.go) matches the DB path slug or
+ * the numeric id only — no name clause — and a miss there is a hard error, not
+ * a fallback to unscoped. Passing `swarmery` for project `-Volumes-Work-swarmery`
+ * therefore 500s `{"error":"unknown template project"}` on every /system and
+ * /system-hub call. The numeric id is the one form EVERY matcher accepts.
+ *
+ * Returns null while the project list is still loading or the key resolves to
+ * nothing; callers then omit the param and show the unscoped view, which is the
+ * server's own "unknown project" behaviour anyway.
+ */
+export function useProjectIdParam(key: string | null | undefined): string | null {
+  const { projects } = useScope();
+  if (key == null || key === '') return null;
+  const found = findProject(projects, key);
+  return found === null ? null : String(found.id);
+}

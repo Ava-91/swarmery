@@ -45,6 +45,7 @@ import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
 import { applyPermissionMessage, useLiveUpdates } from '../lib/ws';
 import { PageSearchInput } from '../components/PageSearchInput';
+import { ScopeChip } from '../components/ScopeChip';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { ProjectName } from '../components/ProjectName';
 import { ApprovalContext } from '../components/ApprovalContext';
@@ -704,7 +705,11 @@ export function Approvals(): JSX.Element {
             ? `${String(pending.length)} pending · ${String(resolvedToday)} resolved today · a pause is a feature, not a failure`
             : 'a pause is a feature, not a failure'}
         </div>
-        <PageSearchInput className="mt-3" />
+        {/* search · project scope — same order as the Sessions filter row. */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <PageSearchInput />
+          <ScopeChip />
+        </div>
       </div>
 
       {error !== null && <ErrorBox message={error} onRetry={load} />}
