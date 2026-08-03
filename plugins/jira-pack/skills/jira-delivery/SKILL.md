@@ -77,18 +77,48 @@ The prompt handed to whichever executor is chosen carries, at minimum:
   executor's own internal stop conditions and this skill's external gate
   never disagree about how much room there is.
 
-**[VERIFY] naming note**: neither `@debugger` nor `@implementation-agent` is
-documented with an input shape for "a ticket-driven task description with no
-plan phase doc and no step file" — `@implementation-agent`'s own mode
-selection table only recognizes `step_file` (Leaf mode) or `task_dir`
-(Plan-execution mode) as inputs, and refuses `task_dir` unless the caller is
-the user directly. A `/jira-fix` run is neither; it hands the executor a
-plain task description (ticket context, above) with no phase doc backing it.
-This works in practice — the executor still behaves leaf-like (single scoped
-change, no subagent spawning, verified via codebase-retrieval) — but it is a
-gap in `@implementation-agent`'s own mode-selection contract, not something
-this skill can paper over. Flagged for `@implementation-agent`'s own doc to
-tighten, not silently resolved here.
+**`@debugger` and `@test-writer` take this directly as a plain-brief
+prompt.** `@debugger`'s own Inputs are a bug description plus an *optional*
+`Reference:` step file path (`plugins/core/agents/debugger.md`);
+`@test-writer`'s are `target`/`type`/`coverage_gaps` (optional)
+(`plugins/core/agents/test-writer.md`). Neither documents a
+`step_file`-vs-`task_dir` mode-selection contract, so the list above, handed
+straight over as a prompt, is exactly the input shape both already expect —
+nothing to reshape for either.
+
+**`@implementation-agent` needs a materialized step file instead.** Its own
+mode table (`plugins/core/agents/implementation-agent.md`) recognizes
+exactly two input shapes — `step_file` (Leaf mode) or `task_dir`
+(Plan-execution mode, a direct-user-invocation entry point whose own
+anti-nesting guard refuses a `task_dir` arriving from an orchestrator). A
+plain ticket brief is neither shape, and the agent's behavior when given
+neither is undocumented — it may guess Leaf mode, or it may stall. On an
+`autonomy: auto` run with nobody present to unblock a stall, that
+undocumented fallback is not something this skill can rely on. So before
+dispatching `@implementation-agent`, write the list above into a minimal
+step-file-shaped doc and dispatch against that file instead of the bare
+brief:
+
+- **Where**: `<workspace>/<project>/workspace/working/{YYYY}/{MM}/{DD}/fix-<KEY>-<slug>/step-file.md`
+  — the run's workspace task dir, never the shared checkout or the worktree
+  (the same workspace-only placement `jira-escalation` uses for its own plan
+  tree, minus the `plan/` subfolder since this is a single step doc, not a
+  phased plan). `{YYYY}/{MM}/{DD}` is this run's date; `fix-<KEY>-<slug>`
+  reuses Step 1's branch/worktree slug so the step file, branch, and
+  worktree all trace back to the same run.
+- **What it contains**: objective, the ticket key and title, the extracted
+  reproduction steps, the repro run's command and output, the working root
+  (Step 1's worktree path) and branch, the budget
+  (`jira.budget.maxFiles`/`maxAttempts`), and measurable acceptance criteria
+  — the regression is resolved, the repro command now exits green, and the
+  existing test suite still passes.
+- **Dispatch passes `step_file: <that path>`, never `task_dir`** —
+  `jira-delivery` is itself an orchestrator dispatching
+  `@implementation-agent`, and the agent's anti-nesting guard refuses a
+  `task_dir` arriving from an orchestrator on sight.
+- **In dry-run, the step file is not written and this dispatch does not run
+  at all** — Step 2 is skipped entirely in dry-run (see Dry-run below), so
+  nothing ever reaches the materialization step.
 
 # Step 3 — `@verification-agent` is the sole publish gate
 
@@ -173,20 +203,25 @@ DRY-RUN gh pr create --title "<title>" --body "<body>"
 ```
 
 **Delegation to an executor does not run at all in dry-run** — Step 2 is
-skipped entirely, not run-and-discarded. The mode exists to check the contour
-(branch naming, commit format, PR shape, the writeback path) without spending
-real fix-attempt budget on a `@debugger`/`@implementation-agent`/`@test-writer`
-invocation. Because Step 2 never ran, Step 3's verification gate and Step 4's
-commit/PR are necessarily also skipped — the four `DRY-RUN` lines above are
-printed from the *planned* branch name, scope, and file count estimate, not
-from a real diff.
+skipped entirely, not run-and-discarded, and that includes the
+`@implementation-agent` step-file materialization: no step-file doc is
+written to the workspace task dir, and no dispatch fires. The mode exists to
+check the contour (branch naming, commit format, PR shape, the writeback
+path) without spending real fix-attempt budget on a
+`@debugger`/`@implementation-agent`/`@test-writer` invocation. Because
+Step 2 never ran, Step 3's verification gate and Step 4's commit/PR are
+necessarily also skipped — the four `DRY-RUN` lines above are printed from
+the *planned* branch name, scope, and file count estimate, not from a real
+diff.
 
 # Self-check before returning
 
 - [ ] The branch was created via `git worktree add`, never `git checkout -b`
       in the shared working root
 - [ ] The executor's prompt carried key, title, repro steps, repro
-      command+output, worktree path, branch, and both budget numbers
+      command+output, worktree path, branch, and both budget numbers —
+      directly for `@debugger`/`@test-writer`, or via the materialized
+      step file for `@implementation-agent`
 - [ ] `push`, PR, the fix comment, and the transition each individually did
       not fire without a `PASS` verdict
 - [ ] The diff's file count was checked against `jira.budget.maxFiles`
