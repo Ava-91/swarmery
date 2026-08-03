@@ -51,12 +51,19 @@ missing project registration must not block the run.
 `GET http://127.0.0.1:7777/api/board/tasks?label=jira-ticket` (the `?label=` filter from Phase 1;
 `listBoardTasks`, `tasks_board.go:401-459`) returns every queue card carrying the `jira-ticket`
 label, across every project. Filter to the current `projectId` and scan for a card whose `title`
-starts with `"<KEY>: "` and whose `boardColumn` is not `archived`.
+starts with `"<KEY>: "`.
 
-- **Found** → reuse it: skip the POST in §3 entirely, keep its `id`/`externalId`, and go straight
+- **Found, `boardColumn` is `triage`, `in_progress`, or `in_review`** (an open run still in
+  flight) → reuse it: skip the POST in §3 entirely, keep its `id`/`externalId`, and go straight
   to whichever PATCH transition matches the run's current stage (§4). Record "reused card
   `<externalId>`" in the run's final report. This is what stops a second `/jira-fix` on the same
   ticket from minting a duplicate card.
+- **Found, `boardColumn` is `done` or `archived`** (a closed previous run) → treat it the same as
+  "not found": mint a fresh card via §3, never revive it. `done` is a normal terminal state, not
+  an edge case — §4's own table sends both the cannot-reproduce and already-fixed endings there —
+  so reusing a `done` card would go straight to the `in_progress` PATCH in §4, and
+  `legalTransition` (`tasks_board.go:169-177`) rejects exactly that edge, `done → in_progress`,
+  with a 400. Do not narrow this back to excluding only `archived`.
 - **Not found** → create a new card (§3).
 
 # 3. Create the card
@@ -129,7 +136,11 @@ never sends those fields in a PATCH body.
 # 5. Fallback: daemon unavailable
 
 The board is an observability aid, not a correctness gate. If `127.0.0.1:7777` doesn't respond,
-`GET /api/projects` can't resolve a project for the working repo, or a POST/PATCH call errors:
+`GET /api/projects` can't resolve a project for the working repo, or a POST/PATCH call errors for
+a reason outside this skill's own logic (network partition, unregistered project, unregistered
+agent) — **not** a `legalTransition` rejection, which §2's `done`/`archived` exclusion exists to
+make unreachable; a 400 there means this skill's idempotency check has a bug and should surface
+as a failure, not fold silently into this fallback:
 
 - the run **continues** — the ticket matters more than the card;
 - the final report gets exactly one extra line: `BOARD: unavailable (<reason>)`;
