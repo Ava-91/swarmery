@@ -90,6 +90,67 @@ func normalizePriority(token string) (int, error) {
 	return v, nil
 }
 
+// maxLabels and maxLabelLen bound a card's label set: a handful of short,
+// slug-shaped marks (e.g. "jira-ticket") is the whole use case, and neither
+// the board UI nor the ?label= filter needs more.
+const (
+	maxLabels   = 10
+	maxLabelLen = 40
+)
+
+// validLabelChars reports whether s contains only lowercase letters, digits,
+// '-' and '_' — the slug-safe alphabet a label may use once normalized.
+func validLabelChars(s string) bool {
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeLabels lowercases, trims, drops empties and de-duplicates while
+// preserving first-seen order. Rejects labels longer than 40 chars or holding
+// characters outside [a-z0-9-_], and more than 10 labels total. nil → empty
+// slice (stored as "[]"). Pure; unit-tested.
+func normalizeLabels(xs []string) ([]string, error) {
+	seen := make(map[string]bool, len(xs))
+	out := make([]string, 0, len(xs))
+	for _, raw := range xs {
+		l := strings.ToLower(strings.TrimSpace(raw))
+		if l == "" {
+			continue
+		}
+		if len(l) > maxLabelLen {
+			return nil, fmt.Errorf("label %q exceeds %d characters", l, maxLabelLen)
+		}
+		if !validLabelChars(l) {
+			return nil, fmt.Errorf("label %q: only lowercase letters, digits, - and _ are allowed", l)
+		}
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	if len(out) > maxLabels {
+		return nil, fmt.Errorf("at most %d labels allowed, got %d", maxLabels, len(out))
+	}
+	return out, nil
+}
+
+// containsLabel reports whether label is present in xs. Both sides are
+// expected already-normalized (lowercase, trimmed), so this is a plain
+// equality scan. Pure; unit-tested.
+func containsLabel(xs []string, label string) bool {
+	for _, x := range xs {
+		if x == label {
+			return true
+		}
+	}
+	return false
+}
+
 // validColumn reports whether c is in the closed board set. Pure; unit-tested.
 func validColumn(c string) bool { return boardColumns[c] }
 
@@ -170,6 +231,7 @@ type boardTaskDTO struct {
 	Model         *string  `json:"model"`
 	Playbook      *string  `json:"playbook"` // selected recipe name (null = default 'standard')
 	FileScope     []string `json:"fileScope"`
+	Labels        []string `json:"labels"` // free-form marks (0049), e.g. "jira-ticket"; never null
 	Branch        *string  `json:"branch"`
 	WorktreePath  *string  `json:"worktreePath"`
 	DispatchError *string  `json:"dispatchError"`
@@ -197,7 +259,7 @@ type boardTaskDTO struct {
 const boardTaskSelect = `
 	SELECT t.id, t.external_id, t.project_id, p.slug, t.title, t.prompt,
 	       t.priority, t.status, t.board_column, t.paused, t.user_paused,
-	       t.dependencies, t.model, t.playbook, t.file_scope, t.branch, t.worktree_path,
+	       t.dependencies, t.model, t.playbook, t.file_scope, t.labels, t.branch, t.worktree_path,
 	       t.dispatch_error, t.retry_count, t.verify_verdict, t.verify_detail,
 	       t.agent, t.origin, t.origin_session_id,
 	       t.column_moved_at, t.created_at
@@ -207,12 +269,12 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 	var (
 		priority           int
 		paused, userPaused int64
-		deps, scope        string
+		deps, scope, labs  string
 		externalID         sql.NullString
 	)
 	if err := scan(&d.ID, &externalID, &d.ProjectID, &d.ProjectSlug, &d.Title, &d.Prompt,
 		&priority, &d.Status, &d.BoardColumn, &paused, &userPaused,
-		&deps, &d.Model, &d.Playbook, &scope, &d.Branch, &d.WorktreePath,
+		&deps, &d.Model, &d.Playbook, &scope, &labs, &d.Branch, &d.WorktreePath,
 		&d.DispatchError, &d.RetryCount, &d.VerifyVerdict, &d.VerifyDetail,
 		&d.Agent, &d.Origin, &d.OriginSessionID,
 		&d.ColumnMovedAt, &d.CreatedAt); err != nil {
@@ -227,6 +289,9 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 		return err
 	}
 	if d.FileScope, err = unmarshalStringList(scope); err != nil {
+		return err
+	}
+	if d.Labels, err = unmarshalStringList(labs); err != nil {
 		return err
 	}
 	return nil
@@ -348,6 +413,19 @@ func (h *Handler) listBoardTasks(w http.ResponseWriter, r *http.Request) {
 		q += ` AND t.board_column = ?`
 		args = append(args, col)
 	}
+	// label is normalized then filtered in Go below rather than in SQL: the
+	// board already reads every card for the project/column in one query, and
+	// SQLite has no JSON-array-contains operator worth reaching for at this
+	// scale.
+	var labelFilter string
+	if lbl := r.URL.Query().Get("label"); lbl != "" {
+		normalized, err := normalizeLabels([]string{lbl})
+		if err != nil || len(normalized) == 0 {
+			http.Error(w, `{"error":"invalid label filter"}`, http.StatusBadRequest)
+			return
+		}
+		labelFilter = normalized[0]
+	}
 	q += ` ORDER BY t.id DESC`
 	rows, err := h.DB.Query(q, args...)
 	if err != nil {
@@ -361,6 +439,9 @@ func (h *Handler) listBoardTasks(w http.ResponseWriter, r *http.Request) {
 		if err := scanBoardTask(rows.Scan, &d); err != nil {
 			writeErr(w, err)
 			return
+		}
+		if labelFilter != "" && !containsLabel(d.Labels, labelFilter) {
+			continue
 		}
 		out = append(out, d)
 	}
@@ -426,6 +507,7 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 		Agent        *string  `json:"agent"`
 		Origin       string   `json:"origin"`
 		FileScope    []string `json:"fileScope"`
+		Labels       []string `json:"labels"`
 		Dependencies []string `json:"dependencies"`
 		BoardColumn  string   `json:"boardColumn"`
 	}
@@ -470,6 +552,16 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
+	labels, err := normalizeLabels(body.Labels)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	labelsJSON, err := marshalStringList(labels)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
 	// Project must exist.
 	var one int
 	err = h.DB.QueryRow(`SELECT 1 FROM projects WHERE id = ?`, body.ProjectID).Scan(&one)
@@ -507,10 +599,10 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	res, err := h.DB.Exec(`
 		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
 		                   source, external_id, board_column, model, playbook, file_scope,
-		                   dependencies, column_moved_at, agent, origin)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
+		                   labels, dependencies, column_moved_at, agent, origin)
+		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
 		body.ProjectID, title, prompt, priority, now,
-		extID, column, body.Model, playbook, scopeJSON, depsJSON, movedAt, agent)
+		extID, column, body.Model, playbook, scopeJSON, labelsJSON, depsJSON, movedAt, agent)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -548,6 +640,7 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		Playbook     *string   `json:"playbook"`
 		Agent        *string   `json:"agent"`
 		FileScope    *[]string `json:"fileScope"`
+		Labels       *[]string `json:"labels"`
 		Dependencies *[]string `json:"dependencies"`
 		Paused       *bool     `json:"paused"`
 		UserPaused   *bool     `json:"userPaused"`
@@ -660,6 +753,20 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		}
 		sets = append(sets, "file_scope = ?")
 		args = append(args, scopeJSON)
+	}
+	if body.Labels != nil {
+		labels, err := normalizeLabels(*body.Labels)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+		labelsJSON, err := marshalStringList(labels)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+		sets = append(sets, "labels = ?")
+		args = append(args, labelsJSON)
 	}
 	if body.Dependencies != nil {
 		depsJSON, err := marshalStringList(*body.Dependencies)

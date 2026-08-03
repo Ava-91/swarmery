@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -121,6 +123,68 @@ func TestStringListRoundTrip(t *testing.T) {
 	got, err := unmarshalStringList("")
 	if err != nil || got == nil || len(got) != 0 {
 		t.Errorf("unmarshalStringList(\"\") = %v, %v; want empty slice", got, err)
+	}
+}
+
+func TestNormalizeLabels(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      []string
+		want    []string
+		wantErr bool
+	}{
+		{"nil", nil, []string{}, false},
+		{"empty slice", []string{}, []string{}, false},
+		{"case and whitespace normalized", []string{"Jira-Ticket", " jira-ticket "}, []string{"jira-ticket"}, false},
+		{"drops empties", []string{"", "  ", "a"}, []string{"a"}, false},
+		{"preserves first-seen order", []string{"b", "a", "b"}, []string{"b", "a"}, false},
+		{"rejects spaces", []string{"has space"}, nil, true},
+		{"rejects invalid chars", []string{"foo!"}, nil, true},
+		{"rejects too long", []string{strings.Repeat("x", 41)}, nil, true},
+		{"allows max length", []string{strings.Repeat("x", 40)}, []string{strings.Repeat("x", 40)}, false},
+		{"allows dash and underscore", []string{"foo-bar_baz"}, []string{"foo-bar_baz"}, false},
+	}
+	for _, c := range cases {
+		got, err := normalizeLabels(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%s: normalizeLabels(%v): want error, got %v", c.name, c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: normalizeLabels(%v): unexpected error %v", c.name, c.in, err)
+			continue
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: normalizeLabels(%v) = %v, want %v", c.name, c.in, got, c.want)
+		}
+	}
+
+	// Exactly 10 unique labels is fine; 11 is rejected.
+	ten := make([]string, 10)
+	for i := range ten {
+		ten[i] = fmt.Sprintf("l%d", i)
+	}
+	if _, err := normalizeLabels(ten); err != nil {
+		t.Errorf("10 labels: unexpected error %v", err)
+	}
+	eleven := append(append([]string{}, ten...), "l10")
+	if _, err := normalizeLabels(eleven); err == nil {
+		t.Error("11 labels: want error, got nil")
+	}
+}
+
+func TestContainsLabel(t *testing.T) {
+	xs := []string{"jira-ticket", "urgent"}
+	if !containsLabel(xs, "jira-ticket") {
+		t.Error("containsLabel(xs, jira-ticket) = false, want true")
+	}
+	if containsLabel(xs, "missing") {
+		t.Error("containsLabel(xs, missing) = true, want false")
+	}
+	if containsLabel(nil, "x") {
+		t.Error("containsLabel(nil, x) = true, want false")
 	}
 }
 
