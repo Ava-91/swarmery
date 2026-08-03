@@ -291,7 +291,7 @@ type task struct {
 	title        string
 	prompt       string
 	model        string
-	source       string
+	origin       string // 'manual' | 'session' | 'llm' | 'verify-fix' (fix-chain marker)
 	branch       string
 	worktreePath string
 	fileScope    string // raw JSON, copied verbatim to a fix task
@@ -305,10 +305,10 @@ func (s *Service) loadTask(id int64) (task, error) {
 	var extID, model, branch, wtpath, playbook sql.NullString
 	err := s.DB.QueryRow(`
 		SELECT t.id, COALESCE(t.external_id,''), t.project_id, t.title, t.prompt, t.model,
-		       t.source, t.branch, t.worktree_path, t.file_scope, t.retry_count, t.playbook, p.path
+		       t.origin, t.branch, t.worktree_path, t.file_scope, t.retry_count, t.playbook, p.path
 		  FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id=?`, id).
 		Scan(&t.id, &extID, &t.projectID, &t.title, &t.prompt, &model,
-			&t.source, &branch, &wtpath, &t.fileScope, &t.retryCount, &playbook, &t.projectPath)
+			&t.origin, &branch, &wtpath, &t.fileScope, &t.retryCount, &playbook, &t.projectPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return task{}, fmt.Errorf("verify: task %d not found", id)
 	}
@@ -482,14 +482,14 @@ func (s *Service) handleFail(current task, reasons string) error {
 }
 
 // resolveRoot follows the fix chain from `current` to its origin. A fix task
-// carries source='verify-fix' and external_id=<root task id>; walk until a task
-// whose source is NOT 'verify-fix' (the human/queue-created root). Cycles are
+// carries origin='verify-fix' and external_id=<root task id>; walk until a task
+// whose origin is NOT 'verify-fix' (the human/queue-created root). Cycles are
 // impossible (each fix points at the fixed task's id, strictly older) but a
 // bounded walk guards against a dangling pointer.
 func (s *Service) resolveRoot(current task) (task, error) {
 	cur := current
 	for i := 0; i < 64; i++ {
-		if cur.source != "verify-fix" {
+		if cur.origin != "verify-fix" {
 			return cur, nil
 		}
 		// external_id of a fix task is the id it is fixing (the root or a nearer
@@ -519,14 +519,14 @@ func (s *Service) loadTaskByExternalID(extID string) (task, error) {
 }
 
 // hasOpenFix reports whether a non-terminal fix task already exists for a root
-// (query by source+external_id, board_column NOT IN done/archived), EXCLUDING
+// (query by origin+external_id, board_column NOT IN done/archived), EXCLUDING
 // excludeID — the task currently being verified, which must not count as its own
 // dedup blocker. Dedup gate (Fusion R22).
 func (s *Service) hasOpenFix(rootExternalID string, excludeID int64) (bool, error) {
 	var one int
 	err := s.DB.QueryRow(`
 		SELECT 1 FROM tasks
-		 WHERE source='verify-fix' AND external_id=?
+		 WHERE origin='verify-fix' AND external_id=?
 		   AND board_column NOT IN ('done','archived')
 		   AND id<>?
 		 LIMIT 1`, rootExternalID, excludeID).Scan(&one)
@@ -546,18 +546,37 @@ func (s *Service) incrementRetry(rootID int64) error {
 }
 
 // createFixTask inserts a fix task in todo: prompt = root prompt + the
-// verification-failed reasons; same file_scope + model as the root; source=
-// 'verify-fix', external_id=<root external id> (so its own failure charges the
-// root), dependencies=[]. Emits task_updated + would be picked up by the
-// dispatcher's own Poke (the api layer pokes after our return).
+// verification-failed reasons; same file_scope + model as the root;
+// external_id=<root external id> (so its own failure charges the root),
+// dependencies=[]. Emits task_updated + is picked up by the dispatcher's own
+// Poke (the api layer pokes after our return).
+//
+// source='queue', origin='verify-fix' — and which column carries the marker is
+// the whole reason this task reaches a runner at all. `source` is not a label
+// for who minted a row: it is the ownership axis the board and the dispatcher
+// both key on ('queue' = a board row the dispatcher may own, 'workspace' = a
+// projection of workspace artifacts that internal/wsingest rewrites on its next
+// scan — see dispatch/service.go:1013). A fix task written with
+// source='verify-fix' therefore matched NEITHER: listBoardTasks
+// (api/tasks_board.go) and candidates() (dispatch/service.go) both select
+// source='queue', so every fix task was minted straight into 'todo' and then
+// orphaned — invisible in the UI and never dispatched, while the log line below
+// and this function's own comment claimed the opposite.
+//
+// `origin` is the "who minted this card" axis ('manual' | 'session' | 'llm'),
+// which is exactly what "the verifier made this one" is, so the fix-chain
+// marker belongs there. It is also safe against capture's auto-move guards:
+// moveCapturedToReview and SweepSessionToReview (ingest/capture.go) each pair
+// their `origin != 'manual'` predicate with a capture-owned key (capture_key /
+// origin_session_id) that is NULL on a fix task and can never match.
 func (s *Service) createFixTask(root task, reasons string) error {
 	fixPrompt := root.prompt + "\n\n## Verification failed\n" + strings.TrimSpace(reasons)
 	now := s.ts()
 	res, err := s.DB.Exec(`
 		INSERT INTO tasks(project_id, title, prompt, priority, status, created_at,
-		                  source, external_id, board_column, model, file_scope,
+		                  source, origin, external_id, board_column, model, file_scope,
 		                  dependencies, column_moved_at)
-		VALUES(?, ?, ?, ?, 'queued', ?, 'verify-fix', ?, 'todo', ?, ?, '[]', ?)`,
+		VALUES(?, ?, ?, ?, 'queued', ?, 'queue', 'verify-fix', ?, 'todo', ?, ?, '[]', ?)`,
 		root.projectID, "fix: "+root.title, fixPrompt, fixPriority, now,
 		root.externalID, nullableModel(root.model), root.fileScope, now)
 	if err != nil {

@@ -96,6 +96,7 @@ func itoaTest(n int) string { return string(rune('0' + n)) }
 type taskOpts struct {
 	column     string
 	source     string
+	origin     string
 	externalID string
 	worktree   string
 	fileScope  string
@@ -113,6 +114,9 @@ func insertTask(t *testing.T, db *sql.DB, o taskOpts) int64 {
 	if o.source == "" {
 		o.source = "queue"
 	}
+	if o.origin == "" {
+		o.origin = "manual"
+	}
 	if o.externalID == "" {
 		o.externalID = "T-root1"
 	}
@@ -124,12 +128,12 @@ func insertTask(t *testing.T, db *sql.DB, o taskOpts) int64 {
 	}
 	res, err := db.Exec(`
 		INSERT INTO tasks(project_id, title, prompt, priority, status, created_at,
-		                  source, external_id, board_column, model, file_scope,
+		                  source, origin, external_id, board_column, model, file_scope,
 		                  dependencies, worktree_path, branch, retry_count, paused, playbook)
 		VALUES(1, ?, ?, 5, 'needs_review', '2026-07-24T00:00:00.000Z',
-		       ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`,
+		       ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`,
 		"title "+o.externalID, "do the thing for "+o.externalID,
-		o.source, o.externalID, o.column, nullStr(o.model), o.fileScope,
+		o.source, o.origin, o.externalID, o.column, nullStr(o.model), o.fileScope,
 		o.worktree, "swarm/"+o.externalID, o.retryCount, o.paused, nullStr(o.playbook))
 	if err != nil {
 		t.Fatalf("insert task: %v", err)
@@ -176,7 +180,7 @@ func countFixTasks(t *testing.T, db *sql.DB, rootExtID string) int {
 	t.Helper()
 	var n int
 	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE source='verify-fix' AND external_id=?`, rootExtID).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM tasks WHERE origin='verify-fix' AND external_id=?`, rootExtID).Scan(&n); err != nil {
 		t.Fatalf("count fix tasks: %v", err)
 	}
 	return n
@@ -326,12 +330,89 @@ func TestVerifyFail_CreatesOneFixTask(t *testing.T) {
 	// The fix task carries the root external_id + failure reasons + same file scope.
 	var prompt, scope string
 	if err := db.QueryRow(
-		`SELECT prompt, file_scope FROM tasks WHERE source='verify-fix' AND external_id='T-root1'`).
+		`SELECT prompt, file_scope FROM tasks WHERE origin='verify-fix' AND external_id='T-root1'`).
 		Scan(&prompt, &scope); err != nil {
 		t.Fatal(err)
 	}
 	if !contains(prompt, "## Verification failed") || !contains(prompt, "returns 500") {
 		t.Fatalf("fix prompt missing failure section: %q", prompt)
+	}
+}
+
+// TestVerifyFail_FixTaskIsReachable is the regression guard for the orphaned-fix
+// bug: createFixTask used to write source='verify-fix', which matched NEITHER of
+// the two predicates that decide whether a row exists for anyone — so every fix
+// task was minted into 'todo' and then stranded, invisible and undispatchable.
+//
+// Both predicates are restated here VERBATIM rather than imported, because
+// internal/verify cannot import internal/api or internal/dispatch (they import
+// it). That duplication is the point: if either consumer ever narrows its filter
+// again, this test is what fails, and it names the two call sites to re-check.
+func TestVerifyFail_FixTaskIsReachable(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "- endpoint returns 500\nVERDICT: FAIL"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-reach"})
+	id := insertTask(t, db, taskOpts{externalID: "T-root1"})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if n := countFixTasks(t, db, "T-root1"); n != 1 {
+		t.Fatalf("fix tasks = %d, want exactly 1", n)
+	}
+
+	// 1. api/tasks_board.go listBoardTasks: `WHERE t.source = 'queue'`.
+	var onBoard int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM tasks
+		 WHERE source = 'queue' AND origin = 'verify-fix' AND external_id = 'T-root1'`).
+		Scan(&onBoard); err != nil {
+		t.Fatal(err)
+	}
+	if onBoard != 1 {
+		t.Fatalf("fix tasks visible to the board = %d, want 1 "+
+			"(listBoardTasks selects source='queue'; a fix task must be a real board row)", onBoard)
+	}
+
+	// 2. dispatch/service.go candidates(): the exact eligibility predicate.
+	var dispatchable int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM tasks
+		 WHERE source='queue' AND board_column='todo'
+		   AND paused=0 AND user_paused=0
+		   AND origin='verify-fix' AND external_id='T-root1'`).
+		Scan(&dispatchable); err != nil {
+		t.Fatal(err)
+	}
+	if dispatchable != 1 {
+		t.Fatalf("fix tasks eligible for dispatch = %d, want 1 "+
+			"(candidates() selects source='queue' AND board_column='todo')", dispatchable)
+	}
+}
+
+// TestResolveRootWalksOriginChain pins the fix-chain walk to `origin` after the
+// marker moved off `source`: a fix task must still resolve to its root, so the
+// retry budget is charged to the root and not reset by each new fix.
+func TestResolveRootWalksOriginChain(t *testing.T) {
+	db := testDB(t)
+	s := newTestService(t, db, &stubRunner{}, stubTrees{hash: "tree-chain"})
+	rootID := insertTask(t, db, taskOpts{externalID: "T-root1"})
+	fixID := insertTask(t, db, taskOpts{
+		origin: "verify-fix", externalID: "T-root1", worktree: "/wt/fix"})
+
+	fix, err := s.loadTask(fixID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fix.origin != "verify-fix" {
+		t.Fatalf("loadTask origin = %q, want verify-fix", fix.origin)
+	}
+	root, err := s.resolveRoot(fix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.id != rootID {
+		t.Fatalf("resolveRoot(fix %d) = task %d, want root %d", fixID, root.id, rootID)
 	}
 }
 
@@ -595,7 +676,7 @@ func fixTaskID(t *testing.T, db *sql.DB, rootExtID string) int64 {
 	t.Helper()
 	var id int64
 	if err := db.QueryRow(
-		`SELECT id FROM tasks WHERE source='verify-fix' AND external_id=? ORDER BY id DESC LIMIT 1`, rootExtID).
+		`SELECT id FROM tasks WHERE origin='verify-fix' AND external_id=? ORDER BY id DESC LIMIT 1`, rootExtID).
 		Scan(&id); err != nil {
 		t.Fatalf("fix task id: %v", err)
 	}
@@ -606,7 +687,7 @@ func newestFix(t *testing.T, db *sql.DB, rootExtID string, notID int64) int64 {
 	t.Helper()
 	var id int64
 	if err := db.QueryRow(
-		`SELECT id FROM tasks WHERE source='verify-fix' AND external_id=? AND id<>? ORDER BY id DESC LIMIT 1`,
+		`SELECT id FROM tasks WHERE origin='verify-fix' AND external_id=? AND id<>? ORDER BY id DESC LIMIT 1`,
 		rootExtID, notID).Scan(&id); err != nil {
 		t.Fatalf("newest fix id: %v", err)
 	}
