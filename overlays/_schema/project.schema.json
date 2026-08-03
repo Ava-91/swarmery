@@ -36,6 +36,33 @@
       "type": "array",
       "items": { "enum": ["uav-pack", "iot-pack", "web-pack", "lsp-pack", "infra-pack"] },
       "description": "domain packs this project enables (mirrors .claude/settings.json enabledPlugins)"
+    },
+    "jira": {
+      "type": "object",
+      "description": "Issue-tracker contract consumed by jira-pack. Required for /jira-fix.",
+      "properties": {
+        "baseUrl":    { "type": "string", "description": "Site host, e.g. yourteam.atlassian.net" },
+        "projectKey": { "type": "string", "description": "Ticket key prefix, e.g. ABC" },
+        "qaStatus":   { "type": "string", "description": "Exact target status name the agent moves a finished ticket to" },
+        "repro": {
+          "type": "object",
+          "description": "Commands the agent runs to reproduce. setup is optional; test is mandatory.",
+          "properties": {
+            "setup": { "type": "string" },
+            "test":  { "type": "string" }
+          },
+          "required": ["test"]
+        },
+        "budget": {
+          "type": "object",
+          "description": "Autonomy limits before the run escalates to planning.",
+          "properties": {
+            "maxFiles":    { "type": "integer", "minimum": 1, "default": 5 },
+            "maxAttempts": { "type": "integer", "minimum": 1, "default": 3 }
+          }
+        }
+      },
+      "required": ["baseUrl", "projectKey", "qaStatus", "repro"]
     }
   }
 }

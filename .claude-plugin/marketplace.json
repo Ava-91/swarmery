@@ -53,6 +53,11 @@
       "name": "architecture-pack",
       "source": "./plugins/architecture-pack",
       "description": "Repo-wide architecture map: /architecture-map generates a machine-readable JSON contract (layers, modules, file-anchored flows) + self-contained HTML viewer, freshness-stamped per commit; the swarmery dashboard serves both on its Architecture page."
+    },
+    {
+      "name": "jira-pack",
+      "source": "./plugins/jira-pack",
+      "description": "Issue-tracker pack: /jira-fix drives a Jira ticket end-to-end — access preflight, reproduction, delegated fix, evidence comment, QA transition. Opt-in; requires core."
     }
   ]
 }
