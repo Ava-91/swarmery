@@ -26,10 +26,11 @@ with **identical** tool names:
 Those two are **illustrative examples of the shape**, not the two values this skill expects --
 a host may register either one, both at once, neither, or a differently-named channel entirely,
 and which channel (if any) is live changes between sessions and between machines. A skill that
-hardcodes one prefix (see `plugins/core/skills/jira-tasks/SKILL.md:27`, which does exactly this
-for its own narrower read-only purpose) will report "no access" against a perfectly reachable
-Jira the moment the *other* channel is the one that's live. This skill never assumes a specific
-prefix is present; it resolves by tool name and treats whatever prefix comes back as the answer.
+hardcodes one prefix will report "no access" against a perfectly reachable Jira the moment the
+*other* channel is the one that's live -- exactly the bug `plugins/core/skills/jira-tasks/SKILL.md`
+carried in its own narrower read-only tool-loading example until Phase 8 de-hardcoded it to the
+same by-name resolution this skill uses. This skill never assumes a specific prefix is present;
+it resolves by tool name and treats whatever prefix comes back as the answer.
 
 # When to use
 
@@ -156,8 +157,9 @@ accounts).
   the rest of the `jira` config block; this skill consumes `jira.baseUrl`, it does not
   re-validate the config block itself.
 - `plugins/core/skills/jira-tasks/SKILL.md` -- read-only ticket queries once a run is past
-  preflight; its own tool-loading example hardcodes one prefix (line 27), which is exactly the
-  failure mode this skill exists to avoid for jira-pack's autonomous run.
+  preflight; resolves tools by name the same way this skill does (Phase 8 de-hardcoded its
+  tool-loading example, which used to pin one prefix -- exactly the failure mode this skill's
+  own by-name resolution exists to avoid for jira-pack's autonomous run).
 - `plugins/core/skills/troubleshooting/SKILL.md` -- the diagnostic-report style (structured
   failure block, explicit "what's missing" + "how to fix" shape) this skill's failure report
   follows.

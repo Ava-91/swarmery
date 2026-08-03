@@ -20,12 +20,24 @@ If none is documented, ask the user once and suggest recording it in `CLAUDE.md`
 # Tool flow
 
 The Atlassian MCP tools are **deferred** — their schemas are not loaded at start. Load them
-before the first call, or the call fails with `InputValidationError` (the tool-name prefix
-depends on how the Atlassian MCP server is registered on the host):
+before the first call, or the call fails with `InputValidationError`. **Resolve by tool name,
+never by a hardcoded channel prefix**: at least two channels can expose the same tool names
+under different prefixes — an officially-installed Atlassian MCP plugin (e.g. a
+`mcp__plugin_atlassian_atlassian__*`-shaped prefix) or a claude.ai Atlassian/Rovo connector
+(e.g. a `mcp__claude_ai_Atlassian_Rovo__*`-shaped prefix) — and which channel, if any, is live
+varies by session and by machine. Hardcoding one prefix reports "no access" against a perfectly
+reachable Jira the moment the *other* channel is the one that's live:
 
 ```
-ToolSearch  query: "select:mcp__plugin_atlassian_atlassian__getAccessibleAtlassianResources,mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql,mcp__plugin_atlassian_atlassian__getJiraIssue"
+ToolSearch  query: "+atlassian getAccessibleAtlassianResources searchJiraIssuesUsingJql getJiraIssue"
 ```
+
+Read the full tool names back from the result and use whichever prefix actually resolved for
+every call in this session — if two channels resolve at once, prefer whichever one's
+`getAccessibleAtlassianResources` response matches the project's `jira.baseUrl`. This is the
+same provider-agnostic resolution `jira-pack`'s preflight step performs; see
+`plugins/jira-pack/skills/jira-access-preflight/SKILL.md` (Steps 1-2) for the canonical
+procedure this skill's narrower read-only lookup follows.
 
 Every Jira call needs a **cloudId**. Resolve it by calling
 `getAccessibleAtlassianResources` (no args) and taking the `id` of the `<jira-base-url>`
@@ -98,10 +110,23 @@ Write tools (`createJiraIssue`, `transitionJiraIssue`, `addCommentToJiraIssue`,
 `addWorklogToJiraIssue`) are loadable via ToolSearch the same way, but only reach for them
 once the user has explicitly asked for that specific change.
 
+**Exception — a run launched via `/jira-fix` in a project with `jira-pack` enabled.** This
+read-only, always-ask policy governs ad-hoc queries in this skill only. `jira-pack`'s
+`@jira-task-runner` agent carries its own, broader write mandate — comment/transition/board
+mutation without a per-action confirmation prompt — but that mandate is scoped strictly to a
+run explicitly started through `/jira-fix`; it never leaks into an ad-hoc "what's the status of
+`<KEY>`" query answered by this skill, and this skill's always-ask posture never narrows what
+`/jira-fix` is allowed to do inside its own run. See
+`plugins/jira-pack/agents/jira-task-runner.md` (`## Boundary with plugins/core/skills/jira-tasks/SKILL.md`)
+for the same boundary stated from the other side.
+
 # Related
 
 - `rules/ASK.md` — human-confirmation posture this skill defers to for any write.
 - `rules/ALWAYS.md` — the `Tickets:` task-card convention and workspace layout.
+- `plugins/jira-pack/` — `/jira-fix`'s end-to-end autonomous run (access preflight,
+  reproduction, delegated fix, evidence comment, QA transition); see the exception above for
+  how its broader write mandate relates to this skill's read-only default.
 - Atlassian plugin skills (`atlassian:generate-status-report`,
   `atlassian:capture-tasks-from-meeting-notes`) — heavier report/write workflows; this skill
   is the lightweight read path.

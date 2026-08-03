@@ -42,9 +42,32 @@ implementation plan for the provider-resolution details.
 
 ## Before you trust it on a real project
 
-**Run the first invocation on any new project with `--dry-run`.** It reproduces the issue and
-shows you the proposed fix and comment without writing anything to Jira or moving the ticket.
+**Onboarding ritual: the first invocation on any new project is always `--dry-run`.**
 
-**This agent is autonomous.** Once config is valid and you drop `--dry-run`, it comments on
-real tickets and moves them across the board on its own — there is no confirmation prompt
-per-action. Don't point it at a project's tracker until you've reviewed a dry run.
+```
+/jira-fix <ticket-url-or-key> --dry-run
+```
+
+It runs every read this agent would run for real — config, tracker access, the ticket itself,
+the reproduction command, the transition list — and shows you the proposed fix and comment
+without writing anything to Jira, the `/board`, or git. Review that output before you ever
+run the same ticket without `--dry-run`.
+
+**This agent is autonomous (`autonomy: auto`).** Once `.claude/project.json`'s `jira` block is
+valid and you drop `--dry-run`, it takes the following actions **without any per-action
+confirmation prompt** — there is no human gate anywhere in its flow:
+
+- posting a comment to a real Jira ticket (`addCommentToJiraIssue`);
+- transitioning a real Jira ticket's status (`transitionJiraIssue`);
+- creating or moving a `/board` card (`swarmery-board-card`'s `POST`/`PATCH`);
+- on the `needs-fix` path only: creating an isolated git branch/worktree, `git push`, and
+  opening a PR (`jira-delivery`) — gated on a green `@verification-agent` verdict, but never on
+  human approval.
+
+None of this is reversible by the agent itself — a wrongly-posted comment or transition is
+corrected by a human via Jira directly, and an escalated fix attempt's branch/worktree is the
+only thing this pack ever removes on its own (`jira-escalation`'s own cleanup, not a general
+undo). Don't point it at a project's real tracker until you've reviewed a dry run.
+
+See `skills/jira-access-preflight/references/setup.md` for the full walkthrough of enabling
+and verifying Jira access (both supported channels) before that first `--dry-run`.
