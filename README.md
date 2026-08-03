@@ -78,7 +78,7 @@ namespace:
 cd /path/to/your/project
 swarmery onboard <project-slug> [pack ...]
 #   packs: web-pack | iot-pack | uav-pack | infra-pack | lsp-pack
-#          claude-eng-pack | graphify-pack | architecture-pack
+#          claude-eng-pack | graphify-pack | architecture-pack | jira-pack
 ```
 
 The binary lives at `<swarmery>/tools/swarmery/swarmery` — put it on `PATH`, run
@@ -525,6 +525,7 @@ the native Claude Code plugin mechanism — **semver-versioned**, **namespaced**
 | `claude-eng-pack` | Claude-engineering: agent architecture, tool/MCP design, prompt engineering, Claude Code config, context reliability. |
 | `graphify-pack` | `/graphify` — repo → persistent knowledge graph with query/path/affected tools (needs the `graphify` CLI). |
 | `architecture-pack` | `/architecture-map` — machine-readable architecture JSON + a self-contained HTML viewer, freshness-stamped per commit. |
+| `jira-pack` | `/jira-fix` — drives a Jira ticket end-to-end: access preflight, reproduction, delegated fix, evidence comment, QA transition. Opt-in; requires an Atlassian MCP provider enabled on the machine. |
 
 Every pack requires `core` and is opt-in per project.
 

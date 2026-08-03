@@ -16,5 +16,12 @@
   "cloud": { "provider": "gcp", "region": "your-region", "runtime": "cloud-run", "envAlias": "staging" },
   "stack": { "web": "Next.js + TypeScript", "db": "PostgreSQL + an ORM" },
   "commitScopes": ["web-app", "marketing-site", "docs", "infra"],
-  "enabledPacks": ["iot-pack", "web-pack"]
+  "enabledPacks": ["iot-pack", "web-pack"],
+  "jira": {
+    "baseUrl": "<jira-base-url>",
+    "projectKey": "<PROJECT-KEY>",
+    "qaStatus": "QA",
+    "repro": { "setup": "npm ci", "test": "npm test" },
+    "budget": { "maxFiles": 5, "maxAttempts": 3 }
+  }
 }

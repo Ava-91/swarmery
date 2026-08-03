@@ -1273,6 +1273,7 @@ function boardTask(p: Partial<BoardTask> & Pick<BoardTask, 'id' | 'externalId' |
     model: null,
     playbook: null,
     fileScope: [],
+    labels: [],
     branch: null,
     worktreePath: null,
     dispatchError: null,
@@ -1295,11 +1296,14 @@ let mockBoard: BoardTask[] = [
   boardTask({
     id: 9103, externalId: 'T-g7h8i9', title: 'Optimistic column moves with revert', boardColumn: 'todo',
     priority: 'urgent', model: 'sonnet', fileScope: ['web/src/pages/Board.tsx', 'web/src/workspace/'],
+    labels: ['jira-ticket'],
   }),
   boardTask({
     id: 9104, externalId: 'T-j1k2l3', title: 'ProjectSwitcher dropdown', boardColumn: 'in_progress',
     status: 'running', branch: 'swarm/T-j1k2l3', worktreePath: '/Volumes/Work/swarmery-worktrees/T-j1k2l3',
     model: 'opus', playbook: 'review-heavy',
+    // 4 labels demos the 3 + "+N" overflow chip.
+    labels: ['jira-ticket', 'ui', 'needs-design', 'flaky'],
   }),
   boardTask({
     id: 9105, externalId: 'T-m4n5o6', title: 'TaskDrawer edit fields', boardColumn: 'in_progress',
@@ -2255,6 +2259,7 @@ export const mockApi = {
     playbook?: string;
     agent?: string;
     fileScope?: string[];
+    labels?: string[];
     dependencies?: string[];
     boardColumn?: BoardColumn;
   }): Promise<BoardTask> {
@@ -2277,6 +2282,10 @@ export const mockApi = {
       ...(input.playbook !== undefined && input.playbook !== '' ? { playbook: input.playbook } : {}),
       ...(input.agent !== undefined && input.agent !== '' ? { agent: input.agent } : {}),
       ...(input.fileScope !== undefined ? { fileScope: input.fileScope } : {}),
+      // Mirrors normalizeLabels server-side (0049): lowercase, trim, dedupe.
+      ...(input.labels !== undefined
+        ? { labels: [...new Set(input.labels.map((l) => l.trim().toLowerCase()).filter((l) => l !== ''))] }
+        : {}),
       ...(input.dependencies !== undefined ? { dependencies: input.dependencies } : {}),
       columnMovedAt: input.boardColumn !== undefined && input.boardColumn !== 'triage' ? iso(0) : null,
       createdAt: iso(0),

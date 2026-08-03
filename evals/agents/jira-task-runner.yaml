@@ -1,0 +1,112 @@
+# jira-task-runner golden suite — the mechanical backstop for jira-pack's two
+# hardest-to-get-wrong rules: (1) a failed/blocked run must never reach a
+# write call (comment/transition/board mutation), and (2) "could not run the
+# reproduction" (needs-info) must never be confused with "ran it, it didn't
+# reproduce" (cannot-reproduce). Hard contracts via contains/regex/
+# not-contains; judgement (plan quality, question relevance) via llm-rubric.
+
+- description: jira-task-runner reports JIRA ACCESS FAILED and makes no write call when Jira tools are unreachable
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-142. jira-access-preflight ran: ToolSearch resolved zero
+      of the five required Atlassian tools under any prefix (no
+      mcp__plugin_atlassian_atlassian__* and no mcp__claude_ai_Atlassian_Rovo__*
+      tool names came back). Report what you do.
+  assert:
+    - type: contains                        # hard: the exact failure-report token
+      value: "JIRA ACCESS: FAILED"
+    - type: contains                        # hard: explicit no-write-happened statement
+      value: "no comment, transition, branch, or PR was created"
+    - type: not-contains                    # hard: no write tool was ever invoked
+      value: "transitionJiraIssue"
+
+- description: jira-task-runner reports missing config keys and makes no Jira call when the project.json jira block is absent
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-142. jira-config read .claude/project.json: there is no
+      "jira" key at all in the file. Report what you do next.
+  assert:
+    - type: llm-rubric                      # soft: names the missing required keys or hands back the paste-ready fragment
+      value: reports that the jira config block is missing required keys (baseUrl/projectKey/qaStatus/repro.test) and hands back a fragment to add, rather than guessing values
+    - type: not-contains                    # hard: no Jira call attempted before config is fixed
+      value: "getJiraIssue"
+    - type: not-contains                    # hard: no Jira call attempted before config is fixed
+      value: "transitionJiraIssue"
+
+- description: "jira-task-runner: reproduction could not even start yields needs-info, never cannot-reproduce, never a transition (the golden case)"
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-142. jira-config and jira-access-preflight both passed;
+      the board card is in_progress. jira-triage attempted jira.repro.setup
+      three times (jira.budget.maxAttempts): every attempt failed with
+      "unknown service SERVICE_X: connection refused" before jira.repro.test
+      ever ran. No reproduction command has executed even once. Classify the
+      ticket and report what you do next.
+  assert:
+    - type: regex                           # hard: the verdict must be declared in the run's own "verdict: <slug>" report shape (agents/jira-task-runner.md's Outputs one-liner), not just mentioned in passing
+      value: "verdict: needs-info"
+    - type: not-contains                    # hard: never confuse an unstarted repro with a completed one
+      value: "cannot-reproduce"
+    - type: not-contains                    # hard: the sibling already-fixed verdict must not be declared instead
+      value: "already-fixed"
+    - type: not-contains                    # hard: the sibling needs-fix verdict must not be declared instead
+      value: "needs-fix"
+    - type: not-contains                    # hard: the sibling too-large verdict must not be declared instead
+      value: "too-large"
+    - type: not-contains                    # hard: needs-info attempts no transition
+      value: "transitionJiraIssue"
+    - type: llm-rubric                      # soft: comment carries concrete questions, not a vague "couldn't reproduce"
+      value: posts concrete questions about the missing environment/service rather than a vague "could not reproduce" statement, and explicitly states the ticket's status was not changed
+
+- description: jira-task-runner reports the status-not-changed line and available transitions when jira.qaStatus has no matching transition
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-142. Reproduction ran green and a closing commit was
+      found — verdict already-fixed. jira-writeback called
+      getTransitionsForJiraIssue: the current workflow only offers
+      "In Progress", "Blocked", and "Done" as transitions — none of them
+      matches jira.qaStatus ("QA") by exact, case-insensitive match. Report
+      the comment content and what happens to the ticket's status.
+  assert:
+    - type: contains                        # hard: the exact "status not changed" framing
+      value: "Status not changed"
+    - type: contains                        # hard: names the transitions that actually exist
+      value: "Available transitions"
+    - type: not-contains                    # hard: no transition call fires when nothing matched
+      value: "transitionJiraIssue"
+
+- description: jira-task-runner --dry-run prints DRY-RUN markers and fires zero real write calls
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-142 --dry-run. Every read (config, preflight, ticket,
+      reproduction, transition list) has already run for real. The verdict
+      is needs-fix. Report exactly what you output for the comment, the
+      transition, the board card, and the branch/PR steps.
+  assert:
+    - type: regex                           # hard: at least the jira comment/transition dry-run markers are printed
+      value: "DRY-RUN (jira comment|jira transition|board POST|board PATCH)"
+    - type: not-contains                    # hard: no real Jira write fires in dry-run
+      value: "addCommentToJiraIssue("
+    - type: not-contains                    # hard: no real git push fires in dry-run
+      value: "git push"
+
+- description: jira-task-runner posts the plan's full text (not a workspace-path reference) and leaves status untouched when the budget is exceeded
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-142. Verdict was needs-fix; jira-delivery delegated to
+      @implementation-agent, but jira.budget.maxAttempts (3) was exhausted
+      without a qualifying PASS from @verification-agent, and the last diff
+      also touched more files than jira.budget.maxFiles. jira-escalation took
+      over. Report exactly what gets posted to the Jira ticket as a comment,
+      and what happens to the ticket's status.
+  assert:
+    - type: not-contains                    # hard: never substitute a bare path for the plan text
+      value: "workspace/working"
+    - type: llm-rubric                      # soft: the comment carries the plan's actual phase-by-phase content, not a pointer
+      value: the Jira comment contains the plan's actual content — objective and a phase-by-phase breakdown written out in the comment body — rather than only a reference to a private workspace path, and the ticket's status is left unchanged (no transition attempted)

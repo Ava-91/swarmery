@@ -1,0 +1,9 @@
+{
+  "name": "jira-pack",
+  "description": "Issue-tracker pack: /jira-fix takes a ticket link, verifies tracker access, reproduces the issue, routes the fix to core executors, comments back with evidence and moves the ticket to the QA column. Opt-in; requires core and an Atlassian MCP provider enabled on the machine.",
+  "version": "0.1.0",
+  "author": {
+    "name": "atretyak",
+    "email": "atretiak.work@gmail.com"
+  }
+}

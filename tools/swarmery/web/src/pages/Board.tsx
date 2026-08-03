@@ -12,13 +12,13 @@
 // the status bar, and the detail modal all reflect one source of truth. Demo
 // mode (VITE_MOCK) renders a full board from fixtures.
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { BoardColumn, BoardTask } from '../api/types';
 import { fetchBoardTasks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useWorkspaceBoard } from '../workspace/ProjectWorkspaceLayout';
-import { BOARD_COLUMNS, COLUMN_LABELS } from '../workspace/boardModel';
+import { BOARD_COLUMNS, COLUMN_LABELS, labelFilterOptions, matchesLabelFilter } from '../workspace/boardModel';
 import { NewTaskModal } from '../workspace/NewTaskModal';
 import { TaskCard } from '../workspace/TaskCard';
 import { TaskModal } from '../workspace/TaskModal';
@@ -37,7 +37,7 @@ export function Board(): JSX.Element {
   // Agent Hub "Run now" deep-links here with ?compose=@<agent>: — the modal
   // opens prefilled from it (the agent picker resolves the "@name:" prefix) so a
   // task can be dispatched to that agent in one hop.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const compose = searchParams.get('compose') ?? '';
   const [composing, setComposing] = useState(compose !== '');
   const [openId, setOpenId] = useState<number | null>(null);
@@ -50,14 +50,40 @@ export function Board(): JSX.Element {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveLoading, setArchiveLoading] = useState(false);
 
+  // Label filter — kept in the URL (not local state) so `?label=jira-ticket`
+  // is both the write target and the read source: a reload restores it with
+  // no separate rehydration step to keep in sync.
+  const labelFilter = searchParams.get('label');
+  const setLabelFilter = useCallback(
+    (label: string | null): void => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (label === null || label === '') next.delete('label');
+          else next.set('label', label);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  const labelOptions = useMemo(() => labelFilterOptions(board.tasks, labelFilter), [board.tasks, labelFilter]);
+  // Filtered BEFORE the column split so Archived (its own lazy fetch) and the
+  // Done sort are untouched — this list only ever feeds byColumn below.
+  const labelFilteredTasks = useMemo(
+    () => board.tasks.filter((t) => matchesLabelFilter(t, labelFilter)),
+    [board.tasks, labelFilter],
+  );
+
   const byColumn = useMemo(() => {
     const map = new Map<BoardColumn, BoardTask[]>();
     for (const c of BOARD_COLUMNS) map.set(c, []);
-    for (const t of board.tasks) map.get(t.boardColumn)?.push(t);
+    for (const t of labelFilteredTasks) map.get(t.boardColumn)?.push(t);
     // Done: most-recently-moved first (spec).
     map.get('done')?.sort((a, b) => (b.columnMovedAt ?? '').localeCompare(a.columnMovedAt ?? ''));
     return map;
-  }, [board.tasks]);
+  }, [labelFilteredTasks]);
 
   const openArchive = (): void => {
     setArchiveOpen((v) => !v);
@@ -114,22 +140,57 @@ export function Board(): JSX.Element {
       )}
 
       {/* Board ⇄ Graph toggle. */}
-      <div className="mb-3 flex items-center gap-1" role="group" aria-label="board view">
-        {(['board', 'graph'] as const).map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => setView(v)}
-            aria-pressed={view === v}
-            className={`rounded-lg border px-2.5 py-1 font-mono text-[11px] capitalize transition-colors ${
-              view === v
-                ? 'border-line-strong bg-surface2 text-brand'
-                : 'border-transparent text-ink-dim hover:bg-surface2/50 hover:text-ink'
-            }`}
-          >
-            {v === 'board' ? '▤ Board' : '⋈ Graph'}
-          </button>
-        ))}
+      <div className="mb-3 flex items-center gap-2">
+        <div className="flex items-center gap-1" role="group" aria-label="board view">
+          {(['board', 'graph'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              aria-pressed={view === v}
+              className={`rounded-lg border px-2.5 py-1 font-mono text-[11px] capitalize transition-colors ${
+                view === v
+                  ? 'border-line-strong bg-surface2 text-brand'
+                  : 'border-transparent text-ink-dim hover:bg-surface2/50 hover:text-ink'
+              }`}
+            >
+              {v === 'board' ? '▤ Board' : '⋈ Graph'}
+            </button>
+          ))}
+        </div>
+
+        {(labelOptions.length > 0 || labelFilter !== null) && (
+          <div className="flex items-center gap-1">
+            <select
+              value={labelFilter ?? ''}
+              onChange={(e) => setLabelFilter(e.target.value === '' ? null : e.target.value)}
+              aria-label="filter by label"
+              className={`rounded-lg border px-2 py-1 font-mono text-[11px] outline-none transition-colors ${
+                labelFilter !== null
+                  ? 'border-brand/50 bg-brand/10 text-brand'
+                  : 'border-line bg-surface text-ink-dim hover:bg-surface2/50'
+              }`}
+            >
+              <option value="">label: any</option>
+              {labelOptions.map(({ label, count }) => (
+                <option key={label} value={label}>
+                  {count === 0 ? `${label} (no cards)` : label}
+                </option>
+              ))}
+            </select>
+            {labelFilter !== null && (
+              <button
+                type="button"
+                onClick={() => setLabelFilter(null)}
+                aria-label="clear label filter"
+                data-tip="clear label filter"
+                className="text-[13px] leading-none text-ink-faint transition-colors hover:text-ink"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {board.loading ? (

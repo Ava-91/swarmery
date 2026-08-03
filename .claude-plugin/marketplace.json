@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Vendor-neutral, multi-project Claude Code agent framework. One shared core plus opt-in domain packs; per-project flavor comes from each consumer's project.json overlay.",
-    "version": "2.10.0"
+    "version": "2.11.0"
   },
   "plugins": [
     {
@@ -53,6 +53,11 @@
       "name": "architecture-pack",
       "source": "./plugins/architecture-pack",
       "description": "Repo-wide architecture map: /architecture-map generates a machine-readable JSON contract (layers, modules, file-anchored flows) + self-contained HTML viewer, freshness-stamped per commit; the swarmery dashboard serves both on its Architecture page."
+    },
+    {
+      "name": "jira-pack",
+      "source": "./plugins/jira-pack",
+      "description": "Issue-tracker pack: /jira-fix drives a Jira ticket end-to-end — access preflight, reproduction, delegated fix, evidence comment, QA transition. Opt-in; requires core."
     }
   ]
 }

@@ -70,6 +70,7 @@ export function NewTaskModal({
   const [playbook, setPlaybook] = useState('');
   const [fileScope, setFileScope] = useState<string[]>([]);
   const [dependencies, setDependencies] = useState<string[]>([]);
+  const [labels, setLabels] = useState<string[]>([]);
   const [column, setColumn] = useState<BoardColumn>('triage');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -143,6 +144,7 @@ export function NewTaskModal({
       boardColumn: column,
       fileScope,
       dependencies,
+      labels,
       ...(model !== 'default' ? { model } : {}),
       ...(playbook !== '' ? { playbook } : {}),
       ...(agent !== '' ? { agent } : {}),
@@ -276,6 +278,13 @@ export function NewTaskModal({
             placeholder="add a T-id + Enter"
             disabled={busy}
             onChange={setDependencies}
+          />
+          <ChipEditor
+            label="labels"
+            values={labels}
+            placeholder="add a label + Enter"
+            disabled={busy}
+            onChange={setLabels}
           />
 
           <div>

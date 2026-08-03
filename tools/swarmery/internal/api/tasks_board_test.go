@@ -24,7 +24,7 @@ import (
 var boardTaskKeys = []string{
 	"id", "externalId", "projectId", "projectSlug", "title", "prompt",
 	"priority", "status", "boardColumn", "paused", "userPaused",
-	"dependencies", "model", "playbook", "fileScope", "branch", "worktreePath",
+	"dependencies", "model", "playbook", "fileScope", "labels", "branch", "worktreePath",
 	"dispatchError", "retryCount", "verifyVerdict", "verifyDetail",
 	"agent", "origin", "originSessionId",
 	"columnMovedAt", "createdAt",
@@ -236,6 +236,96 @@ func TestBoardTaskCRUD(t *testing.T) {
 		if row["title"] == "add waypoint editing" || row["title"] == "t2" {
 			t.Errorf("board task leaked into workspace summary: %v", row)
 		}
+	}
+}
+
+// TestBoardTaskLabels: labels normalize on write (case/whitespace/dedup),
+// default to [] rather than null, clear via PATCH, reject invalid input, and
+// drive the ?label= list filter.
+func TestBoardTaskLabels(t *testing.T) {
+	srv, _ := testServerWithDB(t)
+
+	// --- Create without labels → [] not null ---
+	resp := postBoard(t, srv.URL, `{"projectId":1,"title":"plain","prompt":"p"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var plain boardTaskDTO
+	json.NewDecoder(resp.Body).Decode(&plain)
+	resp.Body.Close()
+	if plain.Labels == nil || len(plain.Labels) != 0 {
+		t.Fatalf("labels not empty-initialized: %v", plain.Labels)
+	}
+
+	// --- Create with labels: normalize case/whitespace/dedup ---
+	resp = postBoard(t, srv.URL,
+		`{"projectId":1,"title":"jira card","prompt":"p","labels":["Jira-Ticket"," jira-ticket "]}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("labeled create status = %d, want 201", resp.StatusCode)
+	}
+	var labeled boardTaskDTO
+	json.NewDecoder(resp.Body).Decode(&labeled)
+	resp.Body.Close()
+	if len(labeled.Labels) != 1 || labeled.Labels[0] != "jira-ticket" {
+		t.Fatalf("labels = %v, want exactly [jira-ticket]", labeled.Labels)
+	}
+
+	// --- Invalid labels → 400: too many, spaces, too long ---
+	tooMany := make([]string, 11)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("label%d", i)
+	}
+	tooManyJSON, _ := json.Marshal(tooMany)
+	for _, bad := range []string{
+		fmt.Sprintf(`{"projectId":1,"title":"t","prompt":"p","labels":%s}`, tooManyJSON),
+		`{"projectId":1,"title":"t","prompt":"p","labels":["has space"]}`,
+		`{"projectId":1,"title":"t","prompt":"p","labels":["` + strings.Repeat("x", 41) + `"]}`,
+	} {
+		r := postBoard(t, srv.URL, bad)
+		if r.StatusCode != http.StatusBadRequest {
+			t.Errorf("POST %s → %d, want 400", bad, r.StatusCode)
+		}
+		r.Body.Close()
+	}
+
+	// --- PATCH: set then clear labels ---
+	resp = patchBoard(t, srv.URL, plain.ID, `{"labels":["Foo","bar"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch set labels status = %d", resp.StatusCode)
+	}
+	var withLabels boardTaskDTO
+	json.NewDecoder(resp.Body).Decode(&withLabels)
+	resp.Body.Close()
+	if len(withLabels.Labels) != 2 || withLabels.Labels[0] != "foo" || withLabels.Labels[1] != "bar" {
+		t.Fatalf("patched labels = %v, want [foo bar]", withLabels.Labels)
+	}
+	resp = patchBoard(t, srv.URL, plain.ID, `{"labels":[]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch clear labels status = %d", resp.StatusCode)
+	}
+	var cleared boardTaskDTO
+	json.NewDecoder(resp.Body).Decode(&cleared)
+	resp.Body.Close()
+	if cleared.Labels == nil || len(cleared.Labels) != 0 {
+		t.Fatalf("cleared labels = %v, want []", cleared.Labels)
+	}
+	// PATCH with an invalid label → 400, and it must not have touched the row.
+	resp = patchBoard(t, srv.URL, plain.ID, `{"labels":["has space"]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("patch invalid label = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// --- GET filter by label ---
+	var filtered []boardTaskDTO
+	getJSON(t, srv.URL+"/api/board/tasks?label=jira-ticket", &filtered)
+	if len(filtered) != 1 || filtered[0].ID != labeled.ID {
+		t.Fatalf("label filter = %+v, want [labeled task]", filtered)
+	}
+	// An invalid filter value is a 400, same shape as the boardColumn filter.
+	r := srvGet(t, srv.URL+"/api/board/tasks?label="+"has%20space")
+	if r != http.StatusBadRequest {
+		t.Errorf("bad label filter = %d, want 400", r)
 	}
 }
 

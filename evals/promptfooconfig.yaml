@@ -27,3 +27,4 @@ tests:
   - file://agents/security-auditor.yaml
   - file://agents/commit-message.yaml
   - file://agents/guardrail-checker.yaml
+  - file://agents/jira-task-runner.yaml

@@ -1310,6 +1310,8 @@ export interface BoardTask {
   /** Selected execution recipe name (fusion phase 13); null = default 'standard'. */
   playbook: string | null;
   fileScope: string[];
+  /** Free-form card marks (0049). Lowercase slugs; empty array, never null. */
+  labels: string[];
   branch: string | null;
   worktreePath: string | null;
   dispatchError: string | null;
