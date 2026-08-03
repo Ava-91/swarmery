@@ -799,6 +799,8 @@ export interface CreateBoardTaskInput {
   /** Registry agent name to dispatch as; omit/empty = a plain run. */
   agent?: string;
   fileScope?: string[];
+  /** Free-form card marks (0049), e.g. "jira-ticket"; server lowercases/trims/dedupes. */
+  labels?: string[];
   dependencies?: string[];
   boardColumn?: BoardColumn;
 }

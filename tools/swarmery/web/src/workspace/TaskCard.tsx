@@ -8,7 +8,7 @@
 // never the only path (WCAG). Clicking the card body opens the TaskModal.
 
 import type { BoardColumn, BoardTask, TaskOrigin, TaskPriority } from '../api/types';
-import { BOARD_COLUMNS, COLUMN_LABELS } from './boardModel';
+import { BOARD_COLUMNS, COLUMN_LABELS, labelColor, visibleLabels } from './boardModel';
 
 const PRIORITY_DOT: Record<TaskPriority, string> = {
   urgent: 'bg-red',
@@ -49,6 +49,49 @@ function OriginBadge({ origin }: { origin: Exclude<TaskOrigin, 'manual'> }): JSX
     >
       ⟲ {label}
     </span>
+  );
+}
+
+/** One label chip: a small colored pill, no icon. Color is a pure hash of the
+ * label text (see `labelColor`) so e.g. "jira-ticket" always reads the same
+ * accent everywhere it appears — stable across renders because nothing but
+ * the label string feeds it. */
+function LabelBadge({ label }: { label: string }): JSX.Element {
+  const hsl = labelColor(label);
+  return (
+    <span
+      className="rounded-full border px-1.5 py-[1px] font-mono text-[9px]"
+      style={{
+        borderColor: `hsl(${hsl} / 0.4)`,
+        backgroundColor: `hsl(${hsl} / 0.12)`,
+        color: `hsl(${hsl})`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** Renders a card's label chips: up to `MAX_VISIBLE_LABELS` directly, the rest
+ * rolled into a single "+N" chip whose tooltip lists every label. Nothing
+ * renders for an empty array — an unlabeled card looks exactly as before. */
+function LabelBadges({ labels }: { labels: readonly string[] }): JSX.Element | null {
+  if (labels.length === 0) return null;
+  const { shown, overflow } = visibleLabels(labels);
+  return (
+    <>
+      {shown.map((l) => (
+        <LabelBadge key={l} label={l} />
+      ))}
+      {overflow > 0 && (
+        <span
+          data-tip={labels.join(', ')}
+          className="rounded-full border border-line px-1.5 py-[1px] font-mono text-[9px] text-ink-dim"
+        >
+          +{overflow}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -157,6 +200,7 @@ export function TaskCard({
         )}
         {task.origin !== 'manual' && <OriginBadge origin={task.origin} />}
         {task.verifyVerdict !== null && <VerdictBadge verdict={task.verifyVerdict} />}
+        <LabelBadges labels={task.labels} />
         {blocked && (
           <span className="rounded-full border border-amber/40 bg-amber/10 px-1.5 py-[1px] font-mono text-[9px] text-amber">
             paused
