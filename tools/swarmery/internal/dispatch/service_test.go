@@ -105,6 +105,14 @@ func (w *stubWt) CommitsForTask(repoRoot, taskID string) ([]string, error) {
 }
 
 func (w *stubWt) acquiredCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.acquired) }
+
+// acquiredIDs is a copy of the acquired task ids, for assertions that count
+// per-id rather than in total.
+func (w *stubWt) acquiredIDs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.acquired...)
+}
 func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
 
 // ── harness ──
@@ -1353,5 +1361,65 @@ func TestDepGateEmptyDepsPass(t *testing.T) {
 		if blocker != nil {
 			t.Errorf("deps %v → %v, want nil", deps, blocker)
 		}
+	}
+}
+
+// TestScheduleWorktreeSingleFlight is the guard for the ONE resource two board
+// rows can silently share: the worktree.
+//
+// worktree.Manager keys both the checkout path and the branch on the external
+// id (worktree.go:158-159), and Acquire warm-REUSES a path whose branch already
+// matches (invariant 4, worktree.go:198-201) rather than refusing it — by
+// design, so a crashed run can be resumed. The dispatcher's own same-task gate
+// (isActive) keys on the task ID instead, so it cannot see two rows converging
+// on one directory.
+//
+// Two rows share an external id in exactly one shipped flow: verify's fix task
+// carries external_id=<root external id> so its failure charges the root
+// (verify/service.go createFixTask). In practice the file-scope gate hides this
+// — a fix task inherits the root's scope verbatim and identical scopes always
+// overlap — but that is an INCIDENTAL guard: it holds only while the two rows
+// agree on file_scope, and file_scope is operator-patchable
+// (PATCH /api/board/tasks/{id}). Disjoint scopes here reproduce exactly that,
+// and without a worktree-identity gate both rows admit and two headless agents
+// get the same checkout on the same branch.
+func TestScheduleWorktreeSingleFlight(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{}
+	wt := &stubWt{}
+	s := newTestService(t, db, r, wt)
+
+	// Same external id (⇒ same worktree + branch), deliberately DISJOINT scopes
+	// so the file-scope gate cannot be what saves us.
+	insertTask(t, db, "T-root1", taskOpts{fileScope: `["a/"]`})
+	insertTask(t, db, "T-root1", taskOpts{fileScope: `["b/"]`, priority: 3})
+
+	s.Schedule()
+
+	var n int
+	for _, id := range wt.acquiredIDs() {
+		if id == "T-root1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("Acquire(T-root1) called %d time(s), want 1 — two board rows sharing an "+
+			"external id must never hold the same worktree/branch concurrently", n)
+	}
+
+	// The gate DEFERS, it does not drop: the run above finished inline and left
+	// in_review, so the checkout is free and the loser admits on the next pass.
+	// Without this half, a gate that silently stranded the second row forever
+	// would pass the assertion above.
+	s.Schedule()
+	n = 0
+	for _, id := range wt.acquiredIDs() {
+		if id == "T-root1" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("Acquire(T-root1) called %d time(s) across two passes, want 2 — the "+
+			"deferred row must be admitted once the checkout is free", n)
 	}
 }
