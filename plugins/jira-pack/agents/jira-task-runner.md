@@ -15,6 +15,8 @@ skills:
   - swarmery-board-card
   - jira-triage
   - jira-writeback
+  - jira-delivery
+  - jira-escalation
   - testing
   - troubleshooting
 ---
@@ -159,16 +161,18 @@ comment does so **before** it ever attempts a transition (see `jira-writeback`)
 | `already-fixed` | `jira-writeback`: comment (`comment-already-fixed.md`) + QA transition attempt | `done` |
 | `cannot-reproduce` | `jira-writeback`: comment (`comment-cannot-reproduce.md`) + QA transition attempt | `done` |
 | `needs-info` | `jira-writeback`: comment (`comment-needs-info.md`) only — **no transition is attempted at all** | `in_review` |
-| `needs-fix` | Phase 7's `jira-delivery` (delegate to `@debugger`/`@implementation-agent`, `@verification-agent` as sole publish gate, commit + PR via `@pr-generator`+`gh`), **then** `jira-writeback`: comment (`comment-fix-summary.md`) + QA transition attempt | `in_review` (gains the PR link) |
-| `too-large` | Phase 7's `jira-escalation` (planner invocation, plan saved to the private workspace per hard-rule §11, full plan text posted via `comment-too-large.md` — **no** transition) | `in_review` (gains the escalation reason) |
+| `needs-fix` | `jira-delivery`: isolated worktree branch `fix/<KEY>-<slug>` from fresh main → delegate to `@debugger`/`@implementation-agent`/`@test-writer` per its delegation table → `@verification-agent` `PASS` as the sole gate on push/PR/comment/transition → commit + PR via `@pr-generator` (text) + `gh` (open) → **then** `jira-writeback`: comment (`comment-fix-summary.md`) + QA transition attempt. `FAIL`/`PARTIAL` once `jira.budget.maxAttempts` is exhausted, or a diff over `jira.budget.maxFiles` even after `PASS`, hands off to `jira-escalation` instead of publishing anything. | `in_review` (gains the PR link on success; gains the escalation reason on hand-off) |
+| `too-large` | `jira-escalation`: choose `@task-planner` (<~1 week / ≤3 phases) or `@implementation-planner` otherwise → plan saved to the private workspace per hard-rule §11 (never this repo) → full plan text posted via `comment-too-large.md` (posted directly by `jira-escalation`, not `jira-writeback`) — **no** transition; any branch/worktree `jira-delivery` already created before this fired is removed together with it | `in_review` (gains the escalation reason) |
 
-`needs-fix` and `too-large` are **placeholders in this phase**: the skills
-they name (`jira-delivery`, `jira-escalation`) are not yet in this agent's
-`skills:` frontmatter and are not implemented until Phase 7, which also
-updates this section from a placeholder reference into the real flow. Nothing
-in Phase 6 fixes code, opens a branch, or plans a fix — reaching either of
-these two verdicts today means the run stops here and reports the verdict,
-without attempting the Phase-7-only mechanics.
+`needs-fix` and `too-large` are fully implemented as of this phase:
+`jira-delivery` and `jira-escalation` are both in this agent's `skills:`
+frontmatter (see above), and the two rows above describe the real flow, not
+a placeholder. `jira-delivery` is the only path that ever creates a branch,
+commits, or opens a PR; `jira-escalation` is the only path that ever invokes
+a planner or writes a plan. See
+`plugins/jira-pack/skills/jira-delivery/SKILL.md` and
+`plugins/jira-pack/skills/jira-escalation/SKILL.md` for the full detail this
+table only summarizes.
 
 **The two rules that carry `jira-triage`'s classification** (restated here for
 the fork's sake; the authoritative text is in
@@ -238,8 +242,11 @@ policy for ad-hoc queries, one broad always-auto policy scoped to an explicit
 - Do not let the board card land in or pass through `todo`.
 - Do not call a second Atlassian MCP tool prefix mid-run even if both channels
   resolve.
-- Do not implement `needs-fix`/`too-large` mechanics in this phase — reference
-  Phase 7's skills and stop.
+- Do not implement `needs-fix`/`too-large` mechanics inline in this agent
+  file — delegate to `jira-delivery` / `jira-escalation`, which own the
+  actual branch/delegate/verify/publish and plan/escalate steps
+  respectively; this agent only forks to the right skill and reports what
+  it did.
 
 # Transparency
 
@@ -253,10 +260,17 @@ policy for ad-hoc queries, one broad always-auto policy scoped to an explicit
 # Deployment & escalation
 
 - Verification hooks: none of this agent's own steps require
-  `npm run typecheck`/`build` (it does not edit application code in Phase 6);
-  `jira-triage`'s mandatory reproduction is itself the verification step for
-  the ticket's reported behavior.
-- Rollback: nothing in this phase's flow is destructive to the codebase; a
+  `npm run typecheck`/`build` directly — it never edits application code
+  itself; `jira-triage`'s mandatory reproduction is the verification step
+  for the ticket's reported behavior, and on the `needs-fix` path
+  `jira-delivery`'s `@verification-agent` gate (build/typecheck/lint/test)
+  is the verification step for the delegated code change.
+- Rollback: nothing this agent does directly is destructive to the
+  codebase — all code edits and git operations happen inside `jira-delivery`'s
+  isolated worktree. `jira-delivery` itself never force-pushes or rewrites
+  history; `jira-escalation`'s branch/worktree cleanup (`git worktree
+  remove`, `git branch -D`, `git push origin --delete`) only ever removes a
+  branch this same run created moments earlier, never a pre-existing one. A
   wrongly-posted comment or transition is corrected by a human via Jira
   directly (no automated rollback path exists for a tracker write).
 - Human gate: none (see above), but escalation triggers apply.
@@ -303,4 +317,5 @@ still executes so the dry-run's answer is honest, but zero writes fire —
 | Reproduction command not found / env missing | `jira.repro.setup`/`.test` exits with a "command not found" or missing-dependency error | Retry the *setup* step up to `jira.budget.maxAttempts`; if still failing, classify `needs-info` |
 | Two Atlassian MCP channels both resolve mid-run | Two distinct prefixes both answer to a tool name | Never happens after step 2 pins one prefix — if it does, that is a preflight bug, not something this agent works around live |
 | Board daemon unreachable | `127.0.0.1:7777` connection error | Continue the ticket-facing work regardless (per `swarmery-board-card`'s fallback); add `BOARD: unavailable (<reason>)` to the final report only |
-| Verdict is `needs-fix`/`too-large` in this phase | Fork reaches either branch | Stop and report the verdict; do not attempt Phase-7-only mechanics |
+| Verdict is `needs-fix` | Fork reaches the `needs-fix` branch | Delegate to `jira-delivery` (branch → executor → verification gate → publish); on `FAIL`/`PARTIAL` after `jira.budget.maxAttempts` exhausted, or a diff over `jira.budget.maxFiles`, `jira-delivery` hands off to `jira-escalation` instead of this agent improvising a fix itself |
+| Verdict is `too-large` | Fork reaches the `too-large` branch, or `jira-delivery` hands off mid-attempt | Delegate to `jira-escalation` (planner → private-workspace plan → full-text comment, no transition); never attempt to fix the ticket directly from this agent |
