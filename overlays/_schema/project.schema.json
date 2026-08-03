@@ -39,6 +39,7 @@
     },
     "jira": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Issue-tracker contract consumed by jira-pack. Required for /jira-fix.",
       "properties": {
         "baseUrl":    { "type": "string", "description": "Site host, e.g. yourteam.atlassian.net" },
@@ -46,6 +47,7 @@
         "qaStatus":   { "type": "string", "description": "Exact target status name the agent moves a finished ticket to" },
         "repro": {
           "type": "object",
+          "additionalProperties": false,
           "description": "Commands the agent runs to reproduce. setup is optional; test is mandatory.",
           "properties": {
             "setup": { "type": "string" },
@@ -55,6 +57,7 @@
         },
         "budget": {
           "type": "object",
+          "additionalProperties": false,
           "description": "Autonomy limits before the run escalates to planning.",
           "properties": {
             "maxFiles":    { "type": "integer", "minimum": 1, "default": 5 },
