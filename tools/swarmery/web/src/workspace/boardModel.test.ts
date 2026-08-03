@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { BoardTask } from '../api/types';
-import { labelColor, matchesLabelFilter, uniqueLabels, visibleLabels } from './boardModel';
+import { labelColor, labelFilterOptions, matchesLabelFilter, uniqueLabels, visibleLabels } from './boardModel';
 
 let nextId = 1;
 
@@ -116,5 +116,43 @@ describe('matchesLabelFilter', () => {
     expect(matchesLabelFilter(withLabel, 'jira-ticket')).toBe(true);
     expect(matchesLabelFilter(withoutLabel, 'jira-ticket')).toBe(false);
     expect(matchesLabelFilter(withLabel, 'other')).toBe(false);
+  });
+});
+
+describe('labelFilterOptions', () => {
+  it('lists each label with how many tasks carry it, sorted by label', () => {
+    const tasks = [
+      makeTask({ labels: ['jira-ticket', 'ui'] }),
+      makeTask({ labels: ['ui', 'flaky'] }),
+      makeTask({ labels: [] }),
+    ];
+    expect(labelFilterOptions(tasks, null)).toEqual([
+      { label: 'flaky', count: 1 },
+      { label: 'jira-ticket', count: 1 },
+      { label: 'ui', count: 2 },
+    ]);
+  });
+
+  it('keeps a stale filter in the list with count 0 instead of dropping it', () => {
+    // The filtered label no longer sits on any loaded task -- a bookmarked
+    // URL, or the last card carrying it lost the label. The dropdown must
+    // still offer this exact value so <select value={filter}> always has a
+    // matching <option> and never silently disagrees with the applied filter.
+    const tasks = [makeTask({ labels: ['ui'] })];
+    expect(labelFilterOptions(tasks, 'gone')).toEqual([
+      { label: 'gone', count: 0 },
+      { label: 'ui', count: 1 },
+    ]);
+  });
+
+  it('does not duplicate the filter when it is still a live label', () => {
+    const tasks = [makeTask({ labels: ['ui'] })];
+    expect(labelFilterOptions(tasks, 'ui')).toEqual([{ label: 'ui', count: 1 }]);
+  });
+
+  it('ignores a null or empty filter -- same as no filter applied', () => {
+    const tasks = [makeTask({ labels: ['ui'] })];
+    expect(labelFilterOptions(tasks, null)).toEqual([{ label: 'ui', count: 1 }]);
+    expect(labelFilterOptions(tasks, '')).toEqual([{ label: 'ui', count: 1 }]);
   });
 });

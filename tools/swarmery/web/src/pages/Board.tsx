@@ -18,7 +18,7 @@ import type { BoardColumn, BoardTask } from '../api/types';
 import { fetchBoardTasks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useWorkspaceBoard } from '../workspace/ProjectWorkspaceLayout';
-import { BOARD_COLUMNS, COLUMN_LABELS, matchesLabelFilter, uniqueLabels } from '../workspace/boardModel';
+import { BOARD_COLUMNS, COLUMN_LABELS, labelFilterOptions, matchesLabelFilter } from '../workspace/boardModel';
 import { NewTaskModal } from '../workspace/NewTaskModal';
 import { TaskCard } from '../workspace/TaskCard';
 import { TaskModal } from '../workspace/TaskModal';
@@ -68,7 +68,7 @@ export function Board(): JSX.Element {
     },
     [setSearchParams],
   );
-  const availableLabels = useMemo(() => uniqueLabels(board.tasks), [board.tasks]);
+  const labelOptions = useMemo(() => labelFilterOptions(board.tasks, labelFilter), [board.tasks, labelFilter]);
   // Filtered BEFORE the column split so Archived (its own lazy fetch) and the
   // Done sort are untouched — this list only ever feeds byColumn below.
   const labelFilteredTasks = useMemo(
@@ -159,7 +159,7 @@ export function Board(): JSX.Element {
           ))}
         </div>
 
-        {(availableLabels.length > 0 || labelFilter !== null) && (
+        {(labelOptions.length > 0 || labelFilter !== null) && (
           <div className="flex items-center gap-1">
             <select
               value={labelFilter ?? ''}
@@ -172,9 +172,9 @@ export function Board(): JSX.Element {
               }`}
             >
               <option value="">label: any</option>
-              {availableLabels.map((l) => (
-                <option key={l} value={l}>
-                  {l}
+              {labelOptions.map(({ label, count }) => (
+                <option key={label} value={label}>
+                  {count === 0 ? `${label} (no cards)` : label}
                 </option>
               ))}
             </select>

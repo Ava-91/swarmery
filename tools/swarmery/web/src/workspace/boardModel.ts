@@ -139,3 +139,27 @@ export function uniqueLabels(tasks: readonly BoardTask[]): string[] {
 export function matchesLabelFilter(task: BoardTask, filter: string | null): boolean {
   return filter === null || filter === '' || task.labels.includes(filter);
 }
+
+/** One entry in the label-filter `<select>` — `count` is how many currently-
+ * loaded tasks carry it. */
+export interface LabelFilterOption {
+  readonly label: string;
+  readonly count: number;
+}
+
+/**
+ * Options for the board's label-filter dropdown, built so the `<select>` can
+ * never hold a `value` that has no matching `<option>`. `uniqueLabels` alone
+ * omits a `filter` that no task carries any more (a stale `?label=` from a
+ * bookmark, or the last card carrying it just lost the label) — a controlled
+ * select bound to that value then renders as if nothing were filtered while
+ * the filter is still applied, making the board look broken instead of
+ * filtered. Folding the orphaned filter in here, with `count: 0`, keeps the
+ * dropdown and the applied filter permanently in agreement.
+ */
+export function labelFilterOptions(tasks: readonly BoardTask[], filter: string | null): LabelFilterOption[] {
+  const counts = new Map<string, number>();
+  for (const t of tasks) for (const l of t.labels) counts.set(l, (counts.get(l) ?? 0) + 1);
+  if (filter !== null && filter !== '' && !counts.has(filter)) counts.set(filter, 0);
+  return [...counts.keys()].sort().map((label) => ({ label, count: counts.get(label) ?? 0 }));
+}
