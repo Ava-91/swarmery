@@ -61,5 +61,5 @@ phase-by-phase plan lives in the workspace task `<workspace task slug>`;
 picking this up is a planning/scheduling decision, not something this run
 makes on its own.
 
-<!-- swarmery:jira-task-runner run=<external_id or run tag> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=too-large -->
 ```

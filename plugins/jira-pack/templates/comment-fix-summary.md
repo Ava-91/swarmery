@@ -41,5 +41,5 @@ line-by-line diff>`
 **Limitations / risks**: `<anything not covered by this fix, follow-up work
 needed, or risk the reviewer should weigh — "none known" if genuinely none>`
 
-<!-- swarmery:jira-task-runner run=<external_id or run tag> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=needs-fix -->
 ```

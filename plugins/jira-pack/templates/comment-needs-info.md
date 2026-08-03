@@ -45,5 +45,5 @@ unknown service, absent environment variable, undocumented prerequisite>`
 **Status**: not changed. This ticket's status was left as-is; a fresh attempt
 will run once the above is answered.
 
-<!-- swarmery:jira-task-runner run=<external_id or run tag> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=needs-info -->
 ```

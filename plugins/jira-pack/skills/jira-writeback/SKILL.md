@@ -72,10 +72,12 @@ Available transitions: <comma-separated list of transition names>.
 ```
 
 Every rendered comment ends with a hidden idempotency marker as its **literal
-last line**:
+last line**, and the marker carries this run's verdict so a later run can
+decide whether to skip **without** re-deriving the verdict from the comment's
+rendered prose:
 
 ```
-<!-- swarmery:jira-task-runner run=<external_id or run tag> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=<already-fixed|cannot-reproduce|needs-fix|needs-info|too-large> -->
 ```
 
 **Language**: the same language the ticket is written in (read off
@@ -84,20 +86,26 @@ last line**:
 # Step 3 — idempotency check
 
 Before posting, scan the ticket's existing comments (already fetched during
-`jira-triage`'s Step 1 read — no extra call needed) for the **most recent**
-comment carrying this agent's marker for this ticket. Skip the write —
-recording `comment: skipped (identical verdict already posted)` — only when
-**both** are true:
+`jira-triage`'s Step 1 read — no extra call needed) for markers matching this
+agent's tag, `<!-- swarmery:jira-task-runner run=<tag> verdict=<slug> -->`. If
+more than one such marker exists on the ticket, take the **most recent** one —
+never an older one. The skip decision is read straight off that marker's
+`verdict` field — never reconstructed by reading the surrounding comment
+prose:
 
-- a marker for this ticket is present in that most-recent agent comment, and
-- that comment's rendered verdict is the **same** verdict this run just
-  produced.
+- **No marker with this run's tag** (first run, or the board card is new) →
+  write.
+- **Marker found, `verdict` differs from this run's verdict** — e.g. the most
+  recent marker carries `verdict=needs-info` and this run just produced
+  `cannot-reproduce` (more information became available, or the environment
+  got fixed) → write; only a truly identical repeat write is what idempotency
+  guards against.
+- **Marker found, `verdict` matches this run's verdict** → skip the write,
+  recording `comment: skipped (identical verdict already posted)`.
 
-A marker alone is not sufficient grounds to skip: a ticket that was
-`needs-info` last run and is `cannot-reproduce` this run (more information
-became available, or the environment got fixed) must still get a fresh
-comment — only a truly identical repeat write is what idempotency guards
-against.
+Use the exact verdict slugs `jira-triage` assigns: `already-fixed`,
+`cannot-reproduce`, `needs-fix`, `needs-info`, `too-large` — never a
+paraphrase, so the marker's `verdict` field always matches one of the five.
 
 # Step 4 — post, in order: comment, then transition
 
@@ -157,8 +165,9 @@ hosts, `<KEY>`, and `<PROJECT-KEY>` — `scripts/scan-flavor.sh` must stay
       whenever a transition might be attempted
 - [ ] The rendered comment ends with the hidden marker as its literal last
       line
-- [ ] The idempotency check compared **both** marker presence and verdict
-      match — never skipped on marker presence alone
+- [ ] The idempotency check read the verdict off the most recent marker's
+      `verdict` field — never skipped on marker presence alone, and never
+      guessed the prior verdict from the comment's rendered prose
 - [ ] `addCommentToJiraIssue` was called (or explicitly skipped, with a
       recorded reason) before any `transitionJiraIssue` call in the same run
 - [ ] `needs-info` calls never resulted in a `transitionJiraIssue` call
@@ -171,7 +180,8 @@ hosts, `<KEY>`, and `<PROJECT-KEY>` — `scripts/scan-flavor.sh` must stay
 - Fuzzy-matching `jira.qaStatus` ("QA" matching "QA Review") — exact,
   case-insensitive, trimmed, nothing looser.
 - Skipping a comment merely because *any* marker is present, without checking
-  the verdict it recorded matches this run's verdict.
+  its `verdict` field matches this run's verdict — and never inferring that
+  prior verdict from the comment's rendered text instead of the marker.
 - Posting the "status not changed" line even when a matching transition was
   found (it belongs only in the not-found branch).
 

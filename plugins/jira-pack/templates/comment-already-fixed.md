@@ -36,5 +36,5 @@ Checked this against the current codebase — it's already fixed.
 **How to re-verify**: `<numbered steps a reporter or QA can follow to confirm
 independently — e.g. pull <branch>, run <command>, expect <result>>`
 
-<!-- swarmery:jira-task-runner run=<external_id or run tag> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=already-fixed -->
 ```

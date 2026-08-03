@@ -49,5 +49,5 @@ input, environment difference) that trigger it. This run's attempt found no
 discrepancy from the behavior documented here — a narrower, more specific
 repro is what would confirm a real regression.
 
-<!-- swarmery:jira-task-runner run=<external_id or run tag> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=cannot-reproduce -->
 ```
