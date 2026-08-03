@@ -15,7 +15,9 @@
 //                          endpoint owns the resume, NOT sendSessionMessage).
 //  · done                — "Plan ready" + link to the Plans page (the plan→board
 //                          activation flow was removed in phase 4) + "Start
-//                          another plan", which re-opens the intake in place
+//                          another plan", which swaps the card for the intake
+//                          (the plan itself lives on the Plans page by then, so
+//                          the card would only crowd the next idea box)
 //                          (Service.Start accepts a new run over a done row —
 //                          markCancelled only supersedes OPEN wizards).
 //  · failed              — error card + intake prefilled to start again.
@@ -413,9 +415,12 @@ export function PlanningMode(): JSX.Element {
         </Card>
       )}
 
-      {/* DONE — plan ready. Rendered ABOVE the intake so "Start another plan"
-          drops the next idea box underneath this card, not above it. */}
-      {wstatus === 'done' && (
+      {/* DONE — plan ready. This card is the completion signal (where the plan
+          landed + the link to it), so it stays until the user acts on it: once
+          "Start another plan" is pressed the plan is already on the Plans page
+          and the card only crowds the next idea box, so it gives way to the
+          intake. "keep the plan card" brings it back. */}
+      {wstatus === 'done' && !newPlanMode && (
         <Card>
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="inline-block h-[7px] w-[7px] shrink-0 rounded-full bg-green" aria-hidden="true" />
@@ -447,7 +452,6 @@ export function PlanningMode(): JSX.Element {
               )}
               <button
                 type="button"
-                disabled={newPlanMode}
                 onClick={() => {
                   setIdea('');
                   setError(null);
@@ -503,14 +507,26 @@ export function PlanningMode(): JSX.Element {
             aria-label="describe what you want to build"
             className="w-full resize-y rounded-xl border border-line bg-field px-3.5 py-3 text-[13.5px] leading-relaxed text-ink transition-colors outline-none placeholder:text-ink-faint focus:border-brand/50"
           />
-          <button
-            type="button"
-            disabled={busy || idea.trim() === ''}
-            onClick={start}
-            className="mt-3 rounded-lg border border-brand/50 bg-brand/12 px-4 py-2 text-[13px] font-semibold text-brand transition-colors hover:bg-brand/20 disabled:opacity-50"
-          >
-            {busy ? 'starting…' : wstatus === 'failed' ? 'Start again' : 'Start planning'}
-          </button>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={busy || idea.trim() === ''}
+              onClick={start}
+              className="rounded-lg border border-brand/50 bg-brand/12 px-4 py-2 text-[13px] font-semibold text-brand transition-colors hover:bg-brand/20 disabled:opacity-50"
+            >
+              {busy ? 'starting…' : wstatus === 'failed' ? 'Start again' : 'Start planning'}
+            </button>
+            {newPlanMode && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setNewPlanMode(false)}
+                className="rounded-lg border border-line px-3 py-2 font-mono text-[11px] text-ink-dim transition-colors hover:bg-surface2 hover:text-ink disabled:opacity-50"
+              >
+                keep the plan card
+              </button>
+            )}
+          </div>
         </div>
       )}
 
