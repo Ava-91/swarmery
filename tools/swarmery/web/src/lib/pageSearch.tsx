@@ -51,7 +51,12 @@ export function usePageSearch(): string {
  * that have no searchable list (analytics, docs, detail views). */
 export function pageSearchPlaceholder(pathname: string): string | null {
   if (pathname === '/') return 'filter sessions by title…';
-  if (pathname === '/sessions') return 'filter sessions by title…';
+  // Sessions matches plan titles and phase names too (lib/sessionsView), so the
+  // placeholder promises what it actually searches. Project mode renders the
+  // same page under /p/<slug>/sessions and needs the same box.
+  if (pathname === '/sessions' || /^\/p\/[^/]+\/sessions$/.test(pathname)) {
+    return 'filter by title or plan…';
+  }
   if (pathname === '/projects') return 'filter projects by name…';
   if (pathname === '/approvals') return 'filter approvals…';
   // /system(/*) is the tabbed System shell — its embedded hubs carry their own

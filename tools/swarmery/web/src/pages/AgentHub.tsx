@@ -16,7 +16,8 @@ import type { AgentProfile, AgentRosterRow, WSMessage } from '../api/types';
 import { fetchAgentProfile, fetchAgentRoster } from '../api/agentHub';
 import { fetchProjects } from '../api';
 import { fmtAgo, fmtCost } from '../lib/format';
-import { useScope } from '../lib/scope';
+import { ScopeChip } from '../components/ScopeChip';
+import { useProjectIdParam, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { SystemItemPanel } from './system/ItemDetail';
@@ -143,7 +144,13 @@ export function AgentHub({
   // Workspace mount (/p/:slug/agents) carries the slug in the route; fleet mount
   // uses the global scope switcher. Either narrows the rollup window. When
   // embedded, the shell passes both explicitly (it owns the route base).
-  const scopeSlug = scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope);
+  // Resolved to the numeric project id before it reaches the API: /api/agents/hub
+  // matches slug-or-id-or-name and would accept the pretty slug, but the sibling
+  // /api/system/* template endpoints do NOT — one convention for the whole hub
+  // family beats two that differ only where it breaks (see useProjectIdParam).
+  const scopeSlug = useProjectIdParam(
+    scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope),
+  );
   const routeBase =
     routeBaseProp ?? (params.slug !== undefined ? `/p/${params.slug}/agents` : '/agents');
 
@@ -273,8 +280,15 @@ export function AgentHub({
   // Scope segmented control (all scopes / global / project) — reuses the System
   // page's chips. Rendered in HubShell's full-width top bar, like the toolkit
   // catalog. Hidden in PROJECT mode: the view is inherently project-only there.
+  // The PROJECT-scope chip leads that row on the standalone /agents mount only:
+  // embedded, SystemShell already renders one above the tab bar, and two chips
+  // driving the same context on one screen is a bug, not a convenience.
+  // (`scopeChip` above is the unrelated ORIGIN scope: all/global/project.)
   const scopeFilters = projectScoped ? undefined : (
-    <FiltersRow scope={scopeChip} onScope={setScopeChip} />
+    <div className="flex flex-wrap items-center gap-2">
+      {!embedded && <ScopeChip />}
+      <FiltersRow scope={scopeChip} onScope={setScopeChip} />
+    </div>
   );
 
   return (

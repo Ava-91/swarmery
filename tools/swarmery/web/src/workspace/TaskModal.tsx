@@ -183,7 +183,7 @@ export function TaskModal({
       onClick={onClose}
     >
       <div
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+        className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-line bg-bg shadow-[0_0_40px_rgba(0,0,0,0.5)]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
@@ -219,7 +219,7 @@ export function TaskModal({
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              rows={5}
+              rows={14}
               aria-label="prompt"
               className="w-full resize-y rounded-[8px] border border-line bg-field px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-ink outline-none focus:border-ink-dim"
             />

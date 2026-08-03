@@ -23,7 +23,7 @@ func TestVerifyCachedFail_CreatesFixWithoutSpawn(t *testing.T) {
 	// Archive the first fix so the dedup gate permits another, and re-verify the
 	// SAME tree → cache hit returns FAIL without spawning, and (tree still failing)
 	// creates the next fix charging the root again.
-	if _, err := db.Exec(`UPDATE tasks SET board_column='archived' WHERE source='verify-fix'`); err != nil {
+	if _, err := db.Exec(`UPDATE tasks SET board_column='archived' WHERE origin='verify-fix'`); err != nil {
 		t.Fatal(err)
 	}
 	callsBefore := r.count()
@@ -90,7 +90,7 @@ func TestVerifyFail_FixInheritsModelAndScope(t *testing.T) {
 	}
 	var model, scope string
 	if err := db.QueryRow(
-		`SELECT COALESCE(model,''), file_scope FROM tasks WHERE source='verify-fix' AND external_id='T-root1'`).
+		`SELECT COALESCE(model,''), file_scope FROM tasks WHERE origin='verify-fix' AND external_id='T-root1'`).
 		Scan(&model, &scope); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestResolveRoot_DanglingParentTreatedAsRoot(t *testing.T) {
 	db := testDB(t)
 	s := newTestService(t, db, &stubRunner{}, stubTrees{})
 	// A verify-fix task whose external_id points at a non-existent root.
-	id := insertTask(t, db, taskOpts{source: "verify-fix", externalID: "T-ghost"})
+	id := insertTask(t, db, taskOpts{origin: "verify-fix", externalID: "T-ghost"})
 	tk, err := s.loadTask(id)
 	if err != nil {
 		t.Fatal(err)
@@ -140,12 +140,12 @@ func TestResolveRoot_MultiHopChain(t *testing.T) {
 	s := newTestService(t, db, &stubRunner{}, stubTrees{})
 	root := insertTask(t, db, taskOpts{source: "queue", externalID: "T-root1"})
 	// fixB fixes the root (external_id = root external id).
-	insertTask(t, db, taskOpts{source: "verify-fix", externalID: "T-root1", worktree: "/wt/b"})
+	insertTask(t, db, taskOpts{origin: "verify-fix", externalID: "T-root1", worktree: "/wt/b"})
 	// The chain root lookup keys on external_id, and every fix in a chain points
 	// at the SAME root id (createFixTask always uses root.externalID), so a fix's
 	// resolveRoot is a single hop to the queue root. Assert that hop.
 	var fixBID int64
-	_ = db.QueryRow(`SELECT id FROM tasks WHERE source='verify-fix' AND external_id='T-root1'`).Scan(&fixBID)
+	_ = db.QueryRow(`SELECT id FROM tasks WHERE origin='verify-fix' AND external_id='T-root1'`).Scan(&fixBID)
 	tk, _ := s.loadTask(fixBID)
 	got, err := s.resolveRoot(tk)
 	if err != nil {

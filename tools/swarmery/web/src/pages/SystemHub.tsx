@@ -25,7 +25,8 @@ import { fetchProjects } from '../api';
 import { fetchSystemCommands, fetchSystemHooks, fetchSystemItems } from '../api/system';
 import { fetchSystemHubSummary, fetchSystemTemplates } from '../api/systemHub';
 import { fmtAgo } from '../lib/format';
-import { useScope } from '../lib/scope';
+import { ScopeChip } from '../components/ScopeChip';
+import { useProjectIdParam, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { Empty } from '../components/ui';
 import { HubShell, type HubTab } from './agent-hub/HubShell';
@@ -227,7 +228,13 @@ export function SystemHub({
   // Workspace mount (/p/:slug/system-hub) carries the slug; fleet mode uses the
   // global scope switcher. Either scopes the rollups + template resolution. When
   // embedded the shell passes both explicitly (it owns the route base).
-  const scopeSlug = scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope);
+  // The scope REFERENCE (pretty slug from the URL or the global scope chip)…
+  const scopeRef = scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope);
+  // …resolved to the numeric project id before it reaches the API. The
+  // /api/system/* template endpoints match the DB path slug or the id only, so
+  // the pretty slug 500s there (see useProjectIdParam). Embedded, the shell has
+  // already resolved it — useProjectIdParam is idempotent on a numeric id.
+  const scopeSlug = useProjectIdParam(scopeRef);
   const routeBase =
     routeBaseProp ?? (params.slug !== undefined ? `/p/${params.slug}/system-hub` : '/system-hub');
 
@@ -411,8 +418,12 @@ export function SystemHub({
         <div className="px-4 pt-4 desk:px-10">{roleNav}</div>
       ) : null}
       <div className="min-h-0 flex-1">
+        {/* Standalone /system-hub has no filter row of its own, so the scope
+            chip goes in HubShell's topBar slot — directly under the h1, the same
+            position it holds on every other page. Embedded, SystemShell owns the
+            chip and hands this hub its scopeSlug. */}
         <HubShell<RosterRow>
-          {...(embedded ? {} : { title: 'System Hub' })}
+          {...(embedded ? {} : { title: 'System Hub', topBar: <ScopeChip /> })}
           roster={roster}
           rosterError={rosterError}
           onRosterRetry={loadRoster}

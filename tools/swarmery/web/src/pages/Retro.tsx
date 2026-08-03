@@ -49,6 +49,7 @@ import {
   fmtTokens,
   isoDay,
 } from '../lib/format';
+import { ScopeChip } from '../components/ScopeChip';
 import { useScope } from '../lib/scope';
 import { ApproxHint, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { ImproveModal } from '../components/ImproveModal';
@@ -73,7 +74,11 @@ function RangeControls({
   onTo: (d: string) => void;
 }): JSX.Element {
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
+      {/* Project scope leads the controls row (this page has no search box) —
+          Retro's rollups are scoped by useScope().scope. */}
+      <ScopeChip />
+      <span className="mx-1 h-4 w-px bg-line" aria-hidden="true" />
       {PRESETS.map((n) => (
         <button
           key={n}

@@ -57,6 +57,7 @@ import {
   fmtTokens,
   isoDay,
 } from '../lib/format';
+import { ScopeChip } from '../components/ScopeChip';
 import { useScope } from '../lib/scope';
 import { useTheme } from '../lib/theme';
 import { ApproxHint, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
@@ -614,6 +615,10 @@ function Controls({
   const pivotOptions = pivotsFor(metric).map((p) => ({ v: p, label: p }));
   return (
     <div className="flex flex-wrap items-center gap-x-[22px] gap-y-3.5">
+      {/* Project scope leads the controls row (this page has no search box).
+          Analytics filters every query by useScope().scope, so without it the
+          page could be pinned to a project with no way back to "all". */}
+      <ScopeChip />
       <label className="flex items-center gap-2">
         <span className="font-mono text-[10px] tracking-[0.14em] text-ink-faint uppercase">Metric</span>
         <Segmented options={METRICS} value={metric} onChange={onMetric} />

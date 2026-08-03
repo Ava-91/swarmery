@@ -1,8 +1,9 @@
 {
   "enabledPlugins": {
+    "architecture-pack@swarmery": true,
+    "claude-eng-pack@swarmery": true,
     "core@swarmery": true,
-    "graphify-pack@swarmery": true,
-    "architecture-pack@swarmery": true
+    "graphify-pack@swarmery": true
   },
   "env": {
     "AGENT_PROJECT": "swarmery"

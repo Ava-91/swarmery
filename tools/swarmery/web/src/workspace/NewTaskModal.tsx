@@ -167,7 +167,7 @@ export function NewTaskModal({
         ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={trapTab}
-        className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl border border-line bg-surface px-4 py-4"
+        className="max-h-full w-full max-w-3xl overflow-y-auto rounded-xl border border-line bg-surface px-4 py-4"
       >
         <div className="flex items-center gap-2">
           <span className="font-display text-[14px] font-bold text-ink">New task</span>
@@ -209,7 +209,7 @@ export function NewTaskModal({
               value={prompt}
               disabled={busy}
               onChange={(e) => setPrompt(e.target.value)}
-              rows={4}
+              rows={12}
               placeholder="the full request (empty = use the title)"
               aria-label="prompt"
               className="w-full resize-y rounded-[8px] border border-line bg-field px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus:border-ink-dim disabled:opacity-50"
