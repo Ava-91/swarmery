@@ -130,3 +130,7 @@ A headless planner interviews you one question at a time and writes a phased pla
 Plugin and marketplace mechanics — how an enabled pack physically reaches a session, why a semver
 bump is mandatory for consumers to adopt a change, and what `--plugin-dir` is for — live in
 [PLUGINS.md](PLUGINS.md#how-a-plugin-reaches-your-session).
+
+The two routes behind a pack row's `configure` modal — what the save writes into
+`.claude/project.json`, what the probe may and may not do, and the fence both share — live in
+[api-project-config.md](api-project-config.md).
