@@ -57,7 +57,7 @@
     {
       "name": "jira-pack",
       "source": "./plugins/jira-pack",
-      "description": "Issue-tracker pack: /jira-fix drives a Jira ticket end-to-end — access preflight, reproduction, delegated fix, evidence comment, QA transition. Opt-in; requires core."
+      "description": "Issue-tracker pack: /jira-fix drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition. Opt-in; requires core."
     }
   ]
 }

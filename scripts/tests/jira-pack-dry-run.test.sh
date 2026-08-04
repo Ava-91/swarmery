@@ -122,13 +122,44 @@ fi
 # ── 6. jira-triage documents needs-info != cannot-reproduce, explicitly ────
 triage="$PACK/skills/jira-triage/SKILL.md"
 check6_bad=0
-grep -qF '## The rule that carries this skill' "$triage" \
-  || { bad "check6: jira-triage is missing the 'rule that carries this skill' section"; check6_bad=1; }
+grep -qE '^## The (rule that carries|two rules that carry) this skill' "$triage" \
+  || { bad "check6: jira-triage is missing the 'rule(s) that carr(y|ies) this skill' section"; check6_bad=1; }
 grep -qF 'is not the same verdict as' "$triage" \
   || { bad "check6: jira-triage is missing the needs-info != cannot-reproduce framing"; check6_bad=1; }
 grep -qF 'Could not run it at all → `needs-info`' "$triage" \
   || { bad "check6: jira-triage is missing the needs-info classification rule"; check6_bad=1; }
 [ "$check6_bad" -eq 0 ] && ok "check6: jira-triage explicitly distinguishes needs-info from cannot-reproduce"
+
+# ── 6b. A change-class ticket can never be cannot-reproduce ─────────────────
+# The failure this guards: a feature/task ticket's suite is green because
+# nothing was implemented yet; reading that green as "did not reproduce"
+# comments on and transitions UNIMPLEMENTED work into jira.qaStatus, and no
+# part of this pack can undo a tracker write. Three docs have to agree, so
+# all three are asserted -- triage (assigns it), the agent (forks on it), and
+# writeback (would be the one to actually post it).
+check6b_bad=0
+grep -qF 'A `change` ticket can never be `cannot-reproduce`' "$triage" \
+  || { bad "check6b: jira-triage does not state that a change ticket can never be cannot-reproduce"; check6b_bad=1; }
+grep -qF 'Step 1b' "$triage" \
+  || { bad "check6b: jira-triage has no Step 1b (class decision before the evidence step)"; check6b_bad=1; }
+grep -qF 'class: change' "$PACK/agents/jira-task-runner.md" \
+  || { bad "check6b: jira-task-runner never mentions class: change"; check6b_bad=1; }
+grep -qF 'caller bug' "$PACK/skills/jira-writeback/SKILL.md" \
+  || { bad "check6b: jira-writeback does not refuse a cannot-reproduce call on a change ticket"; check6b_bad=1; }
+[ "$check6b_bad" -eq 0 ] && ok "check6b: cannot-reproduce is documented as unreachable for class: change"
+
+# ── 6c. A change ticket gets a RED test before any implementation ───────────
+# Without this, "verification" on a change ticket only ever proves the suite
+# still runs -- it never proves the ticket's own behavior was delivered.
+check6c_bad=0
+delivery="$PACK/skills/jira-delivery/SKILL.md"
+grep -qF 'the failing test comes FIRST' "$delivery" \
+  || { bad "check6c: jira-delivery does not require the failing test before implementation"; check6c_bad=1; }
+grep -qF 'comment-change-summary.md' "$delivery" \
+  || { bad "check6c: jira-delivery does not route the change verdict to its own comment template"; check6c_bad=1; }
+[ -f "$PACK/templates/comment-change-summary.md" ] \
+  || { bad "check6c: templates/comment-change-summary.md does not exist"; check6c_bad=1; }
+[ "$check6c_bad" -eq 0 ] && ok "check6c: change delivery is test-first and has its own writeback template"
 
 # ── 7. Agent frontmatter: --- first line, name:/description: in first 15 ───
 agent="$PACK/agents/jira-task-runner.md"

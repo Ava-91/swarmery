@@ -30,7 +30,9 @@ This is a **thin proxy**. It parses `$ARGUMENTS`, validates the *shape* of the
 ticket reference and the flags, and delegates everything else — config
 resolution, access preflight, the board card, triage, writeback — to
 `@jira-task-runner` (`plugins/jira-pack/agents/jira-task-runner.md`). No run
-logic is duplicated here.
+logic is duplicated here. That includes the ticket's **class** (`defect` vs
+`change`): this command never inspects the ticket, so it cannot know which one
+it is, and the flags it forwards are identical either way.
 
 In particular, this command does **not**:
 - check that a `--repo` path exists or is a git repository — that is
@@ -84,8 +86,8 @@ given), the `--dry-run` flag state, and the `--repo` value if provided.
 ## Related
 
 - `plugins/jira-pack/agents/jira-task-runner.md` — everything past argument
-  parsing: config → access preflight → board card → triage (mandatory repro +
-  classification) → writeback.
+  parsing: config → access preflight → board card → triage (class decision +
+  its mandatory evidence step + classification) → writeback.
 - `plugins/jira-pack/skills/jira-config/SKILL.md` — validates
   `.claude/project.json`'s `jira` block and resolves the working repo
   (including `--repo` existence and git-ness).
