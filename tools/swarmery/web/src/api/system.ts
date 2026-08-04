@@ -107,10 +107,14 @@ export function fetchSystemOverlays(): Promise<SystemOverlays> {
   return get('/api/system/overlays');
 }
 
-/** Promotion & drift detector — read-only insight lists (display-only UI). */
-export function fetchSystemInsights(): Promise<SystemInsights> {
+/** Promotion & drift detector — read-only insight lists (display-only UI).
+ * A projectId narrows them to the insights that project participates in (its
+ * own copy of a promotion candidate, an override effective there, one of its
+ * dead agents); omitted, they stay fleet-wide. */
+export function fetchSystemInsights(projectId?: string): Promise<SystemInsights> {
   if (MOCK) return mockSystemApi.insights();
-  return get('/api/system/insights');
+  const qs = projectId !== undefined && projectId !== '' ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  return get(`/api/system/insights${qs}`);
 }
 
 // --- Stage 2 write surface (steps 09–12) --------------------------------------

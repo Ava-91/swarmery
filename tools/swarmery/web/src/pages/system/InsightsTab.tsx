@@ -292,10 +292,14 @@ function PluginDriftRow({ d }: { d: SystemPluginDrift }): JSX.Element {
 export function InsightsTab({
   refreshKey,
   projectNames,
+  projectId,
 }: {
   refreshKey: number;
   /** slug → display name (from the page's projects list) for clean chips. */
   projectNames: Record<string, string>;
+  /** Numeric project id when mounted on a project page — narrows the lists to
+   * the insights that project participates in. Omitted = fleet-wide. */
+  projectId?: string | null;
 }): JSX.Element {
   const [insights, setInsights] = useState<SystemInsights | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -303,7 +307,7 @@ export function InsightsTab({
 
   useEffect(() => {
     let cancelled = false;
-    fetchSystemInsights()
+    fetchSystemInsights(projectId ?? undefined)
       .then((data) => {
         if (cancelled) return;
         setInsights(data);
@@ -315,7 +319,7 @@ export function InsightsTab({
     return () => {
       cancelled = true;
     };
-  }, [refreshKey, attempt]);
+  }, [refreshKey, attempt, projectId]);
 
   if (error !== null) return <ErrorBox message={error} onRetry={() => setAttempt((a) => a + 1)} />;
   if (insights === null) return <Loading label="insights…" />;

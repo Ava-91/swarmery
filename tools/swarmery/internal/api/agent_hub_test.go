@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -246,8 +247,8 @@ func TestAgentsHubParityWithRetro(t *testing.T) {
 
 func TestAgentsHubRosterProjectScope(t *testing.T) {
 	srv, _ := agentHubServer(t)
-	// Scope to beta (archived) → its runs are still archived-excluded by the
-	// helper, so tech-lead shows zero runs but is STILL listed (registry-whole).
+	// tech-lead is a core built-in and core is always effective, so it stays
+	// listed under a project scope; the scope narrows its ROLLUP window.
 	var out agentRosterDTO
 	getJSON(t, srv.URL+"/api/agents/hub?projectId=alpha", &out)
 	tl := findRoster(out.Agents, "core:tech-lead")
@@ -268,6 +269,74 @@ func TestAgentsHubRosterProjectScope(t *testing.T) {
 	}
 	if b := findRoster(bogus.Agents, "core:tech-lead"); b == nil || b.Runs30d != 0 {
 		t.Errorf("bogus scope tech-lead = %+v, want runs30d 0", b)
+	}
+}
+
+// The roster a PROJECT page serves is the project's EFFECTIVE set — its own
+// agents + the user's global-local ones + the built-ins of the packs it enables.
+// Regression: it used to return the whole registry, so a project page listed
+// every OTHER project's local agents.
+func TestAgentsHubRosterEffectiveScope(t *testing.T) {
+	projRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projRoot, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projRoot, ".claude", "settings.json"),
+		[]byte(`{"enabledPlugins":{"core@swarmery":true,"onpack@swarmery":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "eff.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO projects (id, path, slug, name, first_seen) VALUES
+	      (1, ?, 'alpha', 'Alpha', '2026-07-01T00:00:00Z'),
+	      (2, '/work/beta', 'beta', 'Beta', '2026-07-01T00:00:00Z')`, projRoot)
+	exec(`INSERT INTO agents (name, scope, project_id, file_path, origin, plugin_name, deleted) VALUES
+	      ('my-global',       'global',  NULL, '/g1', 'local',  NULL,     0),
+	      ('alpha-local',     'project', 1,    '/a1', 'local',  NULL,     0),
+	      ('beta-local',      'project', 2,    '/b1', 'local',  NULL,     0),
+	      ('core:tech-lead',  'global',  NULL, '/p1', 'plugin', 'core',   0),
+	      ('onpack:helper',   'global',  NULL, '/p2', 'plugin', 'onpack', 0),
+	      ('offpack:helper',  'global',  NULL, '/p3', 'plugin', 'offpack',0)`)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var scoped agentRosterDTO
+	getJSON(t, srv.URL+"/api/agents/hub?projectId=alpha", &scoped)
+	got := map[string]bool{}
+	for _, a := range scoped.Agents {
+		got[a.Name] = true
+	}
+	for _, want := range []string{"my-global", "alpha-local", "core:tech-lead", "onpack:helper"} {
+		if !got[want] {
+			t.Errorf("alpha roster missing %q — effective agents: %v", want, got)
+		}
+	}
+	for _, unwanted := range []string{"beta-local", "offpack:helper"} {
+		if got[unwanted] {
+			t.Errorf("alpha roster leaked %q (another project's local / a disabled pack)", unwanted)
+		}
+	}
+
+	// Fleet mode is unchanged: the whole registry.
+	var fleet agentRosterDTO
+	getJSON(t, srv.URL+"/api/agents/hub", &fleet)
+	if len(fleet.Agents) != 6 {
+		t.Errorf("fleet roster = %d agents, want all 6", len(fleet.Agents))
 	}
 }
 

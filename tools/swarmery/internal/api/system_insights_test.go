@@ -176,7 +176,7 @@ func insightsDB(t *testing.T) *sql.DB {
 
 func TestComputeInsightsPromotionCandidates(t *testing.T) {
 	db := insightsDB(t)
-	got, err := computeInsights(db)
+	got, err := computeInsights(db, nil)
 	if err != nil {
 		t.Fatalf("computeInsights: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestComputeInsightsPromotionCandidates(t *testing.T) {
 
 func TestComputeInsightsStaleOverrides(t *testing.T) {
 	db := insightsDB(t)
-	got, err := computeInsights(db)
+	got, err := computeInsights(db, nil)
 	if err != nil {
 		t.Fatalf("computeInsights: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestComputeInsightsStaleOverrides(t *testing.T) {
 
 func TestComputeInsightsDead(t *testing.T) {
 	db := insightsDB(t)
-	got, err := computeInsights(db)
+	got, err := computeInsights(db, nil)
 	if err != nil {
 		t.Fatalf("computeInsights: %v", err)
 	}
@@ -380,11 +380,11 @@ func TestSystemInsightsQuietWorld(t *testing.T) {
 // comparison catches any future drift between the two paths.
 func TestInsightCounts(t *testing.T) {
 	db := insightsDB(t)
-	promos, stales, err := insightCounts(db)
+	promos, stales, err := insightCounts(db, nil)
 	if err != nil {
 		t.Fatalf("insightCounts: %v", err)
 	}
-	full, err := computeInsights(db)
+	full, err := computeInsights(db, nil)
 	if err != nil {
 		t.Fatalf("computeInsights: %v", err)
 	}

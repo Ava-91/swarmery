@@ -544,11 +544,13 @@ func TestCopyTemplate_AlreadyOverride409(t *testing.T) {
 	}
 }
 
-// In project mode the badge counts must equal the project's OWN rows only
-// (scope='project' AND project_id=<id> for agents/skills/commands/hooks;
-// source='project' for templates), NOT the global totals. Insights (lintFindings)
-// stays global. This seeds a MIX of global + project-scoped rows and asserts the
-// scoped and unscoped summaries differ exactly as the rosters do.
+// In project mode the badge counts must equal what the project EFFECTIVELY
+// resolves — its own rows + the global-local ones + the built-ins of the packs
+// it enables — never the fleet totals and never another project's local rows.
+// lintFindings stays global (the config linter's inbox is machine-wide). This
+// seeds a MIX of global-local, plugin (enabled + disabled pack) and per-project
+// rows and asserts the scoped and unscoped summaries differ exactly as the
+// rosters do.
 func TestSystemHubSummary_ProjectScope(t *testing.T) {
 	claudeDir := t.TempDir()
 	projRoot := t.TempDir()
@@ -563,6 +565,12 @@ func TestSystemHubSummary_ProjectScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(projTmpl, "adr-template.md"), []byte("# project ADR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// alpha enables ONE domain pack: that pack's components are effective here,
+	// another pack's are not (core is always effective).
+	if err := os.WriteFile(filepath.Join(projRoot, ".claude", "settings.json"),
+		[]byte(`{"enabledPlugins":{"core@swarmery":true,"onpack@swarmery":true}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -584,14 +592,17 @@ func TestSystemHubSummary_ProjectScope(t *testing.T) {
 	      (1, ?, 'alpha', 'Alpha', '2026-07-01T00:00:00Z'),
 	      (2, '/beta', 'beta', 'Beta', '2026-07-01T00:00:00Z')`, projRoot)
 
-	// AGENTS: 2 global + 2 project(alpha) + 1 project(beta) + 1 deleted(alpha).
-	exec(`INSERT INTO agents (name, scope, project_id, file_path, origin, deleted) VALUES
-	      ('g-agent-1', 'global',  NULL, '/a1', 'local', 0),
-	      ('g-agent-2', 'global',  NULL, '/a2', 'local', 0),
-	      ('p-agent-1', 'project', 1,    '/a3', 'local', 0),
-	      ('p-agent-2', 'project', 1,    '/a4', 'local', 0),
-	      ('b-agent-1', 'project', 2,    '/a5', 'local', 0),
-	      ('p-agent-x', 'project', 1,    '/a6', 'local', 1)`)
+	// AGENTS: 2 global-local + 2 project(alpha) + 1 project(beta) + 1 deleted(alpha)
+	// + 2 plugin rows (one from the pack alpha enables, one from a pack it does not).
+	exec(`INSERT INTO agents (name, scope, project_id, file_path, origin, plugin_name, deleted) VALUES
+	      ('g-agent-1', 'global',  NULL, '/a1', 'local', NULL, 0),
+	      ('g-agent-2', 'global',  NULL, '/a2', 'local', NULL, 0),
+	      ('p-agent-1', 'project', 1,    '/a3', 'local', NULL, 0),
+	      ('p-agent-2', 'project', 1,    '/a4', 'local', NULL, 0),
+	      ('b-agent-1', 'project', 2,    '/a5', 'local', NULL, 0),
+	      ('p-agent-x', 'project', 1,    '/a6', 'local', NULL, 1),
+	      ('onpack:pk-agent',  'global', NULL, '/a7', 'plugin', 'onpack',  0),
+	      ('offpack:pk-agent', 'global', NULL, '/a8', 'plugin', 'offpack', 0)`)
 
 	// SKILLS: 1 global + 3 project(alpha).
 	exec(`INSERT INTO skills (name, scope, project_id, dir_path, origin, deleted) VALUES
@@ -629,7 +640,7 @@ func TestSystemHubSummary_ProjectScope(t *testing.T) {
 	var fleet map[string]any
 	getJSON(t, srv.URL+"/api/system/hub/summary", &fleet)
 	for field, want := range map[string]float64{
-		"agents":   5, // 5 non-deleted agents across all projects
+		"agents":   7, // 7 non-deleted agents across all projects + both packs
 		"skills":   4,
 		"commands": 3,
 		"hooks":    5,
@@ -641,17 +652,19 @@ func TestSystemHubSummary_ProjectScope(t *testing.T) {
 		}
 	}
 
-	// Project mode (alpha) = ONLY alpha's own scope='project' rows / source='project'
-	// templates. Insights (lintFindings) stays global (unchanged).
+	// Project mode (alpha) = what alpha EFFECTIVELY resolves. Insights
+	// (lintFindings) stays global (unchanged).
 	var scoped map[string]any
 	getJSON(t, srv.URL+"/api/system/hub/summary?projectId=alpha", &scoped)
 	for field, want := range map[string]float64{
-		"agents":   2, // p-agent-1/2 only (deleted + global + beta excluded)
-		"skills":   3,
-		"commands": 1,
-		"hooks":    2,
-		"templates": 1, // only the project override (adr), NOT the inherited pr built-in
-		"lintFindings": 1, // GLOBAL — Insights is system-wide, not scoped
+		// 2 global-local + 2 own + the enabled pack's row; the deleted row, beta's
+		// row and the DISABLED pack's row are all excluded.
+		"agents":   5,
+		"skills":   4, // 1 global-local + 3 own
+		"commands": 3, // 2 global-local + 1 own
+		"hooks":    5, // 3 global + 2 own (hooks are never pack-shipped)
+		"templates": 2, // the project override (adr) + the inherited pr built-in
+		"lintFindings": 1, // GLOBAL — the config-lint inbox is machine-wide
 	} {
 		if got, _ := scoped[field].(float64); got != want {
 			t.Errorf("scoped(alpha) summary.%s = %v, want %v", field, scoped[field], want)
