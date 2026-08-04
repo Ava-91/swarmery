@@ -1,18 +1,28 @@
 ---
 name: jira-triage
-description: "Parse a Jira ticket past access preflight, run its mandatory reproduction, and classify it into exactly one of five verdicts (already-fixed / cannot-reproduce / needs-fix / needs-info / too-large). NOT for posting the verdict back to Jira (that's jira-writeback) and NOT for resolving jira config or the working repo (that's jira-config)."
-version: "0.1.0"
+description: "Parse a Jira ticket past access preflight, classify it as a defect or a change, run the mandatory evidence step that class demands (reproduction / baseline + absence proof), and assign exactly one of five verdicts (already-fixed / cannot-reproduce / needs-fix / needs-info / too-large). NOT for posting the verdict back to Jira (that's jira-writeback) and NOT for resolving jira config or the working repo (that's jira-config)."
+version: "0.2.0"
 owner: "swarmery-core"
 ---
 
 # Purpose
 
 Turn a ticket that `jira-access-preflight` has already smoke-read into a
-decision: is this actually fixed, genuinely not reproducing, in need of a
-real fix, impossible to even attempt yet, or too large to touch under
+decision: is this actually done, genuinely not reproducing, in need of real
+work, impossible to even attempt yet, or too large to touch under
 `/jira-fix`'s autonomy budget? This skill is the only place in `jira-pack`
-that runs a reproduction command and assigns a verdict — `jira-writeback`
+that runs the evidence step and assigns a verdict — `jira-writeback`
 downstream only renders and posts whatever this skill decided.
+
+**A tracker holds two kinds of work, and only one of them reproduces.** A
+defect describes behavior that exists and is wrong; a change (feature, task,
+improvement) describes behavior that does not exist yet. Running a defect's
+reproduction against a change ticket returns green — the suite is fine, the
+feature simply isn't there — and reading that green as "the reported behavior
+did not occur" would classify unimplemented work as `cannot-reproduce` and
+move it to QA. Step 1b exists to make that outcome unreachable: every ticket
+is classified **before** the evidence step, and the evidence step is chosen by
+that class.
 
 # When to use
 
@@ -41,7 +51,43 @@ Call `getJiraIssue` with
   common way a run wastes its reproduction budget on an already-closed
   question.
 
-# Step 2 — mandatory reproduction
+# Step 1b — classify the ticket: `defect` or `change`
+
+Assign exactly one **class** before running anything. This is not the verdict;
+it decides which evidence Step 2 must produce, and which verdicts Step 3 is
+even allowed to reach.
+
+| Class | The ticket describes | Signals |
+|---|---|---|
+| `defect` | Behavior that **exists today and is wrong** — a crash, a wrong value, a regression | issuetype `Bug`; "steps to reproduce"; expected-vs-actual; a stack trace, error text, or failing build; "used to work", "since `<version>`" |
+| `change` | Behavior that **does not exist yet** — a feature, a task, an improvement, a refactor | issuetype `Task`/`Story`/`Feature`/`Improvement`/`Epic`; imperative phrasing ("add", "disable X until Y", "support Z"); acceptance criteria instead of repro steps; no current-behavior complaint |
+
+**`issuetype` is a signal, not the decision.** Trackers are configured by
+humans: bugs get filed as `Task`, and feature requests get filed as `Bug`
+because that was the quickest form. Weigh the ticket's own text over its type
+field, and when the two disagree, say so explicitly in the report — the class
+you acted on and the type that suggested otherwise.
+
+**When the class is genuinely ambiguous** — the text supports both readings and
+no acceptance criteria or repro steps settle it — do **not** pick one to keep
+the run moving. Classify the verdict `needs-info` (Step 3) with the specific
+question that would settle it: is `<X>` currently broken, or does `<X>` not
+exist yet? Guessing `defect` on a change ticket produces exactly the
+`cannot-reproduce`-on-unimplemented-work outcome this skill exists to prevent;
+guessing `change` on a defect wastes an implementation budget re-building
+something that only needed a fix.
+
+The class travels with the verdict through the entire run: it is part of this
+skill's output, `jira-writeback`'s comment marker, and `jira-delivery`'s branch
+naming and executor choice.
+
+# Step 2 — mandatory evidence, chosen by class
+
+**Both classes have a mandatory, executed evidence step. Neither may be
+skipped on the theory that the ticket "looks simple".** What differs is what
+counts as evidence.
+
+## Step 2a — `class: defect` → reproduction
 
 Run `jira.repro.setup` (if the config sets it — absent means skip this
 sub-step, not an error) and then `jira.repro.test`, in the working repo
@@ -65,6 +111,50 @@ script, a particular CLI invocation) — run **that too**, in addition to
 not a ceiling that excuses skipping a more targeted repro the ticket itself
 already hands you.
 
+## Step 2b — `class: change` → baseline + absence proof
+
+A change ticket has no reported behavior to reproduce, so the evidence that
+replaces the reproduction is a pair: the suite is green **now**, and the
+described behavior is genuinely **not there yet**. Both halves are executed,
+neither is asserted from reading the ticket.
+
+1. **Baseline run.** Run `jira.repro.setup` (when configured) and
+   `jira.repro.test` in the working repo, through
+   `plugins/core/skills/testing` — the same commands, the same capture rules as
+   Step 2a. Its purpose here is different: it establishes that the suite is
+   green *before* this run touches anything, so a red suite later in
+   `jira-delivery` is unambiguously this run's own doing and not pre-existing
+   breakage. A baseline that comes back **red** is not this ticket's business:
+   report it as part of the evidence bundle and treat the pre-existing failures
+   as out of scope for the change (they do not turn the ticket into a
+   `defect`).
+
+2. **Absence proof.** Search the working repo for the behavior the ticket asks
+   for — the component, handler, flag, or endpoint it names — with `Grep`/`Read`
+   against real paths. Capture what you searched for and what you found, in the
+   same shape as a command's evidence:
+   - **not found / found but demonstrably not doing what the ticket asks** →
+     the change is genuinely unimplemented → `needs-fix` (Step 3);
+   - **found, and it already does exactly what the ticket describes** →
+     `already-fixed`, with the file/symbol reference (and, when a test covers
+     it, that test's passing run) as the evidence — the same bar the defect
+     path's `already-fixed` has to clear.
+
+3. **Acceptance criteria, made testable.** Extract the ticket's acceptance
+   criteria into a numbered list of statements that a test could assert
+   ("the LAND control is disabled while any unit reports airborne; it enables
+   once every unit reports landed"). This list is what `jira-delivery`'s
+   test-first step turns into the failing test, so its quality is load-bearing:
+   a criterion no test could assert is not a criterion.
+
+   **If no testable criterion can be extracted** — the ticket says "improve the
+   UX" or "make it better" with nothing observable — the verdict is
+   `needs-info` with those questions, **not** `needs-fix` handed to an executor
+   to invent a specification. That is the change-class equivalent of "could not
+   run the reproduction".
+
+## Shared rules (both classes)
+
 **Budget-bounded retries.** If the *setup* step (or `jira.repro.test` itself)
 fails to even execute — missing environment, a dependency that isn't
 installed, an unknown service — retry up to `jira.budget.maxAttempts` times
@@ -83,20 +173,40 @@ to have actually executed.
 
 # Step 3 — classification
 
-Assign **exactly one** of these five states:
+Assign **exactly one** of these five verdicts. The verdict set is unchanged by
+class — what changes is which conditions reach it, and which verdicts a class
+can reach at all:
 
-| Verdict | Condition | What happens next |
-|---|---|---|
-| `already-fixed` | The reproduction runs **green**, **and** a commit or test is found that closes the exact behavior described | Comment with the closing commit link + the passing run's evidence, then QA transition |
-| `cannot-reproduce` | The reproduction was **executed**, the ticket's reported behavior did **not** occur, and no explanation for the discrepancy was found | Comment with the command + output, then QA transition |
-| `needs-fix` | The reproduction runs **red**, or the reported behavior did occur | Phase 7 (delegated fix) |
-| `needs-info` | The reproduction **could not be run at all** (no environment, missing repro steps, an unknown/undocumented service) | Comment with concrete questions; **status unchanged** |
-| `too-large` | The scope obviously exceeds `jira.budget` before any fix work starts (epic, multi-stage feature) | Phase 7 (escalation to planning) |
+| Verdict | `class: defect` condition | `class: change` condition | What happens next |
+|---|---|---|---|
+| `already-fixed` | The reproduction runs **green**, **and** a commit or test is found that closes the exact behavior described | Step 2b's search finds the behavior **already implemented** and doing what the ticket asks (file/symbol reference, plus a covering test's passing run when one exists) | Comment with the evidence, then QA transition |
+| `cannot-reproduce` | The reproduction was **executed**, the ticket's reported behavior did **not** occur, and no explanation for the discrepancy was found | **UNREACHABLE — see the rule below** | Comment with the command + output, then QA transition |
+| `needs-fix` | The reproduction runs **red**, or the reported behavior did occur | The baseline ran, the absence proof shows the behavior is missing, **and** at least one testable acceptance criterion was extracted | `jira-delivery` (delegated work; test-first for `change`) |
+| `needs-info` | The reproduction **could not be run at all** (no environment, missing repro steps, an unknown/undocumented service) | The baseline could not be run at all, **or** no testable acceptance criterion could be extracted, **or** the class itself is ambiguous (Step 1b) | Comment with concrete questions; **status unchanged** |
+| `too-large` | The scope obviously exceeds `jira.budget` before any fix work starts (epic, multi-stage feature) | Same — an epic, or acceptance criteria spanning more than `jira.budget.maxFiles` worth of work | `jira-escalation` (plan, no transition) |
 
-## The rule that carries this skill
+## The two rules that carry this skill
 
-**"Could not run the reproduction" is not the same verdict as "ran it and it
-did not reproduce."**
+### 1. A `change` ticket can never be `cannot-reproduce`
+
+**A green run on work that was never implemented is the expected starting
+state, not a finding.** For `class: change`, `cannot-reproduce` is not a
+verdict this skill may assign under any circumstance — there was nothing to
+reproduce, so "it did not reproduce" says nothing about the ticket. The
+admissible verdicts for a change ticket are `needs-fix`, `already-fixed`,
+`needs-info`, and `too-large`, full stop.
+
+This is the rule that keeps unimplemented work out of QA. Without it, the
+mechanical path is: feature ticket → suite green → `cannot-reproduce` →
+comment + transition to `jira.qaStatus` on a ticket nobody has implemented,
+which no part of this pack can undo automatically.
+
+The mirror rule holds too: a `defect` ticket whose reproduction runs green is
+`cannot-reproduce` (or `already-fixed` when a closing commit explains the
+green) — never `needs-fix` on the theory that the reporter must have been
+right.
+
+### 2. "Could not run the evidence step" is not the same verdict as "ran it and the behavior did not occur"
 
 - Could not run it at all → `needs-info`, and `needs-info` carries **no**
   status transition, ever.
@@ -115,13 +225,20 @@ trying) or `too-large` (recognized before Step 2 ever started) — never
 
 # Output (handed to `@jira-task-runner` / `jira-writeback`)
 
+- The **class** (`defect` or `change`) and the signals it rests on — including
+  a note when the ticket's `issuetype` pointed the other way.
 - The verdict (exactly one of the five).
 - The evidence bundle backing it: command(s) run, exit code(s), the trimmed
-  output fragment, and — for `already-fixed` — the commit/test reference that
-  closes the ticket.
-- For `needs-info`: the specific step that could not run and why, phrased as
-  concrete questions (this becomes `comment-needs-info.md`'s question list,
-  not a vague "couldn't reproduce").
+  output fragment, and — for `already-fixed` — the commit/test/symbol reference
+  that closes the ticket.
+- For `class: change` + `needs-fix`: the numbered **testable acceptance
+  criteria** from Step 2b.3 and the **absence proof** (what was searched, where,
+  what was found) — `jira-delivery` builds the failing test from exactly this
+  list, so it is handed over verbatim rather than re-derived downstream.
+- For `needs-info`: the specific step that could not run and why, or the
+  criteria that could not be made testable, or the class ambiguity — phrased as
+  concrete questions (this becomes `comment-needs-info.md`'s question list, not
+  a vague "couldn't reproduce").
 - For `too-large`: the reason the scope exceeds budget, handed to Phase 7's
   `jira-escalation` rather than rendered here.
 
@@ -138,10 +255,17 @@ and `<jira-base-url>`-style hosts — no real ticket key, hostname, or team name
 
 # Self-check before returning
 
-- [ ] Step 2 actually executed, unless the ticket was classified `too-large`
-      via the early-exit note
+- [ ] A class (`defect`/`change`) was assigned in Step 1b **before** anything
+      was executed, and it is stated in the output
+- [ ] Step 2a (defect) or Step 2b (change) actually executed, unless the ticket
+      was classified `too-large` via the early-exit note
+- [ ] `cannot-reproduce` was not assigned to a `class: change` ticket — under
+      any circumstance, for any reason
 - [ ] `cannot-reproduce` is never assigned without an executed command + a
       captured output fragment
+- [ ] `needs-fix` on a `change` ticket carries both the absence proof and at
+      least one testable acceptance criterion — never an executor brief that
+      leaves the specification to be invented downstream
 - [ ] `needs-info` never carries a transition recommendation
 - [ ] Prior comments were read before concluding `needs-fix`/`cannot-reproduce`
       (an already-fixed-in-`<commit>` comment would have changed the verdict)
@@ -149,6 +273,16 @@ and `<jira-base-url>`-style hosts — no real ticket key, hostname, or team name
 
 # Common mistakes to avoid
 
+- **Classifying a feature ticket as `cannot-reproduce` because
+  `jira.repro.test` came back green.** This is the single failure this skill's
+  Step 1b exists to prevent: the suite is green because the feature was never
+  built, and the verdict transitions unimplemented work to QA.
+- Trusting `issuetype` over the ticket's text when the two disagree, in either
+  direction — a `Bug`-typed feature request and a `Task`-typed crash report are
+  both routine.
+- Handing `jira-delivery` a `change` + `needs-fix` verdict with no testable
+  acceptance criteria, expecting the executor to invent the specification —
+  that is `needs-info`.
 - Assigning `cannot-reproduce` because the description "sounds like it
   shouldn't happen" without running anything — that is a guess, and guesses
   are what this skill exists to replace with an executed command.

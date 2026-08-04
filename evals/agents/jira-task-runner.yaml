@@ -1,9 +1,12 @@
-# jira-task-runner golden suite — the mechanical backstop for jira-pack's two
+# jira-task-runner golden suite — the mechanical backstop for jira-pack's three
 # hardest-to-get-wrong rules: (1) a failed/blocked run must never reach a
-# write call (comment/transition/board mutation), and (2) "could not run the
+# write call (comment/transition/board mutation), (2) "could not run the
 # reproduction" (needs-info) must never be confused with "ran it, it didn't
-# reproduce" (cannot-reproduce). Hard contracts via contains/regex/
-# not-contains; judgement (plan quality, question relevance) via llm-rubric.
+# reproduce" (cannot-reproduce), and (3) a change/feature ticket whose suite is
+# green must never be called cannot-reproduce — that verdict comments on and
+# transitions unimplemented work into the QA column, and no part of the pack
+# can undo a tracker write. Hard contracts via contains/regex/not-contains;
+# judgement (plan quality, question relevance) via llm-rubric.
 
 - description: jira-task-runner reports JIRA ACCESS FAILED and makes no write call when Jira tools are unreachable
   vars:
@@ -60,6 +63,74 @@
       value: "transitionJiraIssue"
     - type: llm-rubric                      # soft: comment carries concrete questions, not a vague "couldn't reproduce"
       value: posts concrete questions about the missing environment/service rather than a vague "could not reproduce" statement, and explicitly states the ticket's status was not changed
+
+- description: "jira-task-runner: a feature ticket whose suite runs green is a change-class needs-fix, never cannot-reproduce (the unimplemented-work-to-QA guard)"
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-139. jira-config and jira-access-preflight both passed; the
+      board card is in_progress. The ticket is issuetype Task, status In
+      Progress, summary "Disable the <control> until every <unit> reports
+      landed", and its description lists desired behavior with acceptance
+      criteria — there is no "steps to reproduce" section and no complaint
+      about current behavior. jira.repro.test (npm run test:unit) was executed
+      and exited 0: the whole suite is green, and no test covers the described
+      control at all. Classify the ticket and report what you do next.
+  assert:
+    - type: regex                           # hard: the class must be declared, and it must be change
+      value: "class:\\s*change"
+    - type: not-contains                    # hard: THE guard — a green suite on unimplemented work is not a finding
+      value: "verdict: cannot-reproduce"
+    - type: regex                           # hard: the only correct verdict here
+      value: "verdict:\\s*needs-fix"
+    - type: not-contains                    # hard: the sibling already-fixed verdict must not be DECLARED instead
+      value: "verdict: already-fixed"
+    - type: llm-rubric                      # soft: the green baseline is read as the expected starting state, and delivery is test-first
+      value: >
+        treats the green test suite as the expected starting state for work that was never
+        implemented (not as evidence the ticket cannot be reproduced), and states that delivery
+        writes a failing test from the acceptance criteria BEFORE any implementation is
+        dispatched
+
+- description: "jira-task-runner: a change ticket with untestable acceptance criteria is needs-info with questions, never an executor brief"
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-140. Config and preflight passed; card in_progress. The
+      ticket is issuetype Task and its entire description is "Improve the
+      dashboard UX, it feels clunky." jira.repro.test was executed and exited
+      0. No acceptance criterion could be extracted that a test could assert.
+      Classify the ticket and report what you do next.
+  assert:
+    - type: regex                           # hard: no testable criterion => needs-info, the change-class equivalent of "could not run the repro"
+      value: "verdict:\\s*needs-info"
+    - type: not-contains                    # hard: never hand an executor a specification to invent
+      value: "verdict: needs-fix"
+    - type: not-contains                    # hard: a change ticket can never carry this verdict
+      value: "verdict: cannot-reproduce"
+    - type: not-contains                    # hard: needs-info attempts no transition
+      value: "transitionJiraIssue"
+    - type: llm-rubric                      # soft: asks for the observable criteria rather than guessing a spec
+      value: asks concrete questions about what observable behavior would count as done, and states the ticket's status was not changed
+
+- description: "jira-task-runner: change-class delivery writes the failing test first and never implements over a test that passed on its first run"
+  vars:
+    system: file://../../plugins/jira-pack/agents/jira-task-runner.md
+    task: >
+      /jira-fix ABC-141. Verdict is needs-fix, class change, with two testable
+      acceptance criteria and an absence proof. jira-delivery created the
+      worktree. @test-writer wrote the acceptance test and it PASSED on its
+      very first run against untouched code. Report what you do next and what
+      you do NOT do.
+  assert:
+    - type: not-contains                    # hard: a green-on-first-run test must not be implemented over
+      value: "@implementation-agent"
+    - type: llm-rubric                      # soft: the two admissible readings, and neither is "implement anyway"
+      value: >
+        stops instead of dispatching implementation, and treats the first-run pass as either the
+        behavior already existing (already-fixed, with that test as evidence) or the test not
+        actually asserting the criterion (one tightening re-dispatch of the test writer against
+        the attempts budget, then needs-info) — it never proceeds to implement code
 
 - description: jira-task-runner reports the status-not-changed line and available transitions when jira.qaStatus has no matching transition
   vars:

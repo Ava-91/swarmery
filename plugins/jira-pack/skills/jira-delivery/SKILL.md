@@ -1,26 +1,49 @@
 ---
 name: jira-delivery
-description: "Close the needs-fix branch: create an isolated git worktree, delegate the actual code change to a core executor, gate every publish action (push / PR / fix comment / QA transition) behind a green @verification-agent verdict, commit + push + PR, then write back to Jira via jira-writeback. NOT for classifying the ticket (that's jira-triage) and NOT for turning an over-budget attempt into a plan (that's jira-escalation, which this skill hands off to when a trigger fires)."
-version: "0.1.0"
+description: "Close the needs-fix branch for both ticket classes: isolated git worktree, a red test BEFORE any implementation on change tickets, delegation to a core executor, every publish action (push / PR / comment / QA transition) gated behind a green @verification-agent verdict, commit + push + PR, then writeback via jira-writeback. NOT for classifying the ticket (that's jira-triage) and NOT for turning an over-budget attempt into a plan (that's jira-escalation, which this skill hands off to when a trigger fires)."
+version: "0.2.0"
 owner: "swarmery-core"
 ---
 
 # Purpose
 
-Turn a `needs-fix` verdict into a real, verified, published fix without the
+Turn a `needs-fix` verdict into real, verified, published work without the
 orchestrator (`@jira-task-runner`) ever editing code itself. This skill owns
-exactly five things: the isolated branch, delegation to the right executor,
-the verification gate, the commit + PR, and the writeback. Anything that
-outgrows `jira.budget` mid-flight is not this skill's problem to solve —
-it hands off to `jira-escalation` (see [Related](#related)) and stops.
+exactly six things: the isolated branch, the red-test-first step on change
+tickets, delegation to the right executor, the verification gate, the commit +
+PR, and the writeback. Anything that outgrows `jira.budget` mid-flight is not
+this skill's problem to solve — it hands off to `jira-escalation` (see
+[Related](#related)) and stops.
 
 # When to use
 
 Called by `@jira-task-runner`'s Fork (step 5), `needs-fix` row, strictly
-after `jira-triage` has produced the evidence bundle (reproduction command,
-exit code, output fragment, extracted repro steps) for a ticket whose
-reproduction ran **red**. Never invoked directly on a `too-large` verdict —
-that never reaches this skill at all.
+after `jira-triage` has produced the evidence bundle for **either** class:
+
+- **`class: defect`** — reproduction command, exit code, output fragment,
+  extracted repro steps, for a ticket whose reproduction ran **red**.
+- **`class: change`** — the green baseline run, the absence proof (what was
+  searched and what was found), and the numbered **testable acceptance
+  criteria**. There is no red command yet: producing one is this skill's Step
+  2a, and it is a precondition for any implementation work.
+
+Never invoked directly on a `too-large` verdict — that never reaches this
+skill at all.
+
+# The class decides the shape of the run
+
+| | `class: defect` | `class: change` |
+|---|---|---|
+| Red evidence | Already in hand (`jira-triage`'s failing reproduction) | **Produced here, in Step 2a**, as a failing acceptance test |
+| Branch | `fix/<KEY>-<slug>` | `feat/<KEY>-<slug>` |
+| Worktree dir | `<worktree-root>/fix-<key>-<slug>` | `<worktree-root>/feat-<key>-<slug>` |
+| Commit type | `fix(<scope>): … [<KEY>]` | `feat(<scope>): … [<KEY>]` |
+| Writeback template | `comment-fix-summary.md` | `comment-change-summary.md` |
+
+Everywhere below, `<branch>` and `<worktree>` mean whichever of the two rows
+above the run's class selected. Nothing else in the flow differs: the same
+verification gate, the same budget ceilings, the same escalation triggers, the
+same comment-then-transition ordering.
 
 # Step 1 — branch, in an isolated git worktree
 
@@ -39,11 +62,14 @@ no shared `HEAD` to check out, so it is replaced with a fetch:
 
 ```bash
 git -C <working-root> fetch origin main                        # read-only, safe against the shared checkout
-git worktree add <worktree-root>/fix-<key>-<slug> \
-  -b fix/<KEY>-<slug> origin/main                               # branch + isolated worktree in one step, from the fresh remote tip
-git -C <worktree-root>/fix-<key>-<slug> push -u origin fix/<KEY>-<slug>   # empty push so it can be protected before real commits land
+git worktree add <worktree-root>/<prefix>-<key>-<slug> \
+  -b <prefix>/<KEY>-<slug> origin/main                          # branch + isolated worktree in one step, from the fresh remote tip
+git -C <worktree-root>/<prefix>-<key>-<slug> push -u origin <prefix>/<KEY>-<slug>   # empty push so it can be protected before real commits land
 ```
 
+- `<prefix>` — `fix` for `class: defect`, `feat` for `class: change` (the
+  table above). A change ticket landing on a `fix/…` branch mislabels the work
+  for every reviewer and every changelog downstream.
 - `<KEY>` — the ticket key.
 - `<slug>` — kebab-case of the ticket's `summary`, truncated to ~40 characters.
 - `<worktree-root>` — a path outside the shared checkout (e.g. a sibling
@@ -51,28 +77,65 @@ git -C <worktree-root>/fix-<key>-<slug> push -u origin fix/<KEY>-<slug>   # empt
   the checkout it's isolating from.
 
 Everything from here on — the executor's edits, the commit, the push, the PR
-branch — happens inside `<worktree-root>/fix-<key>-<slug>`, never in
-`<working-root>`.
+branch — happens inside `<worktree>`, never in `<working-root>`.
 
-# Step 2 — delegate; the orchestrator never edits code itself
+# Step 2a — `class: change` only: the failing test comes FIRST
+
+**A change ticket enters this skill without red evidence, and it does not get
+to leave without having had some.** Before any implementation work is
+dispatched, `@test-writer` writes a test from `jira-triage`'s numbered
+acceptance criteria, and that test is **run and observed failing**.
+
+1. Dispatch `@test-writer` with: the ticket key and title, the numbered
+   testable acceptance criteria (verbatim from `jira-triage` — not
+   paraphrased), the absence proof naming the files the behavior belongs in,
+   `<worktree>` as the working root, and the instruction that the test must
+   assert the ticket's target behavior and **must fail against the current
+   code**.
+2. Run it. Capture the command, exit code, and the failing assertion — this is
+   the change class's red evidence, and it plays exactly the role the
+   reproduction plays for a defect.
+3. **If the new test passes on the first run**, stop and do not implement
+   anything. A green test against untouched code means one of two things, and
+   both are findings rather than work: the behavior already exists (→ hand back
+   `already-fixed` with this test as the evidence; `jira-triage` misread the
+   absence proof) or the test does not actually assert the criterion (→ one
+   re-dispatch of `@test-writer` to tighten it, counted against
+   `jira.budget.maxAttempts`; still green after that → `needs-info`, with the
+   criterion that could not be expressed as the question).
+
+Only with a captured red run does the flow continue to Step 2b. Skipping this
+step and implementing straight from the criteria is what produces a PR whose
+"verification" only ever proves that the suite still runs.
+
+For `class: defect` this step does not apply — `jira-triage`'s failing
+reproduction already **is** the red evidence, and re-deriving it here would
+spend budget to learn what the evidence bundle already states.
+
+# Step 2b — delegate; the orchestrator never edits code itself
 
 | Type of work | Executor | Why |
 |---|---|---|
 | A reproduced defect (the `needs-fix` evidence bundle *is* a repro) | `@debugger` | Has its own stop conditions (3 failed attempts, fix spiral, ~5 files — `plugins/core/agents/debugger.md`) that are deliberately sized to match `jira.budget`, and requires a regression test as part of its own completion criteria. |
-| A behavior change or small feature (ticket describes desired new behavior, not a crash) | `@implementation-agent` | Leaf-mode executor for scoped, step-by-step code changes. |
-| A regression test is still missing after the fix (`@debugger` didn't add one — e.g. a documented `TODO: P0-REGRESSION` case) | `@test-writer` | Adds the test the fix still needs before verification is treated as complete. |
+| A `class: change` ticket, after Step 2a's red test exists | `@implementation-agent` | Leaf-mode executor for scoped, step-by-step code changes; the failing test is the acceptance criterion it drives to green. |
+| A defect fix that landed without a regression test (`@debugger` didn't add one — e.g. a documented `TODO: P0-REGRESSION` case) | `@test-writer` | Adds the test the fix still needs before verification is treated as complete. |
+| A `class: change` ticket whose red test turns out to need a debugger's diagnosis (the implementation attempt fails in existing code the ticket did not name) | `@debugger` | Once the failure is in code that already exists, it is a defect-shaped problem regardless of the ticket's class — use the executor built for diagnosis rather than re-briefing the implementer. |
 
 The prompt handed to whichever executor is chosen carries, at minimum:
 
 - the ticket key and title;
-- the reproduction steps extracted by `jira-triage` (Step 1's read of the
-  ticket's "Steps to reproduce" or equivalent);
-- the reproduction run's evidence — the exact command and a trimmed output
-  fragment, from `jira-triage`'s evidence bundle (never re-derived or
-  re-worded);
+- **for `class: defect`** — the reproduction steps extracted by `jira-triage`
+  (Step 1's read of the ticket's "Steps to reproduce" or equivalent) and the
+  reproduction run's evidence: the exact command and a trimmed output fragment,
+  from `jira-triage`'s evidence bundle (never re-derived or re-worded);
+- **for `class: change`** — the numbered acceptance criteria, the absence
+  proof, the path of Step 2a's new test, and that test's failing run (command,
+  exit code, assertion). The executor's completion condition is *this test goes
+  green without the rest of the suite going red* — stated in the prompt, not
+  left implicit;
 - the working root — the **worktree path** from Step 1, not the shared
   checkout;
-- the branch name (`fix/<KEY>-<slug>`);
+- the branch name (`<prefix>/<KEY>-<slug>`);
 - the budget — `jira.budget.maxFiles` and `jira.budget.maxAttempts` — so the
   executor's own internal stop conditions and this skill's external gate
   never disagree about how much room there is.
@@ -99,26 +162,34 @@ dispatching `@implementation-agent`, write the list above into a minimal
 step-file-shaped doc and dispatch against that file instead of the bare
 brief:
 
-- **Where**: `<workspace>/<project>/workspace/working/{YYYY}/{MM}/{DD}/fix-<KEY>-<slug>/step-file.md`
+- **Where**: `<workspace>/<project>/workspace/working/{YYYY}/{MM}/{DD}/<prefix>-<KEY>-<slug>/step-file.md`
   — the run's workspace task dir, never the shared checkout or the worktree
   (the same workspace-only placement `jira-escalation` uses for its own plan
   tree, minus the `plan/` subfolder since this is a single step doc, not a
-  phased plan). `{YYYY}/{MM}/{DD}` is this run's date; `fix-<KEY>-<slug>`
+  phased plan). `{YYYY}/{MM}/{DD}` is this run's date; `<prefix>-<KEY>-<slug>`
   reuses Step 1's branch/worktree slug so the step file, branch, and
   worktree all trace back to the same run.
-- **What it contains**: objective, the ticket key and title, the extracted
-  reproduction steps, the repro run's command and output, the working root
+- **What it contains**: objective, the ticket key and title, the working root
   (Step 1's worktree path) and branch, the budget
-  (`jira.budget.maxFiles`/`maxAttempts`), and measurable acceptance criteria
-  — the regression is resolved, the repro command now exits green, and the
-  existing test suite still passes.
+  (`jira.budget.maxFiles`/`maxAttempts`), and measurable acceptance criteria.
+  The rest is class-dependent:
+  - `class: defect` — the extracted reproduction steps and the repro run's
+    command and output; acceptance criteria are *the regression is resolved,
+    the repro command now exits green, and the existing test suite still
+    passes*.
+  - `class: change` — the numbered acceptance criteria from `jira-triage`, the
+    absence proof, and Step 2a's test path plus its failing run; acceptance
+    criteria are *Step 2a's test goes green, and the existing test suite still
+    passes*. The step file **never** invites the executor to write the test
+    itself — it already exists and is red; re-writing it is how an executor
+    accidentally weakens the assertion until it passes.
 - **Dispatch passes `step_file: <that path>`, never `task_dir`** —
   `jira-delivery` is itself an orchestrator dispatching
   `@implementation-agent`, and the agent's anti-nesting guard refuses a
   `task_dir` arriving from an orchestrator on sight.
 - **In dry-run, the step file is not written and this dispatch does not run
-  at all** — Step 2 is skipped entirely in dry-run (see Dry-run below), so
-  nothing ever reaches the materialization step.
+  at all** — Steps 2a and 2b are skipped entirely in dry-run (see Dry-run
+  below), so nothing ever reaches the materialization step.
 
 # Step 3 — `@verification-agent` is the sole publish gate
 
@@ -129,12 +200,22 @@ must hit the gate there, not just at the top of this section:
 
 - **`git push`** does not happen without `PASS`.
 - **`gh pr create`** does not happen without `PASS`.
-- **The `comment-fix-summary.md` writeback** is not composed or posted without
-  `PASS`.
+- **The writeback comment** (`comment-fix-summary.md` / `comment-change-summary.md`)
+  is not composed or posted without `PASS`.
 - **The `jira.qaStatus` transition** is not attempted without `PASS`.
 
 Run `@verification-agent` (scope: the worktree's diff against `origin/main`)
 after the executor returns, before touching git or Jira at all.
+
+**On `class: change`, `PASS` is necessary but does not by itself prove the
+ticket was delivered.** `@verification-agent` grades build/typecheck/lint/test
+on the diff; a change whose implementation quietly never satisfied the
+criterion can still come back green if Step 2a's test was weakened or
+deleted along the way. So on the change path, additionally confirm — from the
+verification run's own output, not from the executor's summary — that **Step
+2a's specific test now passes and still exists in the diff**. A `PASS` whose
+test list no longer contains that test is a `FAIL` for this skill's purposes,
+and it routes exactly like one.
 
 **A second, independent gate — `jira.budget.maxFiles`.** `PASS` from
 verification is necessary but not sufficient. Compute the diff's file count
@@ -164,8 +245,13 @@ Only after a qualifying `PASS` (verification green **and** within
 `jira.budget.maxFiles`):
 
 ```
-fix(<scope>): <description>  [<KEY>]
+fix(<scope>): <description>  [<KEY>]     # class: defect
+feat(<scope>): <description>  [<KEY>]    # class: change
 ```
+
+The conventional-commit type follows the ticket's class, not the shape of the
+diff: a change ticket that happened to be implemented by deleting code is still
+`feat`, and a defect fixed by adding a component is still `fix`.
 
 `<scope>` is taken from `commitScopes` in `.claude/project.json` when that
 array is present and a matching scope exists; otherwise omit the parenthesized
@@ -184,11 +270,17 @@ the one that performs the write. The PR body includes a link to the ticket.
 # Step 5 — back to Jira
 
 Through `jira-writeback` (`plugins/jira-pack/skills/jira-writeback/SKILL.md`),
-exactly as it already does for the other four verdicts: post the
-`comment-fix-summary.md`-rendered comment (root cause, what changed, the PR
-link, how to verify for QA, risks), then attempt the transition to
-`jira.qaStatus`. `swarmery-board-card` moves the card to `in_review`, with its
-`prompt` gaining the PR link.
+exactly as it already does for the other four verdicts — passing the class
+along so it renders the matching template:
+
+- `class: defect` → `comment-fix-summary.md` (root cause, what changed, the PR
+  link, how to verify for QA, risks);
+- `class: change` → `comment-change-summary.md` (what was implemented, the
+  acceptance criteria and the test that now asserts each, the PR link, how to
+  verify for QA, what was deliberately left out).
+
+Then attempt the transition to `jira.qaStatus`. `swarmery-board-card` moves the
+card to `in_review`, with its `prompt` gaining the PR link.
 
 # Dry-run
 
@@ -196,33 +288,48 @@ link, how to verify for QA, risks), then attempt the transition to
 all.** In place of the four real actions, print exactly:
 
 ```
-DRY-RUN git branch fix/<KEY>-<slug> from <base>
-DRY-RUN git commit "fix(<scope>): <description>  [<KEY>]"  (files: N)
-DRY-RUN git push origin fix/<KEY>-<slug>
+DRY-RUN git branch <prefix>/<KEY>-<slug> from <base>
+DRY-RUN git commit "<fix|feat>(<scope>): <description>  [<KEY>]"  (files: N)
+DRY-RUN git push origin <prefix>/<KEY>-<slug>
 DRY-RUN gh pr create --title "<title>" --body "<body>"
 ```
 
-**Delegation to an executor does not run at all in dry-run** — Step 2 is
-skipped entirely, not run-and-discarded, and that includes the
-`@implementation-agent` step-file materialization: no step-file doc is
-written to the workspace task dir, and no dispatch fires. The mode exists to
-check the contour (branch naming, commit format, PR shape, the writeback
-path) without spending real fix-attempt budget on a
+**Delegation to an executor does not run at all in dry-run** — Steps 2a and 2b
+are skipped entirely, not run-and-discarded. On the change path that means no
+test is written and no red run is produced either; print instead:
+
+```
+DRY-RUN @test-writer red test for <KEY> from <N> acceptance criteria
+```
+
+That also covers the `@implementation-agent` step-file materialization: no
+step-file doc is written to the workspace task dir, and no dispatch fires. The
+mode exists to check the contour (class, branch naming, commit format, PR
+shape, the writeback path) without spending real budget on a
 `@debugger`/`@implementation-agent`/`@test-writer` invocation. Because
-Step 2 never ran, Step 3's verification gate and Step 4's commit/PR are
-necessarily also skipped — the four `DRY-RUN` lines above are printed from
+Steps 2a/2b never ran, Step 3's verification gate and Step 4's commit/PR are
+necessarily also skipped — the `DRY-RUN` lines above are printed from
 the *planned* branch name, scope, and file count estimate, not from a real
 diff.
 
 # Self-check before returning
 
+- [ ] The branch prefix matched the class (`fix/` for defect, `feat/` for
+      change), and so did the commit type and the writeback template
 - [ ] The branch was created via `git worktree add`, never `git checkout -b`
       in the shared working root
-- [ ] The executor's prompt carried key, title, repro steps, repro
-      command+output, worktree path, branch, and both budget numbers —
-      directly for `@debugger`/`@test-writer`, or via the materialized
-      step file for `@implementation-agent`
-- [ ] `push`, PR, the fix comment, and the transition each individually did
+- [ ] **`class: change` only:** a test was written and **observed failing**
+      before any implementation was dispatched; a first-run pass was treated
+      as `already-fixed`/`needs-info`, never implemented over
+- [ ] **`class: change` only:** the green verification run still contains that
+      same test — a `PASS` whose test list lost it was routed as a `FAIL`
+- [ ] The executor's prompt carried key, title, worktree path, branch, both
+      budget numbers, and the class's own evidence (repro steps + command
+      output for defect; acceptance criteria + absence proof + the red test's
+      path and failing run for change) — directly for
+      `@debugger`/`@test-writer`, or via the materialized step file for
+      `@implementation-agent`
+- [ ] `push`, PR, the comment, and the transition each individually did
       not fire without a `PASS` verdict
 - [ ] The diff's file count was checked against `jira.budget.maxFiles`
       independently of the verification verdict
@@ -236,6 +343,12 @@ diff.
 
 # Common mistakes to avoid
 
+- **Implementing a `change` ticket before a red test exists** — then the only
+  thing the verification gate can prove is that the suite still runs, which is
+  what it proved before the run started too.
+- **Letting the executor rewrite or delete Step 2a's test to get to green.**
+  The test is the acceptance criterion in executable form; a green obtained by
+  weakening it is the one failure mode this whole flow is built to catch.
 - Running `git checkout -b` in the shared working root "just this once" —
   even a single write to the shared checkout's index can race a parallel
   session.
@@ -268,4 +381,8 @@ diff.
 - `plugins/jira-pack/skills/jira-escalation/SKILL.md` — where a budget-
   exhausted or over-scope attempt goes instead of publishing.
 - `plugins/jira-pack/templates/comment-fix-summary.md` — the template
-  `jira-writeback` renders in Step 5.
+  `jira-writeback` renders in Step 5 for `class: defect`.
+- `plugins/jira-pack/templates/comment-change-summary.md` — the same, for
+  `class: change`.
+- `plugins/core/agents/test-writer.md` — the executor Step 2a dispatches to
+  produce the red test a change ticket arrives without.

@@ -1,7 +1,7 @@
 ---
 name: jira-writeback
-description: "Post the run's verdict comment (rendered from a plugins/jira-pack/templates/ template) and, when the verdict allows it, transition the ticket to jira.qaStatus by exact match. Idempotent via a hidden marker; the comment always precedes the transition attempt. NOT for classifying the ticket (that's jira-triage) and NOT for the board card (that's swarmery-board-card)."
-version: "0.1.0"
+description: "Post the run's verdict comment (rendered from the plugins/jira-pack/templates/ template matching verdict + ticket class) and, when the verdict allows it, transition the ticket to jira.qaStatus by exact match. Idempotent via a hidden marker carrying verdict and class; the comment always precedes the transition attempt. NOT for classifying the ticket (that's jira-triage) and NOT for the board card (that's swarmery-board-card)."
+version: "0.2.0"
 owner: "swarmery-core"
 ---
 
@@ -19,6 +19,11 @@ card.
 - `verdict` — one of `already-fixed`, `cannot-reproduce`, `needs-info`,
   `needs-fix` (Phase 7) — never called for `too-large`, which Phase 7's
   `jira-escalation` handles on its own.
+- `class` — `defect` or `change`, from `jira-triage`. It selects the template
+  for `needs-fix` (see [Templates](#templates-plugins-jira-pack-templates)) and
+  is recorded in the idempotency marker. A `needs-fix` call that arrives
+  without a class is a caller bug: stop and report it rather than defaulting to
+  `defect`, which would post a root-cause comment on a feature ticket.
 - The evidence bundle from `jira-triage` (command, exit code, output
   fragment, commit/test reference, or the specific questions for
   `needs-info`) — used to fill the chosen template's placeholders.
@@ -77,8 +82,15 @@ decide whether to skip **without** re-deriving the verdict from the comment's
 rendered prose:
 
 ```
-<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=<already-fixed|cannot-reproduce|needs-fix|needs-info|too-large> -->
+<!-- swarmery:jira-task-runner run=<external_id or run tag> verdict=<already-fixed|cannot-reproduce|needs-fix|needs-info|too-large> class=<defect|change> -->
 ```
+
+`class` is recorded alongside the verdict because the two together are what a
+later run needs to decide whether anything changed: the same ticket can
+legitimately move from `needs-info` (criteria weren't testable) to `needs-fix`
+(they are now), and a marker carrying only the verdict cannot distinguish a
+re-run of the same conclusion from a genuinely new one on a re-classified
+ticket.
 
 **Language**: the same language the ticket is written in (read off
 `summary`/`description`); English if that is ambiguous.
@@ -142,13 +154,25 @@ print that instead of the `DRY-RUN jira comment` line:
 
 # Templates (`plugins/jira-pack/templates/`)
 
-| Verdict | Template |
-|---|---|
-| `already-fixed` | `comment-already-fixed.md` |
-| `cannot-reproduce` | `comment-cannot-reproduce.md` |
-| `needs-info` | `comment-needs-info.md` |
-| `needs-fix` (Phase 7) | `comment-fix-summary.md` |
-| `too-large` (Phase 7, posted by `jira-escalation`, not this skill) | `comment-too-large.md` |
+| Verdict | Class | Template |
+|---|---|---|
+| `already-fixed` | either | `comment-already-fixed.md` |
+| `cannot-reproduce` | `defect` only (a `change` ticket can never carry this verdict — `jira-triage`) | `comment-cannot-reproduce.md` |
+| `needs-info` | either | `comment-needs-info.md` |
+| `needs-fix` | `defect` | `comment-fix-summary.md` |
+| `needs-fix` | `change` | `comment-change-summary.md` |
+| `too-large` (posted by `jira-escalation`, not this skill) | either | `comment-too-large.md` |
+
+The `needs-fix` split is the whole reason `class` is an input: the defect
+template opens with a root cause, which a change ticket does not have, and the
+change template pairs each acceptance criterion with the test that now asserts
+it, which a defect fix has no list for. Rendering the wrong one produces a
+comment whose first line is a fabrication.
+
+**A `cannot-reproduce` call for a `class: change` ticket is a caller bug** —
+stop and report it instead of rendering the template. `jira-triage` cannot
+produce that combination; if it arrives here, something upstream reclassified
+or lost the class, and posting it would move unimplemented work to QA.
 
 Every template ships with placeholders only — no real ticket keys, hostnames,
 or team names (`docs/NEUTRALITY.md`).
@@ -164,7 +188,11 @@ hosts, `<KEY>`, and `<PROJECT-KEY>` — `scripts/scan-flavor.sh` must stay
 - [ ] `getTransitionsForJiraIssue` ran before the comment body was finalized,
       whenever a transition might be attempted
 - [ ] The rendered comment ends with the hidden marker as its literal last
-      line
+      line, carrying both `verdict=` and `class=`
+- [ ] The template was selected by verdict **and** class — `needs-fix` on a
+      `change` ticket rendered `comment-change-summary.md`, never the
+      root-cause-shaped `comment-fix-summary.md`
+- [ ] No `cannot-reproduce` comment was rendered for a `class: change` ticket
 - [ ] The idempotency check read the verdict off the most recent marker's
       `verdict` field — never skipped on marker presence alone, and never
       guessed the prior verdict from the comment's rendered prose
