@@ -2,6 +2,7 @@ package wtjanitor
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -22,33 +23,82 @@ type Inspector interface {
 // Remover is the destructive boundary — separated so tests can assert that a
 // vetoed or failed-salvage worktree is NEVER passed to it.
 //
-// RemoveWorktree takes the branch too because worktree.Manager.Remove deletes
-// the branch in the SAME call (keepBranch=false); asking for the removal and
-// the branch deletion separately would delete it twice and log a spurious
-// failure the second time.
+// RemoveWorktree takes the branch and a flag rather than leaving the caller to
+// pair it with DeleteBranch: the checkout and its branch die together or not at
+// all, and splitting that across two calls is exactly how a half-removed state
+// (directory gone, branch left, journal claiming nothing happened) gets built.
 type Remover interface {
 	RemoveWorktree(repoRoot, path, branch string, deleteBranch bool) error
 	DeleteBranch(repoRoot, branch string) error
 	Prune(repoRoot string) error
 }
 
+// ownedBranchPrefixes are the branch namespaces the janitor may delete: the
+// dispatcher's own, and the harness's isolated-subagent branches.
+//
+// salvage/ is deliberately absent — a rescue branch must survive the sweeper
+// that created it — and so is everything else. This mirrors worktree.Manager's
+// ErrRefusedBranch discipline: close the class at the boundary rather than
+// trusting each caller to have built the name correctly. Without it a branch
+// like `dev`, fully contained in HEAD and therefore "zero commits of its own",
+// would qualify for deletion.
+var ownedBranchPrefixes = []string{"swarm/", "worktree-agent-"}
+
+// ownsBranch reports whether the janitor is allowed to delete this branch.
+func ownsBranch(branch string) bool {
+	for _, p := range ownedBranchPrefixes {
+		if strings.HasPrefix(branch, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // RealRemover adapts worktree.Manager, whose API is shaped for the acquire
 // path: Remove takes an Acquired value (Path/Branch/StartPoint) rather than a
-// bare path, and DeleteBranch returns (existed bool, err error). Adapting here
-// keeps ONE implementation of worktree removal in the tree — including the
-// leftover-directory repair Remove performs when git no longer tracks the path.
+// bare path, and DeleteBranch returns (existed bool, err error).
+//
+// Branch deletion is NOT delegated. Manager owns the swarm/ namespace only and
+// refuses anything outside it (ErrRefusedBranch) — correctly, since it must not
+// delete branches it did not create. The janitor's namespace is wider: it also
+// owns the harness's worktree-agent-* branches, which Manager has never heard
+// of. Routing those through Manager.Remove(keepBranch=false) removes the
+// DIRECTORY, then fails the branch guard and returns an error — leaving the
+// checkout gone, the branch behind, and the journal claiming nothing happened.
+// So the worktree always goes through Manager (for its leftover-directory
+// repair) with keepBranch=true, and the branch goes through the guard above.
 type RealRemover struct{ M *worktree.Manager }
 
 // NewRealRemover wraps the manager dispatch/verify/phaserun already share.
 func NewRealRemover(m *worktree.Manager) RealRemover { return RealRemover{M: m} }
 
 func (r RealRemover) RemoveWorktree(repoRoot, path, branch string, deleteBranch bool) error {
-	return r.M.Remove(repoRoot, worktree.Acquired{Path: path, Branch: branch}, !deleteBranch)
+	// keepBranch=true always: Manager's own branch guard would refuse the
+	// harness namespace, and the directory removal must not depend on it.
+	if err := r.M.Remove(repoRoot, worktree.Acquired{Path: path, Branch: branch}, true); err != nil {
+		return err
+	}
+	if !deleteBranch || branch == "" {
+		return nil
+	}
+	return r.DeleteBranch(repoRoot, branch)
 }
 
+// DeleteBranch removes a branch the janitor owns. Deleting is idempotent: git
+// exits non-zero for a branch that is already gone, and a caller that just
+// removed one has nothing to do about that.
 func (r RealRemover) DeleteBranch(repoRoot, branch string) error {
-	_, err := r.M.DeleteBranch(repoRoot, branch) // existed is uninteresting: deletion is idempotent
-	return err
+	if !ownsBranch(branch) {
+		return fmt.Errorf("wtjanitor: refusing to delete branch outside %v: %s", ownedBranchPrefixes, branch)
+	}
+	// No "is it checked out" probe here: git refuses to delete a checked-out
+	// branch by itself, and both callers have already established otherwise —
+	// sweepOne only reaches this after removing that very worktree, sweepBranches
+	// only considers branches no worktree holds.
+	if _, err := run(repoRoot, "branch", "-D", branch); err != nil {
+		return fmt.Errorf("wtjanitor: delete branch %s: %w", branch, err)
+	}
+	return nil
 }
 
 func (r RealRemover) Prune(repoRoot string) error { return r.M.Prune(repoRoot) }

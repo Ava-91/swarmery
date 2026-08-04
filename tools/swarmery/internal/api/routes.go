@@ -199,6 +199,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/system/hooks", h.listSystemHooks)
 	mux.HandleFunc("GET /api/system/commands", h.listSystemCommands)
 	mux.HandleFunc("GET /api/system/overlays", h.listSystemOverlays)
+
+	// worktree janitor inventory (worktrees.go): live checkouts + the sweep
+	// journal. Read-only on purpose — the janitor owns the decision, this shows
+	// what it decided.
+	mux.HandleFunc("GET /api/worktrees", h.listWorktrees)
 	// promotion & drift detector — read-only analysis over the registry
 	// (system_insights.go). Display-only: promotion stays a manual flow.
 	mux.HandleFunc("GET /api/system/insights", h.systemInsights)
