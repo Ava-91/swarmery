@@ -310,6 +310,23 @@ export async function repairProjectPlugin(
 }
 
 /**
+ * Thrown by putProjectConfig on a 422: the value failed the pack's declared
+ * schema. Carries the server's structured `problems` (one human line per
+ * dotted field path, e.g. "repro.test is required") so a caller with
+ * field-level UI (PluginConfigModal) can place each one next to its input
+ * instead of only showing a joined sentence. Mirrors EscalationRequiredError
+ * below — same "typed error carries the structured payload" shape.
+ */
+export class ConfigValidationError extends Error {
+  readonly problems: string[];
+  constructor(payload: ProjectConfigInvalid) {
+    super(payload.error);
+    this.name = 'ConfigValidationError';
+    this.problems = payload.problems;
+  }
+}
+
+/**
  * PUT /api/projects/{id}/config/{key} — write ONE top-level key of the
  * project's .claude/project.json. Every other key keeps its value, its position
  * in the file, and the file's 2-space formatting; the daemon backs the previous
@@ -318,9 +335,9 @@ export async function repairProjectPlugin(
  * Only keys a catalogued pack declared in its requirements.json are writable
  * (404 otherwise). 403 when the daemon write fence is closed or the project sits
  * outside it; 409 when there is no project.json to merge into; 422 when the
- * value fails the pack's declared schema — that body carries `problems`, one
- * line per field, which the thrown message joins so a caller with no field-level
- * UI still shows the operator what to fix.
+ * value fails the pack's declared schema — thrown as {@link ConfigValidationError}
+ * so the caller can place each problem on its field; every other non-2xx
+ * throws a plain Error with the server's message.
  */
 export async function putProjectConfig(
   id: number,
@@ -335,9 +352,13 @@ export async function putProjectConfig(
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as Partial<ProjectConfigInvalid>;
-    const head = data.error ?? `config write failed: ${String(res.status)}`;
-    const detail = data.problems?.length ? ` — ${data.problems.join('; ')}` : '';
-    throw new Error(head + detail);
+    if (res.status === 422 && data.problems !== undefined) {
+      throw new ConfigValidationError({
+        error: data.error ?? 'invalid config',
+        problems: data.problems,
+      });
+    }
+    throw new Error(data.error ?? `config write failed: ${String(res.status)}`);
   }
   return (await res.json()) as ProjectConfigWriteResponse;
 }
