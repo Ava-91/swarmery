@@ -2042,6 +2042,18 @@ export interface ProjectMeta {
  */
 export type PluginDriftStatus = 'ok' | 'missing' | 'behind' | 'orphaned' | 'unknown';
 
+/**
+ * Verdict on the .claude/project.json key the pack declared for itself
+ * (requirements.json). Distinct from PluginDriftStatus: drift is about whether
+ * the pack is installed, this is about whether it can actually run here.
+ *
+ * The field is optional on the row, and its ABSENCE is not 'ok' — it means the
+ * question was not asked, for one of four reasons: the row is disabled, drift
+ * outranks it (missing/behind/orphaned — repair before config), the pack
+ * declares no requirements, or its declaration is malformed.
+ */
+export type PluginConfigStatus = 'ok' | 'needs-config';
+
 export interface ProjectPluginRow {
   name: string;
   description: string;
@@ -2051,6 +2063,26 @@ export interface ProjectPluginRow {
   status: PluginDriftStatus;
   /** Human explanation for a non-ok status; absent when status is ok/unknown. */
   detail?: string;
+  /** Absent when the config question was not asked — see PluginConfigStatus. */
+  configStatus?: PluginConfigStatus;
+  /** The project.json key the pack declared, e.g. 'jira'. */
+  configKey?: string;
+  /** Pack-supplied modal copy: what the key is, and why the pack needs it. */
+  configTitle?: string;
+  configWhy?: string;
+  /** Pack-relative path to the doc explaining the key. */
+  configDocs?: string;
+  /** Dotted paths of unfilled required leaves, e.g. ['qaStatus', 'repro.test']. */
+  configMissing?: string[];
+  /**
+   * The pack's own JSON Schema fragment for the key, passed through verbatim to
+   * render a form from. Sent only alongside configStatus — a schema is ~1 KB,
+   * and the daemon will not attach one to every row of a catalog that mostly
+   * declares nothing.
+   */
+  configSchema?: unknown;
+  /** The key's existing value, for prefill. Absent when the key is not set. */
+  configCurrent?: unknown;
 }
 
 export interface ProjectPluginsResponse {

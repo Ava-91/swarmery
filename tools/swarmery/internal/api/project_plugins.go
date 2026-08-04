@@ -26,6 +26,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/marketplace"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/pluginreq"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/projectscan"
 )
 
@@ -73,6 +74,27 @@ type projectPluginDTO struct {
 	// disabled here, so no finding is expected either way).
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+
+	// ── Declared project.json config (internal/pluginreq) ──────────────────
+	// ConfigStatus is "" | "ok" | "needs-config". Empty means the question was
+	// not asked for this row — see configFor for the four cases — and is NOT a
+	// synonym for "ok", exactly as with Status above.
+	ConfigStatus string `json:"configStatus,omitempty"`
+	// ConfigKey is the .claude/project.json key the pack declared.
+	ConfigKey   string `json:"configKey,omitempty"`
+	ConfigTitle string `json:"configTitle,omitempty"`
+	ConfigWhy   string `json:"configWhy,omitempty"`
+	ConfigDocs  string `json:"configDocs,omitempty"`
+	// ConfigMissing lists the dotted paths of unfilled required leaves
+	// (e.g. ["qaStatus","repro.test"]). Empty when ConfigStatus is "ok".
+	ConfigMissing []string `json:"configMissing,omitempty"`
+	// ConfigSchema is the pack's JSON Schema fragment, passed through verbatim
+	// for the client to render a form from. ConfigCurrent is the key's existing
+	// value, for prefill. Both are sent ONLY when ConfigStatus != "": a schema
+	// is on the order of a kilobyte, and attaching one to every row of a
+	// catalog that mostly declares nothing would be paid on every poll.
+	ConfigSchema  json.RawMessage `json:"configSchema,omitempty"`
+	ConfigCurrent json.RawMessage `json:"configCurrent,omitempty"`
 }
 
 // projectPluginDrift is the winning finding for one plugin in one project.
@@ -134,6 +156,78 @@ func rank(status string) int {
 		return 1
 	}
 	return 0
+}
+
+// packDir resolves a catalogued pack's own directory inside the marketplace
+// clone. Returns "" when the pack cannot be located safely.
+//
+// The `..` refusal mirrors marketplace.PluginVersion: for a directory-source
+// marketplace the manifest sits in a working tree the operator edits, and a
+// hand-written source must not walk a reader out of the marketplace root.
+func packDir(cat *marketplace.Catalog, p marketplace.Plugin) string {
+	if cat == nil || cat.Root == "" || p.Source == "" {
+		return ""
+	}
+	if strings.Contains(filepath.ToSlash(p.Source), "..") {
+		return ""
+	}
+	return filepath.Join(cat.Root, filepath.Clean(p.Source))
+}
+
+// configFor computes the declared-config fields for one row.
+//
+// needs-config is NOT drift: it says the pack is installed and enabled but the
+// .claude/project.json key it declared is absent or incomplete. The four cases
+// that leave every field empty, in the order they are checked:
+//
+//  1. the row is disabled — a pack that is off has no say in this project;
+//  2. drift is missing/behind/orphaned — the pack is not properly installed, and
+//     asking the operator to fill in its config is noise in front of the real
+//     blocker. Only ok/unknown rows get the question;
+//  3. the pack ships no requirements.json — the normal case for most packs;
+//  4. the declaration is malformed — logged, then treated as case 3, because a
+//     broken pack must not be able to break the plugins list.
+//
+// A pack may declare several keys while the row carries one. The first
+// unsatisfied requirement wins, so a row never reports "ok" while some other
+// declared key is still unfilled; with everything satisfied the first is shown.
+func configFor(dir string, cfg map[string]json.RawMessage, row *projectPluginDTO) {
+	if dir == "" {
+		return
+	}
+	reqs, reason := pluginreq.Read(dir)
+	if reason != "" {
+		log.Printf("plugins: ignoring %s in %s: %s", pluginreq.FileName, dir, reason)
+		return
+	}
+	if len(reqs) == 0 {
+		return
+	}
+
+	chosen, missing := reqs[0], []string(nil)
+	for _, r := range reqs {
+		_, obj := pluginreq.Block(cfg, r.Key)
+		if m := pluginreq.MissingPaths(obj, r); len(m) > 0 {
+			chosen, missing = r, m
+			break
+		}
+	}
+
+	row.ConfigStatus = "ok"
+	if len(missing) > 0 {
+		row.ConfigStatus = "needs-config"
+		row.ConfigMissing = missing
+	}
+	row.ConfigKey, row.ConfigTitle = chosen.Key, chosen.Title
+	row.ConfigWhy, row.ConfigDocs = chosen.Why, chosen.Docs
+	row.ConfigSchema = chosen.Schema
+	row.ConfigCurrent, _ = pluginreq.Block(cfg, chosen.Key)
+}
+
+// configSuppressedBy reports whether a drift verdict outranks the config
+// question — see configFor case 2.
+func configSuppressedBy(status string) bool {
+	return status == "missing" || status == "behind" || status == "orphaned"
 }
 
 type projectPluginsResponse struct {
@@ -237,6 +331,9 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 		Plugins:            []projectPluginDTO{},
 		OverlaySources:     overlaySources,
 	}
+	// Read once for the whole response: every row asks about the same overlay.
+	projectCfg := pluginreq.ReadProjectConfig(path)
+
 	seen := map[string]bool{}
 	for _, p := range cat.Plugins {
 		seen[p.Name] = true
@@ -254,11 +351,15 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 				status, detail = d.status, d.detail
 			}
 		}
-		resp.Plugins = append(resp.Plugins, projectPluginDTO{
+		row := projectPluginDTO{
 			Name: p.Name, Description: p.Description,
 			Enabled: enabled, Locked: p.Name == "core",
 			Status: status, Detail: detail,
-		})
+		}
+		if enabled && !configSuppressedBy(status) {
+			configFor(packDir(cat, p), projectCfg, &row)
+		}
+		resp.Plugins = append(resp.Plugins, row)
 	}
 	// Enabled-but-unknown packs (stale clone) must stay visible. This used to
 	// smuggle its explanation into Description; it now folds into the same
