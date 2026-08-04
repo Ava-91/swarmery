@@ -39,11 +39,37 @@ with it through delivery, the comment template, and the comment's hidden marker.
 read off the ticket itself must be declared in the project's `.claude/project.json` under a
 `jira` block. Missing keys are a loud stop (see `skills/jira-config/SKILL.md`), never a guess.
 
+### From the dashboard
+
+The pack declares this block in its own `requirements.json`, so the dashboard can **ask** you
+for it instead of leaving you to discover it from a failed run:
+
+1. **Enable the pack** for the project. Its row on the project's plugins panel then shows a
+   `needs-config` chip — the declared key is missing or incomplete in `.claude/project.json`.
+   A real install problem (`missing`, `behind`, `orphaned`) always wins over that chip: fix the
+   install first, configure second.
+2. **Press `configure`.** The modal renders the form straight from
+   `plugins/jira-pack/requirements.json` — the same fragment `overlays/_schema/project.schema.json`
+   validates against, so the form cannot ask for a shape the schema would reject.
+3. **Press `probe`** to fill the fields the pack nominated (`qaStatus`, `repro.test`). It hands
+   the pack's prompt to a `claude` session that already holds your tracker connectors, and comes
+   back with the status names that actually exist on your board and the test commands that
+   actually exist in your repo — the obvious guess is usually wrong. Suggestions stay typeable,
+   never a fixed dropdown, because what a probe can reach is not guaranteed to be the whole
+   truth. A probe writes nothing; when it fails you lose the suggestions and nothing else.
+4. **Press `save`.** Exactly the `jira` key is written into `.claude/project.json`, merged into
+   what is already there — every other key and the file's formatting survive — and the previous
+   contents are kept beside it as `project.json.bak`.
+
+### By hand
+
+The same block, the same schema — edit `.claude/project.json` directly if you prefer:
+
 ```json
 "jira": {
   "baseUrl": "<jira-base-url>",
   "projectKey": "<PROJECT-KEY>",
-  "qaStatus": "QA",
+  "qaStatus": "<exact-status-name>",
   "repro": { "setup": "npm ci", "test": "npm test" },
   "budget": { "maxFiles": 5, "maxAttempts": 3 }
 }
@@ -51,10 +77,18 @@ read off the ticket itself must be declared in the project's `.claude/project.js
 
 - `baseUrl`, `projectKey`, `qaStatus`, `repro.test` are required. `repro.setup` is optional
   (skipped, not an error, when absent).
+- `qaStatus` must match the board's status name **exactly**, character for character — that is
+  the field `probe` exists to get right.
 - `budget` defaults to `maxFiles: 5`, `maxAttempts: 3` — the same stop conditions
   `plugins/core/agents/debugger.md` already enforces, so the two never disagree.
-- Schema: `overlays/_schema/project.schema.json` (`jira` property). Example:
+- Schema: `overlays/_schema/project.schema.json` (`jira` property), mirrored in this pack's
+  `requirements.json`; `scripts/check-plugin-requirements.sh` fails CI if they drift. Example:
   `overlays/example/project.json`.
+
+> **A valid config block is not a safety review.** The modal only makes this agent *runnable*;
+> nothing about it makes the agent *safer*, and it adds no human gate to anything below. The
+> first invocation on any new project is still always `--dry-run` — see
+> [Before you trust it on a real project](#before-you-trust-it-on-a-real-project).
 
 ## MCP provider requirement
 

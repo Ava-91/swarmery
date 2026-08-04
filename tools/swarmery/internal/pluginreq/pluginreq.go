@@ -47,12 +47,28 @@ type Requirement struct {
 	Why    string          `json:"why"`
 	Docs   string          `json:"docs,omitempty"`
 	Schema json.RawMessage `json:"schema"`
+	// Probe is the optional live-value discovery block (probe.go), nil unless
+	// the pack declared a runnable one.
+	Probe *ProbeSpec `json:"probe,omitempty"`
+}
+
+// rawRequirement is the on-disk shape, decoded one level away from Requirement
+// so a malformed `probe` cannot take the declaration down with it.
+//
+// json.Unmarshal is all-or-nothing per document: a `"probe": "yes"` decoded
+// straight into Requirement.Probe would fail the whole file, and the pack would
+// lose the config form it declared correctly over an optional block it did not.
+// Holding the block raw and decoding it separately keeps the blast radius at the
+// probe: the requirement survives, Probe is nil, the form still renders.
+type rawRequirement struct {
+	Requirement
+	Probe json.RawMessage `json:"probe"`
 }
 
 // declaration is the requirements.json envelope.
 type declaration struct {
-	Version       int           `json:"version"`
-	ProjectConfig []Requirement `json:"projectConfig"`
+	Version       int              `json:"version"`
+	ProjectConfig []rawRequirement `json:"projectConfig"`
 }
 
 // Read parses <packDir>/requirements.json.
@@ -81,7 +97,16 @@ func Read(packDir string) (reqs []Requirement, reason string) {
 	if d.Version != schemaVersion {
 		return nil, fmt.Sprintf("%s: unsupported version %d", FileName, d.Version)
 	}
-	return d.ProjectConfig, ""
+	// nil, not an empty slice, when the array is empty: callers branch on
+	// len() but tests compare whole values, and "declares nothing" has had one
+	// representation in this package since it shipped.
+	var out []Requirement
+	for _, raw := range d.ProjectConfig {
+		req := raw.Requirement
+		req.Probe = parseProbe(raw.Probe)
+		out = append(out, req)
+	}
+	return out, ""
 }
 
 // ReadProjectConfig reads <projectPath>/.claude/project.json as a map of

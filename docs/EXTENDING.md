@@ -57,9 +57,47 @@ know what the pack does — the same neutrality rule that keeps domain knowledge
 | `.why` | yes | one sentence on why the pack can't run without it — shown above the form |
 | `.docs` | no | pack-relative path to documentation, rendered as a link |
 | `.schema` | yes | self-contained JSON Schema fragment (`type: object` + `properties` + `required`) |
+| `.probe` | no | how to discover **live** values for some of those fields — see below |
 
 Unknown fields are ignored by readers, so a later version can add optional fields without
 bumping `version`.
+
+### `probe` — asking for real values instead of guesses
+
+A declared key is only half the operator's problem. The other half is that the obvious value is
+often the wrong one: a status name that reads right in the form does not exist on the board, and
+the only way to learn the real one is to ask the system that owns it. The daemon cannot ask — it
+holds no credentials for anything a pack integrates with, by design. So the pack ships a
+**prompt**, and the daemon hands it to a `claude` session that already has the operator's live
+connectors. The daemon learns nothing about the domain and gains no client and no token.
+
+```json
+"probe": {
+  "needs": ["baseUrl", "projectKey"],
+  "fields": ["qaStatus", "repro.test"],
+  "timeoutSeconds": 180,
+  "prompt": "…self-contained instruction; output ONLY {\"suggestions\":{…},\"notes\":\"…\"}…"
+}
+```
+
+| Field | Required | Purpose |
+|---|---|---|
+| `.needs` | no | dotted paths that must be filled before the probe can run — its **inputs**. Until they are, the button is disabled |
+| `.fields` | yes | dotted paths the probe may suggest values for. A **whitelist**: anything else the agent returns is discarded |
+| `.timeoutSeconds` | no | clamped to `[1, 300]`; default `180` |
+| `.prompt` | yes | self-contained instruction. Placeholders only — the real host and key arrive in the value at call time |
+
+The prompt must demand JSON and nothing else, and must tell the agent to **omit** a key rather
+than guess at it: an absent key is a correct answer, a plausible fabrication is not. Suggestions
+render as a `<datalist>`, never a `<select>` — what the probe can reach is not guaranteed to be
+the whole truth, so the field stays typeable.
+
+A probe never writes and is never an operator-facing error: a timeout, a missing `claude`, prose
+instead of JSON, a connector that would not resolve — every one of them comes back `200` with an
+empty `suggestions` object and a one-line reason. A **malformed** `probe` block costs the pack
+its suggestions and nothing else; the config form still renders. CI validates the block's shape
+(`check-plugin-requirements.sh`) but deliberately does **not** compare it against the overlay
+schema — it declares how to discover values, not what shape they take.
 
 **Sync rule (CI-enforced).** `.schema` must be canonically identical to the matching branch of
 `overlays/_schema/project.schema.json` → `properties[<key>]` — same `description` strings, same

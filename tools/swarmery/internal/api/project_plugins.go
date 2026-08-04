@@ -95,6 +95,22 @@ type projectPluginDTO struct {
 	// catalog that mostly declares nothing would be paid on every poll.
 	ConfigSchema  json.RawMessage `json:"configSchema,omitempty"`
 	ConfigCurrent json.RawMessage `json:"configCurrent,omitempty"`
+	// ConfigProbe is present only when the pack declared a runnable probe
+	// (pluginreq.ProbeSpec). Deliberately NOT the whole spec: the browser needs
+	// to know when the probe can run and which fields it may fill, and the
+	// prompt is neither — it is a multi-hundred-byte instruction that would ride
+	// on every plugins poll to be used by nobody but the daemon.
+	ConfigProbe *configProbeDTO `json:"configProbe,omitempty"`
+}
+
+// configProbeDTO is the browser-visible half of a pack's probe declaration.
+type configProbeDTO struct {
+	// Needs gates the button: until every one of these is filled the probe has
+	// no input to work from.
+	Needs []string `json:"needs"`
+	// Fields are the paths that may receive suggestions — the browser uses it to
+	// decide which inputs get a datalist at all.
+	Fields []string `json:"fields"`
 }
 
 // projectPluginDrift is the winning finding for one plugin in one project.
@@ -222,6 +238,9 @@ func configFor(dir string, cfg map[string]json.RawMessage, row *projectPluginDTO
 	row.ConfigWhy, row.ConfigDocs = chosen.Why, chosen.Docs
 	row.ConfigSchema = chosen.Schema
 	row.ConfigCurrent, _ = pluginreq.Block(cfg, chosen.Key)
+	if chosen.Probe != nil {
+		row.ConfigProbe = &configProbeDTO{Needs: chosen.Probe.Needs, Fields: chosen.Probe.Fields}
+	}
 }
 
 // configSuppressedBy reports whether a drift verdict outranks the config
