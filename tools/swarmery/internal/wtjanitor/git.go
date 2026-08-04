@@ -67,9 +67,12 @@ func (RepoGit) BlobInGit(repoRoot, worktreePath, repoRelPath string) (bool, erro
 	return false, nil
 }
 
-// Inspect enumerates the repository's worktrees and observes the facts Classify
-// needs. It never decides anything and never writes.
-func (g RepoGit) Inspect(repoRoot string, live Liveness) ([]Worktree, error) {
+// List enumerates the repository's worktrees WITHOUT observing anything about
+// them: one `git worktree list` and nothing else. It is what a reader wants
+// (the inventory endpoint) as opposed to what the sweeper needs — observation
+// costs a full directory walk per worktree, which is fine every 15 minutes and
+// absurd on every page load.
+func (RepoGit) List(repoRoot string) ([]Worktree, error) {
 	out, err := run(repoRoot, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
@@ -78,10 +81,32 @@ func (g RepoGit) Inspect(repoRoot string, live Liveness) ([]Worktree, error) {
 	res := make([]Worktree, 0, len(entries))
 	for i, e := range entries {
 		// `git worktree list` always prints the MAIN checkout first.
-		wt := Worktree{Path: e.Path, Branch: e.Branch, IsMain: i == 0}
+		res = append(res, Worktree{Path: e.Path, Branch: e.Branch, IsMain: i == 0})
+	}
+	return res, nil
+}
+
+// Inspect enumerates the repository's worktrees and observes the facts Classify
+// needs. It never decides anything and never writes.
+//
+// The main checkout is enumerated but NOT observed: it is vetoed by IsMain
+// before any other field is read, and walking it would mean statting an entire
+// working repository (node_modules and all) to compute an mtime nothing looks
+// at. Same for a registered path that is gone from disk — every observation
+// would fail, and prune is what fixes that, not inspection.
+func (g RepoGit) Inspect(repoRoot string, live Liveness) ([]Worktree, error) {
+	entries, err := g.List(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]Worktree, 0, len(entries))
+	for _, e := range entries {
+		wt := Worktree{Path: e.Path, Branch: e.Branch, IsMain: e.IsMain}
+		if wt.IsMain {
+			res = append(res, wt)
+			continue
+		}
 		if !dirExists(e.Path) {
-			// Registered but gone from disk: every observation below would fail.
-			// Prune is what fixes this, not inspection.
 			continue
 		}
 		if wt.Dirty, err = g.dirty(e.Path); err != nil {

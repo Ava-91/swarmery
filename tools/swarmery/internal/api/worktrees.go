@@ -27,7 +27,9 @@ type worktreeRowDTO struct {
 	Path        string  `json:"path"`
 	Branch      *string `json:"branch"`
 	IsMain      bool    `json:"isMain"`
-	DirtyFiles  int     `json:"dirtyFiles"`
+	// DirtyFiles is the count the LAST sweep saw, not a live number: counting it
+	// live would mean a `git status` per worktree on every page load.
+	DirtyFiles int `json:"dirtyFiles"`
 	// LastVerdict/LastReason/LastSweptAt come from the newest worktree_sweeps row
 	// for this path; null when the janitor has never reached it.
 	LastVerdict *string `json:"lastVerdict"`
@@ -56,14 +58,6 @@ type worktreesDTO struct {
 	// off" instead of silently presenting a frozen history as current.
 	Enabled bool `json:"enabled"`
 }
-
-// noopLiveness answers "nobody is here" without touching the process table.
-// The inventory endpoint must not shell out to `ps` on every page open, and it
-// does not render liveness anyway — the janitor itself asks the real question
-// at the only moment it matters, immediately before removing something.
-type noopLiveness struct{}
-
-func (noopLiveness) Busy(string) (bool, error) { return false, nil }
 
 // GET /api/worktrees?project=<slug|id|name>
 func (h *Handler) listWorktrees(w http.ResponseWriter, r *http.Request) {
@@ -104,16 +98,21 @@ func (h *Handler) listWorktrees(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, p := range list {
-		wts, ierr := wtjanitor.RepoGit{}.Inspect(p.path, noopLiveness{})
+		// List, NOT Inspect: observation walks every file of every worktree to
+		// compute an mtime, which is the right cost for a 15-minute sweep and an
+		// absurd one for a page load (it hung this endpoint for minutes on a 2.4G
+		// checkout). Everything the panel shows is either in the listing or in the
+		// journal row the janitor already wrote.
+		wts, ierr := wtjanitor.RepoGit{}.List(p.path)
 		if ierr != nil {
 			// A project that moved, was unmounted or is not a git repo any more
 			// must not blank the panel for every other one.
-			log.Printf("worktrees: inspect %s: %v", p.path, ierr)
+			log.Printf("worktrees: list %s: %v", p.path, ierr)
 			continue
 		}
 		for _, wt := range wts {
 			row := worktreeRowDTO{
-				ProjectSlug: p.slug, Path: wt.Path, IsMain: wt.IsMain, DirtyFiles: len(wt.Dirty),
+				ProjectSlug: p.slug, Path: wt.Path, IsMain: wt.IsMain,
 			}
 			if wt.Branch != "" {
 				b := wt.Branch
@@ -122,6 +121,7 @@ func (h *Handler) listWorktrees(w http.ResponseWriter, r *http.Request) {
 			if s, ok := latest[wt.Path]; ok {
 				v, rs, ts := s.verdict, s.reason, s.ts
 				row.LastVerdict, row.LastReason, row.LastSweptAt = &v, &rs, &ts
+				row.DirtyFiles = s.files // as of the last sweep, not live
 			}
 			out.Live = append(out.Live, row)
 		}
@@ -134,14 +134,17 @@ func (h *Handler) listWorktrees(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out, nil)
 }
 
-type sweepMark struct{ verdict, reason, ts string }
+type sweepMark struct {
+	verdict, reason, ts string
+	files               int
+}
 
 // latestSweepByPath folds the journal to the newest row per path in ONE query —
 // never a per-row lookup inside the inventory loop (the store caps the pool at
 // one connection, so a query inside an open cursor would deadlock).
 func (h *Handler) latestSweepByPath() (map[string]sweepMark, error) {
 	rows, err := h.DB.Query(`
-		SELECT s.path, s.verdict, s.reason, s.ts
+		SELECT s.path, s.verdict, s.reason, s.ts, s.files
 		  FROM worktree_sweeps s
 		  JOIN (SELECT path, MAX(id) AS id FROM worktree_sweeps GROUP BY path) m
 		    ON m.id = s.id`)
@@ -153,7 +156,7 @@ func (h *Handler) latestSweepByPath() (map[string]sweepMark, error) {
 	for rows.Next() {
 		var path string
 		var m sweepMark
-		if err := rows.Scan(&path, &m.verdict, &m.reason, &m.ts); err != nil {
+		if err := rows.Scan(&path, &m.verdict, &m.reason, &m.ts, &m.files); err != nil {
 			return nil, err
 		}
 		out[path] = m

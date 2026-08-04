@@ -172,7 +172,13 @@ func (s *Service) sweepOne(r repo, wt Worktree, dryRun bool, res *Result) {
 	switch dec.Verdict {
 	case VerdictSkip:
 		res.Skipped++
-		s.journal(r, wt, dec, "", false, nil)
+		// The main checkout is skipped structurally, not judged: journalling it
+		// would write one identical row per project per tick — 96 rows a day
+		// saying nothing — and bury the decisions that matter. Every OTHER skip
+		// (live, too young, lock held) IS informative and is recorded.
+		if !wt.IsMain {
+			s.journal(r, wt, dec, "", false, nil)
+		}
 		return
 	case VerdictKeepUnmerged:
 		res.Kept++
