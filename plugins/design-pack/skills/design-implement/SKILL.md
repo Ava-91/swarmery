@@ -153,14 +153,33 @@ an over-budget list usually means the screen should be split, not that the budge
 
 # Phase 5 — implement
 
-Hand off to `@design-implementer` with: the path to `tokens.json`, the design path, the target
-route, the authoring viewport, and the approved file list. Correction loops are capped by
-`design.budget.maxIterations`.
+Invoke `@design-implementer` with all seven inputs. It refuses to start on a missing one — it
+does not infer, default, or discover them:
+
+1. the path to Phase 2's `tokens.json`;
+2. the design path — the HTML export, or the screenshot set in degraded mode;
+3. the target route;
+4. the authoring viewport, as `WxH`;
+5. the operator-approved file list, literally — this is the agent's autonomy boundary;
+6. the whole `design` block: `tokensFile`, `componentsRoot`, `routesRoot`, `fontLoader`,
+   `devCommand`, `devUrl`, `verify.lint`, `verify.typecheck`, `diff.threshold`,
+   `diff.pixelTolerance`, `budget.maxIterations`, `budget.maxFiles`;
+7. the mode — `normal` or `degraded: screenshots`.
 
 Repeat this rule to the agent verbatim, because it is the one that gets rationalised away:
 **the design is re-expressed in this project's stack; the exported design HTML is never pasted
 in as a component.** The export is a measurement reference, not a source file
 (`references/anti-patterns.md`, #1).
+
+## When the agent returns `STOPPED`
+
+Control comes back to this session — that is the design, not a failure. Show the operator the
+stop form's `Blast radius` and `What must change`, and get a decision.
+
+**Only the operator extends the approved file list.** Re-invoking the agent with the same list
+just re-fires the same trigger. Re-invoke with the extended list once the operator has said
+which files may be touched; the iteration and file counters carry across re-invocations,
+because `design.budget` bounds the run, not one dispatch.
 
 # Phase 6 — verify
 
