@@ -35,6 +35,12 @@
           }
         },
         "required": ["baseUrl", "projectKey", "qaStatus", "repro"]
+      },
+      "probe": {
+        "needs": ["baseUrl", "projectKey"],
+        "fields": ["qaStatus", "repro.test"],
+        "timeoutSeconds": 180,
+        "prompt": "You are filling in one project's issue-tracker configuration for a Claude Code plugin. This is a READ-ONLY lookup: do not create, edit, transition, or comment on anything, and do not modify any file.\n\nThe operator's partial configuration is appended below as JSON. Use its fields as your inputs; never substitute a value you were not given.\n\nSteps:\n1. Resolve the Atlassian MCP tools BY NAME (a tool whose name ends in getVisibleJiraProjects, getJiraProjectIssueTypesMetadata, getTransitionsForJiraIssue, searchJiraIssuesUsingJql). Never match on the channel or server prefix — it differs per machine and per session.\n2. Resolve the cloudId for the site named in the JSON field `baseUrl`.\n3. Read the workflow statuses that issues of the project whose key is in the JSON field `projectKey` can actually reach, and collect their EXACT display names, character for character as the board shows them. These are candidates for `qaStatus`.\n4. In the working repository this session was started in, read the package manifest and build files (package.json scripts, Makefile targets, pyproject/tox config) and collect the full shell commands that run the test suite. These are candidates for `repro.test`.\n\nOutput rules — these are absolute:\n- Emit ONE JSON object and nothing else. No prose before or after it, no code fence, no explanation.\n- Shape: {\"suggestions\":{\"qaStatus\":[\"…\"],\"repro.test\":[\"…\"]},\"notes\":\"…\"}\n- Every value must be something you actually read from a tool or a file. NEVER invent, normalise, or prettify a status name — the whole point of this lookup is that the obvious guess is usually wrong.\n- If a lookup fails or returns nothing, OMIT that key entirely rather than filling it with a guess. An absent key is a correct answer; a plausible fabrication is not.\n- Keep `notes` to one short sentence, and only when something is worth flagging (for example that a lookup failed)."
       }
     }
   ]

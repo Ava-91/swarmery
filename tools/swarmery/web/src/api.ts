@@ -53,6 +53,7 @@ import type {
   ProjectMeta,
   ProjectMetaPatch,
   ProjectConfigInvalid,
+  ProjectConfigProbeResponse,
   ProjectConfigWriteResponse,
   ProjectOverviewResp,
   ProjectPluginsResponse,
@@ -361,6 +362,53 @@ export async function putProjectConfig(
     throw new Error(data.error ?? `config write failed: ${String(res.status)}`);
   }
   return (await res.json()) as ProjectConfigWriteResponse;
+}
+
+/**
+ * POST /api/projects/{id}/config/{key}/probe — ask a live `claude` session for
+ * REAL candidate values for the fields the pack nominated. Writes nothing: the
+ * answer only fills datalists, and saving stays an explicit `save`.
+ *
+ * Runtime failures are NOT exceptions here. A timeout, a missing binary, prose
+ * instead of JSON — all of them come back 200 with empty `suggestions` and a
+ * `reason` to show in grey. Only the refusals throw: 403 (fence), 404 (the key
+ * declares no probe), and 400 with `problems` when the probe's own inputs are
+ * still empty — thrown as {@link ConfigValidationError} so the modal can place
+ * each problem on its field, exactly as it does for a rejected save.
+ *
+ * `signal` is worth passing: the server's timeout hangs off the REQUEST context,
+ * so aborting the fetch kills the agent process instead of orphaning it for the
+ * next three minutes.
+ */
+export async function probeProjectConfig(
+  id: number,
+  key: string,
+  value: unknown,
+  signal?: AbortSignal,
+): Promise<ProjectConfigProbeResponse> {
+  if (MOCK) return { suggestions: {}, reason: 'probe is unavailable in mock mode' };
+  const res = await fetch(
+    `/api/projects/${String(id)}/config/${encodeURIComponent(key)}/probe`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+      // `?? null` because RequestInit.signal is AbortSignal | null under
+      // exactOptionalPropertyTypes — undefined is not one of its inhabitants.
+      signal: signal ?? null,
+    },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as Partial<ProjectConfigInvalid>;
+    if (res.status === 400 && data.problems !== undefined) {
+      throw new ConfigValidationError({
+        error: data.error ?? 'the probe needs more fields filled in first',
+        problems: data.problems,
+      });
+    }
+    throw new Error(data.error ?? `probe failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as ProjectConfigProbeResponse;
 }
 
 /** GET /api/projects/onboard/config — defaults + enabled state for the modal. */

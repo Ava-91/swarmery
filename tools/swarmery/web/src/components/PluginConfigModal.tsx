@@ -12,9 +12,9 @@
 // doesn't match a rendered leaf (e.g. "unknown field: xyz") falls through to
 // the general ErrorBox — same shape as AttachModal/DetachModal.
 
-import { useId, useMemo, useState } from 'react';
-import type { ProjectPluginRow } from '../api/types';
-import { ConfigValidationError, putProjectConfig } from '../api';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { PluginConfigProbe, ProjectPluginRow } from '../api/types';
+import { ConfigValidationError, probeProjectConfig, putProjectConfig } from '../api';
 import { ErrorBox } from './ui';
 
 /** The subset of JSON Schema the contract allows (Phase 1): string / integer
@@ -133,7 +133,30 @@ function leafPaths(schema: SchemaNode, prefix: string[] = []): string[] {
   return out.sort((a, b) => b.length - a.length);
 }
 
+/** Reads a dotted path out of the form value — the same addressing the server
+ * uses for `needs`, `fields`, and its `problems` lines. */
+function valueAt(value: unknown, dotted: string): unknown {
+  let cur: unknown = value;
+  for (const segment of dotted.split('.')) {
+    if (!isRecord(cur)) return undefined;
+    cur = cur[segment];
+  }
+  return cur;
+}
+
+/** The probe's own inputs that are still empty. Empty result = it can run. */
+function unfilledNeeds(probe: PluginConfigProbe, value: FormValue): string[] {
+  return probe.needs.filter((path) => isEmptyValue(valueAt(value, path)));
+}
+
 type Phase = { kind: 'editing' } | { kind: 'saving' };
+
+/** The probe is a side channel, never a gate: `idle` and `running` both leave
+ * the form fully usable, and `done` only adds suggestions or a grey line. */
+type ProbePhase =
+  | { kind: 'idle' }
+  | { kind: 'running' }
+  | { kind: 'done'; suggestions: Record<string, string[]>; reason?: string | undefined };
 
 export function PluginConfigModal({
   projectId,
@@ -157,6 +180,65 @@ export function PluginConfigModal({
   const busy = phase.kind === 'saving';
   const firstPath = useMemo(() => (schema !== undefined ? firstLeafPath(schema) : null), [schema]);
   const knownLeaves = useMemo(() => (schema !== undefined ? leafPaths(schema) : []), [schema]);
+
+  const probe = row.configProbe;
+  const [probePhase, setProbePhase] = useState<ProbePhase>({ kind: 'idle' });
+  // Held in a ref rather than state: aborting is a side effect on an in-flight
+  // request, and re-rendering the form because one was cancelled would be noise.
+  const probeAbort = useRef<AbortController | null>(null);
+  const probing = probePhase.kind === 'running';
+  const suggestions = probePhase.kind === 'done' ? probePhase.suggestions : {};
+  const probeBlockers = probe === undefined ? [] : unfilledNeeds(probe, value);
+  const canProbe = probe !== undefined && probeBlockers.length === 0;
+
+  function runProbe(): void {
+    if (probe === undefined || row.configKey === undefined || schema === undefined) return;
+    if (unfilledNeeds(probe, value).length > 0) return;
+    probeAbort.current?.abort();
+    const controller = new AbortController();
+    probeAbort.current = controller;
+    setProbePhase({ kind: 'running' });
+    // The form's current partial contents, shaped exactly as a save would shape
+    // them (empties omitted, integers as numbers) — that is the only thing the
+    // daemon substitutes into the pack's prompt.
+    const partial = buildSubmitValue(schema, value);
+    probeProjectConfig(projectId, row.configKey, partial, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        setProbePhase({ kind: 'done', suggestions: res.suggestions, reason: res.reason });
+      })
+      .catch((e: unknown) => {
+        if (controller.signal.aborted) return;
+        // Even the refusals land in the grey line rather than the error box:
+        // nothing the operator was doing has failed, and a red banner over an
+        // optional convenience would read as "the config page is broken".
+        setProbePhase({ kind: 'done', suggestions: {}, reason: e instanceof Error ? e.message : String(e) });
+      });
+  }
+
+  function skipProbe(): void {
+    probeAbort.current?.abort();
+    probeAbort.current = null;
+    setProbePhase({ kind: 'idle' });
+  }
+
+  // Auto-run ON OPEN when the inputs are already there — the repeat-visit case,
+  // where the operator came back precisely to fix the one field the probe can
+  // answer for.
+  //
+  // Mount-only, deliberately. Keying this on "needs are filled" instead would
+  // fire the moment the last input became non-empty — i.e. mid-keystroke, on a
+  // half-typed project key — and spend a three-minute agent run on it. Once the
+  // operator is typing, starting the probe is their call: that is the button.
+  useEffect(() => {
+    runProbe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // An unmount mid-probe must cancel the request: the daemon's timeout hangs off
+  // the request context, so aborting kills the agent process instead of leaving
+  // it running for minutes against a modal nobody is looking at.
+  useEffect(() => () => probeAbort.current?.abort(), []);
 
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
     if (e.key === 'Escape' && !busy) onClose();
@@ -242,7 +324,20 @@ export function PluginConfigModal({
               onChange={(path, v) => setValue((cur) => setAt(cur, path, v))}
               fieldErrors={fieldErrors}
               firstPath={firstPath}
+              suggestions={suggestions}
             />
+
+            {probe !== undefined && (
+              <ProbeRow
+                probing={probing}
+                canProbe={canProbe}
+                blockers={probeBlockers}
+                reason={probePhase.kind === 'done' ? probePhase.reason : undefined}
+                found={Object.keys(suggestions).length}
+                onRun={runProbe}
+                onSkip={skipProbe}
+              />
+            )}
 
             {generalError !== null && <ErrorBox message={generalError} />}
 
@@ -282,6 +377,67 @@ export function PluginConfigModal({
   );
 }
 
+/**
+ * The probe's own line: a button while it can run, `probing… / skip` while it
+ * does, and a grey outcome afterwards.
+ *
+ * Nothing here disables anything else. The probe is a convenience layered over
+ * a form that already worked without it, so a run in flight must never take the
+ * inputs, `save`, or `cancel` away from the operator.
+ */
+function ProbeRow({
+  probing,
+  canProbe,
+  blockers,
+  reason,
+  found,
+  onRun,
+  onSkip,
+}: {
+  probing: boolean;
+  canProbe: boolean;
+  blockers: string[];
+  reason: string | undefined;
+  found: number;
+  onRun: () => void;
+  onSkip: () => void;
+}): JSX.Element {
+  if (probing) {
+    return (
+      <div className="mt-3 flex items-center gap-2 font-mono text-[10.5px] text-ink-faint">
+        <span aria-live="polite">probing for live values…</span>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="rounded border border-line px-1.5 py-0.5 text-ink-dim transition-colors hover:bg-surface2"
+        >
+          skip
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 flex items-center gap-2 font-mono text-[10.5px] text-ink-faint">
+      <button
+        type="button"
+        onClick={onRun}
+        disabled={!canProbe}
+        title={canProbe ? undefined : `fill in ${blockers.join(', ')} first`}
+        className="rounded border border-line px-1.5 py-0.5 text-ink-dim transition-colors hover:bg-surface2 disabled:opacity-40"
+      >
+        probe
+      </button>
+      {!canProbe && <span>needs {blockers.join(', ')}</span>}
+      {canProbe && reason !== undefined && reason !== '' && <span>probe: {reason}</span>}
+      {canProbe && reason === undefined && found > 0 && (
+        <span>
+          suggested values for {found} field{found === 1 ? '' : 's'}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SchemaFields({
   schema,
   path,
@@ -289,6 +445,7 @@ function SchemaFields({
   onChange,
   fieldErrors,
   firstPath,
+  suggestions,
 }: {
   schema: SchemaNode & { properties: Record<string, SchemaNode> };
   path: string[];
@@ -296,6 +453,7 @@ function SchemaFields({
   onChange: (path: string[], value: unknown) => void;
   fieldErrors: Record<string, string>;
   firstPath: string | null;
+  suggestions: Record<string, string[]>;
 }): JSX.Element {
   const required = schema.required ?? [];
   return (
@@ -322,6 +480,7 @@ function SchemaFields({
                 onChange={onChange}
                 fieldErrors={fieldErrors}
                 firstPath={firstPath}
+                suggestions={suggestions}
               />
             </fieldset>
           );
@@ -337,6 +496,7 @@ function SchemaFields({
             error={fieldErrors[dotted]}
             autoFocus={dotted === firstPath}
             onChange={onChange}
+            suggestions={suggestions[dotted]}
           />
         );
       })}
@@ -353,6 +513,7 @@ function LeafField({
   error,
   autoFocus,
   onChange,
+  suggestions,
 }: {
   fieldKey: string;
   path: string[];
@@ -362,13 +523,16 @@ function LeafField({
   error: string | undefined;
   autoFocus: boolean;
   onChange: (path: string[], value: unknown) => void;
+  suggestions: string[] | undefined;
 }): JSX.Element {
   const dotted = path.join('.');
   const fieldId = `cfg-${dotted.replace(/\./g, '-')}`;
   const hintId = `${fieldId}-hint`;
   const errorId = `${fieldId}-error`;
+  const listId = `${fieldId}-suggestions`;
   const isInteger = schema.type === 'integer';
   const hasDescription = schema.description !== undefined && schema.description !== '';
+  const hasSuggestions = suggestions !== undefined && suggestions.length > 0;
   const describedBy = [hasDescription ? hintId : null, error !== undefined ? errorId : null]
     .filter((v): v is string => v !== null)
     .join(' ');
@@ -383,6 +547,12 @@ function LeafField({
         id={fieldId}
         type={isInteger ? 'number' : 'text'}
         min={isInteger ? schema.minimum : undefined}
+        // A datalist, never a select. The probe reads what it can reach, and
+        // what it reaches is not guaranteed to be the whole truth — a workflow
+        // it could not see, or a script the manifest does not declare, would be
+        // unreachable in a closed dropdown. Suggestions accelerate typing; they
+        // never take it away.
+        list={hasSuggestions ? listId : undefined}
         value={typeof value === 'string' || typeof value === 'number' ? value : ''}
         placeholder={schema.default !== undefined ? String(schema.default) : undefined}
         autoFocus={autoFocus}
@@ -393,9 +563,21 @@ function LeafField({
           error !== undefined ? 'border-red/50' : 'border-line'
         }`}
       />
+      {hasSuggestions && (
+        <datalist id={listId}>
+          {suggestions.map((s) => (
+            <option key={s} value={s} />
+          ))}
+        </datalist>
+      )}
       {hasDescription && (
         <p id={hintId} className="mt-1 text-[10.5px] text-ink-faint">
           {schema.description}
+        </p>
+      )}
+      {hasSuggestions && (
+        <p className="mt-1 font-mono text-[10px] text-ink-faint">
+          {suggestions.length} suggested by probe
         </p>
       )}
       {error !== undefined && (

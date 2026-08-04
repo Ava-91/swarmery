@@ -2083,6 +2083,37 @@ export interface ProjectPluginRow {
   configSchema?: unknown;
   /** The key's existing value, for prefill. Absent when the key is not set. */
   configCurrent?: unknown;
+  /**
+   * Present only when the pack declared a runnable probe — a `claude` session
+   * the daemon can ask for REAL candidate values (the obvious guess for a
+   * status name is usually not the one on the board). Deliberately not the
+   * whole spec: the prompt is the daemon's business and would ride on every
+   * poll of this endpoint.
+   */
+  configProbe?: PluginConfigProbe;
+}
+
+export interface PluginConfigProbe {
+  /** Dotted paths that must be filled before the probe has anything to work
+   * from — its inputs, not its outputs. Gates the button. */
+  needs: string[];
+  /** Dotted paths the probe may suggest values for. A whitelist: the daemon
+   * discards anything the agent returns outside it. */
+  fields: string[];
+}
+
+/**
+ * POST /api/projects/{id}/config/{key}/probe.
+ *
+ * `suggestions` is always an object, including when the probe found nothing —
+ * the failure shape and the success shape are the same, so there is one code
+ * path. `reason` is set only when nothing came back, and is written to be read
+ * by a human in a grey line under the form.
+ */
+export interface ProjectConfigProbeResponse {
+  suggestions: Record<string, string[]>;
+  reason?: string;
+  notes?: string;
 }
 
 export interface ProjectPluginsResponse {

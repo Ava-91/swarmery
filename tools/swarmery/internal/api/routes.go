@@ -41,6 +41,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// Same fence as the plugin toggle: requireLocalOrigin here,
 	// SWARMERY_ONBOARD_ROOTS + resolveUnderRoots inside the handler.
 	mux.HandleFunc("PUT /api/projects/{id}/config/{key}", requireLocalOrigin(h.putProjectConfig))
+	// …and asks a live `claude` session for real candidate values for the
+	// fields that pack nominated (project_config_probe.go). Same fence — it
+	// spawns a process with the project as cwd — but it writes nothing, and it
+	// answers 200 with a reason for every runtime failure rather than a 5xx.
+	mux.HandleFunc("POST /api/projects/{id}/config/{key}/probe", requireLocalOrigin(h.probeProjectConfig))
 	// canvas v2 parity: project editorial aggregate (rightNow + thisWeek + attention).
 	mux.HandleFunc("GET /api/projects/{id}/overview", h.projectOverview)
 	// onboarding: bootstrap a new consumer project from the dashboard. Fenced

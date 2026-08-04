@@ -9,10 +9,15 @@
 #
 # For every plugins/*/requirements.json (the file is optional per pack — absence is not an
 # error) it: parses the JSON; checks version == 1, a non-empty projectConfig, and
-# key/title/why/schema on every entry; then compares each entry's .schema against
+# key/title/why/schema on every entry; validates the OPTIONAL `probe` block when one is
+# present; then compares each entry's .schema against
 # overlays/_schema/project.schema.json → properties[key] under a canonical form (object keys
 # sorted recursively), so key order and whitespace never count as drift but a changed
 # description does.
+#
+# `probe` is checked but NOT compared against the overlay schema: it declares how to
+# discover values for fields, not what shape those values take, so it has no counterpart
+# in project.schema.json by design.
 #
 # Implementation is bash + `node -e`: node is the only runtime the CI validate job has
 # (.github/workflows/ci.yml already parses every manifest with it).
@@ -106,6 +111,36 @@ for (const pack of packs) {
       note(at + '.schema is missing or not an object');
       return;
     }
+
+    // `probe` is an OPTIONAL sibling of `schema` (see docs/EXTENDING.md → "Pack
+    // requirements"). It is deliberately excluded from the overlay comparison
+    // below — it declares how to DISCOVER values, not what shape they take, and
+    // has no counterpart in project.schema.json. Checked here rather than merely
+    // tolerated so a typo'd block fails CI instead of silently disabling the
+    // probe at runtime (the daemon parses it leniently on purpose).
+    if (entry.probe !== undefined) {
+      const p = entry.probe;
+      const probeAt = at + '.probe';
+      if (!p || typeof p !== 'object' || Array.isArray(p)) {
+        note(probeAt + ' is present but not an object');
+      } else {
+        const strList = (v) => Array.isArray(v) && v.every((s) => typeof s === 'string' && s.trim() !== '');
+        if (!strList(p.fields) || p.fields.length === 0) {
+          note(probeAt + '.fields must be a non-empty array of non-empty strings');
+        }
+        if (p.needs !== undefined && !strList(p.needs)) {
+          note(probeAt + '.needs must be an array of non-empty strings');
+        }
+        if (typeof p.prompt !== 'string' || p.prompt.trim() === '') {
+          note(probeAt + '.prompt is missing or not a non-empty string');
+        }
+        if (p.timeoutSeconds !== undefined &&
+            (!Number.isInteger(p.timeoutSeconds) || p.timeoutSeconds < 1)) {
+          note(probeAt + '.timeoutSeconds must be a positive integer');
+        }
+      }
+    }
+
     if (!keyOk) return;
 
     const key = entry.key;
