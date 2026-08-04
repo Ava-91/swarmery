@@ -235,9 +235,17 @@ func TestSystemAgentsList(t *testing.T) {
 	if len(agents) != 1 || agents[0]["name"] != "reviewer" {
 		t.Errorf("scope=global: %v, want only reviewer", agents)
 	}
+	// ?project= is the EFFECTIVE set, not a project_id match: alpha's own row
+	// PLUS the global-local one it inherits from ~/.claude (a pack built-in would
+	// join it when the project enables that pack).
 	getJSON(t, srv.URL+"/api/system/agents?project=alpha", &agents)
+	if len(agents) != 2 || agents[0]["name"] != "proj-agent" || agents[1]["name"] != "reviewer" {
+		t.Errorf("project=alpha: %v, want proj-agent + the inherited global reviewer", agents)
+	}
+	// …and ?scope=project narrows that to the project's OWN rows.
+	getJSON(t, srv.URL+"/api/system/agents?project=alpha&scope=project", &agents)
 	if len(agents) != 1 || agents[0]["name"] != "proj-agent" {
-		t.Errorf("project=alpha: %v, want only proj-agent", agents)
+		t.Errorf("project=alpha&scope=project: %v, want only proj-agent", agents)
 	}
 }
 

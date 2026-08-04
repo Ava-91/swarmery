@@ -139,6 +139,37 @@ const (
 	                       AND g.name = g.plugin_name || ':' || l.name`
 )
 
+// ---- project scope ------------------------------------------------------------
+//
+// Insights are cross-project ANALYSIS (a promotion candidate is by definition a
+// component several projects copied), so a project scope cannot simply drop the
+// other projects' rows — it selects the insights THIS project participates in,
+// and the payload still shows every copy. Both fragments below are spliced into
+// the compute queries AND into insightCounts, so the badge equals the list
+// length by construction (the discipline the predicates above already follow).
+
+// promotionScopeHaving keeps only names the scoped project itself has a local
+// copy of. Empty (and nil-safe) in fleet mode. Must be appended to a HAVING over
+// the item table aliased `t`.
+func (e *effectiveScope) promotionScopeHaving() (string, []any) {
+	if e == nil {
+		return "", nil
+	}
+	return ` AND SUM(CASE WHEN t.project_id = ? THEN 1 ELSE 0 END) > 0`, []any{e.projectID}
+}
+
+// staleOverrideScope keeps the overrides that are EFFECTIVE in the scoped
+// project: a local copy that is either the project's own or the user's global
+// one, shadowing a pack the project actually enables. Empty in fleet mode.
+func (e *effectiveScope) staleOverrideScope() (string, []any) {
+	if e == nil {
+		return "", nil
+	}
+	holes, packArgs := e.packHoles()
+	args := append([]any{e.projectID}, packArgs...)
+	return ` AND (l.project_id = ? OR l.scope = 'global') AND g.plugin_name IN (` + holes + `)`, args
+}
+
 // insightKind parameterizes the per-kind queries. verTable=="" marks the
 // unversioned kind (commands): contents are read from disk instead.
 type insightKind struct {
@@ -164,7 +195,9 @@ type insightCopy struct {
 
 // ---- compute ----------------------------------------------------------------
 
-func computeInsights(db *sql.DB) (systemInsightsDTO, error) {
+// computeInsights builds the whole payload. esc is the optional project scope
+// (nil = fleet-wide, the unchanged behaviour).
+func computeInsights(db *sql.DB, esc *effectiveScope) (systemInsightsDTO, error) {
 	out := systemInsightsDTO{
 		PromotionCandidates: []promotionCandidateDTO{},
 		StaleOverrides:      []staleOverrideDTO{},
@@ -172,18 +205,18 @@ func computeInsights(db *sql.DB) (systemInsightsDTO, error) {
 		PluginDrift:         []pluginDriftDTO{},
 	}
 	var err error
-	if out.PromotionCandidates, err = promotionCandidates(db); err != nil {
+	if out.PromotionCandidates, err = promotionCandidates(db, esc); err != nil {
 		return out, err
 	}
-	if out.StaleOverrides, err = staleOverrideList(db); err != nil {
+	if out.StaleOverrides, err = staleOverrideList(db, esc); err != nil {
 		return out, err
 	}
-	if out.Dead, err = deadComponents(db); err != nil {
+	if out.Dead, err = deadComponents(db, esc); err != nil {
 		return out, err
 	}
 	// Best effort, like the fields above: a drift query failure must not take
 	// the whole insights page down.
-	if drift, derr := pluginDriftFindings(db); derr == nil {
+	if drift, derr := pluginDriftFindings(db, esc); derr == nil {
 		out.PluginDrift = drift
 	}
 	return out, nil
@@ -192,7 +225,9 @@ func computeInsights(db *sql.DB) (systemInsightsDTO, error) {
 // pluginDriftFindings lists active plugin_* findings with the project resolved
 // by path. plugin:detector (no "|" in the target) is machine-wide and carries a
 // null slug and an empty path.
-func pluginDriftFindings(db *sql.DB) ([]pluginDriftDTO, error) {
+// A project scope keeps only the findings that resolve to THAT project (the
+// machine-wide plugin:detector row has no project and is dropped there).
+func pluginDriftFindings(db *sql.DB, esc *effectiveScope) ([]pluginDriftDTO, error) {
 	rows, err := db.Query(`
 		SELECT f.target, f.rule, f.severity, f.message
 		FROM config_lint_findings f
@@ -233,7 +268,16 @@ func pluginDriftFindings(db *sql.DB) ([]pluginDriftDTO, error) {
 			out[i].ProjectSlug = &slug
 		}
 	}
-	return out, nil
+	if !esc.scoped() {
+		return out, nil
+	}
+	scopedOut := []pluginDriftDTO{}
+	for _, d := range out {
+		if d.ProjectSlug != nil && *d.ProjectSlug == esc.slug() {
+			scopedOut = append(scopedOut, d)
+		}
+	}
+	return scopedOut, nil
 }
 
 // projectSlugsByPath is the path→slug map used to link a finding to its project.
@@ -256,10 +300,10 @@ func projectSlugsByPath(db *sql.DB) (map[string]string, error) {
 
 // promotionCandidates groups project-local components by name and keeps the
 // names present in ≥2 distinct projects.
-func promotionCandidates(db *sql.DB) ([]promotionCandidateDTO, error) {
+func promotionCandidates(db *sql.DB, esc *effectiveScope) ([]promotionCandidateDTO, error) {
 	out := []promotionCandidateDTO{}
 	for _, k := range insightKinds {
-		groups, names, err := projectLocalGroups(db, k)
+		groups, names, err := projectLocalGroups(db, k, esc)
 		if err != nil {
 			return nil, err
 		}
@@ -289,13 +333,17 @@ func promotionCandidates(db *sql.DB) ([]promotionCandidateDTO, error) {
 
 // projectLocalGroups loads every live scope=project origin=local row of one
 // kind, grouped by name (names returned in first-seen = SQL name order).
-func projectLocalGroups(db *sql.DB, k insightKind) (map[string][]insightCopy, []string, error) {
+func projectLocalGroups(db *sql.DB, k insightKind, esc *effectiveScope) (map[string][]insightCopy, []string, error) {
 	// The ≥2-distinct-projects name gate is repeated in SQL so version CONTENT
 	// is only ever joined/loaded for actual candidate names — a lone local
 	// component never drags its full body off disk pages into the result set.
+	// In project mode the gate also requires the scoped project to be one of
+	// those copies; the group itself still carries EVERY project's copy, which
+	// is what makes the insight actionable.
+	gate, gateArgs := esc.promotionScopeHaving()
 	nameGate := ` AND t.name IN (SELECT t.name FROM ` + k.table + ` t
 	                             WHERE ` + localProjectPred + `
-	                             GROUP BY t.name HAVING COUNT(DISTINCT t.project_id) >= 2)`
+	                             GROUP BY t.name HAVING COUNT(DISTINCT t.project_id) >= 2` + gate + `)`
 	var q string
 	if k.verTable != "" {
 		q = `SELECT t.id, t.name, p.slug, t.` + k.pathCol + `, v.content_hash, v.content
@@ -311,7 +359,7 @@ func projectLocalGroups(db *sql.DB, k insightKind) (map[string][]insightCopy, []
 		     WHERE ` + localProjectPred + nameGate + `
 		     ORDER BY t.name, p.slug, t.id`
 	}
-	rows, err := db.Query(q)
+	rows, err := db.Query(q, gateArgs...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -348,8 +396,9 @@ func projectLocalGroups(db *sql.DB, k insightKind) (map[string][]insightCopy, []
 
 // staleOverrideList pairs each local item with the plugin item it
 // name-collides with (composite plugin names, registry.go §7).
-func staleOverrideList(db *sql.DB) ([]staleOverrideDTO, error) {
+func staleOverrideList(db *sql.DB, esc *effectiveScope) ([]staleOverrideDTO, error) {
 	out := []staleOverrideDTO{}
+	scope, scopeArgs := esc.staleOverrideScope()
 	for _, k := range insightKinds {
 		var q string
 		if k.verTable != "" {
@@ -360,7 +409,7 @@ func staleOverrideList(db *sql.DB) ([]staleOverrideDTO, error) {
 			     LEFT JOIN projects lp ON lp.id = l.project_id
 			     LEFT JOIN ` + k.verTable + ` lv ON lv.id = l.current_version_id
 			     LEFT JOIN ` + k.verTable + ` gv ON gv.id = g.current_version_id
-			     WHERE ` + localOverridePred + `
+			     WHERE ` + localOverridePred + scope + `
 			     ORDER BY l.name, lp.slug, l.id`
 		} else {
 			q = `SELECT l.id, l.name, l.scope, lp.slug, l.file_path, l.content_hash, NULL,
@@ -368,10 +417,10 @@ func staleOverrideList(db *sql.DB) ([]staleOverrideDTO, error) {
 			     FROM commands l
 			     JOIN commands g ON ` + pluginCollisionJoin + `
 			     LEFT JOIN projects lp ON lp.id = l.project_id
-			     WHERE ` + localOverridePred + `
+			     WHERE ` + localOverridePred + scope + `
 			     ORDER BY l.name, lp.slug, l.id`
 		}
-		rows, err := db.Query(q)
+		rows, err := db.Query(q, scopeArgs...)
 		if err != nil {
 			return nil, err
 		}
@@ -433,14 +482,17 @@ func staleOverrideList(db *sql.DB) ([]staleOverrideDTO, error) {
 
 // deadComponents reframes the linter's ACTIVE agent_dead findings — one
 // source of truth, no second telemetry query.
-func deadComponents(db *sql.DB) ([]deadComponentDTO, error) {
+// A project scope keeps only the agents EFFECTIVE there (effectiveScope) — a
+// dead agent of another project is that project's problem.
+func deadComponents(db *sql.DB, esc *effectiveScope) ([]deadComponentDTO, error) {
+	pred, args := esc.predicate("a.", true)
 	rows, err := db.Query(`
 		SELECT a.id, a.name, a.scope, p.slug, f.message
 		FROM config_lint_findings f
 		JOIN agents a ON f.target = 'agent:' || a.id
 		LEFT JOIN projects p ON p.id = a.project_id
-		WHERE f.rule = 'agent_dead' AND f.resolved_at IS NULL AND a.deleted = 0
-		ORDER BY a.name, a.id`)
+		WHERE f.rule = 'agent_dead' AND f.resolved_at IS NULL AND a.deleted = 0`+pred+`
+		ORDER BY a.name, a.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -586,19 +638,23 @@ func splitLines(s string) []string {
 // IO, no diffing. Predicates are the SAME spliced constants the full compute
 // uses (localProjectPred / localOverridePred / pluginCollisionJoin), so the
 // counts equal len(promotionCandidates) / len(staleOverrides) by construction.
-func insightCounts(db *sql.DB) (promotions, staleOverrides int64, err error) {
+// esc scopes the counts to one project exactly as it scopes the lists (nil =
+// fleet-wide).
+func insightCounts(db *sql.DB, esc *effectiveScope) (promotions, staleOverrides int64, err error) {
+	gate, gateArgs := esc.promotionScopeHaving()
+	scope, scopeArgs := esc.staleOverrideScope()
 	for _, k := range insightKinds {
 		var n int64
 		if err = db.QueryRow(`SELECT COUNT(*) FROM (
-			SELECT t.name FROM ` + k.table + ` t
-			WHERE ` + localProjectPred + `
-			GROUP BY t.name HAVING COUNT(DISTINCT t.project_id) >= 2)`).Scan(&n); err != nil {
+			SELECT t.name FROM `+k.table+` t
+			WHERE `+localProjectPred+`
+			GROUP BY t.name HAVING COUNT(DISTINCT t.project_id) >= 2`+gate+`)`, gateArgs...).Scan(&n); err != nil {
 			return
 		}
 		promotions += n
-		if err = db.QueryRow(`SELECT COUNT(*) FROM ` + k.table + ` l
-			JOIN ` + k.table + ` g ON ` + pluginCollisionJoin + `
-			WHERE ` + localOverridePred).Scan(&n); err != nil {
+		if err = db.QueryRow(`SELECT COUNT(*) FROM `+k.table+` l
+			JOIN `+k.table+` g ON `+pluginCollisionJoin+`
+			WHERE `+localOverridePred+scope, scopeArgs...).Scan(&n); err != nil {
 			return
 		}
 		staleOverrides += n
@@ -608,9 +664,15 @@ func insightCounts(db *sql.DB) (promotions, staleOverrides int64, err error) {
 
 // ---- handler (route registered in routes.go) -----------------------------------
 
-// GET /api/system/insights
+// GET /api/system/insights?projectId=<slug|id> — fleet-wide, or narrowed to the
+// insights one project participates in.
 func (h *Handler) systemInsights(w http.ResponseWriter, r *http.Request) {
-	out, err := computeInsights(h.DB)
+	esc, err := h.resolveEffectiveScope(r.URL.Query().Get("projectId"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	out, err := computeInsights(h.DB, esc)
 	if err != nil {
 		writeErr(w, err)
 		return

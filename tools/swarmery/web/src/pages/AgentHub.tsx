@@ -17,7 +17,7 @@ import { fetchAgentProfile, fetchAgentRoster } from '../api/agentHub';
 import { fetchProjects } from '../api';
 import { fmtAgo, fmtCost } from '../lib/format';
 import { ScopeChip } from '../components/ScopeChip';
-import { useProjectIdParam, useScope } from '../lib/scope';
+import { useProjectScope, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { SystemItemPanel } from './system/ItemDetail';
@@ -51,14 +51,19 @@ function RosterCard({
   projectNames: Record<string, string>;
 }): JSX.Element {
   const health = healthTone(agent.failedShare);
-  // Project-scoped rows badge with the OWNING project, not the bare word
-  // "project" — several projects can define an agent with the same name, and
-  // "project" alone can't tell those rows apart in a fleet-wide roster. Global
-  // rows keep the plain "global" chip (no project to disambiguate against).
+  // Where the row comes FROM, which is the question a project roster raises now
+  // that it lists the effective set (own + global + enabled packs):
+  //   project row  → the OWNING project (several projects can define an agent
+  //                  with the same name, so the bare word "project" can't tell
+  //                  those rows apart);
+  //   plugin row   → the pack that ships it ("core", "uav-pack", …);
+  //   otherwise    → "global" (the user's own ~/.claude).
   const scopeBadge =
     agent.scope === 'project' && agent.projectSlug !== null
       ? (projectNames[agent.projectSlug] ?? agent.projectSlug)
-      : agent.scope;
+      : agent.origin === 'plugin' && agent.pluginName !== null
+        ? agent.pluginName
+        : agent.scope;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -131,10 +136,9 @@ export function AgentHub({
   embedded?: boolean;
   routeBase?: string;
   scopeSlug?: string | null;
-  /** PROJECT mode (/p/:slug/system/agents): the roster is narrowed to this
-   * project's OWN agents (scope === 'project') and the all/global/project scope
-   * selector is hidden — the view is inherently project-only. Fleet mode keeps
-   * the full roster + the scope chips. */
+  /** PROJECT mode (/p/:slug/system/agents): the roster is the project's
+   * EFFECTIVE set — the server narrows it via ?projectId= (own + global +
+   * enabled packs). Only the empty-state copy differs from fleet mode. */
   projectScoped?: boolean;
 } = {}): JSX.Element {
   const params = useParams();
@@ -147,8 +151,11 @@ export function AgentHub({
   // Resolved to the numeric project id before it reaches the API: /api/agents/hub
   // matches slug-or-id-or-name and would accept the pretty slug, but the sibling
   // /api/system/* template endpoints do NOT — one convention for the whole hub
-  // family beats two that differ only where it breaks (see useProjectIdParam).
-  const scopeSlug = useProjectIdParam(
+  // family beats two that differ only where it breaks (see useProjectScope).
+  // `scopePending` is load-bearing, not a nicety: the unscoped roster is the
+  // WHOLE fleet, so firing it while the project list resolves lets it land last
+  // and overwrite the scoped one.
+  const { id: scopeSlug, pending: scopePending } = useProjectScope(
     scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope),
   );
   const routeBase =
@@ -174,11 +181,12 @@ export function AgentHub({
   const [projectNames, setProjectNames] = useState<Record<string, string>>({});
 
   const loadRoster = useCallback((): void => {
+    if (scopePending) return; // see scopePending above — never fetch unscoped first
     setRosterError(null);
     fetchAgentRoster(scopeSlug ?? undefined)
       .then((r) => setRoster(r.agents))
       .catch((e: unknown) => setRosterError(String(e)));
-  }, [scopeSlug]);
+  }, [scopeSlug, scopePending]);
   useEffect(loadRoster, [loadRoster]);
 
   useEffect(() => {
@@ -192,11 +200,12 @@ export function AgentHub({
       setProfile(null);
       return;
     }
+    if (scopePending) return;
     setProfileError(null);
     fetchAgentProfile(selectedId, scopeSlug ?? undefined)
       .then(setProfile)
       .catch((e: unknown) => setProfileError(String(e)));
-  }, [selectedId, scopeSlug]);
+  }, [selectedId, scopeSlug, scopePending]);
   useEffect(loadProfile, [loadProfile]);
 
   // Live: a registry edit (WS system_item_updated) refetches the roster, the
@@ -265,26 +274,25 @@ export function AgentHub({
     [],
   );
 
-  // Client-side origin-scope filter. In PROJECT mode the roster is pinned to
-  // this project's OWN agents (scope === 'project') — the /api/agents/hub roster
-  // returns the whole registry (projectId only scopes the rollup window), so the
-  // project-only narrowing happens here. In fleet mode the scope chips drive it:
+  // Client-side origin-scope filter. The ROSTER ITSELF is already narrowed by
+  // the server: /api/agents/hub?projectId= returns the agents EFFECTIVE in that
+  // project (its own + global + the packs it enables), so another project's
+  // local agents never arrive here. These chips only slice what did arrive:
   // scopeChip === null ("all scopes") passes the roster through untouched.
   const visibleRoster = useMemo(() => {
-    if (roster === null) return roster;
-    if (projectScoped) return roster.filter((a) => a.scope === 'project');
-    if (scopeChip === null) return roster;
+    if (roster === null || scopeChip === null) return roster;
     return roster.filter((a) => a.scope === scopeChip);
-  }, [roster, scopeChip, projectScoped]);
+  }, [roster, scopeChip]);
 
   // Scope segmented control (all scopes / global / project) — reuses the System
   // page's chips. Rendered in HubShell's full-width top bar, like the toolkit
-  // catalog. Hidden in PROJECT mode: the view is inherently project-only there.
+  // catalog. It stays in PROJECT mode too: with the effective roster there, the
+  // chips are how you narrow to the project's OWN agents.
   // The PROJECT-scope chip leads that row on the standalone /agents mount only:
   // embedded, SystemShell already renders one above the tab bar, and two chips
   // driving the same context on one screen is a bug, not a convenience.
   // (`scopeChip` above is the unrelated ORIGIN scope: all/global/project.)
-  const scopeFilters = projectScoped ? undefined : (
+  const scopeFilters = (
     <div className="flex flex-wrap items-center gap-2">
       {!embedded && <ScopeChip />}
       <FiltersRow scope={scopeChip} onScope={setScopeChip} />
@@ -303,11 +311,11 @@ export function AgentHub({
       renderRow={(a) => <RosterCard agent={a} projectNames={projectNames} />}
       selectedKey={selectedId === null ? null : String(selectedId)}
       onSelect={onSelect}
-      {...(scopeFilters !== undefined ? { topBar: scopeFilters } : {})}
+      topBar={scopeFilters}
       searchPlaceholder="filter agents…"
       rosterEmptyLabel={
         projectScoped
-          ? 'No project-specific agents — this project inherits from enabled packs.'
+          ? 'No agents resolve for this project — enable a pack in Settings, or add one under .claude/agents/.'
           : 'no agents on this machine'
       }
       tabs={tabs}

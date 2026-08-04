@@ -266,12 +266,22 @@ type registryAgentRow struct {
 }
 
 // GET /api/agents/hub?projectId=<slug|id> — the roster. Registry agents joined
-// with 30-day rollups by normalised name; a projectId scope narrows the ROLLUP
-// window to that project's sessions (the registry rows themselves are shown
-// whole — an agent with no runs in the project simply shows zeros).
+// with 30-day rollups by normalised name. A projectId scope narrows BOTH:
+//   - the ROSTER to the agents EFFECTIVE in that project (its own + global-local
+//     + the built-ins of the packs it enables — effectiveScope), so another
+//     project's local agents never appear on a project page; and
+//   - the ROLLUP window to that project's sessions (an effective agent with no
+//     runs there simply shows zeros).
 func (h *Handler) agentsHub(w http.ResponseWriter, r *http.Request) {
 	pf, pargs := hubScope(r)
 	dr := hubRange()
+
+	esc, err := h.resolveEffectiveScope(r.URL.Query().Get("projectId"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	scopePred, scopeBinds := esc.predicate("t.", true)
 
 	rollups, err := h.agentRollupsByName(dr, pf, pargs)
 	if err != nil {
@@ -295,8 +305,8 @@ func (h *Handler) agentsHub(w http.ResponseWriter, r *http.Request) {
 		       t.file_path, t.description
 		  FROM agents t
 		  LEFT JOIN projects p ON p.id = t.project_id
-		 WHERE t.deleted = 0
-		 ORDER BY t.name, t.scope, t.id`)
+		 WHERE t.deleted = 0`+scopePred+`
+		 ORDER BY t.name, t.scope, t.id`, scopeBinds...)
 	if err != nil {
 		writeErr(w, err)
 		return

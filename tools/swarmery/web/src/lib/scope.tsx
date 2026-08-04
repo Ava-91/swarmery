@@ -134,3 +134,24 @@ export function useProjectIdParam(key: string | null | undefined): string | null
   const found = findProject(projects, key);
   return found === null ? null : String(found.id);
 }
+
+/**
+ * useProjectIdParam plus the one bit it cannot express: whether the id is null
+ * because there is NO scope, or merely because the project list has not landed
+ * yet. Any caller whose unscoped request returns a DIFFERENT (wider) result set
+ * must use this and skip fetching while `pending` — otherwise the first,
+ * unscoped response can resolve last and clobber the scoped one, which is how a
+ * project page ends up rendering the whole fleet.
+ */
+export function useProjectScope(key: string | null | undefined): {
+  id: string | null;
+  pending: boolean;
+} {
+  const { projects } = useScope();
+  if (key == null || key === '') return { id: null, pending: false };
+  // The list is fetched once in ScopeProvider; empty means "not yet" (a machine
+  // with zero projects cannot be showing a project-scoped page).
+  if (projects.length === 0) return { id: null, pending: true };
+  const found = findProject(projects, key);
+  return { id: found === null ? null : String(found.id), pending: false };
+}
