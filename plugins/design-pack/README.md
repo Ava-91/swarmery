@@ -165,6 +165,19 @@ What the bundle gives up, stated plainly:
 - `design-acquire` and `design-verify` travel as `references/*.md` rather than as sibling
   skills, so they are read, not delegated to.
 
+> **The bundle trades an enforced boundary for a written one.** Inside the pack, the eight STOP
+> triggers are an agent contract: the run stops and hands the decision back before a global
+> token, a font, or a shared component is touched. In the bundle there is no agent, so those
+> same triggers are **advisory text** that the session may rationalise past. That is acceptable
+> in a supervised interactive session, where you see the stop and decide. Do not point the
+> bundle at an unattended headless run — use the pack there, or accept that the blast-radius
+> guarantee is gone.
+
 Everything else is identical: `SCRIPTS_DIR` resolves to `${CLAUDE_PLUGIN_ROOT}/scripts` inside
 the pack and to the skill's own `scripts/` inside the bundle, and that one variable is the only
 difference between the two.
+
+The bundling recipe above is hand-copied and nothing in CI checks it, so a new file under
+`skills/design-implement/references/` or `scripts/` lands in the bundle only because `cp -R`
+happens to sweep the whole directory. If the layout ever gains a file outside those two trees,
+update the recipe in the same commit.
