@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "projectConfig": [
+    {
+      "key": "jira",
+      "title": "Jira tracker",
+      "why": "/jira-fix runs with autonomy: auto — there's no one to ask mid-run, so everything it can't read off the ticket itself must be declared here.",
+      "docs": "skills/jira-config/SKILL.md",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Issue-tracker contract consumed by jira-pack. Required for /jira-fix.",
+        "properties": {
+          "baseUrl":    { "type": "string", "description": "Site host, e.g. <your-site>.atlassian.net" },
+          "projectKey": { "type": "string", "description": "Ticket key prefix, e.g. ABC" },
+          "qaStatus":   { "type": "string", "description": "Exact target status name the agent moves a finished ticket to" },
+          "repro": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Commands the agent runs to reproduce. setup is optional; test is mandatory.",
+            "properties": {
+              "setup": { "type": "string" },
+              "test":  { "type": "string" }
+            },
+            "required": ["test"]
+          },
+          "budget": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Autonomy limits before the run escalates to planning.",
+            "properties": {
+              "maxFiles":    { "type": "integer", "minimum": 1, "default": 5 },
+              "maxAttempts": { "type": "integer", "minimum": 1, "default": 3 }
+            }
+          }
+        },
+        "required": ["baseUrl", "projectKey", "qaStatus", "repro"]
+      }
+    }
+  ]
+}
