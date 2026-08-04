@@ -25,6 +25,66 @@ Promotion checklist:
 2. Move the file into the pack/core; bump that plugin's semver.
 3. Delete the project-local copy in the consumer that donated it (the plugin now supplies it).
 
+## Pack requirements (`requirements.json`)
+
+A pack that cannot work without project-specific config declares it in
+`plugins/<pack>/requirements.json` — at the **pack root**, next to `agents/` and `skills/`
+(only `plugin.json` lives under `.claude-plugin/`). This is how a pack says "I need block `X`
+in `.claude/project.json`, here is its schema, here is why" **without** any reader needing to
+know what the pack does — the same neutrality rule that keeps domain knowledge out of core.
+
+```json
+{
+  "version": 1,
+  "projectConfig": [
+    {
+      "key": "<top-level project.json key>",
+      "title": "<human label>",
+      "why": "<one sentence: what breaks without it>",
+      "docs": "skills/<skill>/SKILL.md",
+      "schema": { "type": "object", "properties": {}, "required": [] }
+    }
+  ]
+}
+```
+
+| Field | Required | Purpose |
+|---|---|---|
+| `version` | yes | integer, currently exactly `1`. A reader seeing any other number ignores the file (forward-compat) |
+| `projectConfig[]` | yes | the top-level `project.json` keys the pack needs |
+| `.key` | yes | the key name in `project.json` |
+| `.title` | yes | human-readable heading |
+| `.why` | yes | one sentence on why the pack can't run without it — shown above the form |
+| `.docs` | no | pack-relative path to documentation, rendered as a link |
+| `.schema` | yes | self-contained JSON Schema fragment (`type: object` + `properties` + `required`) |
+
+Unknown fields are ignored by readers, so a later version can add optional fields without
+bumping `version`.
+
+**Sync rule (CI-enforced).** `.schema` must be canonically identical to the matching branch of
+`overlays/_schema/project.schema.json` → `properties[<key>]` — same `description` strings, same
+`required`, same defaults. A consumer's `project.json` is validated against the overlay schema
+while the form is rendered from the pack file; if they drift, the form collects one shape and
+the schema rejects another. `scripts/check-plugin-requirements.sh` compares them under a
+canonical form (object keys sorted recursively, so ordering and formatting never count as
+drift) and fails the build on any difference, or when the key is missing from the overlay
+schema entirely. The file is optional per pack — its absence is not an error. Run it locally:
+
+```bash
+bash scripts/check-plugin-requirements.sh   # → ✓ plugin requirements in sync (<n> checked)
+```
+
+Changing the schema means editing **both** files in the same commit.
+
+**Neutrality.** `requirements.json` is under `plugins/**`, so it carries placeholders only —
+never a real host, project key, or status name (`docs/NEUTRALITY.md`).
+
+**Semver.** Adding a new required key to `requirements.json` changes the pack's contract with
+its consumers: existing projects become under-configured until someone fills the new key in.
+That is a **minor bump** of the pack's `plugin.json` at minimum, so consumers pick it up via
+`/plugin update`. Loosening the contract (dropping a required key, adding an optional one) is a
+patch bump.
+
 ## Overriding core behavior
 
 A project may ship a component with the **same name** as a core one in its `.claude/agents/`

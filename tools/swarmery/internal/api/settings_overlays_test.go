@@ -72,11 +72,7 @@ func TestProjectPluginsOverlayEnablesUnmanagedRepo(t *testing.T) {
 			Status: "unknown", Detail: overlayStatusDetail},
 		{Name: "lsp-pack", Description: "LSP pack", Enabled: false, Status: "unknown"},
 	}
-	for i, w := range want {
-		if resp.Plugins[i] != w {
-			t.Errorf("plugins[%d] = %+v, want %+v", i, resp.Plugins[i], w)
-		}
-	}
+	assertPluginRows(t, resp.Plugins, want)
 }
 
 // TestProjectPluginsOverlayWithNoRepoSettingsFile covers the same path when the
@@ -124,11 +120,7 @@ func TestProjectPluginsOverlayWinsOnKeyConflict(t *testing.T) {
 		// Repo said true, overlay said false — overlay wins.
 		{Name: "lsp-pack", Description: "LSP pack", Enabled: false, Status: "unknown"},
 	}
-	for i, w := range want {
-		if resp.Plugins[i] != w {
-			t.Errorf("plugins[%d] = %+v, want %+v", i, resp.Plugins[i], w)
-		}
-	}
+	assertPluginRows(t, resp.Plugins, want)
 }
 
 // TestProjectPluginsOutsideOverlayRootsIsRepoOnly — a declared overlay must not

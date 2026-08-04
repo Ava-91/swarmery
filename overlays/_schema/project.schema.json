@@ -42,7 +42,7 @@
       "additionalProperties": false,
       "description": "Issue-tracker contract consumed by jira-pack. Required for /jira-fix.",
       "properties": {
-        "baseUrl":    { "type": "string", "description": "Site host, e.g. yourteam.atlassian.net" },
+        "baseUrl":    { "type": "string", "description": "Site host, e.g. <your-site>.atlassian.net" },
         "projectKey": { "type": "string", "description": "Ticket key prefix, e.g. ABC" },
         "qaStatus":   { "type": "string", "description": "Exact target status name the agent moves a finished ticket to" },
         "repro": {
