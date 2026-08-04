@@ -52,6 +52,9 @@ import type {
   RunConflictCode,
   ProjectMeta,
   ProjectMetaPatch,
+  ProjectConfigInvalid,
+  ProjectConfigProbeResponse,
+  ProjectConfigWriteResponse,
   ProjectOverviewResp,
   ProjectPluginsResponse,
   PluginRepairResponse,
@@ -305,6 +308,107 @@ export async function repairProjectPlugin(
     throw new Error(data.error ?? data.output ?? `repair failed: ${String(res.status)}`);
   }
   return (await res.json()) as PluginRepairResponse;
+}
+
+/**
+ * Thrown by putProjectConfig on a 422: the value failed the pack's declared
+ * schema. Carries the server's structured `problems` (one human line per
+ * dotted field path, e.g. "repro.test is required") so a caller with
+ * field-level UI (PluginConfigModal) can place each one next to its input
+ * instead of only showing a joined sentence. Mirrors EscalationRequiredError
+ * below — same "typed error carries the structured payload" shape.
+ */
+export class ConfigValidationError extends Error {
+  readonly problems: string[];
+  constructor(payload: ProjectConfigInvalid) {
+    super(payload.error);
+    this.name = 'ConfigValidationError';
+    this.problems = payload.problems;
+  }
+}
+
+/**
+ * PUT /api/projects/{id}/config/{key} — write ONE top-level key of the
+ * project's .claude/project.json. Every other key keeps its value, its position
+ * in the file, and the file's 2-space formatting; the daemon backs the previous
+ * contents up to project.json.bak first.
+ *
+ * Only keys a catalogued pack declared in its requirements.json are writable
+ * (404 otherwise). 403 when the daemon write fence is closed or the project sits
+ * outside it; 409 when there is no project.json to merge into; 422 when the
+ * value fails the pack's declared schema — thrown as {@link ConfigValidationError}
+ * so the caller can place each problem on its field; every other non-2xx
+ * throws a plain Error with the server's message.
+ */
+export async function putProjectConfig(
+  id: number,
+  key: string,
+  value: unknown,
+): Promise<ProjectConfigWriteResponse> {
+  if (MOCK) return { key, written: true, backup: '.claude/project.json.bak', changed: true };
+  const res = await fetch(`/api/projects/${String(id)}/config/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as Partial<ProjectConfigInvalid>;
+    if (res.status === 422 && data.problems !== undefined) {
+      throw new ConfigValidationError({
+        error: data.error ?? 'invalid config',
+        problems: data.problems,
+      });
+    }
+    throw new Error(data.error ?? `config write failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as ProjectConfigWriteResponse;
+}
+
+/**
+ * POST /api/projects/{id}/config/{key}/probe — ask a live `claude` session for
+ * REAL candidate values for the fields the pack nominated. Writes nothing: the
+ * answer only fills datalists, and saving stays an explicit `save`.
+ *
+ * Runtime failures are NOT exceptions here. A timeout, a missing binary, prose
+ * instead of JSON — all of them come back 200 with empty `suggestions` and a
+ * `reason` to show in grey. Only the refusals throw: 403 (fence), 404 (the key
+ * declares no probe), and 400 with `problems` when the probe's own inputs are
+ * still empty — thrown as {@link ConfigValidationError} so the modal can place
+ * each problem on its field, exactly as it does for a rejected save.
+ *
+ * `signal` is worth passing: the server's timeout hangs off the REQUEST context,
+ * so aborting the fetch kills the agent process instead of orphaning it for the
+ * next three minutes.
+ */
+export async function probeProjectConfig(
+  id: number,
+  key: string,
+  value: unknown,
+  signal?: AbortSignal,
+): Promise<ProjectConfigProbeResponse> {
+  if (MOCK) return { suggestions: {}, reason: 'probe is unavailable in mock mode' };
+  const res = await fetch(
+    `/api/projects/${String(id)}/config/${encodeURIComponent(key)}/probe`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+      // `?? null` because RequestInit.signal is AbortSignal | null under
+      // exactOptionalPropertyTypes — undefined is not one of its inhabitants.
+      signal: signal ?? null,
+    },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as Partial<ProjectConfigInvalid>;
+    if (res.status === 400 && data.problems !== undefined) {
+      throw new ConfigValidationError({
+        error: data.error ?? 'the probe needs more fields filled in first',
+        problems: data.problems,
+      });
+    }
+    throw new Error(data.error ?? `probe failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as ProjectConfigProbeResponse;
 }
 
 /** GET /api/projects/onboard/config — defaults + enabled state for the modal. */

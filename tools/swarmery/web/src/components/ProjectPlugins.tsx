@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PluginDriftStatus, ProjectPluginRow, ProjectPluginsResponse } from '../api/types';
 import { fetchProjectPlugins, repairProjectPlugin, toggleProjectPlugin } from '../api';
 import { Card, ErrorBox, Loading, SectionTitle } from './ui';
+import { PluginConfigModal } from './PluginConfigModal';
 
 // red = the plugin is not loaded at all; amber = it loads, but stale or from a
 // reclaimed cache dir. Both tokens are defined in light and dark themes.
@@ -19,15 +20,62 @@ const STATUS_STYLES: Record<Exclude<PluginDriftStatus, 'ok' | 'unknown'>, string
   behind: 'border-amber/40 bg-amber/10 text-amber',
 };
 
+// needs-config is NOT a PluginDriftStatus (see PluginConfigStatus in
+// api/types.ts) — it is a separate, lower-priority chip: the daemon only ever
+// sets it when drift is already 'ok' (repair outranks config), so a row shows
+// at most one of the two chips, never both.
 function StatusChip({ row }: { row: ProjectPluginRow }): JSX.Element | null {
-  if (row.status === 'ok' || row.status === 'unknown') return null;
+  if (row.status !== 'ok' && row.status !== 'unknown') {
+    return (
+      <span
+        data-tip={row.detail}
+        className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] ${STATUS_STYLES[row.status]}`}
+      >
+        {row.status}
+      </span>
+    );
+  }
+  if (row.configStatus === 'needs-config') {
+    const missing = row.configMissing ?? [];
+    return (
+      <span
+        data-tip={missing.length > 0 ? `missing: ${missing.join(', ')}` : undefined}
+        className="shrink-0 rounded-full border border-amber/40 bg-amber/10 px-2 py-0.5 font-mono text-[10px] text-amber"
+      >
+        needs-config
+      </span>
+    );
+  }
+  return null;
+}
+
+// Pill-button twin of RepairButton, but the action it drives (opening
+// PluginConfigModal) has its own loading/error state, so this stays a plain
+// button — 'configure' when the declared key is unfilled, 'edit' once it's
+// ok (so a wrong value can be fixed without hand-editing project.json).
+function ConfigureButton({
+  row,
+  disabled,
+  onOpen,
+}: {
+  row: ProjectPluginRow;
+  disabled: boolean;
+  onOpen: () => void;
+}): JSX.Element | null {
+  if (row.configStatus === undefined) return null;
+  const needsConfig = row.configStatus === 'needs-config';
   return (
-    <span
-      data-tip={row.detail}
-      className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] ${STATUS_STYLES[row.status]}`}
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onOpen}
+      data-tip={disabled ? 'read-only — daemon started without SWARMERY_ONBOARD_ROOTS' : undefined}
+      className={`shrink-0 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 ${
+        needsConfig ? 'text-amber' : 'text-ink-dim'
+      }`}
     >
-      {row.status}
-    </span>
+      {needsConfig ? 'configure' : 'edit'}
+    </button>
   );
 }
 
@@ -131,40 +179,63 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
   const [data, setData] = useState<ProjectPluginsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // The row whose config modal is open — manual 'configure'/'edit' click, or
+  // an automatic open right after enabling a pack that needs it (see toggle).
+  const [configFor, setConfigFor] = useState<ProjectPluginRow | null>(null);
 
   // Unmount guard shared by the initial load, the retry button, and the
   // reload-after-toggle: a ref (not a closure `let`) because `load` outlives
   // any single effect run. Flipped false in the effect cleanup below.
   const aliveRef = useRef(true);
 
-  const load = useCallback((): void => {
-    fetchProjectPlugins(projectId)
+  // Returns the freshly-loaded response so toggle() can inspect the just-
+  // enabled row's configStatus without a second fetch or a stale-closure read
+  // of `data`.
+  const load = useCallback((): Promise<ProjectPluginsResponse | null> => {
+    return fetchProjectPlugins(projectId)
       .then((d) => {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current) return null;
         setData(d);
         setError(null);
+        return d;
       })
       .catch((e: unknown) => {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current) return null;
         setError(e instanceof Error ? e.message : String(e));
+        return null;
       });
   }, [projectId]);
 
   useEffect(() => {
     aliveRef.current = true;
-    load();
+    void load();
     return () => {
       aliveRef.current = false;
     };
   }, [load]);
 
   const toggle = (row: ProjectPluginRow): void => {
+    const wasEnabled = row.enabled;
     setBusy(row.name);
     toggleProjectPlugin(projectId, row.name, !row.enabled)
       .then(() => {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current) return null;
         setError(null);
-        load();
+        return load();
+      })
+      .then((fresh) => {
+        // Close the loop without making the operator notice the amber chip
+        // first: enabling a pack that needs config opens the modal right
+        // away. Only on enable (not disable), and only when the reload
+        // actually landed.
+        if (!aliveRef.current || wasEnabled || fresh === null) return;
+        const freshRow = fresh.plugins.find((p) => p.name === row.name);
+        if (freshRow?.configStatus !== 'needs-config') return;
+        // Never displace a modal the operator already has open: a reload
+        // landing while they are typing into another pack's form must not
+        // swap the dialog out from under them. Functional update so the
+        // decision reads live state, not this closure's snapshot.
+        setConfigFor((current) => (current === null ? freshRow : current));
       })
       .catch((e: unknown) => {
         if (!aliveRef.current) return;
@@ -212,6 +283,11 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
                         onDone={load}
                       />
                     ) : null}
+                    <ConfigureButton
+                      row={row}
+                      disabled={!data.canWrite}
+                      onOpen={() => setConfigFor(row)}
+                    />
                     <ToggleButton
                       row={row}
                       disabled={!data.canWrite}
@@ -234,6 +310,22 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
           </div>
         </Card>
       ) : null}
+      {configFor !== null && (
+        // key on the row name: switching the modal from one pack to another
+        // must REMOUNT it, not reuse the mounted instance. Without this the
+        // form state (a half-typed block) would survive the swap and could be
+        // saved under the other pack's key.
+        <PluginConfigModal
+          key={configFor.name}
+          projectId={projectId}
+          row={configFor}
+          onClose={() => setConfigFor(null)}
+          onSaved={() => {
+            setConfigFor(null);
+            void load();
+          }}
+        />
+      )}
     </>
   );
 }

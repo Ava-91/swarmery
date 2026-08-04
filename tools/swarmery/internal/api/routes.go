@@ -36,6 +36,16 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// project_plugins.go) — the CLI cannot write project-scope settings through
 	// a symlink there.
 	mux.HandleFunc("POST /api/projects/{id}/plugins/{name}/repair", requireLocalOrigin(h.repairProjectPlugin))
+	// project config: the dashboard writes ONE top-level key of
+	// .claude/project.json — the key a pack declared in its requirements.json.
+	// Same fence as the plugin toggle: requireLocalOrigin here,
+	// SWARMERY_ONBOARD_ROOTS + resolveUnderRoots inside the handler.
+	mux.HandleFunc("PUT /api/projects/{id}/config/{key}", requireLocalOrigin(h.putProjectConfig))
+	// …and asks a live `claude` session for real candidate values for the
+	// fields that pack nominated (project_config_probe.go). Same fence — it
+	// spawns a process with the project as cwd — but it writes nothing, and it
+	// answers 200 with a reason for every runtime failure rather than a 5xx.
+	mux.HandleFunc("POST /api/projects/{id}/config/{key}/probe", requireLocalOrigin(h.probeProjectConfig))
 	// canvas v2 parity: project editorial aggregate (rightNow + thisWeek + attention).
 	mux.HandleFunc("GET /api/projects/{id}/overview", h.projectOverview)
 	// onboarding: bootstrap a new consumer project from the dashboard. Fenced

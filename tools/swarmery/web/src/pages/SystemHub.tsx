@@ -26,7 +26,7 @@ import { fetchSystemCommands, fetchSystemHooks, fetchSystemItems } from '../api/
 import { fetchSystemHubSummary, fetchSystemTemplates } from '../api/systemHub';
 import { fmtAgo } from '../lib/format';
 import { ScopeChip } from '../components/ScopeChip';
-import { useProjectIdParam, useScope } from '../lib/scope';
+import { useProjectScope, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { Empty } from '../components/ui';
 import { HubShell, type HubTab } from './agent-hub/HubShell';
@@ -182,17 +182,6 @@ function fetchRoster(category: HubCategory, projectId: string | null): Promise<R
   }
 }
 
-/** PROJECT-mode narrowing: keep only rows that originate in the project's OWN
- * .claude/ — skills/commands/hooks carry scope === 'project'; templates carry
- * source === 'project' (the effective template list also returns core/pack
- * built-ins the project merely inherits). Anything global / pack-inherited is
- * dropped. (For skills/commands/hooks the backend ?project= filter already
- * returns only project-scoped rows; this is a defensive, self-documenting
- * client-side narrowing that also covers any inherited row that slips through.) */
-function isProjectRow(r: RosterRow): boolean {
-  return r.kind === 'templates' ? r.item.source === 'project' : r.item.scope === 'project';
-}
-
 /* ================= the page ================= */
 
 /** Props are optional so the standalone /system-hub and /p/:slug/system-hub
@@ -212,12 +201,10 @@ export function SystemHub({
   forceCategory?: HubCategory;
   routeBase?: string;
   scopeSlug?: string | null;
-  /** PROJECT mode (/p/:slug/system/…): the roster shows ONLY this project's own
-   * items (skills/commands/hooks scope === 'project'; templates source ===
-   * 'project'), dropping catalog items inherited from packs/core or the global
-   * scope. The Toolkit/Hooks catalog has no scope selector to hide (that control
-   * lives only on the Agents tab), so this flag drives only the roster filter +
-   * the empty-state copy. Fleet mode is unchanged. */
+  /** PROJECT mode (/p/:slug/system/…): the roster is the project's EFFECTIVE
+   * catalog — its own items PLUS the global ones PLUS the built-ins of the packs
+   * it enables. The narrowing is the server's (?project= / ?projectId=), so this
+   * flag drives only the empty-state copy. Fleet mode is unchanged. */
   projectScoped?: boolean;
 } = {}): JSX.Element {
   const params = useParams();
@@ -232,9 +219,12 @@ export function SystemHub({
   const scopeRef = scopeSlugProp !== undefined ? scopeSlugProp : (params.slug ?? scope);
   // …resolved to the numeric project id before it reaches the API. The
   // /api/system/* template endpoints match the DB path slug or the id only, so
-  // the pretty slug 500s there (see useProjectIdParam). Embedded, the shell has
-  // already resolved it — useProjectIdParam is idempotent on a numeric id.
-  const scopeSlug = useProjectIdParam(scopeRef);
+  // the pretty slug 500s there (see useProjectScope). Embedded, the shell has
+  // already resolved it — the resolver is idempotent on a numeric id.
+  // `scopePending` gates every fetch below: the unscoped catalog is the whole
+  // fleet, and firing it while the project list resolves lets it land last and
+  // overwrite the scoped one.
+  const { id: scopeSlug, pending: scopePending } = useProjectScope(scopeRef);
   const routeBase =
     routeBaseProp ?? (params.slug !== undefined ? `/p/${params.slug}/system-hub` : '/system-hub');
 
@@ -269,18 +259,23 @@ export function SystemHub({
       setRoster([]);
       return;
     }
+    if (scopePending) return;
     setRosterError(null);
+    // No client-side narrowing: a scopeSlug makes every endpoint above serve the
+    // project's EFFECTIVE catalog already, and re-filtering here would drop the
+    // pack/global items the project genuinely resolves.
     fetchRoster(category, scopeSlug ?? null)
-      .then((rows) => setRoster(projectScoped ? rows.filter(isProjectRow) : rows))
+      .then(setRoster)
       .catch((e: unknown) => setRosterError(String(e)));
-  }, [category, scopeSlug, refreshKey, projectScoped]);
+  }, [category, scopeSlug, scopePending, refreshKey]);
   useEffect(loadRoster, [loadRoster]);
 
   const loadSummary = useCallback((): void => {
+    if (scopePending) return;
     fetchSystemHubSummary(scopeSlug ?? undefined)
       .then(setSummary)
       .catch(() => setSummary(null));
-  }, [scopeSlug]);
+  }, [scopeSlug, scopePending]);
   useEffect(loadSummary, [loadSummary]);
 
   useEffect(() => {
@@ -395,7 +390,7 @@ export function SystemHub({
         )}
         {!embedded && roleNav}
         <div className="mt-4 min-h-0 flex-1 overflow-y-auto [-webkit-overflow-scrolling:touch]">
-          <InsightsTab refreshKey={refreshKey} projectNames={projectNames} />
+          <InsightsTab refreshKey={refreshKey} projectNames={projectNames} projectId={scopeSlug} />
         </div>
       </div>
     );
@@ -435,7 +430,7 @@ export function SystemHub({
           searchPlaceholder={`filter ${category}…`}
           rosterEmptyLabel={
             projectScoped
-              ? `No project-specific ${category} — this project inherits from enabled packs.`
+              ? `No ${category} resolve for this project — enable a pack in Settings, or add one under .claude/.`
               : `no ${category} on this machine`
           }
           tabs={tabs}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,25 @@ const threePackManifest = `{
 	]
 }`
 
+// assertPluginRows compares whole rows in manifest order.
+//
+// reflect.DeepEqual rather than != because the DTO carries slice fields
+// (configMissing, and the raw JSON of configSchema/configCurrent). That is not
+// merely a workaround: it turns every fixture below — none of which ships a
+// requirements.json — into an assertion that a pack declaring nothing leaves
+// all eight config fields unset, rather than paying a schema on every row.
+func assertPluginRows(t *testing.T, got, want []projectPluginDTO) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("plugins len = %d, want %d (%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if !reflect.DeepEqual(got[i], want[i]) {
+			t.Errorf("plugins[%d] = %+v, want %+v (manifest order)", i, got[i], want[i])
+		}
+	}
+}
+
 func getPluginsResponse(t *testing.T, srvURL, projectID string) projectPluginsResponse {
 	t.Helper()
 	var resp projectPluginsResponse
@@ -65,14 +85,7 @@ func TestProjectPluginsMergesCatalogAndState(t *testing.T) {
 		{Name: "uav-pack", Description: "UAV domain pack", Enabled: false, Locked: false, Status: "unknown"},
 		{Name: "lsp-pack", Description: "LSP pack", Enabled: true, Locked: false, Status: "ok"},
 	}
-	if len(resp.Plugins) != len(want) {
-		t.Fatalf("plugins len = %d, want %d (%+v)", len(resp.Plugins), len(want), resp.Plugins)
-	}
-	for i, w := range want {
-		if resp.Plugins[i] != w {
-			t.Errorf("plugins[%d] = %+v, want %+v (manifest order)", i, resp.Plugins[i], w)
-		}
-	}
+	assertPluginRows(t, resp.Plugins, want)
 }
 
 func TestProjectPluginsCanWriteFollowsFence(t *testing.T) {
@@ -415,14 +428,7 @@ func TestProjectPluginsResolvesDirectorySourceMarketplace(t *testing.T) {
 		{Name: "uav-pack", Description: "UAV domain pack", Enabled: false, Locked: false, Status: "unknown"},
 		{Name: "lsp-pack", Description: "LSP pack", Enabled: true, Locked: false, Status: "ok"},
 	}
-	if len(resp.Plugins) != len(want) {
-		t.Fatalf("plugins len = %d, want %d (%+v)", len(resp.Plugins), len(want), resp.Plugins)
-	}
-	for i, w := range want {
-		if resp.Plugins[i] != w {
-			t.Errorf("plugins[%d] = %+v, want %+v (manifest order)", i, resp.Plugins[i], w)
-		}
-	}
+	assertPluginRows(t, resp.Plugins, want)
 }
 
 // A registry that does not mention our marketplace is not evidence against the

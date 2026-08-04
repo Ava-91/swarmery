@@ -2042,6 +2042,18 @@ export interface ProjectMeta {
  */
 export type PluginDriftStatus = 'ok' | 'missing' | 'behind' | 'orphaned' | 'unknown';
 
+/**
+ * Verdict on the .claude/project.json key the pack declared for itself
+ * (requirements.json). Distinct from PluginDriftStatus: drift is about whether
+ * the pack is installed, this is about whether it can actually run here.
+ *
+ * The field is optional on the row, and its ABSENCE is not 'ok' — it means the
+ * question was not asked, for one of four reasons: the row is disabled, drift
+ * outranks it (missing/behind/orphaned — repair before config), the pack
+ * declares no requirements, or its declaration is malformed.
+ */
+export type PluginConfigStatus = 'ok' | 'needs-config';
+
 export interface ProjectPluginRow {
   name: string;
   description: string;
@@ -2051,6 +2063,57 @@ export interface ProjectPluginRow {
   status: PluginDriftStatus;
   /** Human explanation for a non-ok status; absent when status is ok/unknown. */
   detail?: string;
+  /** Absent when the config question was not asked — see PluginConfigStatus. */
+  configStatus?: PluginConfigStatus;
+  /** The project.json key the pack declared, e.g. 'jira'. */
+  configKey?: string;
+  /** Pack-supplied modal copy: what the key is, and why the pack needs it. */
+  configTitle?: string;
+  configWhy?: string;
+  /** Pack-relative path to the doc explaining the key. */
+  configDocs?: string;
+  /** Dotted paths of unfilled required leaves, e.g. ['qaStatus', 'repro.test']. */
+  configMissing?: string[];
+  /**
+   * The pack's own JSON Schema fragment for the key, passed through verbatim to
+   * render a form from. Sent only alongside configStatus — a schema is ~1 KB,
+   * and the daemon will not attach one to every row of a catalog that mostly
+   * declares nothing.
+   */
+  configSchema?: unknown;
+  /** The key's existing value, for prefill. Absent when the key is not set. */
+  configCurrent?: unknown;
+  /**
+   * Present only when the pack declared a runnable probe — a `claude` session
+   * the daemon can ask for REAL candidate values (the obvious guess for a
+   * status name is usually not the one on the board). Deliberately not the
+   * whole spec: the prompt is the daemon's business and would ride on every
+   * poll of this endpoint.
+   */
+  configProbe?: PluginConfigProbe;
+}
+
+export interface PluginConfigProbe {
+  /** Dotted paths that must be filled before the probe has anything to work
+   * from — its inputs, not its outputs. Gates the button. */
+  needs: string[];
+  /** Dotted paths the probe may suggest values for. A whitelist: the daemon
+   * discards anything the agent returns outside it. */
+  fields: string[];
+}
+
+/**
+ * POST /api/projects/{id}/config/{key}/probe.
+ *
+ * `suggestions` is always an object, including when the probe found nothing —
+ * the failure shape and the success shape are the same, so there is one code
+ * path. `reason` is set only when nothing came back, and is written to be read
+ * by a human in a grey line under the form.
+ */
+export interface ProjectConfigProbeResponse {
+  suggestions: Record<string, string[]>;
+  reason?: string;
+  notes?: string;
 }
 
 export interface ProjectPluginsResponse {
@@ -2090,6 +2153,27 @@ export interface ProjectPluginToggleResponse {
   enabled: boolean;
   changed: boolean;
   backup?: string;
+}
+
+/** PUT /api/projects/{id}/config/{key} result — one top-level project.json key. */
+export interface ProjectConfigWriteResponse {
+  /** The key that was written — echoed back so a stale response is detectable. */
+  key: string;
+  written: boolean;
+  /** Relative path of the pre-write copy (".claude/project.json.bak"). */
+  backup?: string;
+  /** False when the key already held this exact value; the file was still rewritten. */
+  changed: boolean;
+}
+
+/**
+ * 422 body from PUT /api/projects/{id}/config/{key}: the value did not satisfy
+ * the schema the pack declared. `problems` carries one line per field, so the
+ * form can put each next to its input instead of showing one long sentence.
+ */
+export interface ProjectConfigInvalid {
+  error: string;
+  problems: string[];
 }
 
 // --- Tool dashboards (GET /api/tools) -----------------------------------------

@@ -17,7 +17,7 @@ import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import type { SystemHubSummary } from '../api/types';
 import { fetchSystemHubSummary } from '../api/systemHub';
 import { ScopeChip } from '../components/ScopeChip';
-import { useProjectIdParam, useScope } from '../lib/scope';
+import { useProjectScope, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { AgentHub } from './AgentHub';
 import { SystemHub } from './SystemHub';
@@ -42,15 +42,23 @@ export function SystemShell(): JSX.Element {
 
   // Workspace mount (/p/:slug/system/*) carries the slug; fleet mode uses the
   // global scope switcher. Either narrows the rollup window + template scope.
-  // In PROJECT mode (a concrete :slug in the route) the embedded hubs show ONLY
-  // that project's own items (project-scoped) and drop the scope selector; fleet
-  // mode keeps the full catalog + the all/global/project chips.
+  // In PROJECT mode (a concrete :slug in the route) the embedded hubs show the
+  // project's EFFECTIVE system — its own components PLUS the global ones PLUS
+  // the built-ins of the packs it enables — never another project's locals. The
+  // narrowing is the server's (?projectId=); fleet mode keeps the full catalog.
   const slug = params.slug;
   const projectScoped = slug !== undefined;
-  // Numeric project id, not the pretty slug: this shell's own summary fetch and
-  // every embedded hub it feeds hit /api/system/* endpoints whose template
-  // matcher accepts the DB path slug or the id only (see useProjectIdParam).
-  const scopeSlug = useProjectIdParam(slug ?? scope);
+  // The scope REFERENCE (URL slug or the global scope chip). This shell's own
+  // summary fetch needs it as a NUMERIC id — /api/system/* template matchers
+  // accept the DB path slug or the id only — but the embedded hubs re-resolve it
+  // themselves, so they get the reference verbatim (handing them a resolved id
+  // would make `null while resolving` indistinguishable from `no scope`, and
+  // they would fetch the whole fleet).
+  const scopeRef = slug ?? scope;
+  // scopePending: the unscoped summary counts the WHOLE machine, so firing it
+  // while the project list resolves lets it land last and show fleet badges over
+  // a project page.
+  const { id: scopeSlug, pending: scopePending } = useProjectScope(scopeRef);
   const base = projectScoped ? `/p/${slug}/system` : '/system';
 
   // Active tab = first path segment after the base (params['*'] is the splat).
@@ -63,6 +71,7 @@ export function SystemShell(): JSX.Element {
   const [summary, setSummary] = useState<SystemHubSummary | null>(null);
   useEffect(() => {
     let cancelled = false;
+    if (scopePending) return;
     const load = (): void => {
       fetchSystemHubSummary(scopeSlug ?? undefined)
         .then((s) => {
@@ -76,7 +85,7 @@ export function SystemShell(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [scopeSlug]);
+  }, [scopeSlug, scopePending]);
   useLiveUpdates(
     (msg) => {
       if (msg.type === 'system_item_updated') {
@@ -159,7 +168,7 @@ export function SystemShell(): JSX.Element {
           search, detail rail and detail sub-tabs). Each hub manages its own
           internal selection/sub-tab state; the outer tab lives in the URL. */}
       <div className="min-h-0 flex-1">
-        <SystemTabPanel tab={tab} base={base} scopeSlug={scopeSlug} projectScoped={projectScoped} />
+        <SystemTabPanel tab={tab} base={base} scopeRef={scopeRef} projectScoped={projectScoped} />
       </div>
     </div>
   );
@@ -172,14 +181,16 @@ export function SystemShell(): JSX.Element {
 function SystemTabPanel({
   tab,
   base,
-  scopeSlug,
+  scopeRef,
   projectScoped,
 }: {
   tab: SystemTab;
   base: string;
-  scopeSlug: string | null;
-  /** PROJECT mode (/p/:slug/system): show only this project's own items and hide
-   * the all/global/project scope selector. */
+  /** Project REFERENCE (URL slug / global scope value), not a resolved id —
+   * each hub resolves it and gates its own fetches while that is in flight. */
+  scopeRef: string | null;
+  /** PROJECT mode (/p/:slug/system): the hubs list the project's effective
+   * system rather than the machine-wide catalog. */
   projectScoped: boolean;
 }): JSX.Element {
   if (tab === 'agents') {
@@ -187,7 +198,7 @@ function SystemTabPanel({
       <AgentHub
         embedded
         routeBase={`${base}/agents`}
-        scopeSlug={scopeSlug}
+        scopeSlug={scopeRef}
         projectScoped={projectScoped}
       />
     );
@@ -200,7 +211,7 @@ function SystemTabPanel({
       embedded
       forceCategory={forceCategory}
       routeBase={`${base}/${tab}`}
-      scopeSlug={scopeSlug}
+      scopeSlug={scopeRef}
       projectScoped={projectScoped}
     />
   );

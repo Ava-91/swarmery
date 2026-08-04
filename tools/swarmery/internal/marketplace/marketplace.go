@@ -30,6 +30,14 @@ type Plugin struct {
 type Catalog struct {
 	// Version is metadata.version (tracks the core plugin's version).
 	Version string
+	// Root is the directory the manifest was read from — the clone under
+	// plugins/marketplaces/<name>, or the operator's own checkout for a
+	// directory-source marketplace. Exposed because a pack's own files live at
+	// filepath.Join(Root, plugin.Source) and callers outside this package need
+	// to reach them (internal/pluginreq reads a pack's requirements.json there).
+	// Without it, catalogRoot's two-branch resolution would have to be
+	// reimplemented — and kept in sync — by every such caller.
+	Root string
 	// Plugins preserves manifest order (core first by convention).
 	Plugins []Plugin
 }
@@ -85,7 +93,8 @@ func catalogRoot(claudeDir, name string) string {
 // clone surfaces as fs.ErrNotExist (unwrapped ReadFile error) so callers can
 // distinguish "marketplace not installed" from a parse failure.
 func Read(claudeDir, name string) (*Catalog, error) {
-	path := filepath.Join(catalogRoot(claudeDir, name), ".claude-plugin", "marketplace.json")
+	root := catalogRoot(claudeDir, name)
+	path := filepath.Join(root, ".claude-plugin", "marketplace.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -99,7 +108,7 @@ func Read(claudeDir, name string) (*Catalog, error) {
 		// matching the projectscan convention.
 		m.Plugins = []Plugin{}
 	}
-	return &Catalog{Version: m.Metadata.Version, Plugins: m.Plugins}, nil
+	return &Catalog{Version: m.Metadata.Version, Root: root, Plugins: m.Plugins}, nil
 }
 
 // PluginVersion reads the version of one catalogued pack from its own

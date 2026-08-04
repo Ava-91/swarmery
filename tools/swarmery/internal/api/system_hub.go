@@ -185,41 +185,36 @@ func (h *Handler) systemHubSummary(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the ?projectId= scope (accepts slug OR numeric id, the same
 	// resolution the rest of this file uses). When present, the Agents / Toolkit
-	// (Skills/Commands) / Hooks badges count ONLY the project's OWN rows
-	// (scope='project' AND project_id=<id>) — mirroring the project-scoped rosters
-	// (SystemHub.tsx isProjectRow keeps scope==='project'). When absent, or the id
-	// does not resolve, the counts stay GLOBAL (unchanged fleet behaviour).
-	projID, scoped, err := h.resolveHubProjectID(strings.TrimSpace(r.URL.Query().Get("projectId")))
+	// (Skills/Commands) / Hooks badges count the rows EFFECTIVE for the project —
+	// its own + global-local + the built-ins of the packs it enables — which is
+	// exactly what the project-scoped rosters now list, so badge == roster length
+	// by construction. When absent, or the id does not resolve, the counts stay
+	// GLOBAL (unchanged fleet behaviour).
+	esc, err := h.resolveEffectiveScope(strings.TrimSpace(r.URL.Query().Get("projectId")))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
+	scoped := esc.scoped()
+	withOrigin, originArgs := esc.predicate("t.", true)
+	noOrigin, noOriginArgs := esc.predicate("t.", false)
 
-	// Each row pairs a GLOBAL count with its project-scoped variant. The scoped
-	// query keeps the existing deleted=0 guards and adds
-	// scope='project' AND project_id=? so the badge equals the visible roster
-	// length. An empty projectQuery (lintFindings) stays global in BOTH modes —
-	// the Insights inbox is system-wide and never project-filtered.
+	// A nil scopePred leaves the query untouched (fleet mode). lintFindings has
+	// no item table to scope against and stays global in BOTH modes — the config
+	// linter's inbox is machine-wide.
 	for _, c := range []struct {
-		dst          *int64
-		query        string
-		projectQuery string
+		dst   *int64
+		query string
+		pred  string
+		args  []any
 	}{
-		{&s.Agents, `SELECT COUNT(*) FROM agents WHERE deleted = 0`,
-			`SELECT COUNT(*) FROM agents WHERE deleted = 0 AND scope = 'project' AND project_id = ?`},
-		{&s.Skills, `SELECT COUNT(*) FROM skills WHERE deleted = 0`,
-			`SELECT COUNT(*) FROM skills WHERE deleted = 0 AND scope = 'project' AND project_id = ?`},
-		{&s.Hooks, `SELECT COUNT(*) FROM hooks`,
-			`SELECT COUNT(*) FROM hooks WHERE scope = 'project' AND project_id = ?`},
-		{&s.Commands, `SELECT COUNT(*) FROM commands WHERE deleted = 0`,
-			`SELECT COUNT(*) FROM commands WHERE deleted = 0 AND scope = 'project' AND project_id = ?`},
-		{&s.LintFindings, `SELECT COUNT(*) FROM config_lint_findings WHERE resolved_at IS NULL`, ``},
+		{&s.Agents, `SELECT COUNT(*) FROM agents t WHERE t.deleted = 0`, withOrigin, originArgs},
+		{&s.Skills, `SELECT COUNT(*) FROM skills t WHERE t.deleted = 0`, withOrigin, originArgs},
+		{&s.Hooks, `SELECT COUNT(*) FROM hooks t WHERE 1 = 1`, noOrigin, noOriginArgs},
+		{&s.Commands, `SELECT COUNT(*) FROM commands t WHERE t.deleted = 0`, withOrigin, originArgs},
+		{&s.LintFindings, `SELECT COUNT(*) FROM config_lint_findings WHERE resolved_at IS NULL`, ``, nil},
 	} {
-		query, args := c.query, []any(nil)
-		if scoped && c.projectQuery != "" {
-			query, args = c.projectQuery, []any{projID}
-		}
-		if err := h.DB.QueryRow(query, args...).Scan(c.dst); err != nil {
+		if err := h.DB.QueryRow(c.query+c.pred, c.args...).Scan(c.dst); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -227,35 +222,25 @@ func (h *Handler) systemHubSummary(w http.ResponseWriter, r *http.Request) {
 
 	// Insights inbox count — the same promotion + stale-override counters the
 	// System nav badges (system_insights.go).
-	promos, stales, err := insightCounts(h.DB)
+	promos, stales, err := insightCounts(h.DB, esc)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	s.Insights = promos + stales
 
-	// Templates. Fleet mode: the effective count (built-ins for the scope).
-	// Project mode: ONLY the project's own overrides (source=='project') —
-	// matching the roster narrowing (isProjectRow keeps templates with
-	// source==='project', dropping core/pack built-ins the project merely
-	// inherits). An unresolved projectId falls back to fleet (via templatesScope),
-	// so it never 500s where the counts already degraded to global.
+	// Templates. Both modes count the EFFECTIVE list for the scope: fleet = every
+	// installed pack's built-ins; project = the enabled packs' built-ins overlaid
+	// by the project's own overrides (effectiveTemplates already resolves that),
+	// which is what the project roster lists. An unresolved projectId falls back
+	// to fleet (via templatesForScope), so it never 500s where the counts already
+	// degraded to global.
 	tmpls, err := h.templatesForScope(r, scoped)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	if scoped {
-		var projectOnly int64
-		for _, t := range tmpls {
-			if t.Source == string(sysscan.TemplateSourceProject) {
-				projectOnly++
-			}
-		}
-		s.Templates = projectOnly
-	} else {
-		s.Templates = int64(len(tmpls))
-	}
+	s.Templates = int64(len(tmpls))
 
 	writeJSON(w, s, nil)
 }
@@ -851,28 +836,6 @@ func (h *Handler) scannableProjects() ([]sysscan.TemplateProject, error) {
 		out = append(out, sysscan.TemplateProject{ID: id, Slug: slug.String, Path: path.String})
 	}
 	return out, rows.Err()
-}
-
-// resolveHubProjectID resolves the ?projectId= scope value (slug OR numeric id)
-// to a numeric project id for the count predicates. An empty value, or one that
-// does not resolve to a live (archived=0) project, yields scoped=false — the
-// caller then keeps the GLOBAL counts (the unchanged fleet-mode behaviour). This
-// is the same slug-or-id match rule the rest of this file uses.
-func (h *Handler) resolveHubProjectID(pid string) (int64, bool, error) {
-	if pid == "" {
-		return 0, false, nil
-	}
-	var id int64
-	err := h.DB.QueryRow(
-		`SELECT id FROM projects WHERE `+projectMatchExpr("")+` AND archived = 0`,
-		scopeArgs(pid)...).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil // unknown project → treat as no scope → global
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	return id, true, nil
 }
 
 // projectPathForTemplateScope resolves the ?projectId= (slug or id) to a path.

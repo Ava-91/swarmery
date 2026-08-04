@@ -318,6 +318,48 @@ func TestReadRegistryUnreadableFallsBackToLegacy(t *testing.T) {
 	}
 }
 
+// Catalog.Root is what lets a caller outside this package reach a pack's own
+// files at filepath.Join(Root, plugin.Source). Both resolution branches are
+// asserted, because a Root that silently fell back to the legacy path on a
+// directory-source machine would send those callers looking in a directory that
+// does not exist — the same class of bug as the reported catalog 404.
+func TestReadExposesCatalogRootLegacyPath(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "swarmery", twoPackManifest)
+
+	cat, err := Read(dir, "swarmery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "plugins", "marketplaces", "swarmery")
+	if cat.Root != want {
+		t.Errorf("Root = %q, want the legacy clone path %q", cat.Root, want)
+	}
+	// The point of exposing Root: a pack's files resolve under it.
+	if got := filepath.Join(cat.Root, cat.Plugins[0].Source); got != filepath.Join(want, "plugins", "core") {
+		t.Errorf("pack dir = %q, want it under the clone root", got)
+	}
+}
+
+func TestReadExposesCatalogRootFromRegistry(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	writeRootManifest(t, root, twoPackManifest)
+	writeRegistry(t, dir, directoryRegistry(t, "swarmery", root))
+
+	cat, err := Read(dir, "swarmery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.Root != root {
+		t.Errorf("Root = %q, want installLocation %q from known_marketplaces.json", cat.Root, root)
+	}
+	// Nothing under the legacy layout — Root came from the registry, not a guess.
+	if _, err := os.Stat(filepath.Join(dir, "plugins", "marketplaces")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("stat plugins/marketplaces = %v, want it absent", err)
+	}
+}
+
 // (i) A directory-source manifest lives in a tree the operator edits, so a
 // hand-written `..` source must not walk PluginVersion out of the root — proved
 // by planting a readable plugin.json exactly where the escape would land.

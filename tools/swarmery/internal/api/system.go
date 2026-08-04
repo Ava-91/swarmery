@@ -237,7 +237,7 @@ func (h *Handler) systemSummary(w http.ResponseWriter, r *http.Request) {
 
 	// Insight badge counters — cheap COUNT queries (system_insights.go), no
 	// disk IO: the summary is refetched on every WS system_item_updated.
-	promos, stales, err := insightCounts(h.DB)
+	promos, stales, err := insightCounts(h.DB, nil) // /api/system/summary is fleet-wide
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -365,12 +365,16 @@ func usageCutoff() string {
 func (h *Handler) listSystemItems(w http.ResponseWriter, r *http.Request, k systemKind) {
 	query := systemItemSelect(k) + ` WHERE t.deleted = 0`
 	args := []any{}
-	query, args = systemFilters(query, args, r)
-	query += ` ORDER BY t.name, t.scope, t.id`
-
-	rows, err := h.DB.Query(query, args...)
+	query, args, err := h.systemFilters(query, args, r, true)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	query += ` ORDER BY t.name, t.scope, t.id`
+
+	rows, qerr := h.DB.Query(query, args...)
+	if qerr != nil {
+		writeErr(w, qerr)
 		return
 	}
 	defer rows.Close()
@@ -416,16 +420,28 @@ func (h *Handler) listSystemItems(w http.ResponseWriter, r *http.Request, k syst
 }
 
 // systemFilters appends the shared ?scope=&project= WHERE clauses.
-func systemFilters(query string, args []any, r *http.Request) (string, []any) {
+//
+// ?project= selects the components EFFECTIVE for that project — its own rows
+// PLUS the global-local ones PLUS the built-ins of the packs it enables (see
+// effectiveScope). It is deliberately NOT a plain project_id match: the registry
+// is machine-wide, so a project_id match would hide everything a project
+// inherits while an unfiltered list leaks other projects' local components.
+// ?scope= still narrows independently, so ?scope=project&project=X keeps the
+// old "only X's own rows" view.
+//
+// hasOrigin tells whether the item table carries origin/plugin_name (agents,
+// skills, commands do; hooks do not).
+func (h *Handler) systemFilters(query string, args []any, r *http.Request, hasOrigin bool) (string, []any, error) {
 	if scope := r.URL.Query().Get("scope"); scope != "" {
 		query += ` AND t.scope = ?`
 		args = append(args, scope)
 	}
-	if project := r.URL.Query().Get("project"); project != "" {
-		query += projectScopePredicate
-		args = append(args, scopeArgs(project)...)
+	esc, err := h.resolveEffectiveScope(r.URL.Query().Get("project"))
+	if err != nil {
+		return "", nil, err
 	}
-	return query, args
+	pred, pargs := esc.predicate("t.", hasOrigin)
+	return query + pred, append(args, pargs...), nil
 }
 
 // ---- agents / skills detail ------------------------------------------------
@@ -656,12 +672,18 @@ func (h *Handler) listSystemHooks(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE 1=1`
 	args := []any{}
-	query, args = systemFilters(query, args, r)
-	query += ` ORDER BY t.source_file, t.event, t.seq`
-
-	rows, err := h.DB.Query(query, args...)
+	// Hooks carry no origin/plugin_name: they are parsed out of settings.json
+	// files, never shipped by a pack, so "effective" is global ∪ the project's own.
+	query, args, err := h.systemFilters(query, args, r, false)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	query += ` ORDER BY t.source_file, t.event, t.seq`
+
+	rows, qerr := h.DB.Query(query, args...)
+	if qerr != nil {
+		writeErr(w, qerr)
 		return
 	}
 	defer rows.Close()
@@ -691,12 +713,16 @@ func (h *Handler) listSystemCommands(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.deleted = 0`
 	args := []any{}
-	query, args = systemFilters(query, args, r)
-	query += ` ORDER BY t.name, t.scope, t.id`
-
-	rows, err := h.DB.Query(query, args...)
+	query, args, err := h.systemFilters(query, args, r, true)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	query += ` ORDER BY t.name, t.scope, t.id`
+
+	rows, qerr := h.DB.Query(query, args...)
+	if qerr != nil {
+		writeErr(w, qerr)
 		return
 	}
 	defer rows.Close()
