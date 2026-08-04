@@ -20,9 +20,10 @@ diff is under the configured threshold and the project's own lint and type-check
 cannot produce that number does not get to call itself finished — it reports what it could not
 measure and why.
 
-> **Status.** `0.1.0` ships the pack skeleton and its config contract only. The
-> `/design-implement` skill and its agent land in a later phase of the pack's plan; until then
-> enabling the pack gives you the config form and nothing that runs.
+> **Status.** `0.1.0` ships the whole flow — the config contract, the verification runtime,
+> the three skills, `/design-implement` and `@design-implementer`. What it has not yet had is
+> a live run on a real design in a real project; until that happens, treat the numbers it
+> reports as trustworthy and its ergonomics as unproven.
 
 ## Four ways a design arrives — and what each one can promise
 
@@ -118,3 +119,52 @@ The same block, the same schema — edit `.claude/project.json` directly if you 
 - **It does not run unattended past its budget.** `budget.maxIterations` and `budget.maxFiles`
   are hard stops: when either is reached the decision goes back to the operator instead of the
   agent widening its own scope.
+
+## Tests
+
+Two of them, deliberately split by cost:
+
+- `bash scripts/tests/design-pack-contract.test.sh` — static, runs in CI. Eleven greps over the
+  shipped docs asserting the safety wording is still there (read-only probe, the export route
+  labels, the screenshot warning, the eight STOP triggers, the ban on completion without a
+  comparison image, the thin-proxy line budget). It never runs a model and never opens a browser.
+- `bash plugins/design-pack/scripts/test.sh` — the browser smoke: five checks against the
+  bundled fixtures, including a 2px mutation the region clustering has to localise. **Local
+  only** — it needs the pinned Chromium (~275 MB on first prepare), so CI does not run it. Run
+  it after touching anything under `scripts/`. Without a prepared cache and with
+  `DESIGN_PACK_TEST_OFFLINE=1` it skips cleanly instead of failing.
+
+## Standalone `.skill` bundle
+
+The pack is the supported way to install this. If you need the workflow in a project that does
+not use this marketplace, bundle the skill by hand — the CLI has no packaging command
+(`claude plugin` offers `install`/`validate`/`tag`, nothing that builds a `.skill`), so the
+bundle is a zip with exactly one root directory:
+
+```bash
+PACK=plugins/design-pack
+STAGE=$(mktemp -d)/design-implement && mkdir -p "$STAGE"
+cp "$PACK/skills/design-implement/SKILL.md" "$STAGE/SKILL.md"
+cp -R "$PACK/skills/design-implement/references" "$STAGE/references"
+cp -R "$PACK/scripts" "$STAGE/scripts"
+cp "$PACK/skills/design-acquire/SKILL.md" "$STAGE/references/design-acquire.md"
+cp "$PACK/skills/design-verify/SKILL.md"  "$STAGE/references/design-verify.md"
+(cd "$(dirname "$STAGE")" && zip -qr design-implement.skill design-implement -x '*/.DS_Store')
+```
+
+Install it by unpacking that directory into the skills directory the CLI loads
+(`claude plugin init` scaffolds into `~/.claude/skills/<name>/`, which is the same shape).
+
+What the bundle gives up, stated plainly:
+
+- **No config form.** `requirements.json` belongs to the pack, so the dashboard cannot render
+  the `design` block for a bundled skill — fill it into `.claude/project.json` by hand.
+- **No `@design-implementer`.** Agents ship with the pack; in the bundle the workflow runs in
+  the session that invoked it, and the autonomy contract is prose rather than an agent boundary.
+- **No `/design-implement` command** — invoke the skill by name.
+- `design-acquire` and `design-verify` travel as `references/*.md` rather than as sibling
+  skills, so they are read, not delegated to.
+
+Everything else is identical: `SCRIPTS_DIR` resolves to `${CLAUDE_PLUGIN_ROOT}/scripts` inside
+the pack and to the skill's own `scripts/` inside the bundle, and that one variable is the only
+difference between the two.

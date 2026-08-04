@@ -47,11 +47,18 @@ file carries the decision history that changes how a screen is built — which l
 styling, which component library is already committed to, what is deliberately not abstracted.
 Skipping it produces work that is locally correct and architecturally wrong.
 
-**0.3 — Confirm the render runtime once:**
+**0.3 — Resolve `SCRIPTS_DIR` once, then confirm the render runtime:**
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-runtime.mjs" --check
+# Installed as part of the pack, CLAUDE_PLUGIN_ROOT is set; in a standalone
+# .skill bundle it is not, and the scripts sit beside this file.
+SCRIPTS_DIR="${CLAUDE_PLUGIN_ROOT:+${CLAUDE_PLUGIN_ROOT}/scripts}"
+SCRIPTS_DIR="${SCRIPTS_DIR:-<this skill's directory>/scripts}"
+node "$SCRIPTS_DIR/ensure-runtime.mjs" --check
 ```
+
+Every later script call in this workflow goes through `$SCRIPTS_DIR`. That one
+variable is the only difference between the pack and the bundle.
 
 Exit `3` means the runtime is not prepared; the fix is to run `ensure-runtime.mjs` once while
 online. Phases 2 and 6 both depend on it, so this is cheaper to learn now than mid-diff.
@@ -68,7 +75,7 @@ plan and into the final report — it is never quietly forgotten.
 # Phase 2 — ground truth
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/extract-computed-styles.mjs" \
+node "$SCRIPTS_DIR/extract-computed-styles.mjs" \
   --input <design path> --out .design-verify/tokens/<slug>
 ```
 

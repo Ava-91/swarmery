@@ -50,6 +50,7 @@ jobs:
           bash scripts/tests/protect-sensitive-files.test.sh
           bash scripts/tests/eval-gate.test.sh
           bash scripts/tests/jira-pack-dry-run.test.sh
+          bash scripts/tests/design-pack-contract.test.sh
 
       - name: Agent frontmatter (name + description)
         run: |

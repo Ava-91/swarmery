@@ -22,8 +22,12 @@ Never point verification at a production origin. The target is the local dev URL
 
 # 2. Run the diff
 
+`$SCRIPTS_DIR` is the one resolved in `design-implement` Step 0.3
+(`${CLAUDE_PLUGIN_ROOT}/scripts` inside the pack, the skill's own `scripts/`
+directory inside a standalone bundle).
+
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/screenshot-diff.mjs" \
+node "$SCRIPTS_DIR/screenshot-diff.mjs" \
   --design <design path> \
   --url <design.devUrl + route> \
   --viewport <authoring viewport> \
