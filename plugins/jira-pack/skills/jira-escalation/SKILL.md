@@ -1,7 +1,7 @@
 ---
 name: jira-escalation
 description: "Convert a needs-fix attempt that has outgrown /jira-fix's autonomy budget (or a ticket triage already classified too-large) into a phased plan saved to the private workspace, post the plan's full text to Jira via comment-too-large.md, leave the ticket's status untouched, and remove any branch/worktree jira-delivery created before this fired. NOT for classifying the ticket (that's jira-triage) and NOT for the fix attempt itself (that's jira-delivery, which hands off here on budget exhaustion)."
-version: "0.1.0"
+version: "0.1.1"
 owner: "swarmery-core"
 ---
 
@@ -121,10 +121,14 @@ full per-phase detail is capped to the one sample.
     from `jira-delivery`'s Step 1 already exist. Remove both together, in
     this order:
     ```bash
-    git worktree remove <worktree-root>/fix-<key>-<slug> --force   # --force: it may still carry the aborted attempt's uncommitted edits
-    git branch -D fix/<KEY>-<slug>                                  # if the worktree removal didn't already take the local ref with it
-    git push origin --delete fix/<KEY>-<slug>                       # only if jira-delivery's Step 1 empty-push already ran
+    git worktree remove <worktree-root>/<prefix>-<key>-<slug> --force   # --force: it may still carry the aborted attempt's uncommitted edits
+    git branch -D <prefix>/<KEY>-<slug>                                  # if the worktree removal didn't already take the local ref with it
+    git push origin --delete <prefix>/<KEY>-<slug>                       # only if jira-delivery's Step 1 empty-push already ran
     ```
+    `<prefix>` is whichever one `jira-delivery` used for this run's class —
+    `fix` for `defect`, `feat` for `change`. Take it from the hand-off, never
+    assume `fix`: deleting the wrong ref name silently leaves the real branch
+    behind, which is exactly the state this step exists to prevent.
     A half-done fix must not settle into git — leaving the branch around
     (even unmerged) is a worse failure mode than deleting a few empty or
     partial commits, since nothing downstream should ever build on an
