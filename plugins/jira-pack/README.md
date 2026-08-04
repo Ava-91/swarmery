@@ -1,8 +1,31 @@
 # jira-pack
 
-Issue-tracker pack: `/jira-fix` takes a ticket link, verifies tracker access, reproduces the
-issue, routes the fix to core executors, comments back with evidence, and moves the ticket to
-the QA column. Opt-in — most projects don't need it, and it requires setup before first use.
+Issue-tracker pack: `/jira-fix` takes a ticket link of **any type**, verifies tracker access,
+classifies the ticket, produces real evidence for it, routes the work to core executors,
+comments back with that evidence, and moves the ticket to the QA column. Opt-in — most projects
+don't need it, and it requires setup before first use.
+
+## Two ticket classes, two kinds of evidence
+
+A tracker holds two kinds of work, and only one of them reproduces. `jira-triage` decides which
+one it is **before** running anything, and the class picks the evidence:
+
+| | `class: defect` | `class: change` |
+|---|---|---|
+| The ticket describes | behavior that exists and is wrong | behavior that does not exist yet |
+| Evidence | the reproduction runs **red** | green baseline + absence proof + testable acceptance criteria; the red evidence is a **failing test written before any implementation** (`jira-delivery` Step 2a) |
+| Branch / commit | `fix/<KEY>-<slug>` / `fix(...)` | `feat/<KEY>-<slug>` / `feat(...)` |
+| Comment | `comment-fix-summary.md` | `comment-change-summary.md` |
+| `cannot-reproduce` | possible | **impossible, by rule** |
+
+That last row is the load-bearing one. A feature ticket's suite is green because the feature was
+never built; reading that green as "the reported behavior did not occur" would comment on and
+transition **unimplemented work** into the QA column, and nothing in this pack can undo a tracker
+write. So on a change ticket the admissible verdicts are `needs-fix`, `already-fixed`,
+`needs-info`, and `too-large` — never `cannot-reproduce`.
+
+The verdict set itself is unchanged (five verdicts); the class is orthogonal to it and travels
+with it through delivery, the comment template, and the comment's hidden marker.
 
 ## Enable per project
 
@@ -60,9 +83,9 @@ confirmation prompt** — there is no human gate anywhere in its flow:
 - posting a comment to a real Jira ticket (`addCommentToJiraIssue`);
 - transitioning a real Jira ticket's status (`transitionJiraIssue`);
 - creating or moving a `/board` card (`swarmery-board-card`'s `POST`/`PATCH`);
-- on the `needs-fix` path only: creating an isolated git branch/worktree, `git push`, and
-  opening a PR (`jira-delivery`) — gated on a green `@verification-agent` verdict, but never on
-  human approval.
+- on the `needs-fix` path only: creating an isolated git branch/worktree, writing code and
+  tests into it, `git push`, and opening a PR (`jira-delivery`) — gated on a green
+  `@verification-agent` verdict, but never on human approval.
 
 None of this is reversible by the agent itself — a wrongly-posted comment or transition is
 corrected by a human via Jira directly, and an escalated fix attempt's branch/worktree is the
