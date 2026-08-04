@@ -19,8 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -192,6 +195,196 @@ func walk(node schemaNode, val map[string]any, prefix string, out *[]string) {
 			*out = append(*out, path)
 		}
 	}
+}
+
+// ── Validate ─────────────────────────────────────────────────────────────────
+
+// validateNode is the subset of JSON Schema the write path enforces. Wider than
+// schemaNode above because a write must be judged, not merely surveyed: a type,
+// a minimum, and the additionalProperties gate all decide whether bytes reach
+// the operator's overlay.
+//
+// Type and AdditionalProperties stay RawMessage because JSON Schema allows both
+// a scalar and a richer form for each ("type": ["string","null"],
+// "additionalProperties": {…}). Decoding into a bool/string would fail the whole
+// node on a construct this evaluator merely wants to IGNORE.
+type validateNode struct {
+	Type                 json.RawMessage            `json:"type"`
+	Required             []string                   `json:"required"`
+	Properties           map[string]json.RawMessage `json:"properties"`
+	AdditionalProperties json.RawMessage            `json:"additionalProperties"`
+	Minimum              *float64                   `json:"minimum"`
+}
+
+// typeName returns the declared type when it is a plain string, else "".
+func (n validateNode) typeName() string {
+	var s string
+	if json.Unmarshal(n.Type, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// closed reports whether the node declares additionalProperties: false. Only
+// the literal false closes an object; an object-valued additionalProperties is
+// a construct this evaluator does not model, and treating it as closed would
+// reject fields the pack deliberately allowed.
+func (n validateNode) closed() bool {
+	var b bool
+	return json.Unmarshal(n.AdditionalProperties, &b) == nil && !b
+}
+
+// property parses the sub-schema at key. A key the schema requires but does not
+// describe yields the zero node, which constrains nothing — the same "ignore
+// rather than guess" rule the package applies everywhere else.
+func (n validateNode) property(key string) (validateNode, bool) {
+	raw, ok := n.Properties[key]
+	if !ok {
+		return validateNode{}, false
+	}
+	var child validateNode
+	_ = json.Unmarshal(raw, &child)
+	return child, true
+}
+
+// Validate checks a candidate value against the requirement's schema fragment
+// and returns one human-readable line per problem, in a stable order: the
+// missing required fields of a level first, then its present fields in
+// alphabetical order (a map has no order of its own, and an operator staring at
+// a rejected form deserves the same list twice in a row).
+//
+// Deliberately NOT a general JSON Schema implementation. It enforces exactly the
+// constructs the pack contract allows — object/string/integer types, recursively
+// required leaves, minimum on integers, additionalProperties:false — and ignores
+// everything else rather than guessing at it. A daemon that half-implements a
+// spec rejects valid documents, and the operator has no recourse when it does.
+//
+// additionalProperties:false is not pedantry here: the overlay schema already
+// declares it (overlays/_schema/project.schema.json), and the likeliest operator
+// error is a typo in a field name, which would otherwise be saved in silence and
+// leave the pack reading a default it was never told about.
+//
+// Required is judged exactly as MissingPaths judges it, blank strings included,
+// so a value this function accepts is one that actually clears the needs-config
+// badge. An accepted write that leaves the badge up would be worse than a
+// rejection.
+//
+// An empty slice means valid. An unparseable schema also means valid: a pack
+// that cannot state its constraints has not stated any, and inventing rejections
+// out of a fragment we failed to read would lock the operator out of a key the
+// daemon itself offered them.
+func Validate(value map[string]any, r Requirement) []string {
+	var root validateNode
+	if err := json.Unmarshal(r.Schema, &root); err != nil {
+		return nil
+	}
+	var out []string
+	check(root, value, "", &out)
+	return out
+}
+
+func check(node validateNode, val map[string]any, prefix string, out *[]string) {
+	// ── required ─────────────────────────────────────────────────────────────
+	for _, key := range node.Required {
+		path := prefix + key
+		child, _ := node.property(key)
+		v, present := val[key]
+
+		if len(child.Required) > 0 {
+			// A required object that states its own requirements is not answered
+			// by mere presence — "complete" is the question. When it IS a usable
+			// object the descent below covers it; when it is absent, null, or the
+			// wrong shape, report its nested leaves here, because nothing else
+			// will reach them.
+			if _, ok := v.(map[string]any); ok && present {
+				continue
+			}
+			check(child, nil, path+".", out)
+			continue
+		}
+		if !present || isBlank(v) {
+			*out = append(*out, path+" is required")
+		}
+	}
+
+	// ── declared-ness, types, descent ────────────────────────────────────────
+	for _, key := range sortedKeys(val) {
+		path := prefix + key
+		child, declared := node.property(key)
+		if !declared {
+			if node.closed() {
+				*out = append(*out, "unknown field: "+path)
+			}
+			continue
+		}
+		v := val[key]
+		if v == nil {
+			// JSON null is how a document says "unset". The required check above
+			// already speaks for it; adding "must be a string" on top would give
+			// the operator two lines about one empty field.
+			continue
+		}
+		switch child.typeName() {
+		case "object":
+			nested, ok := v.(map[string]any)
+			if !ok {
+				*out = append(*out, path+" must be an object")
+				continue
+			}
+			check(child, nested, path+".", out)
+		case "string":
+			if _, ok := v.(string); !ok {
+				*out = append(*out, path+" must be a string")
+			}
+		case "integer":
+			n, ok := asInteger(v)
+			if !ok {
+				*out = append(*out, path+" must be an integer")
+				continue
+			}
+			if child.Minimum != nil && n < *child.Minimum {
+				*out = append(*out, fmt.Sprintf("%s must be at least %s", path, formatNumber(*child.Minimum)))
+			}
+		default:
+			// No modelled type — but a sub-schema that declares properties or
+			// required IS an object as far as its own requirements go. Descending
+			// anyway keeps an omitted `type` from silently switching the nested
+			// required check off, which is the one construct MissingPaths would
+			// have caught and this function must not lose.
+			if nested, ok := v.(map[string]any); ok && (len(child.Required) > 0 || len(child.Properties) > 0) {
+				check(child, nested, path+".", out)
+			}
+		}
+	}
+}
+
+// sortedKeys gives the present fields a deterministic walk order.
+func sortedKeys(val map[string]any) []string {
+	keys := make([]string, 0, len(val))
+	for k := range val {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// asInteger accepts the two shapes a JSON number arrives in — float64 from a
+// plain unmarshal, json.Number from a UseNumber decoder — and insists the value
+// is whole. 5.0 is an integer; 5.5 is not.
+func asInteger(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, t == math.Trunc(t)
+	case json.Number:
+		f, err := t.Float64()
+		return f, err == nil && f == math.Trunc(f)
+	}
+	return 0, false
+}
+
+// formatNumber renders a schema bound without a trailing ".0" on whole values.
+func formatNumber(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 // isBlank reports whether a present value still counts as unset. Only null and

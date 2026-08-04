@@ -2124,6 +2124,27 @@ export interface ProjectPluginToggleResponse {
   backup?: string;
 }
 
+/** PUT /api/projects/{id}/config/{key} result — one top-level project.json key. */
+export interface ProjectConfigWriteResponse {
+  /** The key that was written — echoed back so a stale response is detectable. */
+  key: string;
+  written: boolean;
+  /** Relative path of the pre-write copy (".claude/project.json.bak"). */
+  backup?: string;
+  /** False when the key already held this exact value; the file was still rewritten. */
+  changed: boolean;
+}
+
+/**
+ * 422 body from PUT /api/projects/{id}/config/{key}: the value did not satisfy
+ * the schema the pack declared. `problems` carries one line per field, so the
+ * form can put each next to its input instead of showing one long sentence.
+ */
+export interface ProjectConfigInvalid {
+  error: string;
+  problems: string[];
+}
+
 // --- Tool dashboards (GET /api/tools) -----------------------------------------
 
 /** GET /api/tools — sidebar feed for daemon-managed tool dashboards. */

@@ -52,6 +52,8 @@ import type {
   RunConflictCode,
   ProjectMeta,
   ProjectMetaPatch,
+  ProjectConfigInvalid,
+  ProjectConfigWriteResponse,
   ProjectOverviewResp,
   ProjectPluginsResponse,
   PluginRepairResponse,
@@ -305,6 +307,39 @@ export async function repairProjectPlugin(
     throw new Error(data.error ?? data.output ?? `repair failed: ${String(res.status)}`);
   }
   return (await res.json()) as PluginRepairResponse;
+}
+
+/**
+ * PUT /api/projects/{id}/config/{key} — write ONE top-level key of the
+ * project's .claude/project.json. Every other key keeps its value, its position
+ * in the file, and the file's 2-space formatting; the daemon backs the previous
+ * contents up to project.json.bak first.
+ *
+ * Only keys a catalogued pack declared in its requirements.json are writable
+ * (404 otherwise). 403 when the daemon write fence is closed or the project sits
+ * outside it; 409 when there is no project.json to merge into; 422 when the
+ * value fails the pack's declared schema — that body carries `problems`, one
+ * line per field, which the thrown message joins so a caller with no field-level
+ * UI still shows the operator what to fix.
+ */
+export async function putProjectConfig(
+  id: number,
+  key: string,
+  value: unknown,
+): Promise<ProjectConfigWriteResponse> {
+  if (MOCK) return { key, written: true, backup: '.claude/project.json.bak', changed: true };
+  const res = await fetch(`/api/projects/${String(id)}/config/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as Partial<ProjectConfigInvalid>;
+    const head = data.error ?? `config write failed: ${String(res.status)}`;
+    const detail = data.problems?.length ? ` — ${data.problems.join('; ')}` : '';
+    throw new Error(head + detail);
+  }
+  return (await res.json()) as ProjectConfigWriteResponse;
 }
 
 /** GET /api/projects/onboard/config — defaults + enabled state for the modal. */
