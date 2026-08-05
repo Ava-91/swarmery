@@ -132,6 +132,7 @@ export function AgentHub({
   routeBase: routeBaseProp,
   scopeSlug: scopeSlugProp,
   projectScoped = false,
+  originScope,
 }: {
   embedded?: boolean;
   routeBase?: string;
@@ -140,6 +141,11 @@ export function AgentHub({
    * EFFECTIVE set — the server narrows it via ?projectId= (own + global +
    * enabled packs). Only the empty-state copy differs from fleet mode. */
   projectScoped?: boolean;
+  /** Origin-scope filter OWNED BY THE CALLER (SystemShell renders one row of
+   * chips above its tab bar so the same filter applies to every tab). When
+   * supplied this hub renders no chips of its own; when absent (the standalone
+   * /agents mount) it keeps its own local chips. */
+  originScope?: 'global' | 'project' | null;
 } = {}): JSX.Element {
   const params = useParams();
   const navigate = useNavigate();
@@ -161,9 +167,13 @@ export function AgentHub({
   const routeBase =
     routeBaseProp ?? (params.slug !== undefined ? `/p/${params.slug}/agents` : '/agents');
 
-  // Origin scope chips (embedded Agents tab only): all scopes / global / project,
-  // filtered CLIENT-SIDE against AgentRosterRow.scope (no API change).
-  const [scopeChip, setScopeChip] = useState<'global' | 'project' | null>(null);
+  // Origin scope (all scopes / global / project), filtered CLIENT-SIDE against
+  // AgentRosterRow.scope (no API change). The shell-embedded mount takes the
+  // value from its caller — SystemShell hoisted the chips above the tab bar so
+  // one control narrows Agents, Toolkit and Hooks alike; the standalone /agents
+  // mount keeps this local state and renders the chips itself.
+  const [localScopeChip, setLocalScopeChip] = useState<'global' | 'project' | null>(null);
+  const scopeChip = originScope !== undefined ? originScope : localScopeChip;
 
   // Selected agent: standalone reads it from the /agents/:id route; embedded
   // keeps it in LOCAL state (the shell's /system/* route has no :id segment, so
@@ -290,14 +300,15 @@ export function AgentHub({
   // chips are how you narrow to the project's OWN agents.
   // The PROJECT-scope chip leads that row on the standalone /agents mount only:
   // embedded, SystemShell already renders one above the tab bar, and two chips
-  // driving the same context on one screen is a bug, not a convenience.
-  // (`scopeChip` above is the unrelated ORIGIN scope: all/global/project.)
-  const scopeFilters = (
-    <div className="flex flex-wrap items-center gap-2">
-      {!embedded && <ScopeChip />}
-      <FiltersRow scope={scopeChip} onScope={setScopeChip} />
-    </div>
-  );
+  // driving the same context on one screen is a bug, not a convenience — which
+  // is also why the ORIGIN chips disappear once the caller owns them.
+  const scopeFilters =
+    originScope !== undefined ? undefined : (
+      <div className="flex flex-wrap items-center gap-2">
+        {!embedded && <ScopeChip />}
+        <FiltersRow scope={scopeChip} onScope={setLocalScopeChip} />
+      </div>
+    );
 
   return (
     <HubShell<AgentRosterRow>
@@ -314,9 +325,13 @@ export function AgentHub({
       topBar={scopeFilters}
       searchPlaceholder="filter agents…"
       rosterEmptyLabel={
-        projectScoped
-          ? 'No agents resolve for this project — enable a pack in Settings, or add one under .claude/agents/.'
-          : 'no agents on this machine'
+        // An active origin filter is the likely cause of an empty roster, so
+        // name it instead of claiming the machine has none.
+        scopeChip !== null
+          ? `no ${scopeChip}-scope agents here`
+          : projectScoped
+            ? 'No agents resolve for this project — enable a pack in Settings, or add one under .claude/agents/.'
+            : 'no agents on this machine'
       }
       tabs={tabs}
       activeTab={tab}

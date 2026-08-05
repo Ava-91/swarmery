@@ -319,14 +319,18 @@ export function FiltersRow({
   onScope,
   sort,
   onSort,
+  inline = false,
 }: {
   scope: 'global' | 'project' | null;
   onScope: (scope: 'global' | 'project' | null) => void;
   sort?: SystemSort;
   onSort?: (sort: SystemSort) => void;
+  /** Rendered alongside other controls (SystemShell's filter row) rather than
+   * as the standalone bar under a heading — drops the leading top margin. */
+  inline?: boolean;
 }): JSX.Element {
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-2">
+    <div className={`${inline ? '' : 'mt-4 '}flex flex-wrap items-center gap-2`}>
       <FilterChip selected={scope === null} onClick={() => onScope(null)}>all scopes</FilterChip>
       <FilterChip selected={scope === 'global'} onClick={() => onScope('global')}>global</FilterChip>
       <FilterChip selected={scope === 'project'} onClick={() => onScope('project')}>project</FilterChip>
