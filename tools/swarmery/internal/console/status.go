@@ -15,6 +15,16 @@ import (
 //
 // Pure function (no I/O) so it unit-tests exactly. When snap.Reachable is false
 // it returns the single-line down banner instead (see RenderDown).
+// daemonBuild is the identity of the daemon the console is talking to: its
+// build stamp ("0.2.0-15-g41157a8-dirty") when it publishes one, falling back
+// to the bare release semver for a daemon built before the stamp landed.
+func daemonBuild(h Health) string {
+	if h.Build != "" {
+		return h.Build
+	}
+	return h.Version
+}
+
 func RenderStatus(snap Snapshot) string {
 	if !snap.Reachable {
 		return RenderDown(snap)
@@ -23,7 +33,7 @@ func RenderStatus(snap Snapshot) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "swarmery v%s   up %s   db %s   migrations %04d   ingest lag %s\n",
-		h.Version,
+		daemonBuild(h),
 		humanUptime(time.Duration(h.UptimeSec)*time.Second),
 		humanBytes(h.DBSizeBytes),
 		h.MigrationVersion,

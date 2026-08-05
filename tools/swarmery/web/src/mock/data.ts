@@ -364,6 +364,7 @@ export const mockStatsToday: StatsToday = {
 export const mockHealth: HealthResponse = {
   status: 'ok',
   version: '0.3.0',
+  build: '0.3.0-15-g41157a8',
   db_size_bytes: 18_874_368,
   watching: true,
 };

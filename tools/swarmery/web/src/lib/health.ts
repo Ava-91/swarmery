@@ -1,5 +1,5 @@
 // Daemon health polling (GET /api/health, every 60s), shared by the app shell
-// header ("● daemon healthy") and the icon-rail footer ("v0.3 · :7777").
+// header ("● daemon healthy") and the icon-rail footer ("v0.2.0+41157a8 · :7777").
 // `unreachable` flips true when the fetch fails so the UI can go red.
 
 import { useEffect, useState } from 'react';
@@ -8,10 +8,29 @@ import { fetchHealth } from '../api';
 
 const POLL_MS = 60_000;
 
-/** "0.3.0" → "v0.3" (Canvas shows major.minor). */
-export function shortVersion(version: string): string {
-  const parts = version.split('.');
-  return `v${parts.slice(0, 2).join('.')}`;
+/**
+ * Build identity for the header: the release semver plus the commit the daemon
+ * was actually built from, so a rebuild is visible without a semver bump.
+ *
+ *   "0.2.0-15-g41157a8"       → "v0.2.0+41157a8"
+ *   "0.2.0-15-g41157a8-dirty" → "v0.2.0+41157a8*"   (* = uncommitted worktree)
+ *   "0.2.0+41157a8"           → "v0.2.0+41157a8"    (Go VCS-stamp fallback)
+ *   "0.2.0"                   → "v0.2.0"            (built exactly on the tag)
+ *
+ * Falls back to `version` when talking to a daemon older than the build field.
+ */
+export function versionLabel(health: Pick<HealthResponse, 'version' | 'build'>): string {
+  const raw = (health.build ?? health.version).trim();
+  const dirty = raw.endsWith('-dirty');
+  const clean = dirty ? raw.slice(0, -'-dirty'.length) : raw;
+  const semver = /^\d+\.\d+\.\d+/.exec(clean)?.[0] ?? clean;
+  const commit = /[-+]g?([0-9a-f]{7,40})$/.exec(clean)?.[1];
+  return `v${semver}${commit ? `+${commit}` : ''}${dirty ? '*' : ''}`;
+}
+
+/** Full, untruncated build string for the `title` tooltip behind the label. */
+export function versionTitle(health: Pick<HealthResponse, 'version' | 'build'>): string {
+  return `swarmery ${health.build ?? health.version}`;
 }
 
 export interface HealthState {

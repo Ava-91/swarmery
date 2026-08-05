@@ -404,6 +404,13 @@ export interface StatsToday {
 export interface HealthResponse {
   status: 'ok';
   version: string;
+  /**
+   * Build identity of the running daemon — the release semver plus the commit
+   * it was built from ("0.2.0-15-g41157a8-dirty"). Additive: absent when
+   * talking to a daemon built before the build stamp landed, where `version`
+   * (frozen bare semver) is the only identity available.
+   */
+  build?: string;
   db_size_bytes: number;
   watching: boolean;
   /**

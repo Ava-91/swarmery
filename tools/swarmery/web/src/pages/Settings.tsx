@@ -19,7 +19,7 @@
 import { ConnectorsSection } from '../components/ConnectorsSection';
 import { NotifySettings } from '../components/NotifySettings';
 import { SectionTitle } from '../components/ui';
-import { useHealth, shortVersion } from '../lib/health';
+import { useHealth, versionLabel, versionTitle } from '../lib/health';
 import { useNotifyPrefs } from '../lib/notifyPrefsContext';
 import { ThemePickerPanel } from '../theme/ThemePicker';
 import { WorktreesPanel } from './settings/WorktreesPanel';
@@ -61,7 +61,12 @@ export function Settings(): JSX.Element {
           className={`inline-block h-[7px] w-[7px] rounded-full ${daemonOk ? 'bg-green' : 'bg-red'}`}
         />
         {daemonOk ? 'daemon healthy' : 'daemon unreachable'}
-        {health !== null ? ` · ${shortVersion(health.version)} · :7777` : ''}
+        {health !== null && (
+          <span title={versionTitle(health)}>
+            {' '}
+            · {versionLabel(health)} · :7777
+          </span>
+        )}
       </div>
 
       {/* Worktrees — the janitor's inventory + what it decided. Host-level like

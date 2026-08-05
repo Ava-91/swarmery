@@ -1,19 +1,14 @@
-// Sidebar-bottom daemon health line (Redesign): "● daemon healthy · v0.3"
+// Sidebar-bottom daemon health line (Redesign): "● daemon healthy · v0.2.0+41157a8"
 // from GET /api/health, polled every 60s; red + "daemon unreachable" when the
 // fetch fails.
 
 import { useEffect, useState } from 'react';
 import type { HealthResponse } from '../api/types';
 import { fetchHealth } from '../api';
+import { versionLabel, versionTitle } from '../lib/health';
 import { PluginDriftBadge } from './PluginDriftBadge';
 
 const POLL_MS = 60_000;
-
-/** "0.3.0" → "v0.3" (Redesign shows major.minor). */
-function shortVersion(version: string): string {
-  const parts = version.split('.');
-  return `v${parts.slice(0, 2).join('.')}`;
-}
 
 export function HealthFooter(): JSX.Element | null {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -48,9 +43,14 @@ export function HealthFooter(): JSX.Element | null {
         className={`h-1.5 w-1.5 shrink-0 rounded-full ${unreachable ? 'bg-red' : 'bg-green'}`}
         aria-hidden="true"
       />
-      {unreachable
-        ? 'daemon unreachable'
-        : `daemon healthy${health !== null ? ` · ${shortVersion(health.version)}` : ''}`}
+      {unreachable ? (
+        'daemon unreachable'
+      ) : (
+        <>
+          daemon healthy
+          {health !== null && <span title={versionTitle(health)}> · {versionLabel(health)}</span>}
+        </>
+      )}
       <PluginDriftBadge health={health} />
     </div>
   );

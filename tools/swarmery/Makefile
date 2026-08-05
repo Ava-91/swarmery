@@ -4,6 +4,13 @@
 DOCS_SRC := ../../docs
 DOCS_DST := internal/docsfs/content
 
+# Build identity stamped into the binary so every rebuild reports the commit it
+# came from instead of the frozen release semver (internal/version). Empty
+# outside a git checkout — version.String() then falls back to the VCS revision
+# Go stamps into the build info, and to bare semver if even that is missing.
+VERSION_PKG := github.com/atretyak1985/swarmery/tools/swarmery/internal/version
+BUILD_ID    := $(shell git describe --tags --match 'swarmery-v*' --always --dirty 2>/dev/null)
+
 # Where the launchd service (`swarmery install`) expects the daemon binary,
 # and the label it registers under.
 INSTALL_BIN   := $(HOME)/.swarmery/bin/swarmery
@@ -16,7 +23,7 @@ build-web:
 	cd web && npm install && npm run build
 
 build-go:
-	go build -o swarmery ./cmd/swarmery
+	go build -ldflags "-X $(VERSION_PKG).Build=$(BUILD_ID)" -o swarmery ./cmd/swarmery
 
 # install: rebuild, then replace the launchd-managed binary and restart the
 # service. The binary is swapped via atomic rename (mv) so it never overwrites
