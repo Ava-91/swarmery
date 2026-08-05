@@ -58,6 +58,11 @@
       "name": "jira-pack",
       "source": "./plugins/jira-pack",
       "description": "Issue-tracker pack: /jira-fix drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition. Opt-in; requires core."
+    },
+    {
+      "name": "design-pack",
+      "source": "./plugins/design-pack",
+      "description": "Design-handoff pack: /design-implement takes an exported design and re-expresses it in the project's stack pixel-accurately — computed-style token inventory, reuse-vs-create recon, an approval gate, and a measured pixel diff as the completion criterion. Opt-in; requires core."
     }
   ]
 }

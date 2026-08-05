@@ -66,6 +66,95 @@
         }
       },
       "required": ["baseUrl", "projectKey", "qaStatus", "repro"]
+    },
+    "design": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Design-handoff contract consumed by design-pack. Required for /design-implement. This fragment is mirrored in plugins/design-pack/requirements.json, which the dashboard renders the config form from; scripts/check-plugin-requirements.sh fails CI when the two drift, so change both in one commit.",
+      "properties": {
+        "tokensFile": {
+          "type": "string",
+          "description": "Repo-relative CSS file that holds the design tokens an implementation must extend rather than duplicate, e.g. src/app/globals.css"
+        },
+        "componentsRoot": {
+          "type": "string",
+          "description": "Repo-relative directory the reuse-vs-create survey walks before anything new is built, e.g. src/components"
+        },
+        "routesRoot": {
+          "type": "string",
+          "description": "Repo-relative directory holding routable pages, e.g. src/app"
+        },
+        "fontLoader": {
+          "type": "string",
+          "enum": ["next-font", "link-tag", "self-hosted", "none"],
+          "description": "How this project loads typefaces. A design font missing from the project stops the run with instructions written for this loader; it is never silently substituted."
+        },
+        "devCommand": {
+          "type": "string",
+          "description": "Command that serves the app so an implemented route can be screenshotted, e.g. npm run dev"
+        },
+        "devUrl": {
+          "type": "string",
+          "description": "Base URL devCommand serves on, e.g. http://localhost:3000. Never a shared or production origin."
+        },
+        "verify": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Check commands run after implementation. Both are mandatory.",
+          "properties": {
+            "lint": {
+              "type": "string",
+              "description": "Lint command, e.g. npm run lint"
+            },
+            "typecheck": {
+              "type": "string",
+              "description": "Type-check command, e.g. npx tsc --noEmit"
+            }
+          },
+          "required": ["lint", "typecheck"]
+        },
+        "diff": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Pixel-diff acceptance for the verification phase.",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 0.5,
+              "description": "Maximum percentage of differing pixels that still counts as a match"
+            },
+            "pixelTolerance": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.1,
+              "description": "Per-pixel colour tolerance passed to the diff, 0 = exact"
+            }
+          }
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Autonomy limits before the implementation agent stops and returns the decision to the operator.",
+          "properties": {
+            "maxIterations": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 4,
+              "description": "Diff-then-fix rounds the agent may run unattended"
+            },
+            "maxFiles": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 12,
+              "description": "Files the agent may touch before it must stop"
+            }
+          }
+        }
+      },
+      "required": ["tokensFile", "componentsRoot", "routesRoot", "devUrl", "verify"]
     }
   }
 }

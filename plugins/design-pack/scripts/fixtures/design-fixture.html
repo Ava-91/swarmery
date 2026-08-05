@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Design fixture</title>
+<!--
+  Self-contained smoke fixture for the design pack verification scripts.
+  No network resources of any kind: no web fonts, no images, no external CSS.
+
+  It deliberately carries values that a naive 4px-grid assumption would miss:
+  a 13px type size, an 18px gap, a 12px radius, letter-spacing, a soft shadow,
+  an oklch fill, and one authored breakpoint at 768px.
+
+  Geometry is fixed on purpose. At a 1440x900 viewport .panel__fill starts at
+  x=40 (24px body padding + 16px panel padding) and y=40, and is 160px tall.
+  design-fixture-mutated.html moves that left edge to x=42 and nothing else,
+  which is what the diff test asserts against.
+-->
+<style>
+  :root {
+    --ink: #0f172a;
+    --body: #475569;
+    --line: #e2e8f0;
+    --surface: #ffffff;
+    --canvas: #f8fafc;
+    --muted: oklch(55% 0.03 250);
+    --accent: oklch(62% 0.17 255);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .panel {
+    margin: 0 0 18px;
+    padding: 16px;
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+  }
+
+  .panel__fill {
+    height: 160px;
+    border-radius: 8px;
+    background: var(--accent);
+  }
+
+  .grid {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+  }
+
+  .card {
+    flex: 1;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+  }
+
+  .card__title {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 20px;
+    letter-spacing: 0.2px;
+  }
+
+  .card__meta {
+    margin: 0 0 12px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 16px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+  }
+
+  .card__body {
+    margin: 0;
+    color: var(--body);
+    font-size: 13px;
+    line-height: 18px;
+  }
+
+  @media (max-width: 768px) {
+    .grid { flex-direction: column; }
+    .card { width: 100%; }
+  }
+</style>
+</head>
+<body>
+  <section class="panel">
+    <div class="panel__fill"></div>
+  </section>
+
+  <div class="grid">
+    <article class="card">
+      <h2 class="card__title">Line items</h2>
+      <p class="card__meta">Updated today</p>
+      <p class="card__body">Three rows, one currency, no rounding surprises.</p>
+    </article>
+    <article class="card">
+      <h2 class="card__title">Shipping</h2>
+      <p class="card__meta">Two carriers</p>
+      <p class="card__body">Rates resolve at checkout and never at build time.</p>
+    </article>
+    <article class="card">
+      <h2 class="card__title">Totals</h2>
+      <p class="card__meta">Tax included</p>
+      <p class="card__body">Subtotal, tax and total, in that order, always.</p>
+    </article>
+  </div>
+</body>
+</html>
