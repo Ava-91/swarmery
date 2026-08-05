@@ -2781,3 +2781,39 @@ export interface SystemTemplateCopyResponse {
   path: string;
   hint: string;
 }
+
+/* ---- worktree janitor (internal/api/worktrees.go) ---- */
+
+/** One live worktree, annotated with the janitor's most recent decision. */
+export interface WorktreeRow {
+  projectSlug: string;
+  path: string;
+  branch: string | null;
+  isMain: boolean;
+  dirtyFiles: number;
+  lastVerdict: string | null;
+  lastReason: string | null;
+  lastSweptAt: string | null;
+}
+
+/** One journal row: what the janitor decided, and whether it acted. */
+export interface WorktreeSweep {
+  ts: string;
+  projectSlug: string | null;
+  path: string;
+  branch: string | null;
+  verdict: string;
+  reason: string;
+  salvageBranch: string | null;
+  files: number;
+  removed: boolean;
+  error: string | null;
+}
+
+export interface WorktreesResponse {
+  live: WorktreeRow[];
+  sweeps: WorktreeSweep[];
+  /** False when SWARMERY_WTJANITOR disables the sweeper — the history below is
+   * then historical, not current, and the panel says so. */
+  enabled: boolean;
+}

@@ -22,6 +22,7 @@ import { SectionTitle } from '../components/ui';
 import { useHealth, shortVersion } from '../lib/health';
 import { useNotifyPrefs } from '../lib/notifyPrefsContext';
 import { ThemePickerPanel } from '../theme/ThemePicker';
+import { WorktreesPanel } from './settings/WorktreesPanel';
 
 export function Settings(): JSX.Element {
   const { prefs, setPrefs } = useNotifyPrefs();
@@ -62,6 +63,12 @@ export function Settings(): JSX.Element {
         {daemonOk ? 'daemon healthy' : 'daemon unreachable'}
         {health !== null ? ` · ${shortVersion(health.version)} · :7777` : ''}
       </div>
+
+      {/* Worktrees — the janitor's inventory + what it decided. Host-level like
+          the daemon card above: it sweeps every project on this machine, and it
+          does so without being asked, so this is the account of what it did. */}
+      <SectionTitle>worktrees</SectionTitle>
+      <WorktreesPanel />
 
       {/* Connectors — the MCP servers Claude Code has configured on THIS host,
           read through the daemon. Host-level like the daemon card above, not

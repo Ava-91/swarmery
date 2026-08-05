@@ -32,6 +32,11 @@ type Stats struct {
 	Events      int64
 	FileChanges int64
 	RollupRows  int64 // daily_rollups rows inserted (0 under DryRun)
+	// WorktreeSweeps is journal rows dropped (internal/wtjanitor). Unlike every
+	// other count here it is NOT session-derived: the janitor's log ages on the
+	// same cutoff but has no candidate set, since nothing reads a row to make a
+	// decision — losing old rows costs history, never correctness.
+	WorktreeSweeps int64
 	// VacuumErr carries a post-commit VACUUM failure (e.g. SQLITE_BUSY).
 	// The destructive transaction has already committed by then, so the
 	// prune itself succeeded — callers should report this as a warning
@@ -108,6 +113,7 @@ func Run(db *sql.DB, cutoff string, dryRun bool) (Stats, error) {
 			{`SELECT COUNT(*) FROM turns t JOIN (` + candidateSet + `) pr ON pr.id = t.session_id`, &st.Turns},
 			{`SELECT COUNT(*) FROM events e JOIN (` + candidateSet + `) pr ON pr.id = e.session_id`, &st.Events},
 			{`SELECT COUNT(*) FROM file_changes fc JOIN (` + candidateSet + `) pr ON pr.id = fc.session_id`, &st.FileChanges},
+			{`SELECT COUNT(*) FROM worktree_sweeps WHERE ts < ?`, &st.WorktreeSweeps},
 		}
 		for _, c := range counts {
 			if err := db.QueryRow(c.q, cutoff).Scan(c.dst); err != nil {
@@ -116,6 +122,16 @@ func Run(db *sql.DB, cutoff string, dryRun bool) (Stats, error) {
 		}
 		return st, nil
 	}
+	// The worktree-janitor journal ages on the SAME cutoff but is not
+	// session-derived, so it must be dropped before the candidate gate below:
+	// leaving it inside the transaction would mean the journal is only ever
+	// trimmed on days that also happen to have expiring sessions.
+	if res, err := db.Exec(`DELETE FROM worktree_sweeps WHERE ts < ?`, cutoff); err == nil {
+		st.WorktreeSweeps, _ = res.RowsAffected()
+	} else {
+		return st, fmt.Errorf("prune worktree_sweeps: %w", err)
+	}
+
 	if st.Sessions == 0 {
 		return st, nil
 	}

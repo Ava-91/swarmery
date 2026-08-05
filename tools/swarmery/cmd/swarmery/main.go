@@ -38,8 +38,8 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/economics"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/extract"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/evals"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/extract"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/handoff"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookcfg"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/hookshim"
@@ -69,6 +69,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/verify"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wtjanitor"
 )
 
 const defaultPort = 7777
@@ -97,6 +98,8 @@ func main() {
 		err = cmdBackup(os.Args[2:])
 	case "prune":
 		err = cmdPrune(os.Args[2:])
+	case "worktrees":
+		err = cmdWorktrees(os.Args[2:])
 	case "wscan":
 		err = cmdWscan(os.Args[2:])
 	case "evals-import":
@@ -1521,6 +1524,51 @@ func cmdServe(args []string) error {
 	// under the shutdown context.
 	go termMgr.Reap(ctx.Done())
 
+	// worktree janitor: agent worktrees — the harness's <repo>/.claude/worktrees/*
+	// and our own under the manager's root — are never cleaned by whoever created
+	// them, so they accumulate until a human notices. This sweeps them on a
+	// 15-minute tick: a worktree is removed only when every dirty path's blob is
+	// already in git, or after its content has been committed to a salvage/*
+	// branch, and never while anything is live inside it. Kill-switch
+	// SWARMERY_WTJANITOR=0. One pass runs immediately so a restart is also a
+	// cleanup; it logs only when it actually did something, because a quiet
+	// janitor printing a line every 15 minutes forever is just noise.
+	wtjCfg := wtjanitor.ConfigFromEnv()
+	if wtjCfg.Enabled {
+		wtj := &wtjanitor.Service{
+			DB:      db,
+			Git:     wtjanitor.RepoGit{},
+			Live:    wtjanitor.ProcLiveness{Proc: procwatch.OsProvider{}, DB: db},
+			MinIdle: wtjCfg.MinIdle,
+			Remover: wtjanitor.NewRealRemover(wtMgr),
+		}
+		go func() {
+			sweep := func() {
+				res, err := wtj.Sweep(false)
+				switch {
+				case err != nil:
+					log.Printf("warning: worktree janitor sweep: %v", err)
+				case res.Removed+res.Salvaged > 0:
+					log.Printf("worktree janitor: removed %d, salvaged %d, kept %d, skipped %d",
+						res.Removed, res.Salvaged, res.Kept, res.Skipped)
+				}
+			}
+			sweep()
+			t := time.NewTicker(wtjCfg.TickInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					sweep()
+				}
+			}
+		}()
+		log.Printf("swarmery worktree janitor started (interval %s, min-idle %s)",
+			wtjCfg.TickInterval, wtjCfg.MinIdle)
+	}
+
 	srv := &http.Server{Addr: addr, Handler: handler}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -1604,4 +1652,84 @@ func envPort() int {
 		log.Printf("warn: ignoring invalid SWARMERY_PORT=%q", v)
 	}
 	return defaultPort
+}
+
+// cmdWorktrees implements `swarmery worktrees clean [--dry-run] [--repo <path>]`
+// — the SAME Service.Sweep the daemon ticks, exposed so a human can read the
+// verdicts before trusting them. --dry-run decides and journals but removes
+// nothing, which is also how you audit the rules after changing them.
+func cmdWorktrees(args []string) error {
+	if len(args) == 0 || args[0] != "clean" {
+		return fmt.Errorf("usage: swarmery worktrees clean [--db <path>] [--dry-run] [--repo <path>]")
+	}
+	fs := flag.NewFlagSet("worktrees clean", flag.ExitOnError)
+	dbPath := dbFlag(fs)
+	dryRun := fs.Bool("dry-run", false, "decide and journal, but remove nothing")
+	repo := fs.String("repo", "", "limit the sweep to one repository path")
+	fs.Parse(args[1:])
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: swarmery worktrees clean [--db <path>] [--dry-run] [--repo <path>]")
+	}
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	cfg := wtjanitor.ConfigFromEnv()
+	svc := &wtjanitor.Service{
+		DB:       db,
+		Git:      wtjanitor.RepoGit{},
+		Live:     wtjanitor.ProcLiveness{Proc: procwatch.OsProvider{}, DB: db},
+		MinIdle:  cfg.MinIdle,
+		OnlyRepo: *repo,
+		Remover:  wtjanitor.NewRealRemover(&worktree.Manager{Git: worktree.ExecGit{}}),
+	}
+	// Stamp the journal cursor BEFORE sweeping so the report prints this pass's
+	// rows only, not the whole history.
+	var before int64
+	_ = db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM worktree_sweeps`).Scan(&before)
+
+	res, err := svc.Sweep(*dryRun)
+	if err != nil {
+		return err
+	}
+
+	rows, err := db.Query(
+		`SELECT path, COALESCE(branch, '-'), verdict, reason, COALESCE(salvage_branch, ''), removed, COALESCE(error, '')
+		   FROM worktree_sweeps WHERE id > ? ORDER BY id`, before)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var path, branch, verdict, reason, salvage, errStr string
+		var removed int
+		if err := rows.Scan(&path, &branch, &verdict, &reason, &salvage, &removed, &errStr); err != nil {
+			return err
+		}
+		line := fmt.Sprintf("  %-13s %s [%s] — %s", verdict, path, branch, reason)
+		if salvage != "" {
+			line += " → " + salvage
+		}
+		if removed == 1 {
+			line += " (removed)"
+		}
+		if errStr != "" {
+			line += " !! " + errStr
+		}
+		fmt.Println(line)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	mode := "swept"
+	if *dryRun {
+		mode = "would sweep (dry-run)"
+	}
+	fmt.Printf("worktrees %s: inspected %d, removed %d, salvaged %d, kept %d, skipped %d, errors %d\n",
+		mode, res.Inspected, res.Removed, res.Salvaged, res.Kept, res.Skipped, res.Errors)
+	return nil
 }
