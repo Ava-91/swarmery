@@ -423,7 +423,16 @@ function shapeTokens(raw, { source, viewport }) {
 
 /* ── markdown rendering ───────────────────────────────────────────────────── */
 
-const cell = (value) => String(value ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+// Backslash FIRST, then the pipe: escaping `|` into `\|` without having escaped
+// the backslashes already present turns a value ending in `\` into `\\|`, which
+// markdown reads as an escaped backslash followed by a LIVE pipe — a stray
+// column break in the report. CSS values reach here verbatim (font stacks,
+// content strings), so this is reachable, not theoretical.
+const cell = (value) =>
+  String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\n/g, ' ');
 
 function table(headers, rows) {
   if (!rows.length) return '_none_\n';
