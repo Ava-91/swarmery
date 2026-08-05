@@ -12,9 +12,10 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/version"
 )
 
-// Version is the CLI version reported by `swarmery status` — re-exported from
-// the single shared source in internal/version (also served by /api/health).
-const Version = version.Version
+// Version is the build identity reported by `swarmery status` — the semver of
+// the release line plus the commit it was built from, resolved by the single
+// shared source in internal/version (whose bare semver /api/health serves).
+var Version = version.String()
 
 // installEnvKeys maps each install flag to the SWARMERY_* var it bakes into the
 // plist. launchd does not inherit the installing shell's environment, so these

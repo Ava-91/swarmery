@@ -6,6 +6,10 @@ package api
 // header keeps working:
 //   {"status":"ok","version":"<semver>","db_size_bytes":<int>,"watching":<bool>}
 //
+// "build" is additive next to it: the same semver plus the commit the running
+// binary was built from, so the header can distinguish two builds of one
+// release line (see internal/version).
+//
 // Fusion phase 9 (Console/DX) ADDS operational fields consumed by `swarmery
 // status` / `swarmery console` (camelCase, additive — nothing above is renamed):
 //   uptimeSec, migrationVersion, wsClients, ingestLagSec, dispatch{active,paused}
@@ -32,6 +36,11 @@ type healthDTO struct {
 	Version     string `json:"version"`
 	DBSizeBytes int64  `json:"db_size_bytes"`
 	Watching    bool   `json:"watching"`
+	// build: the identity of the running binary — the release semver plus the
+	// commit it was built from ("0.2.0-15-g41157a8-dirty"). Additive: `version`
+	// stays bare semver for the frozen reader, so only this field moves between
+	// two builds of the same release line.
+	Build string `json:"build"`
 	// hooks_last_seen: ISO timestamp of the most recent POST /api/hooks/*
 	// (phase 2 heartbeat, additive optional per the frozen HealthResponse).
 	// Kept in-memory in the approvals service — absent until the first hook
@@ -80,6 +89,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 	dto := healthDTO{
 		Status:           "ok",
 		Version:          version.Version,
+		Build:            version.String(),
 		DBSizeBytes:      size,
 		DBSizeBytesCamel: size,
 		Watching:         h.Watching,

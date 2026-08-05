@@ -63,6 +63,7 @@ func TestHealth(t *testing.T) {
 		var got struct {
 			Status      string `json:"status"`
 			Version     string `json:"version"`
+			Build       string `json:"build"`
 			DBSizeBytes int64  `json:"db_size_bytes"`
 			Watching    bool   `json:"watching"`
 		}
@@ -77,6 +78,14 @@ func TestHealth(t *testing.T) {
 		}
 		if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(got.Version) {
 			t.Errorf("version = %q, want semver", got.Version)
+		}
+		// build carries the running binary's identity — never empty, and it
+		// starts from the same release line as version.
+		if got.Build != version.String() {
+			t.Errorf("build = %q, want the shared build identity %q", got.Build, version.String())
+		}
+		if got.Build == "" {
+			t.Error("build is empty, want the release semver plus the build commit")
 		}
 		if got.DBSizeBytes <= 0 {
 			t.Errorf("db_size_bytes = %d, want > 0 (migrated schema has pages)", got.DBSizeBytes)

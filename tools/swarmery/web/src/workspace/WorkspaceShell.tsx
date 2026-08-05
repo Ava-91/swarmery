@@ -14,7 +14,7 @@ import { MOCK } from '../api';
 import { ModeToggle } from '../components/ModeToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { UsageChip } from '../components/usage/UsageChip';
-import { useHealth, shortVersion } from '../lib/health';
+import { useHealth, versionLabel, versionTitle } from '../lib/health';
 import { PluginDriftBadge } from '../components/PluginDriftBadge';
 import { ProjectWorkspaceLayout } from './ProjectWorkspaceLayout';
 
@@ -52,7 +52,7 @@ export function WorkspaceShell(): JSX.Element {
                   className={`inline-block h-[7px] w-[7px] rounded-full ${daemonOk ? 'animate-pulse-dot bg-green' : 'bg-red'}`}
                 />
                 {daemonOk ? 'daemon healthy' : 'daemon unreachable'}
-                {health !== null ? ` · ${shortVersion(health.version)}` : ''}
+                {health !== null && <span title={versionTitle(health)}>· {versionLabel(health)}</span>}
                 <PluginDriftBadge health={health} />
               </>
             )}

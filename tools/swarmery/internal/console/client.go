@@ -19,6 +19,7 @@ import (
 type Health struct {
 	Status           string `json:"status"`
 	Version          string `json:"version"`
+	Build            string `json:"build"` // "" from a daemon older than the build stamp
 	DBSizeBytes      int64  `json:"dbSizeBytes"`
 	UptimeSec        int64  `json:"uptimeSec"`
 	MigrationVersion int    `json:"migrationVersion"`

@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DispatchStatus } from '../api/types';
 import { fetchDispatchStatus, pauseDispatch } from '../api';
-import { useHealth, shortVersion } from '../lib/health';
+import { useHealth, versionLabel, versionTitle } from '../lib/health';
 import { projectScopeKey } from './scopeKey';
 import type { BoardCounts } from './boardModel';
 
@@ -134,7 +134,11 @@ export function StatusBar({
             )}
           </>
         )}
-        {health !== null && <span className="text-ink-faint">{shortVersion(health.version)}</span>}
+        {health !== null && (
+          <span className="text-ink-faint" title={versionTitle(health)}>
+            {versionLabel(health)}
+          </span>
+        )}
       </span>
     </div>
   );
