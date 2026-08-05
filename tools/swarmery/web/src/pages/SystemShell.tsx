@@ -21,6 +21,13 @@ import { useProjectScope, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
 import { AgentHub } from './AgentHub';
 import { SystemHub } from './SystemHub';
+import { FiltersRow } from './system/shared';
+
+/** Origin scope of a catalog row — where the component is DEFINED (the user's
+ * ~/.claude + the plugin cache = global; a project's own .claude/ = project).
+ * Distinct from the project SCOPE chip next to it, which picks *which* project's
+ * effective catalog is listed. */
+type OriginScope = 'global' | 'project' | null;
 
 type SystemTab = 'agents' | 'toolkit' | 'hooks' | 'insights';
 const TABS: SystemTab[] = ['agents', 'toolkit', 'hooks', 'insights'];
@@ -60,6 +67,14 @@ export function SystemShell(): JSX.Element {
   // a project page.
   const { id: scopeSlug, pending: scopePending } = useProjectScope(scopeRef);
   const base = projectScoped ? `/p/${slug}/system` : '/system';
+
+  // Origin-scope filter, hoisted OUT of the Agents tab so one control narrows
+  // every roster (Agents · Toolkit · Hooks). Filtering stays client-side inside
+  // each hub — the rosters are already the effective catalog for the project
+  // scope, and these chips only slice what arrived. Insights is an advisory
+  // inbox with no per-row scope, so the chips are hidden there rather than
+  // rendered inert.
+  const [originScope, setOriginScope] = useState<OriginScope>(null);
 
   // Active tab = first path segment after the base (params['*'] is the splat).
   const splat = params['*'] ?? '';
@@ -131,8 +146,11 @@ export function SystemShell(): JSX.Element {
       {/* Own row, NOT inside the tablist below: a non-tab child would break
           that element's role contract. This shell resolves scopeSlug for every
           embedded hub, so the chip belongs here rather than in each hub. */}
-      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
+      <div className="mb-3 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2">
         <ScopeChip />
+        {tab !== 'insights' && (
+          <FiltersRow inline scope={originScope} onScope={setOriginScope} />
+        )}
       </div>
       <div
         className="mb-4 flex gap-1 overflow-x-auto border-b border-line [-webkit-overflow-scrolling:touch]"
@@ -168,7 +186,13 @@ export function SystemShell(): JSX.Element {
           search, detail rail and detail sub-tabs). Each hub manages its own
           internal selection/sub-tab state; the outer tab lives in the URL. */}
       <div className="min-h-0 flex-1">
-        <SystemTabPanel tab={tab} base={base} scopeRef={scopeRef} projectScoped={projectScoped} />
+        <SystemTabPanel
+          tab={tab}
+          base={base}
+          scopeRef={scopeRef}
+          projectScoped={projectScoped}
+          originScope={originScope}
+        />
       </div>
     </div>
   );
@@ -183,6 +207,7 @@ function SystemTabPanel({
   base,
   scopeRef,
   projectScoped,
+  originScope,
 }: {
   tab: SystemTab;
   base: string;
@@ -192,6 +217,9 @@ function SystemTabPanel({
   /** PROJECT mode (/p/:slug/system): the hubs list the project's effective
    * system rather than the machine-wide catalog. */
   projectScoped: boolean;
+  /** Shell-owned origin-scope filter (all scopes / global / project) — the hub
+   * slices its roster by it instead of rendering chips of its own. */
+  originScope: OriginScope;
 }): JSX.Element {
   if (tab === 'agents') {
     return (
@@ -200,6 +228,7 @@ function SystemTabPanel({
         routeBase={`${base}/agents`}
         scopeSlug={scopeRef}
         projectScoped={projectScoped}
+        originScope={originScope}
       />
     );
   }
@@ -213,6 +242,7 @@ function SystemTabPanel({
       routeBase={`${base}/${tab}`}
       scopeSlug={scopeRef}
       projectScoped={projectScoped}
+      originScope={originScope}
     />
   );
 }

@@ -57,6 +57,14 @@ function rowKey(r: RosterRow): string {
   return r.kind === 'templates' ? r.item.name : String(r.item.id);
 }
 
+/** Where the row is DEFINED, for the shell's origin-scope chips. Skills,
+ * commands and hooks carry `scope` straight from the registry (plugin-shipped
+ * items are scanned as global); templates predate that field, so their
+ * plugin/project `source` — the same distinction — stands in for it. */
+function rowScope(r: RosterRow): 'global' | 'project' {
+  return r.kind === 'templates' ? (r.item.source === 'project' ? 'project' : 'global') : r.item.scope;
+}
+
 /* ----- roster cards (one per kind) ----- */
 
 function SkillCard({ item }: { item: SystemItem }): JSX.Element {
@@ -196,11 +204,17 @@ export function SystemHub({
   routeBase: routeBaseProp,
   scopeSlug: scopeSlugProp,
   projectScoped = false,
+  originScope = null,
 }: {
   embedded?: boolean;
   forceCategory?: HubCategory;
   routeBase?: string;
   scopeSlug?: string | null;
+  /** Origin-scope filter owned by the caller (SystemShell's chips above the tab
+   * bar): null = all scopes, otherwise keep only rows defined in that scope.
+   * Applied CLIENT-SIDE — the roster is already the effective catalog for the
+   * project scope, and these chips only slice what arrived. */
+  originScope?: 'global' | 'project' | null;
   /** PROJECT mode (/p/:slug/system/…): the roster is the project's EFFECTIVE
    * catalog — its own items PLUS the global ones PLUS the built-ins of the packs
    * it enables. The narrowing is the server's (?project= / ?projectId=), so this
@@ -305,6 +319,11 @@ export function SystemHub({
   const projectNames = useMemo(
     () => Object.fromEntries(projects.map((p) => [p.slug, p.name ?? p.slug])),
     [projects],
+  );
+
+  const visibleRoster = useMemo(
+    () => (roster === null || originScope === null ? roster : roster.filter((r) => rowScope(r) === originScope)),
+    [roster, originScope],
   );
 
   const goCategory = (next: HubCategory): void => {
@@ -419,7 +438,7 @@ export function SystemHub({
             chip and hands this hub its scopeSlug. */}
         <HubShell<RosterRow>
           {...(embedded ? {} : { title: 'System Hub', topBar: <ScopeChip /> })}
-          roster={roster}
+          roster={visibleRoster}
           rosterError={rosterError}
           onRosterRetry={loadRoster}
           rowKey={rowKey}
@@ -429,9 +448,13 @@ export function SystemHub({
           onSelect={onSelect}
           searchPlaceholder={`filter ${category}…`}
           rosterEmptyLabel={
-            projectScoped
-              ? `No ${category} resolve for this project — enable a pack in Settings, or add one under .claude/.`
-              : `no ${category} on this machine`
+            // An active origin filter is the likely cause of an empty roster, so
+            // name it instead of claiming the machine has none.
+            originScope !== null
+              ? `no ${originScope}-scope ${category} here`
+              : projectScoped
+                ? `No ${category} resolve for this project — enable a pack in Settings, or add one under .claude/.`
+                : `no ${category} on this machine`
           }
           tabs={tabs}
           activeTab={activeTab}
