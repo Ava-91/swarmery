@@ -12,7 +12,6 @@
 import type {
   AgentHistory,
   SystemCommand,
-  SystemCommandHub,
   SystemConflict,
   SystemCreateAgentRequest,
   SystemCreateResponse,
@@ -101,14 +100,6 @@ export function fetchSystemHooks(filters: SystemListFilters = {}): Promise<Syste
 export function fetchSystemCommands(filters: SystemListFilters = {}): Promise<SystemCommand[]> {
   if (MOCK) return mockSystemApi.commands(filters);
   return get(`/api/system/commands${query(filters)}`);
-}
-
-/** Read-only detail of one command: frontmatter + body + usage guide + an
- * APPROXIMATE invocation rollup. Commands have no write surface, so there is
- * no matching PUT and no base_hash here. */
-export function fetchCommandHub(id: number): Promise<SystemCommandHub> {
-  if (MOCK) return mockSystemApi.commandHub(id);
-  return get(`/api/system/commands/${String(id)}/hub`);
 }
 
 export function fetchSystemOverlays(): Promise<SystemOverlays> {
