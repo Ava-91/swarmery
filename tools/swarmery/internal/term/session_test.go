@@ -100,16 +100,19 @@ func (p *fakeProc) got() []syscall.Signal {
 }
 
 // stubStarter hands out a fresh fakePTY+fakeProc per Start and records them so
-// tests can drive/observe each session. Never spawns a real shell.
+// tests can drive/observe each session. Never spawns a real shell. envs records
+// the environment delta Manager.Start handed down, per call, so the account
+// plumbing is observable without spawning a process.
 type stubStarter struct {
 	mu           sync.Mutex
 	ptys         []*fakePTY
 	procs        []*fakeProc
+	envs         [][]string
 	exitOnSIGHUP bool
 	startErr     error
 }
 
-func (s *stubStarter) start(_, _ string, _, _ uint16) (ptyFile, process, error) {
+func (s *stubStarter) start(_, _ string, env []string, _, _ uint16) (ptyFile, process, error) {
 	if s.startErr != nil {
 		return nil, nil, s.startErr
 	}
@@ -118,15 +121,26 @@ func (s *stubStarter) start(_, _ string, _, _ uint16) (ptyFile, process, error) 
 	s.mu.Lock()
 	s.ptys = append(s.ptys, f)
 	s.procs = append(s.procs, p)
+	s.envs = append(s.envs, env)
 	s.mu.Unlock()
 	return f, p, nil
+}
+
+// lastEnv returns the delta recorded for the most recent start call.
+func (s *stubStarter) lastEnv() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.envs) == 0 {
+		return nil
+	}
+	return s.envs[len(s.envs)-1]
 }
 
 func TestSessionLifecycleEcho(t *testing.T) {
 	st := &stubStarter{exitOnSIGHUP: true}
 	m := NewManager(Config{starter: st, Shell: "/stub"})
 
-	s, err := m.Start("/tmp", 80, 24)
+	s, err := m.Start("/tmp", nil, 80, 24)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -170,21 +184,21 @@ func TestConcurrencyCap(t *testing.T) {
 	st := &stubStarter{exitOnSIGHUP: true}
 	m := NewManager(Config{starter: st, Shell: "/stub", MaxSessions: 2})
 
-	a, err := m.Start("/tmp", 80, 24)
+	a, err := m.Start("/tmp", nil, 80, 24)
 	if err != nil {
 		t.Fatalf("start a: %v", err)
 	}
-	if _, err := m.Start("/tmp", 80, 24); err != nil {
+	if _, err := m.Start("/tmp", nil, 80, 24); err != nil {
 		t.Fatalf("start b: %v", err)
 	}
 	// Third exceeds the cap.
-	if _, err := m.Start("/tmp", 80, 24); err != ErrTooManySessions {
+	if _, err := m.Start("/tmp", nil, 80, 24); err != ErrTooManySessions {
 		t.Fatalf("third Start err = %v, want ErrTooManySessions", err)
 	}
 	// Freeing a slot lets the next Start through.
 	a.Close()
 	waitFor(t, func() bool { return m.Count() == 1 }, "count drops after close")
-	if _, err := m.Start("/tmp", 80, 24); err != nil {
+	if _, err := m.Start("/tmp", nil, 80, 24); err != nil {
 		t.Fatalf("start after free: %v", err)
 	}
 }
@@ -192,7 +206,7 @@ func TestConcurrencyCap(t *testing.T) {
 func TestStartErrorReleasesSlot(t *testing.T) {
 	st := &stubStarter{startErr: io.ErrUnexpectedEOF}
 	m := NewManager(Config{starter: st, Shell: "/stub", MaxSessions: 1})
-	if _, err := m.Start("/tmp", 0, 0); err != io.ErrUnexpectedEOF {
+	if _, err := m.Start("/tmp", nil, 0, 0); err != io.ErrUnexpectedEOF {
 		t.Fatalf("Start err = %v, want the spawn error", err)
 	}
 	// The reserved slot must be released so the cap isn't permanently consumed.
@@ -207,7 +221,7 @@ func TestIdleReapWithInjectedClock(t *testing.T) {
 	clock := func() time.Time { return now }
 	m := NewManager(Config{starter: st, Shell: "/stub", IdleTimeout: time.Hour, now: clock})
 
-	s, err := m.Start("/tmp", 80, 24)
+	s, err := m.Start("/tmp", nil, 80, 24)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -231,7 +245,7 @@ func TestCloseGraceEscalatesToSIGKILL(t *testing.T) {
 	// grace via a fast path: the fakeProc ignores SIGHUP, so Close's timer fires.
 	st := &stubStarter{exitOnSIGHUP: false}
 	m := NewManager(Config{starter: st, Shell: "/stub"})
-	s, err := m.Start("/tmp", 80, 24)
+	s, err := m.Start("/tmp", nil, 80, 24)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -252,7 +266,7 @@ func TestCloseGraceEscalatesToSIGKILL(t *testing.T) {
 func TestResizeControl(t *testing.T) {
 	st := &stubStarter{exitOnSIGHUP: true}
 	m := NewManager(Config{starter: st, Shell: "/stub"})
-	s, err := m.Start("/tmp", 80, 24)
+	s, err := m.Start("/tmp", nil, 80, 24)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -268,7 +282,7 @@ func TestResizeControl(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	st := &stubStarter{exitOnSIGHUP: true}
 	m := NewManager(Config{starter: st, Shell: "/stub"})
-	s, err := m.Start("/tmp", 80, 24)
+	s, err := m.Start("/tmp", nil, 80, 24)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -283,7 +297,7 @@ func TestCloseAll(t *testing.T) {
 	st := &stubStarter{exitOnSIGHUP: true}
 	m := NewManager(Config{starter: st, Shell: "/stub", MaxSessions: 5})
 	for i := 0; i < 3; i++ {
-		if _, err := m.Start("/tmp", 80, 24); err != nil {
+		if _, err := m.Start("/tmp", nil, 80, 24); err != nil {
 			t.Fatalf("Start %d: %v", i, err)
 		}
 	}

@@ -29,6 +29,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/term"
 )
 
@@ -80,7 +81,12 @@ func (h *Handler) term(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(termReadLimit)
 	defer c.Close(websocket.StatusInternalError, "server error")
 
-	sess, err := termMgr.Start(cwd, 0, 0)
+	// Run the dock shell under the project's Claude account. cwd is already the
+	// resolved allow-listed path; for a project cwd this picks up its
+	// .claude/settings.local.json binding, for a worktree cwd there is no
+	// settings file and EnvFor yields nil ⇒ the default account, i.e. today's
+	// behaviour unchanged.
+	sess, err := termMgr.Start(cwd, claudeacct.EnvFor(cwd), 0, 0)
 	if err != nil {
 		if errors.Is(err, term.ErrTooManySessions) {
 			// 1013 Try Again Later — the browser surfaces a "too many terminals".
