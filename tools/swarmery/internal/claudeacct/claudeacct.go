@@ -77,6 +77,33 @@ func Discover() []Account {
 	return out
 }
 
+// DiscoverWithDefault returns Discover's result with the default account
+// guaranteed present. Discover only reports config dirs that exist on disk, so a
+// machine whose ~/.claude/projects has not been created yet would otherwise hide
+// the operator's primary login from every surface that lists accounts.
+//
+// The synthesised entry is the canonical ~/.claude path, NOT a claim that the
+// directory exists. Callers that need existence must check it themselves.
+//
+// One function, two callers (the dashboard's account screen and the CLI's
+// `account list`): they must never disagree about which accounts exist.
+func DiscoverWithDefault() []Account {
+	found := Discover()
+	for _, a := range found {
+		if a.IsDefault {
+			return found
+		}
+	}
+	dir, err := ConfigDirFor(ingest.DefaultAccount)
+	if err != nil {
+		// Only reachable when userHomeDir() fails; a fabricated relative path
+		// would be worse than an honestly short list.
+		return found
+	}
+	def := Account{Key: ingest.DefaultAccount, ConfigDir: dir, IsDefault: true}
+	return append([]Account{def}, found...)
+}
+
 // ProjectsRoots discovers every Claude Code config dir's transcript tree under
 // $HOME — ~/.claude/projects plus each ~/.claude-<account>/projects a
 // CLAUDE_CONFIG_DIR setup creates. Only existing directories survive; Glob

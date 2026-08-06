@@ -149,32 +149,9 @@ type accountBindingDTO struct {
 
 // ── shared helpers ─────────────────────────────────────────────────────────
 
-// accountsForList is Discover() with the DEFAULT account guaranteed present.
-//
-// Discover only reports config dirs that physically exist, and a machine whose
-// ~/.claude has no projects/ yet has none — but the default account still exists
-// conceptually (it is where the CLI looks with no CLAUDE_CONFIG_DIR set), so
-// omitting it would hide the operator's primary login from its own management
-// screen. Discover already sorts the default first, so prepending preserves the
-// order rather than inventing one.
-func accountsForList() []claudeacct.Account {
-	found := claudeacct.Discover()
-	for _, a := range found {
-		if a.IsDefault {
-			return found
-		}
-	}
-	dir, err := claudeacct.ConfigDirFor(ingest.DefaultAccount)
-	if err != nil {
-		return found
-	}
-	def := claudeacct.Account{Key: ingest.DefaultAccount, ConfigDir: dir, IsDefault: true}
-	return append([]claudeacct.Account{def}, found...)
-}
-
 // findAccount resolves a key against the accounts that exist.
 func findAccount(key string) (claudeacct.Account, bool) {
-	for _, a := range accountsForList() {
+	for _, a := range claudeacct.DiscoverWithDefault() {
 		if a.Key == key {
 			return a, true
 		}
@@ -316,7 +293,7 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roots := ingestedRoots()
-	accounts := accountsForList()
+	accounts := claudeacct.DiscoverWithDefault()
 	rows := make([]accountDTO, 0, len(accounts))
 	for _, a := range accounts {
 		rows = append(rows, accountRow(r.Context(), a, roots, bound))

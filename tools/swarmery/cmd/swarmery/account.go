@@ -131,7 +131,7 @@ func accountList(args []string, out io.Writer) error {
 		return errors.New("usage: swarmery account list")
 	}
 
-	accounts := accountsForList()
+	accounts := claudeacct.DiscoverWithDefault()
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "no accounts found")
 		return nil
@@ -146,32 +146,6 @@ func accountList(args []string, out io.Writer) error {
 			a.Key, a.ConfigDir, yesNo(a.IsDefault), connected, orDash(plan))
 	}
 	return w.Flush()
-}
-
-// accountsForList is Discover() with the DEFAULT account guaranteed present.
-//
-// Discover only reports config dirs that physically exist, and a machine whose
-// ~/.claude has no projects/ yet has none — but the default account still
-// exists conceptually (it is where the CLI looks with no CLAUDE_CONFIG_DIR
-// set), so omitting it would hide the operator's primary login from the listing
-// meant to show every account. Discover already sorts the default first, so
-// prepending preserves that order rather than inventing one.
-//
-// Deliberately identical in behaviour to api.accountsForList: the dashboard and
-// the CLI must not disagree about which accounts exist.
-func accountsForList() []claudeacct.Account {
-	found := claudeacct.Discover()
-	for _, a := range found {
-		if a.IsDefault {
-			return found
-		}
-	}
-	dir, err := claudeacct.ConfigDirFor(ingest.DefaultAccount)
-	if err != nil {
-		return found
-	}
-	def := claudeacct.Account{Key: ingest.DefaultAccount, ConfigDir: dir, IsDefault: true}
-	return append([]claudeacct.Account{def}, found...)
 }
 
 // accountState answers "connected?" and "which plan?" for one account.
@@ -333,7 +307,7 @@ func accountClear(args []string, out io.Writer) error {
 
 // accountKeys lists the installed account keys, for error messages.
 func accountKeys() []string {
-	accounts := accountsForList()
+	accounts := claudeacct.DiscoverWithDefault()
 	keys := make([]string, 0, len(accounts))
 	for _, a := range accounts {
 		keys = append(keys, a.Key)

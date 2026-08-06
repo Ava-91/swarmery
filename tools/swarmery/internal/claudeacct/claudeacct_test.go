@@ -125,6 +125,78 @@ func TestProjectsRootsWithoutAHomeIsEmpty(t *testing.T) {
 	}
 }
 
+// TestDiscoverWithDefault covers the branch Discover() alone deliberately does
+// not: whether the default account is synthesised when it is missing from what
+// physically exists on disk. Package var seam, so no t.Parallel() anywhere here.
+func TestDiscoverWithDefault(t *testing.T) {
+	t.Run("default already present", func(t *testing.T) {
+		home := fakeHome(t)
+		mkdirs(t,
+			filepath.Join(home, ".claude", "projects"),
+			filepath.Join(home, ".claude-work", "projects"),
+		)
+		want := Discover()
+		got := DiscoverWithDefault()
+		if !slices.Equal(got, want) {
+			t.Errorf("DiscoverWithDefault() = %+v, want %+v (== Discover())", got, want)
+		}
+		count := 0
+		for _, a := range got {
+			if a.Key == "default" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("got %d entries keyed \"default\", want exactly 1: %+v", count, got)
+		}
+	})
+
+	t.Run("default missing, synthesised first", func(t *testing.T) {
+		home := fakeHome(t)
+		mkdirs(t, filepath.Join(home, ".claude-work", "projects"))
+
+		got := DiscoverWithDefault()
+		if len(got) != 2 {
+			t.Fatalf("DiscoverWithDefault() = %+v, want len 2", got)
+		}
+		if got[0].Key != "default" {
+			t.Errorf("got[0].Key = %q, want %q", got[0].Key, "default")
+		}
+		if !got[0].IsDefault {
+			t.Errorf("got[0].IsDefault = false, want true")
+		}
+		if want := filepath.Join(home, ".claude"); got[0].ConfigDir != want {
+			t.Errorf("got[0].ConfigDir = %q, want %q", got[0].ConfigDir, want)
+		}
+		if got[1].Key != "work" {
+			t.Errorf("got[1].Key = %q, want %q", got[1].Key, "work")
+		}
+	})
+
+	t.Run("empty $HOME yields only the synthetic default", func(t *testing.T) {
+		fakeHome(t)
+		got := DiscoverWithDefault()
+		if len(got) != 1 {
+			t.Fatalf("DiscoverWithDefault() = %+v, want len 1", got)
+		}
+		if !got[0].IsDefault || got[0].Key != "default" {
+			t.Errorf("got[0] = %+v, want the synthetic default", got[0])
+		}
+	})
+
+	t.Run("userHomeDir errors, no panic and no fabricated path", func(t *testing.T) {
+		prev := userHomeDir
+		userHomeDir = func() (string, error) { return "", errors.New("no home") }
+		t.Cleanup(func() { userHomeDir = prev })
+
+		want := Discover() // Discover() itself is empty in this situation
+		got := DiscoverWithDefault()
+		if !slices.Equal(got, want) {
+			t.Errorf("DiscoverWithDefault() = %+v, want %+v (== Discover())", got, want)
+		}
+	})
+}
+
 // ConfigDirFor is a pure mapping — it answers for accounts that do not exist yet
 // (the provisioning case), so it must not consult the filesystem.
 func TestConfigDirForMapsKeysWithoutTouchingDisk(t *testing.T) {
