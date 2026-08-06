@@ -2841,6 +2841,10 @@ export interface CommandHub extends SystemCommand {
   frontmatter: string;
   /** Redacted markdown body. */
   content: string;
+  /** Parsed `# How to use` guide. Go: commandHubDTO, always populated
+   * (internal/api/system_hub.go:136-140, :443-446 — out.Docs = emptyDocsDTO()
+   * first, so the JSON key is never absent). */
+  docs: SystemDocs;
   usage: {
     windowDays: number;
     invocations: number;
