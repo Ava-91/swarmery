@@ -2273,6 +2273,51 @@ export interface ConnectorsResponse {
   connectors: Connector[];
 }
 
+// ── Accounts (multi-account, phase 7) ────────────────────────────────────────
+
+/** Go: accountDTO (internal/api/accounts.go:82) */
+export interface Account {
+  key: string;
+  configDir: string;
+  isDefault: boolean;
+  /** Tri-state, NOT boolean: true/false = the question was asked and answered,
+   * null = it could not be asked at all (SWARMERY_USAGE_OAUTH=0). Rendering
+   * null as false is a false statement about the operator's subscription. */
+  connected: boolean | null;
+  /** Raw rateLimitTier, "" when unresolved — display as-is, do not re-derive. */
+  plan: string;
+  ingested: boolean;
+  /** Project paths EXPLICITLY bound to this account (not "every unbound project"). */
+  projects: string[];
+}
+
+export interface AccountsResponse {
+  accounts: Account[];
+}
+
+/** Go: provisionResponse (internal/api/accounts.go:113) */
+export interface ProvisionResponse {
+  account: Account;
+  /** "CLAUDE_CONFIG_DIR=<dir> claude" — the OPERATOR runs this, we never do. */
+  loginCommand: string;
+  hint?: string;
+}
+
+/** Go: removeAccountResponse (internal/api/accounts.go:126) */
+export interface RemoveAccountResponse {
+  ok: boolean;
+  danglingBindings?: string[];
+}
+
+/** Go: accountBindingDTO (internal/api/accounts.go:137) */
+export interface AccountBinding {
+  /** Stored binding, "" when the project has none. */
+  account: string;
+  effective: string;
+  configDir: string;
+  source: 'binding' | 'default';
+}
+
 // --- Project overview (GET /api/projects/{id}/overview, Canvas v2 phase 1) ----
 
 /** One "Right now" live-count tile. tone: green | amber | red | neutral. */
