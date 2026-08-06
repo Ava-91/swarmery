@@ -14,6 +14,18 @@ ones; **on a name collision the project-local component wins** (native base + ov
 | unique to one project | **the project's own `.claude/{agents,skills,commands,templates}/`** — versioned with the project's code, because it evolves with the product |
 | configuration, not logic (repo lists, env names, commit scopes, domain nouns) | the project's `.claude/project.json` |
 
+**Every new agent, skill or command owes its reader a `# How to use` block, and CI enforces
+it.** Whatever the thing does, it lands in `plugins/**` with one `# How to use` H1 carrying
+the four required subsections — What it does, When to use it, How to invoke, Worked example
+— or the **System item docs coverage** step fails the build; the gate runs
+`scripts/docgen/check-coverage.sh` with `DOCS_MAX_PROBLEMS` unset, so the tolerated problem
+count is zero. The full contract (heading placement, the `docs:` frontmatter provenance,
+the parser's edge cases, and what the dashboard does with the block) is
+[`tools/swarmery/docs/system-docs-format.md`](../tools/swarmery/docs/system-docs-format.md);
+`scripts/docgen/generate.sh` will draft the block for you from the item's own body, but the
+prose is yours to make worth reading. Run `bash scripts/docgen/check-coverage.sh` before you
+push.
+
 ## The graduation rule (flow goes UP only)
 
 New things are born **project-local**. When a *second* project needs the same thing, promote it

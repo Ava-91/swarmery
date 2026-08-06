@@ -313,3 +313,116 @@ item. Machine rules make it findable; these make it worth finding.
   command output. Prose for everything else.
 - **Length.** A guide is a page, not a manual: aim for under 60 lines total. The
   reference documentation for the item lives in the item body above the guide.
+
+---
+
+## §7 How the dashboard uses this
+
+Everything above is a contract between an author and a parser. This section is why the
+contract earns its keep: what the swarmery dashboard actually does with a `# How to use`
+block once `ParseDocs` (`internal/sysscan/docs.go`) has read it.
+
+### §7.1 The Docs section of an item detail
+
+On `/system`, selecting an agent, skill or command opens a detail panel split into two
+sections by a tablist (`web/src/pages/system/SectionTabs.tsx`): **Docs** and
+**Definition**. Docs renders the parsed guide; Definition is the item's own source, the
+view that existed before this format did.
+
+The panel opens on **Docs when a guide is present and Definition when it is not**
+(`defaultSection`, `web/src/pages/system/docsSection.ts`) — an item without a guide is
+better served by showing its source than an empty state. The open section is mirrored
+into the `?sec=` query parameter, so a link to a specific section survives a reload;
+`?sec=` belongs to the open panel and is cleared whenever `?item=` is.
+
+The guide's `docs.status`, staleness and duplicate state become the pills of the status
+row (`docsStatusTone`). They are a list rather than one badge because the states really do
+overlap: a reviewed guide can also be stale. When required subsections are absent, the
+panel names them (`missingLabel`), and the empty state names the file the guide belongs in
+(`guidePath` — a skill's guide lives in its directory's `SKILL.md`, §5.5).
+
+The Agent Hub shows the same guide for the same agent under its own `?tab=docs`
+(`web/src/pages/AgentHub.tsx`). It reuses the identical panel with the `docs` variant: the
+hub's tab bar is already the section switcher, so the panel renders the guide alone.
+
+### §7.2 The five lint rules
+
+`internal/sysscan/lint.go` owns five rules, all thin wrappers over the same `ParseDocs`
+call — the parse is never re-implemented:
+
+| rule | severity | fires when |
+|---|---|---|
+| `docs_missing` | warn | no `# How to use` block at all (§1) |
+| `docs_incomplete` | warn | block present, a REQUIRED subsection absent or under the rune floor (§2) |
+| `docs_duplicate_block` | warn | a second `# How to use` H1 (§5.4) |
+| `docs_stale` | info | `docs.source_sha` no longer matches the body (§4) |
+| `docs_unreviewed` | info | `docs.status` is not `reviewed` (§3) |
+
+An absent guide reports `docs_missing` and **stops**. An item with no block is also
+trivially incomplete, unreviewed and of unknown staleness, and reporting all four would
+bury the one fact that matters — the same reason `ParseDocs` leaves `Missing` empty when
+`Present` is false.
+
+`/api/system/insights` reframes the active `docs_missing` and `docs_incomplete` findings
+into an `undocumented` list, each entry carrying the item, the rule, the specific missing
+subsections and a hint pointing back at §2.
+
+### §7.3 The coverage headline
+
+`/api/system/summary` carries a `docs` block:
+
+```json
+"docs": { "total": 134, "documented": 134, "reviewed": 0 }
+```
+
+`total` is every registrable item (agents + skills + commands). `documented` is `total`
+minus the distinct targets with an active `docs_missing` or `docs_incomplete` finding.
+`reviewed` is `documented` minus the distinct targets with an active `docs_unreviewed`
+finding, explicitly excluding targets that are already undocumented — the linter stops at
+`docs_missing`, so counting an item as unreviewed *on top of* undocumented would double-
+report one gap. Both figures are clamped at zero: findings are keyed by target, and an
+item deleted between two lint passes could otherwise drive the headline negative.
+
+The whole block is `COUNT(DISTINCT target)` over the findings table — no disk IO and no
+second parse. The summary is refetched on every `system_item_updated` websocket event, so
+it has to stay a handful of index-backed counts.
+
+### §7.4 Why the docs rules are excluded from the severity roll-up
+
+This is the part that will surprise a reader, so it is written down rather than left to be
+rediscovered: **the `docs_*` rules are deliberately excluded from every severity
+aggregate.** One SQL literal, `docsRuleLike` in `internal/api/system.go`, is spliced into
+`rule NOT LIKE …` everywhere a roll-up is computed:
+
+- the fleet-wide `lint: {error, warn, info}` counts on `/api/system/summary`;
+- the per-row `lintMax` that drives the lint dot in the item list and the `?lint=`
+  click-to-filter.
+
+So an undocumented item **does not light the lint dot**, and the warn badge does not count
+it. The reason is that the badges are click-to-filter over `lintMax`: before the backfill,
+folding the guide rules in would have advertised roughly one warn per component and then
+filtered to a list where none of them appeared — the badge and the list would disagree.
+
+The signal is not lost, it is carried on a different axis. Every item row exposes a
+`documented` boolean — false while a `docs_missing` or `docs_incomplete` finding is active
+— computed as a JOIN alongside `lintMax`, never a per-row subquery. Coverage has its own
+headline (§7.3) and its own list (§7.2); severity keeps meaning "how broken is this
+item", which is what a reader clicking a warn badge expects.
+
+The `_` in `docs\_%` is escaped deliberately. Unescaped it is a `LIKE` wildcard, which
+would silently swallow a future rule named `docsomething`.
+
+### §7.5 The CI gate
+
+`scripts/docgen/check-coverage.sh` is the same contract enforced before merge, without a
+database: it walks the three item globs and checks the two gateable facts — exactly one
+`# How to use` H1 outside a fenced region (§1, §5.1, §5.4) and all four required
+subsections above the rune floor (§2). It runs in the marketplace CI as the **System item
+docs coverage** step and prints `checked=N documented=M problems=K`.
+
+`DOCS_MAX_PROBLEMS` is the ratchet knob and defaults to `0`. The corpus is at 134/134, so
+CI sets no override: a new agent, skill or command without a guide fails the build. Never
+raise the knob above the live number — a ratchet with slack is not a ratchet.
+
+Review status is deliberately **not** gated. `status: reviewed` is a human act, tracked by
+`docs_unreviewed` at info severity and never by CI.
