@@ -26,10 +26,19 @@ import { HubShell, healthTone, type HubTab } from './agent-hub/HubShell';
 import { ActivityTab, InsightsTab, OverviewTab, RunsTab, TasksTab } from './agent-hub/Tabs';
 import { RunNowButton } from './agent-hub/RunNow';
 
-type ProfileTab = 'overview' | 'runs' | 'tasks' | 'activity' | 'insights' | 'definition';
-const TABS: ProfileTab[] = ['overview', 'runs', 'tasks', 'activity', 'insights', 'definition'];
+type ProfileTab = 'overview' | 'docs' | 'runs' | 'tasks' | 'activity' | 'insights' | 'definition';
+const TABS: ProfileTab[] = [
+  'overview',
+  'docs',
+  'runs',
+  'tasks',
+  'activity',
+  'insights',
+  'definition',
+];
 const TAB_LABELS: Record<ProfileTab, string> = {
   overview: 'Overview',
+  docs: 'Docs',
   runs: 'Runs',
   tasks: 'Tasks',
   activity: 'Activity',
@@ -383,6 +392,25 @@ function ProfilePanel({
   defRefresh: number;
   onDefinitionMutated: () => void;
 }): JSX.Element {
+  // Docs tab: the agent's `# How to use` guide. Same panel, same registry id,
+  // 'docs' variant — the hub's own tab bar is the section switcher here, so
+  // the panel renders the guide alone. Deep-link is the native ?tab=docs.
+  if (tab === 'docs') {
+    return (
+      <SystemItemPanel
+        kind="agents"
+        id={selectedId}
+        refreshKey={defRefresh}
+        projectNames={projectNames}
+        onClose={() => undefined}
+        onMutated={onDefinitionMutated}
+        onDeleted={onDefinitionMutated}
+        onReadonly={() => undefined}
+        variant="docs"
+      />
+    );
+  }
+
   // Definition tab: reuse the existing versioned System editor verbatim. It
   // fetches its own detail by the SAME registry id, so it works standalone —
   // create/delete stay on the System page (this is edit/versions/rollback only).

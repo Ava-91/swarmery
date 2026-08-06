@@ -868,10 +868,10 @@ func matchProjectID(p sysscan.TemplateProject, pid string) bool {
 func (h *Handler) systemItemByID(k systemKind, id int64) (systemItemDTO, bool, error) {
 	var it systemItemDTO
 	var sev sql.NullInt64
-	var dead int64
+	var dead, undoc int64
 	err := h.DB.QueryRow(systemItemSelect(k)+` WHERE t.id = ? AND t.deleted = 0`, id).Scan(
 		&it.ID, &it.Name, &it.Scope, &it.ProjectSlug, &it.Origin, &it.PluginName,
-		&it.Model, &it.Description, &it.Path, &sev, &dead)
+		&it.Model, &it.Description, &it.Path, &sev, &dead, &undoc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return it, false, nil
 	}
@@ -883,6 +883,7 @@ func (h *Handler) systemItemByID(k systemKind, id int64) (systemItemDTO, bool, e
 		it.LintMax = &name
 	}
 	it.Dead = dead != 0
+	it.Documented = undoc == 0
 
 	usage, err := h.usageByName(k, usageCutoff())
 	if err != nil {

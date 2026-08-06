@@ -51,6 +51,7 @@ const SKILL_HUB: SkillHub = {
   path: '/plugins/core/skills/browser-verification',
   lintMax: null,
   dead: false,
+  documented: false,
   lastUsed: daysAgoISO(0),
   tasks30d: 12,
   usage: {

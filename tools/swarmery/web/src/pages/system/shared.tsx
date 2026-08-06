@@ -3,7 +3,7 @@
 // the global header scope switcher), and the list-fetch hook every tab uses. Visual language mirrors components/ui.tsx (hairline
 // pill chips, mono micro-type); tooltips are native `title` attributes.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { LintSeverity } from '../../api/types';
 import type { SystemListFilters } from '../../api/system';
@@ -92,6 +92,62 @@ export function LintDot({
     >
       {severity === 'info' ? '●' : '▲'}
     </span>
+  );
+}
+
+/* ----- frontmatter → table -----
+ * The contract serves the RAW YAML block (redacted). Top-level `key: value`
+ * lines become rows; indented/list continuation lines append to the previous
+ * row's value. Anything unparseable falls back to a mono <pre>.
+ * Shared by the agents/skills detail panel and the read-only command panel. */
+
+interface FmRow {
+  key: string;
+  value: string;
+}
+
+export function parseFrontmatter(frontmatter: string): FmRow[] | null {
+  const rows: FmRow[] = [];
+  for (const line of frontmatter.split('\n')) {
+    if (line.trim() === '') continue;
+    const top = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (top !== null && !line.startsWith(' ') && !line.startsWith('\t')) {
+      rows.push({ key: top[1] ?? '', value: top[2] ?? '' });
+      continue;
+    }
+    const last = rows[rows.length - 1];
+    if (last === undefined) return null; // continuation before any key
+    last.value = last.value === '' ? line.trim() : `${last.value}\n${line.trim()}`;
+  }
+  return rows.length > 0 ? rows : null;
+}
+
+export function FrontmatterTable({ frontmatter }: { frontmatter: string }): JSX.Element {
+  const rows = useMemo(() => parseFrontmatter(frontmatter), [frontmatter]);
+  if (rows === null) {
+    return (
+      <pre className="overflow-x-auto rounded-lg border border-line bg-bg px-3 py-2.5 font-mono text-[11px] leading-relaxed text-ink-2">
+        {frontmatter}
+      </pre>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border border-line">
+      <table className="w-full border-collapse">
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              <td className="w-[120px] border-b border-line-soft px-2.5 py-1.5 align-top font-mono text-[10px] tracking-[0.06em] text-ink-faint uppercase">
+                {row.key}
+              </td>
+              <td className="border-b border-line-soft px-2.5 py-1.5 align-top font-mono text-[11.5px] whitespace-pre-wrap text-ink-2">
+                {row.value === '' ? '—' : row.value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

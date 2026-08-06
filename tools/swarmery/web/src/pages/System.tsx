@@ -34,6 +34,8 @@ import {
   type SystemSort,
 } from './system/shared';
 import { SystemItemPanel } from './system/ItemDetail';
+import { CommandDetail } from './system/CommandDetail';
+import type { DocsSection } from './system/docsSection';
 import { CreateAgentForm } from './system/CreateAgentForm';
 import { HooksTab } from './system/HooksTab';
 import { TemplatesTab } from './system/TemplatesTab';
@@ -56,6 +58,13 @@ function parseTab(value: string | null): SystemTab {
   return (TABS as string[]).includes(value ?? '') ? (value as SystemTab) : 'agents';
 }
 
+/** ?sec= — the open detail panel's section. Separate from ?tab=, which the
+ * page tab bar already owns. null means "no explicit pick", which lets the
+ * panel default to Docs or Definition based on whether a guide exists. */
+function parseSection(value: string | null): DocsSection | null {
+  return value === 'docs' || value === 'definition' ? value : null;
+}
+
 function parseScope(value: string | null): 'global' | 'project' | null {
   return value === 'global' || value === 'project' ? value : null;
 }
@@ -65,6 +74,8 @@ function parseLint(value: string | null): LintSeverity | null {
 }
 
 const DEAD_TOOLTIP = 'dead: 0 telemetry mentions in the last 30 days (advisory)';
+const UNDOCUMENTED_TOOLTIP =
+  'no usable `# How to use` guide — the block is absent or missing a required subsection';
 
 /* ----- header summary + lint severity badges ----- */
 
@@ -88,6 +99,15 @@ function SummaryHeader({
             {String(summary.agents)} agents · {String(summary.skills)} skills ·{' '}
             {String(summary.hooks)} hooks · {String(summary.commands)} commands ·{' '}
             {String(summary.overlays)} overlays
+          </span>
+          {/* Guide coverage sits with the inventory counts rather than with the
+              lint badges: docs_* is deliberately kept out of lintMax, so it is
+              an inventory fact here, not a severity. */}
+          <span
+            className="font-mono text-[11px] text-ink-dim"
+            data-tip={`${String(summary.docs.reviewed)} of them human-reviewed — \`# How to use\` coverage over agents + skills + commands`}
+          >
+            {String(summary.docs.documented)}/{String(summary.docs.total)} documented
           </span>
           <span className="flex items-center gap-1.5">
             {(['error', 'warn', 'info'] as const).map((severity) => {
@@ -154,6 +174,13 @@ function ItemRow({
         <span className="whitespace-nowrap">
           {item.lastUsed !== null ? `used ${fmtAgo(item.lastUsed)}` : 'never used'}
         </span>
+        {/* The docs axis LintDot no longer carries (docs_* is excluded from
+            lintMax, or every row would be amber): stated only when absent. */}
+        {!item.documented && (
+          <span className="whitespace-nowrap text-amber" data-tip={UNDOCUMENTED_TOOLTIP}>
+            undocumented
+          </span>
+        )}
         <span className="min-w-0 truncate">{item.path}</span>
       </div>
     </>
@@ -202,18 +229,20 @@ function ItemsTab({
   lint,
   sort,
   selectedId,
+  section,
   refreshKey,
   find,
   onScope,
   onSort,
   onSelect,
+  onSection,
   onFindResolved,
   onMutated,
   onDeleted,
   onReadonly,
 }: {
   kind: SystemItemsKind | 'commands';
-  /** Agents/skills open the detail panel; commands are list-only (no detail DTO). */
+  /** Every kind opens a detail panel now — commands get the read-only one. */
   selectable: boolean;
   scope: 'global' | 'project' | null;
   project: string | null;
@@ -221,12 +250,16 @@ function ItemsTab({
   lint: LintSeverity | null;
   sort: SystemSort;
   selectedId: number | null;
+  /** ?sec= — the open panel's section; null lets the panel pick its default. */
+  section: DocsSection | null;
   refreshKey: number;
   /** ?find= deep-link by item name (from session detail chips) — resolved to ?item= once rows load. */
   find: string | null;
   onScope: (scope: 'global' | 'project' | null) => void;
   onSort: (sort: SystemSort) => void;
   onSelect: (id: number | null) => void;
+  /** The panel switched section — mirrored into ?sec= so it survives a reload. */
+  onSection: (section: DocsSection) => void;
   onFindResolved: (id: number | null) => void;
   /** A write landed in the panel/form — refetch list + summary + detail. */
   onMutated: () => void;
@@ -243,13 +276,19 @@ function ItemsTab({
   const fetcher = useCallback(
     (filters: SystemListFilters): Promise<SystemItem[]> =>
       kind === 'commands'
-        ? // Commands carry no model/lint/usage columns — pad to the shared row shape.
+        ? // Commands carry no model/lint/usage/docs columns — pad to the shared
+          // row shape. `documented: true` is the no-claim padding: the command
+          // list endpoint does not serve the flag, and a false here would print
+          // "undocumented" over every command on no evidence. The linter DOES
+          // score commands (lintDocsCommands), so the real flag is a follow-up
+          // on the commands endpoint, alongside the same gap in lintMax/dead.
           fetchSystemCommands(filters).then((rows) =>
             rows.map((c) => ({
               ...c,
               model: null,
               lintMax: null,
               dead: false,
+              documented: true,
               lastUsed: null,
               tasks30d: 0,
             })),
@@ -358,7 +397,7 @@ function ItemsTab({
       </div>
 
       {/* scrollable area — list only (no detail) or 2-col grid with independent scrolls */}
-      {!detailOpen || kind === 'commands' ? (
+      {!detailOpen ? (
         <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-line [-webkit-overflow-scrolling:touch]">
           {listContent}
         </div>
@@ -372,16 +411,28 @@ function ItemsTab({
           {/* Border is a fixed frame on the scroll container — the panel
               scrolls INSIDE it, so the perimeter stays visible while scrolling. */}
           <div className="overflow-y-auto rounded-xl border border-line bg-surface px-[18px] py-4 [-webkit-overflow-scrolling:touch]">
-            <SystemItemPanel
-              kind={kind}
-              id={selectedId}
-              refreshKey={refreshKey}
-              projectNames={projectNames}
-              onClose={() => onSelect(null)}
-              onMutated={onMutated}
-              onDeleted={onDeleted}
-              onReadonly={onReadonly}
-            />
+            {kind === 'commands' ? (
+              <CommandDetail
+                id={selectedId}
+                projectNames={projectNames}
+                section={section}
+                onSection={onSection}
+                onClose={() => onSelect(null)}
+              />
+            ) : (
+              <SystemItemPanel
+                kind={kind}
+                id={selectedId}
+                refreshKey={refreshKey}
+                projectNames={projectNames}
+                section={section}
+                onSection={onSection}
+                onClose={() => onSelect(null)}
+                onMutated={onMutated}
+                onDeleted={onDeleted}
+                onReadonly={onReadonly}
+              />
+            )}
           </div>
         </div>
       )}
@@ -403,6 +454,7 @@ export function System(): JSX.Element {
   const sort = parseSort(searchParams.get('sort'));
   const itemParam = searchParams.get('item');
   const selectedId = itemParam !== null && /^\d+$/.test(itemParam) ? Number(itemParam) : null;
+  const section = parseSection(searchParams.get('sec'));
   const find = searchParams.get('find');
 
   const [projects, setProjects] = useState<Project[]>([]);
@@ -460,16 +512,18 @@ export function System(): JSX.Element {
   );
   useLiveUpdates(onMessage, refresh);
 
+  // ?sec= belongs to the OPEN PANEL, so it is cleared everywhere ?item= is:
+  // a section picked on one item must not leak onto the next one.
   const setTab = (next: SystemTab): void => {
     // Keep level/lint across tabs (they mean the same thing); the item
     // selection belongs to one list.
-    patchParams({ tab: next === 'agents' ? null : next, item: null });
+    patchParams({ tab: next === 'agents' ? null : next, item: null, sec: null });
   };
   const onScope = (next: 'global' | 'project' | null): void => {
-    patchParams({ level: next, item: null });
+    patchParams({ level: next, item: null, sec: null });
   };
   const onLint = (severity: LintSeverity | null): void => {
-    patchParams({ lint: severity, item: null });
+    patchParams({ lint: severity, item: null, sec: null });
   };
   // Sort is a view preference — it never changes which row is selected, so it
   // keeps ?item=. 'name' is the default and stays out of the URL.
@@ -477,17 +531,20 @@ export function System(): JSX.Element {
     patchParams({ sort: next === 'name' ? null : next });
   };
   const onSelect = (id: number | null): void => {
-    patchParams({ item: id === null ? null : String(id) });
+    patchParams({ item: id === null ? null : String(id), sec: null });
+  };
+  const onSection = (next: DocsSection): void => {
+    patchParams({ sec: next });
   };
   const onFindResolved = useCallback(
     (id: number | null): void => {
-      patchParams({ find: null, item: id === null ? null : String(id) });
+      patchParams({ find: null, item: id === null ? null : String(id), sec: null });
     },
     [patchParams],
   );
   const onReadonly = useCallback((): void => setReadonly(true), []);
   const onDeleted = useCallback((): void => {
-    patchParams({ item: null });
+    patchParams({ item: null, sec: null });
     refresh();
   }, [patchParams, refresh]);
 
@@ -499,6 +556,20 @@ export function System(): JSX.Element {
     find,
     onScope,
     onFindResolved,
+  };
+
+  /** Everything the selectable item tabs (agents/skills/commands) share. */
+  const detailProps = {
+    projects,
+    selectedId,
+    section,
+    sort,
+    onSort,
+    onSelect,
+    onSection,
+    onMutated: refresh,
+    onDeleted,
+    onReadonly,
   };
 
   // Insights tab-label badge: promotion + stale-override counters from the
@@ -550,51 +621,11 @@ export function System(): JSX.Element {
 
       {/* content area — each tab manages its own internal scroll */}
       <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
-        {tab === 'agents' && (
-          <ItemsTab
-            kind="agents"
-            selectable
-            projects={projects}
-            selectedId={selectedId}
-            sort={sort}
-            onSort={onSort}
-            onSelect={onSelect}
-            onMutated={refresh}
-            onDeleted={onDeleted}
-            onReadonly={onReadonly}
-            {...listProps}
-          />
-        )}
-        {tab === 'skills' && (
-          <ItemsTab
-            kind="skills"
-            selectable
-            projects={projects}
-            selectedId={selectedId}
-            sort={sort}
-            onSort={onSort}
-            onSelect={onSelect}
-            onMutated={refresh}
-            onDeleted={onDeleted}
-            onReadonly={onReadonly}
-            {...listProps}
-          />
-        )}
+        {tab === 'agents' && <ItemsTab kind="agents" selectable {...detailProps} {...listProps} />}
+        {tab === 'skills' && <ItemsTab kind="skills" selectable {...detailProps} {...listProps} />}
         {tab === 'hooks' && <HooksTab projects={projects} onReadonly={onReadonly} {...listProps} />}
         {tab === 'commands' && (
-          <ItemsTab
-            kind="commands"
-            selectable={false}
-            projects={projects}
-            selectedId={null}
-            sort={sort}
-            onSort={onSort}
-            onSelect={onSelect}
-            onMutated={refresh}
-            onDeleted={onDeleted}
-            onReadonly={onReadonly}
-            {...listProps}
-          />
+          <ItemsTab kind="commands" selectable {...detailProps} {...listProps} />
         )}
         {tab === 'templates' && (
           <div className="h-full overflow-y-auto pb-4 pt-3 [-webkit-overflow-scrolling:touch]">
