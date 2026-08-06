@@ -386,11 +386,12 @@ func (h *Handler) listSystemSkills(w http.ResponseWriter, r *http.Request) {
 // they are folded by normalised name in Go and overlaid post-query (usageByName).
 //
 // `sev` deliberately EXCLUDES the docs_* rules. They are real findings at their
-// stated severities (docs_missing is a warn — sysscan/lint.go), but the corpus
-// is undocumented end to end, so folding them into the row-level severity would
-// paint an amber LintDot on essentially every row, make ?lint=warn return the
-// whole list, and drown the pre-existing lint signal the moment the guide rules
-// shipped. The docs signal has its own dedicated carrier on the same JOIN —
+// stated severities (docs_missing is a warn — sysscan/lint.go), but a docs rule
+// saturates: before the backfill every item carried docs_missing, and after it
+// every item carries docs_unreviewed until a human reads the guide. Either way,
+// folding them into the row-level severity would paint one uniform LintDot
+// across essentially every row, make ?lint= return the whole list, and drown the
+// pre-existing lint signal. The docs signal has its own dedicated carrier on the same JOIN —
 // `undoc` → the `documented` field — plus the insights `undocumented` list, so
 // nothing is hidden by keeping the two axes separate.
 func systemItemSelect(k systemKind) string {

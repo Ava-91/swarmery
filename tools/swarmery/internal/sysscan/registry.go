@@ -131,6 +131,9 @@ func (s *Scanner) scanSkillDir(d skillDir, st *Stats, counter *int, seen map[int
 		warn("skill %s: %v", skillMD, err)
 		return
 	}
+	if !isFrontmatterStart(content) {
+		return // no frontmatter — not a skill (§1.1, docs §5.5), as for agents
+	}
 	hash := sha256Hex(content)
 
 	if id, ok := s.unchangedRow(

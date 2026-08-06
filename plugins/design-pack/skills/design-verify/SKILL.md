@@ -134,7 +134,7 @@ Invoke it directly when you want a measurement pass, or let `design-implement` r
 
 ## Inputs
 
-- Design export path — the reference image or export to measure against — required.
+- Design export path — an `.html` file, a directory containing one (`index.html`, or a single `.html`), or a `.zip` of either — required. A bare `.png` is not an accepted export: nothing rejects it, and the run silently measures against the browser's image viewer.
 - Route under test — appended to the local dev URL from `design.devUrl` — required.
 - Authoring viewport — the breakpoint the design was drawn at, not a convenient one — required.
 - Threshold and pixel tolerance — read from `design.diff` in project config — optional, defaults come from config.
@@ -149,7 +149,7 @@ An artefact directory containing `design.png`, `impl.png`, `diff.png`, `side-by-
 ```
 Skill(skill: "design-pack:design-verify")
 → dev server already answering on the local dev URL
-→ node screenshot-diff.mjs --design ./export/checkout.png \
+→ node screenshot-diff.mjs --design ./export/checkout/index.html \
     --url <devUrl>/orders/line-items --viewport 1440x900 \
     --threshold 0.5 --out .design-verify/report/line-items
 → diffPercent 0.02, threshold 0.5, pass: true

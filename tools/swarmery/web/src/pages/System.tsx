@@ -105,9 +105,10 @@ function SummaryHeader({
               an inventory fact here, not a severity. */}
           <span
             className="font-mono text-[11px] text-ink-dim"
-            data-tip={`${String(summary.docs.reviewed)} of them human-reviewed — \`# How to use\` coverage over agents + skills + commands`}
+            data-tip={'`# How to use` coverage over agents + skills + commands. A guide counts as documented once it carries the four required subsections; it counts as reviewed only after a human has read it.'}
           >
-            {String(summary.docs.documented)}/{String(summary.docs.total)} documented
+            {String(summary.docs.documented)}/{String(summary.docs.total)} documented ·{' '}
+            {String(summary.docs.reviewed)} reviewed
           </span>
           <span className="flex items-center gap-1.5">
             {(['error', 'warn', 'info'] as const).map((severity) => {

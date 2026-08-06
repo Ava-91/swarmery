@@ -430,10 +430,11 @@ This agent takes one tracker ticket reference and drives it to a written-back an
 ## How to invoke
 
 ```
-@jira-pack:jira-task-runner
+/jira-fix ABC-139             ← the only thing you type
+@jira-pack:jira-task-runner   ← the identity /jira-fix dispatches to
 ```
 
-In practice you do not call it directly: the `/jira-fix` command is the only supported entry point, and it hands control here after checking the argument shape. Never wire this agent into a plan phase or another orchestrator's routing table.
+The `/jira-fix` command is the only supported entry point: it checks the argument shape, then hands control here. The composite above is this agent's underlying identity, shown so you can recognise it in a transcript — not an address to call by hand. Never invoke it directly, and never wire it into a plan phase or another orchestrator's routing table.
 
 ## Inputs
 

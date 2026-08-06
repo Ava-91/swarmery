@@ -336,7 +336,7 @@ This skill turns a tracker ticket into one decision you can act on. It reads the
 Skill(skill: "jira-pack:jira-triage")
 ```
 
-Call it after config, access preflight, and the board card are done. It takes no arguments — it works from the ticket and config the run already resolved.
+Call it after config, access preflight, and the board card are done. You pass it nothing at the call site — every input below is read from the ticket and the config the run already resolved, not typed as an argument.
 
 ## Inputs
 
@@ -354,16 +354,16 @@ A report, not a Jira write. It contains the class and the signals behind it (inc
 ```
 Skill(skill: "jira-pack:jira-triage")
 
-Ticket <PROJECT-KEY>-412, typed "Bug": "LAND control stays enabled while units
-are airborne."
+Ticket <PROJECT-KEY>-412, typed "Bug": "disable the <control> until every
+<unit> reports <terminal-state>."
 
 Step 1b   → class: change (imperative phrasing, acceptance criteria, no
             current-behavior complaint; issuetype disagreed — noted)
 Step 2b.1 → baseline: `npm test` exit 0, suite green
-Step 2b.2 → absence proof: grep for the LAND control's disabled state in
-            apps/<mainApp> — control renders, no airborne guard
-Step 2b.3 → criteria: 1) disabled while any unit reports airborne
-                      2) enabled once every unit reports landed
+Step 2b.2 → absence proof: grep for the <control>'s disabled state in
+            apps/<mainApp> — control renders, no <terminal-state> guard
+Step 2b.3 → criteria: 1) disabled while any <unit> is not in <terminal-state>
+                      2) enabled once every <unit> reports <terminal-state>
 Step 3    → needs-fix
 ```
 

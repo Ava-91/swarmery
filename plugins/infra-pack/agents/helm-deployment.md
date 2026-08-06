@@ -213,9 +213,9 @@ This agent owns Kubernetes delivery through Helm. It writes and maintains charts
 
 ## When not to use it
 
-- Pipeline YAML and CI job design — use the CI specialist agent for that.
-- A live incident on a running cluster — hand it to the SRE orchestrator.
-- Application source changes — that belongs to the implementation agent.
+- Pipeline YAML and CI job design — use `@infra-pack:gitlab-ci-specialist` for that.
+- A live incident on a running cluster — hand it to `@core:sre-orchestrator`.
+- Application source changes — that belongs to `@core:implementation-agent`.
 
 ## How to invoke
 
@@ -251,6 +251,6 @@ You end up with a staging values file pinned to an immutable digest, the prior d
 
 ## Related
 
-- The CI specialist — prefer it when the question is about pipeline stages, not chart contents.
-- The SRE orchestrator — prefer it for incident response and pod readiness that exceeds the deploy budget.
-- The supply-chain security skill — prefer it for image scanning, SBOMs, and signing readiness.
+- `@infra-pack:gitlab-ci-specialist` — prefer it when the question is about pipeline stages, not chart contents.
+- `@core:sre-orchestrator` — prefer it for incident response and pod readiness that exceeds the deploy budget.
+- `Skill(skill: "core:supply-chain-security")` — prefer it for image scanning, SBOMs, and signing readiness.

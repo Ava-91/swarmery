@@ -212,7 +212,7 @@ This agent writes the hardware-facing Python for a Raspberry Pi 5 edge device: U
 
 - MAVLink message framing or protocol parsing — use `@uav-pack:mavlink-specialist`.
 - Streaming telemetry out to the web portal — use `@uav-pack:telemetry-processor`.
-- Container or Helm deployment changes — use `@uav-pack:helm-deployment`.
+- Container or Helm deployment changes — use `@infra-pack:helm-deployment`.
 - Multi-phase work spanning several repos — start with `@core:tech-lead`.
 
 ## How to invoke
