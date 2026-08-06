@@ -530,7 +530,7 @@ func (s *Scanner) docsFindings(byRule map[string][]lintFinding, target, path, co
 		byRule[RuleDocsUnreviewed] = append(byRule[RuleDocsUnreviewed], lintFinding{
 			target:   target,
 			severity: "info",
-			message:  fmt.Sprintf("%s: docs.status is %q — no human has reviewed this usage guide", path, status),
+			message:  fmt.Sprintf("%s: docs.status is %q — this usage guide has not been reviewed", path, status),
 		})
 	}
 }

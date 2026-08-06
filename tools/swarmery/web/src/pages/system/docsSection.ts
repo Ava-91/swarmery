@@ -41,12 +41,21 @@ export function docsStatusTone(docs: SystemDocs): DocsBadge[] {
   if (!docs.present) return [];
   const out: DocsBadge[] = [];
   if (docs.status === 'reviewed') {
-    out.push({ label: 'reviewed', tone: TONE_GREEN, tip: 'a human has reviewed this guide' });
+    out.push({
+      label: 'reviewed',
+      tone: TONE_GREEN,
+      // Deliberately does not claim a *human* read it. The 2026-08-06 wave was
+      // reviewed by agents under operator direction, so a "a human has reviewed
+      // this" tooltip would be false on all 134 items. The flag records that a
+      // review happened and the guide was checked against the item it documents;
+      // it does not record who performed it.
+      tip: 'checked against the item it documents',
+    });
   } else if (docs.status === 'generated') {
     out.push({
       label: 'generated',
       tone: TONE_AMBER,
-      tip: 'written by the docs generator and not reviewed by a human yet',
+      tip: 'written by the docs generator and not reviewed yet',
     });
   } else if (docs.status !== '') {
     // §3 keeps an unknown docs.status verbatim so the UI can surface it rather
