@@ -7,6 +7,10 @@ allowed-tools:
   - codebase-retrieval
   - view
 color: red
+docs:
+  status: generated
+  source_sha: 697acbe8f32a
+  updated: 2026-08-06
 ---
 
 # Figma Design System Styling
@@ -652,7 +656,59 @@ test('should have no accessibility violations', async () => {
 - Design system documentation
 
 \`\`\`
+```
 
 ---
 
 Now generate styling for: $ARGUMENTS
+
+# How to use
+
+## What it does
+
+Turns a Figma design into styling code that matches both the design and your project's existing design system. It pulls colors, spacing, typography, shadows, and radii out of Figma, compares each one against the tokens your project already uses, and writes Tailwind classes, CSS variables, and a React component for the target UI. It also checks color contrast, grid alignment, and every interaction state before it hands you the code.
+
+## When to use it
+
+- A designer handed you a Figma component or frame and you need production styling for it in `apps/<mainApp>`.
+- You want to know whether a new design drifts from your existing tokens before you build it.
+- You need the full state matrix — default, hover, focus, active, disabled — rather than just the resting look.
+- You want the accessibility pass (WCAG 2.1 AA contrast, keyboard, screen reader) done at the same time as the styling.
+
+## When not to use it
+
+- You have no Figma source, only screenshots or a description — reach for a general frontend design skill instead.
+- The change is behavioral rather than visual — reach for a React or component-focused agent.
+- The target is an edge or device-facing runtime repo — this command targets the main web app unless the UI genuinely lives on the device.
+
+## How to invoke
+
+```
+/figma-style OrderCard from the checkout Figma file
+```
+
+Type `/figma-style` followed by the component you want styled. Anything after the command becomes the target description, so name the component and, where it helps, the Figma file or frame it lives in.
+
+## Inputs
+
+- **Component or design target** — the thing you want styled, passed as the command argument — required.
+- **Figma access** — the command reads the design through Figma tooling, so the file must be reachable — required.
+- **Project design tokens** — read from your project's configuration and `CLAUDE.md` so extracted values can be compared against what you already use — optional, but the compliance table is thin without them.
+
+## What you get back
+
+One structured report in the conversation. It contains the extracted design tokens as CSS variables grouped by colors, typography, spacing, radius, and shadow; a compliance table scoring each value against your project standard; a typed React component plus its Tailwind classes; responsive breakpoints; a contrast table with pass/fail per color pair; every component state; suggested `tailwind.config.js` additions; visual-regression and accessibility test stubs; and an implementation checklist. Nothing is written to disk — you copy what you want into place.
+
+## Worked example
+
+```
+/figma-style OrderCard from the checkout Figma file
+```
+
+The command reads the OrderCard frame, extracts its tokens, and compares them with the project's own. You get back a table showing which values match and which drift, a typed `OrderCard.tsx` with props, a matching `OrderCard.css` of Tailwind classes covering hover, focus, active, and disabled, a contrast table flagging any color that fails AA for text, and Playwright plus axe test stubs to drop next to the component.
+
+## Related
+
+- **frontend-design** — prefer it when you are inventing the interface rather than reproducing an existing design.
+- **design-implement** — prefer it when you have a full design handoff export and want a measured pixel diff of the result.
+- **ui-designer** — prefer it when the work is building typed components against tokens you already have, with no Figma source involved.

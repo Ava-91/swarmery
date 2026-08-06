@@ -14,6 +14,10 @@ skills:
   - api-integration
   - code-standards
   - testing
+docs:
+  status: generated
+  source_sha: 2de9033a8c30
+  updated: 2026-08-06
 ---
 
 # Role
@@ -221,3 +225,62 @@ This agent can drive a real browser through the Playwright MCP tools (`mcp__plug
 - `browser_run_code_unsafe` / `browser_evaluate` -- authorized local/staging targets only, never production.
 - Always `browser_close` when finished.
 - The browser confirms render + stream liveness; the load test (9 drones × 5 Hz, p99 < 100ms) remains the throughput gate.
+
+# How to use
+
+## What it does
+
+This agent builds the live telemetry path for a drone platform: the WebSocket or SSE fan-out on the server, the client hooks that consume it, and the map overlay that renders drone positions. It treats latency and frame rate as pass/fail numbers, not impressions — every change ends with a load test and a measured p99.
+
+## When to use it
+
+- You need a WebSocket or SSE endpoint that streams drone telemetry to a browser, plus the client hook that consumes it.
+- Map markers stutter, lag, or re-render on every message and you need throttled, batched updates at 30 FPS or better.
+- A stream drops messages or fails to reconnect after a disconnect, and you need backoff, cleanup, and a load test proving the fix.
+- The telemetry message schema changed and both the producer service and the browser consumer must be updated together.
+
+## When not to use it
+
+- MAVLink message parsing or serial-link problems on the device side — use `@uav-pack:mavlink-specialist`.
+- UART, camera, GPIO, or systemd work on the edge board — use `@uav-pack:embedded-systems`.
+- Deployment manifests, Helm values, or runtime config that only happen to touch telemetry — hand those to your deployment owner.
+
+## How to invoke
+
+```
+@uav-pack:telemetry-processor Add exponential-backoff reconnect to the telemetry WebSocket hook
+```
+
+Address the agent directly with the telemetry feature you want. Give it one feature per invocation; it owns the change end to end, including the load test.
+
+## Inputs
+
+- `task` — the telemetry feature to implement, in one sentence — required.
+- `plan` — a reference to an existing implementation plan or step file — optional.
+- `context` — a reference to a prior context-gathering artifact — optional.
+
+## What you get back
+
+Modified or created source files in the streaming service and the web app, plus a Completion Report of 30 lines or fewer. The report lists every file touched with a one-line description, the load-test result (drone count, message rate, p99 latency, drop count), the measured frame rate, and whether reconnect was tested. The final chat message repeats the diff summary and the load-test numbers.
+
+## Worked example
+
+```
+@uav-pack:telemetry-processor Optimize WebSocket message batching for the 9-drone scenario
+
+The agent finds that the map re-renders on every message at 45 messages per
+second, adds a batcher aligned to the render frame (~16 ms) that groups
+messages by drone id, wires it into the telemetry hook, then load-tests.
+
+You get back:
+  apps/<mainApp>/src/lib/telemetry/batcher.ts   new frame-aligned batcher
+  apps/<mainApp>/src/hooks/useTelemetry.ts      hook now consumes the batcher
+  Load test: 9 drones x 5 Hz, p99 42 ms (was 87 ms), 0 drops
+  FPS at target load: 32 (was 24)
+  Reconnect tested: yes, within 3 s
+```
+
+## Related
+
+- `@uav-pack:mavlink-specialist` — prefer it when the problem is in protocol parsing before telemetry reaches the stream.
+- `@uav-pack:edge-python-specialist` — prefer it for the Python producer side, including camera and socket client code on the device.

@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - code-quality
   - browser-verification
+docs:
+  status: generated
+  source_sha: 4a2634321356
+  updated: 2026-08-06
 ---
 
 # Role
@@ -219,3 +223,65 @@ Diff:      1 file, +8 -2 lines
 # Browser verification (Playwright MCP)
 
 After the deterministic checks (build / typecheck / lint / tests / security) complete, optionally smoke the running app in a browser -- fold the result into the verdict block as an extra observation. Follow the **`browser-verification` skill** (observation-only variant). Role-specific invariants: observe and report, never fix (route fixes via the triage matrix above); a browser smoke is an optional add-on line in the verdict, never a blocking check. When the brief includes `screenshots_dir`, save every captured screenshot to that directory using `NN-phase5-{slug}.png` numbering and reference the file paths in `05-verification.md`; if the directory does not exist, create it.
+
+# How to use
+
+## What it does
+
+This agent runs your project's quality checks — build, typecheck, lint, tests, security audit — and reports one machine-readable verdict: PASS, FAIL, or PARTIAL. It never fixes anything. It runs every applicable check even after one fails, so you get the full picture in a single pass instead of a fix-rerun-fix loop. On FAIL it names the specific agent that should do the repair.
+
+## When to use it
+
+- You finished a change and want a quality gate before opening a pull request or merging.
+- An orchestrator reached the Phase 5 quality gate and needs a structured go/no-go signal.
+- You want one command that covers every affected stack when a change touches more than one.
+- You need a written verification record on disk, not just a passing terminal scrollback.
+
+## When not to use it
+
+- You want the errors fixed, not just reported — send the failures to `@implementation-agent` or `@debugger`.
+- You only need tests run and counted, with no build, lint, or security pass — use `@test-runner`.
+- You want a judgment call on code quality rather than pass/fail commands — use `@quality-checker`.
+- You want a deep vulnerability review instead of a dependency audit — use `@security-auditor`.
+
+## How to invoke
+
+```
+@core:verification-agent
+```
+
+Address the agent and describe the scope. Say which repo or directory changed, or say "auto-detect from changed files" and it will read `git diff --name-only` to pick the stacks itself.
+
+## Inputs
+
+- `scope` — which repos or files to check, or the string "auto-detect from changed files". Required.
+- `screenshots_dir` — a task workspace directory for browser smoke screenshots. Optional; when given, images are saved there as `NN-phase5-{slug}.png` and their paths are listed in the artifact.
+
+## What you get back
+
+The last thing in the reply is the verdict block: one line per check, each reading `success`, `N errors`, `N warnings`, or `not run`. A FAIL verdict adds a `Next:` line naming the agent to route the fix to. The same results, with full error detail, are written to a `05-verification.md` file in the task's `phases/` directory before the chat verdict appears. No source file is ever modified.
+
+## Worked example
+
+```
+@core:verification-agent verify apps/<mainApp> after the orders/line-items CRUD change
+
+→ detects TypeScript only; Python and infrastructure checks marked "not run"
+→ runs build, typecheck, lint, tests, audit — none abort on failure
+→ writes 05-verification.md, then prints:
+
+VERIFICATION: FAIL
+Build:     success
+Typecheck: 2 errors
+Lint:      0 errors
+Tests:     42/42 passed
+Security:  0 high vulns
+Diff:      3 files, +34 -8 lines
+Next: @implementation-agent fix TypeScript errors in LineItem.tsx and useOrder.ts
+```
+
+## Related
+
+- `@quality-checker` — scores quality with a language-model judge; report-only, not the gate.
+- `@contract-validator` — traces types across the database-to-frontend chain rather than running commands.
+- `@test-runner` — runs test suites alone when you do not need a full gate.

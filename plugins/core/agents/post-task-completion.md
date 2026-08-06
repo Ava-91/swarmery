@@ -11,6 +11,10 @@ autonomy: highly-auto
 version: 1.0.0
 owner: platform-team
 skills: []
+docs:
+  status: generated
+  source_sha: 261ce4b022b2
+  updated: 2026-08-06
 ---
 
 # Role
@@ -155,3 +159,66 @@ HOOK SKIPPED: reason=no change signals (no Edit/Write/git-commit calls in sessio
 | Duplicate documentation (hook fires twice for same task) | Detected by checking existing workspace files; idempotency check before triggering |
 | Cannot determine task ID | Pass `task_id: unknown` and let @task-documenter infer from context |
 | @task-documenter unavailable | Surface 1-line warning to user and exit -- do not retry indefinitely |
+
+# How to use
+
+## What it does
+
+This agent watches a working session and decides one thing: has a task actually finished, and does it deserve a documentation entry? When both a change signal (an edit, a write, a commit) and a completion signal (an agent reporting done, or you saying "ship it") are present, it hands a filled-in context payload to `@task-documenter`. It never writes the documentation itself — it only detects and delegates, so the documenter does not have to re-read the whole session to reconstruct what changed.
+
+## When to use it
+
+- An executing agent has just finished a feature and you want the work recorded without asking for it every time.
+- You want documentation triggered from the workflow's documentation phase rather than bolted onto each agent separately.
+- You need the file list and task ID gathered from real tool calls, not guessed from a summary.
+
+## When not to use it
+
+- You want the documentation written now — call `@task-documenter` directly instead.
+- The session was read-only or exploratory; this agent will correctly skip, so there is nothing to gain.
+- You need a full task report with metrics — reach for the summary generator.
+
+## How to invoke
+
+```
+@core:post-task-completion
+```
+
+Call it after a change-producing task reports complete. It runs in the background on a small, fast model and does not block the main flow.
+
+## Inputs
+
+- `task_id` — the active task identifier from the workspace, or from orchestrator context — optional; if it cannot be determined the agent passes `task_id: unknown` and lets the documenter infer it.
+- Session tool-call history — read implicitly from the conversation; this is where the modified and created file lists come from.
+
+## What you get back
+
+One decision line, then either nothing or a delegation. On a fire: `HOOK FIRED: task={id}, trigger={condition}, files={count}` followed by a structured call to `@task-documenter` carrying task_id, phase, trigger, files_modified, files_created, and agent. On a skip: `HOOK SKIPPED: reason={reason}`. If the documenter does not confirm within three turns, you get a one-line warning telling you to check the workspace by hand — the gap is surfaced, never swallowed.
+
+## Worked example
+
+```
+@core:post-task-completion
+
+# after an implementation agent edits two files and creates one:
+HOOK FIRED: task=task-2026-05-25-001, trigger=implementation-agent reported complete, files=3
+
+@task-documenter document task
+  task_id: task-2026-05-25-001
+  phase: 4
+  trigger: implementation-agent reported complete
+  files_modified:
+    - apps/<mainApp>/src/app/api/v2/orders/route.ts
+    - apps/<mainApp>/src/lib/actions/orders.ts
+  files_created:
+    - apps/<mainApp>/src/lib/validation/orders.ts
+  agent: @implementation-agent
+```
+
+You end up with a documentation entry in the working task folder, written by the documenter from a payload it did not have to guess at.
+
+## Related
+
+- `@core:task-documenter` — the downstream agent that writes the files; call it directly when you want documentation now.
+- `@core:summary-generator` — prefer it for the final task report with quantified metrics.
+- `@core:tech-lead` — the orchestrator whose documentation phase this hook fires from.

@@ -8,6 +8,10 @@ maxTurns: 20
 skills:
   - code-standards
   - functional-design
+docs:
+  status: generated
+  source_sha: 06a1e0222898
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -173,3 +177,59 @@ const defaultRules: AlertRule[] = [
 **Version**: 1.0
 **Created**: April 2026
 **Maintained by**: swarmery iot-pack
+
+# How to use
+
+## What it does
+
+This agent designs the data side of a connected-device product: what a sensor reading looks like, how it travels over Bluetooth Low Energy, where it lands, and when it should raise an alert. You bring the device and the metrics; it gives you schemas, a compact wire format, a pipeline sketch, and threshold rules that survive real battery and connectivity limits.
+
+## When to use it
+
+- You are modelling time-series health or telemetry readings and need a schema that covers every sensor type you plan to ship.
+- You are defining a BLE packet format and want it small enough to keep the device's battery alive.
+- You are planning the path from device to app to backend to time-series storage, including offline buffering when the phone is out of range.
+- You need alert rules with thresholds, durations, and severities rather than raw value comparisons.
+
+## When not to use it
+
+- For the REST endpoints that receive the uploaded batches — use `@core:api-designer`.
+- For the storage schema and indexes once the data model is settled — use `@core:database-designer`.
+- For encryption, key handling, and a threat model of the device fleet — use `@core:security-auditor`.
+- For system-wide component boundaries beyond the data path — use `@core:architecture-designer`.
+
+## How to invoke
+
+```
+@iot-pack:iot-data-specialist design the data model for continuous heart-rate and temperature readings
+```
+
+Mention the sensors, the sync path, and any constraint you already know — battery target, sample rate, expected device count. The more of that you state up front, the less the agent has to assume.
+
+## Inputs
+
+- **The task** — what you want designed: data model, BLE protocol, pipeline, or alert rules. Required.
+- **Sensor list and sample rates** — which metrics the device produces and how often. Optional, but shapes the schema.
+- **Constraints** — battery budget, packet size limits, offline window, expected scale. Optional.
+
+## What you get back
+
+Design artifacts in your chat, not committed files: typed interfaces for readings and packets, a pipeline diagram from sensor to dashboard, and alert rules as data. The agent closes with a quality checklist covering sensor coverage, packet efficiency, offline buffering, storage fit, threshold correctness, encryption, privacy compliance, and API contracts.
+
+## Worked example
+
+```
+@iot-pack:iot-data-specialist plan the BLE sync protocol for a wearable
+that samples heart rate every 30s and must survive 8 hours offline
+```
+
+You get a compact binary packet layout with a version byte, sequence number for
+ordering, per-reading type/timestamp/value/confidence fields, and a checksum —
+plus an on-device averaging step so 8 hours of 30-second samples batch into a
+handful of transmissions instead of nine hundred.
+
+## Related
+
+- `@core:database-designer` — once the reading schema is agreed and you need the storage layout.
+- `@core:api-designer` — for the ingestion endpoints the mobile client posts batches to.
+- `@core:full-stack-feature` — when you want the design carried through to working code across layers.

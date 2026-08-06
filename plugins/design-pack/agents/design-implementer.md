@@ -11,6 +11,10 @@ version: 0.1.0
 owner: swarmery-core
 skills:
   - design-verify
+docs:
+  status: generated
+  source_sha: 4a66e9bc0ebf
+  updated: 2026-08-06
 ---
 
 # Role
@@ -339,3 +343,66 @@ Artifacts: <abs>/design-out/checkout/side-by-side.png
 | Diff plateaus | `diffPercent` new >= previous | Trigger 7 — stop; the cause is elsewhere, more iterations only burn budget |
 | Approved list is one file short | Needed path not in the list | Trigger 4 — stop; the operator extends the list, then re-invokes |
 | Dev server not reachable on loopback | `design.devCommand` up but `design.devUrl` refuses | Re-run `ensure-runtime.mjs`, retry once, then stop and report — never point the diff at a remote URL |
+
+# How to use
+
+## What it does
+
+This agent takes a design handoff that you have already approved and builds it in your project's own stack, then proves the result with a pixel diff instead of an opinion. It renders your route at the authoring viewport, compares it to the design, and keeps fixing the biggest visual gap until the measurement closes. The point is the boundary: it will not "fix" a diff by editing a global token, swapping a font, or reaching into a shared component — it stops and hands that decision back to you.
+
+## When to use it
+
+- You approved a Phase 4 implementation plan with a literal file list, and one screen now needs to be built and measured.
+- An implemented screen is close but not matching, and you want the remaining gaps found by measurement rather than by eye.
+- You want a fidelity pass that cannot quietly change styling shared by other routes.
+
+## When not to use it
+
+- You still need the design export or its tokens — run the `design-acquire` skill first.
+- You only want to measure an already-built screen — use the `design-verify` skill on its own.
+- You have no approved file list, or you are working from free chat — start with `/design-implement`, which produces the plan this agent requires.
+- You want the work committed, branched, or opened as a pull request — this agent never touches version control.
+
+## How to invoke
+
+```
+@design-pack:design-implementer
+```
+
+It is normally reached through the `design-implement` skill rather than typed by hand, because that skill assembles the inputs below.
+
+## Inputs
+
+All seven are required; the agent refuses to start on a missing one and says which field it was.
+
+- `tokens.json` — the ground-truth inventory of values that actually exist in the project.
+- Export path — the acquired HTML export, or the screenshot set in degraded mode.
+- Route — the target path under the routes root.
+- Viewport — `WxH`, the viewport the design was authored at.
+- Approved file list — literal paths, exactly as you approved them.
+- `design` block — roots, font loader, dev command and URL, verify commands, diff threshold, iteration and file budgets.
+- Mode — `normal` or `degraded: screenshots`.
+
+## What you get back
+
+A report naming the route, the diff percentage against the threshold, iteration and file counts, and absolute paths to `side-by-side.png`, `diff.png` and `report.json`. Two tables follow: regions still differing with a probable cause each, and every file changed with the inventory values it used. Lint and typecheck results are stated as PASS or FAIL, never "not run". If a stop trigger fired, you instead get a `STOPPED` block naming the change, the region that motivated it, and real command output showing everything else that change would touch.
+
+## Worked example
+
+```
+@design-pack:design-implementer
+Route /checkout at 1440x900, normal mode, approved list of 3 files.
+
+→ Builds the screen, lint + typecheck pass, first diff 1.8%.
+→ Dominant region: the summary card is 4px short on padding. The value is
+  in the inventory and the card is on the approved list → fixes it.
+→ Re-measures: 0.31%, pass, no regions left. Reports both iterations.
+```
+
+Had the dominant region been the button radius instead, you would have gotten a `STOPPED — 1. Token change` block with the grep output listing the four other files that radius reaches, and no edit made.
+
+## Related
+
+- `design-implement` — the skill that owns the whole flow and is what you actually run.
+- `design-acquire` — resolves the handoff into an export and a token inventory before any implementation.
+- `design-verify` — measures one screen against a design export without changing anything.

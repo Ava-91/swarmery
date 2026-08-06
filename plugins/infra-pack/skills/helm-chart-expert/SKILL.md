@@ -3,6 +3,10 @@ name: helm-chart-expert
 description: "Use this skill when a task involves Helm chart templating, values file structure, subchart dependency management, or chart validation (lint/template/dry-run) for the project's charts. Don't use it for Helm deploy orchestration (use deployment), Keycloak config (use keycloak), IaC drift (use infrastructure-as-code), or Docker builds (use docker-build)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: 9ca1ca2b31c7
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -229,3 +233,62 @@ auth-secret: {{ include "app.requireRealSecret" (list .Values.secrets.authSecret
 - `kubernetes-deployment` -- **defer** to it for k8s cluster operations, GCP firewall, minikube tunnel; **compose** when debugging a deployment that uses this chart
 - `migration-check` -- no direct overlap; migration scripts are not Helm-managed
 - `docker-build` -- **defer** to it for image builds; this skill only consumes image tags/digests in values files
+
+# How to use
+
+## What it does
+
+This skill helps you write and validate Helm charts: template files, values files, subchart dependencies, and chart versions. It focuses on getting the chart correct before anything reaches a cluster — defensive template patterns, `helm lint`, `helm template`, and `helm upgrade --dry-run`. It does not push releases to live clusters.
+
+## When to use it
+
+- You are writing or fixing a chart template (deployment, service, ingress, network policy) and want the nesting patterns right.
+- A render fails with `nil pointer evaluating interface {}.fieldName` and you need to find the values key that is missing a guard.
+- You bumped a subchart version and need the umbrella `Chart.yaml` and `Chart.lock` to stay in sync.
+- You want a chart reviewed with file:line citations and a severity per finding.
+
+## When not to use it
+
+- Running an upgrade against a live cluster end to end — use the `deployment` skill.
+- Keycloak realm, client, or auth integration config — use the `keycloak` skill.
+- Terraform drift or post-incident capture — use the `infrastructure-as-code` skill.
+- Building or pushing container images — use the `docker-build` skill.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:helm-chart-expert")
+```
+
+Invoke it directly, or just describe the chart work — the skill's own triggers cover template edits, values structure, dependency bumps, and validation runs.
+
+## Inputs
+
+- `chart_path` — the chart directory containing `Chart.yaml` — required.
+- `values_file` — the values file to validate against — optional.
+- `operation` — one of `author`, `validate`, `review`, `debug` — required.
+
+## What you get back
+
+A result block headed `## {operation} Result — {chart_path}`, with a findings table (`File:Line`, issue, severity, fix), the ordered validation commands with pass/fail, and a HIGH/MEDIUM/LOW confidence label with its rationale. `author` returns corrected YAML with inline comments; `validate` returns the lint → template → dry-run sequence. Nothing is applied to a cluster.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:helm-chart-expert")
+
+Request: "values.<envAlias>.yaml has no networkPolicy section and the render
+dies with a nil pointer. chart_path: apps/<mainApp>/chart, operation: debug"
+
+What happens: the skill runs helm lint and helm template first, traces the
+failure to a conditional that guards only the leaf key, and returns the
+corrected template that extracts every nesting level with `| default dict`,
+plus four helm template commands covering full values, --set, defaults only,
+and bootstrap values.
+```
+
+## Related
+
+- `deployment` — prefer it once the chart is correct and you need the release orchestrated.
+- `kubernetes-deployment` — prefer it for cluster-level debugging; compose with it when the failing workload comes from this chart.
+- `infrastructure-as-code` — compose with it when a manual override needs to be captured back into code.

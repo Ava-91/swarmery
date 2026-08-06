@@ -6,6 +6,10 @@ description: "Use this skill when a task involves adding, removing, or renaming 
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob
 color: teal
+docs:
+  status: generated
+  source_sha: 1cd8c6fbf3fd
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -194,3 +198,66 @@ Not found -- MISSING from env.example
 - `deployment` -- compose with this skill when CI/CD pipeline variables need to match application env vars
 - `deployment` -- compose with this skill when verifying that Cloud Run values match application expectations
 - `deps-check` -- shares the same canonical five-repo scope; align repo lists when auditing both env vars and dependencies
+
+# How to use
+
+## What it does
+
+This skill audits environment variables across every repository in your project. It reads code, config, and example files without writing anything, then reports which variables are used but undocumented, documented but unused, named inconsistently across repos, or look like hardcoded secrets. Every finding comes with a `file:line` citation so you can go straight to the line that matters.
+
+## When to use it
+
+- You added, removed, or renamed an env var and want to confirm every repo agrees on the name and the default.
+- You are cutting a release and need proof that all required variables appear in `env.example`.
+- You are reviewing a PR that touches service config, `env.example`, or a typed env accessor.
+- A deployment failed and you suspect a missing or misspelled variable.
+
+## When not to use it
+
+- You need the values actually set inside a running pod — that requires exec access to the live service, not static analysis.
+- You are adding a secret to a cloud secret manager — use the `gcp-cicd-auth` skill.
+- You are wiring CI/CD pipeline variables rather than auditing application code — use the `deployment` skill.
+- You are auditing package versions instead of variables — use the `deps-check` skill.
+
+## How to invoke
+
+```
+Skill(skill: "core:env-check")
+```
+
+Invoke it directly, or ask in plain language ("check env vars across the repos") and the skill activates on its own.
+
+## Inputs
+
+- `repos` — list of repository root paths to audit — optional; defaults to the project's full repo list from `.claude/project.json` → `repos`.
+- `focus` — a single variable name or a prefix such as `NEXT_PUBLIC_` — optional; narrows the audit to matching variables.
+- Report path — where the markdown report is written — optional; you supply it if you want the report saved somewhere specific.
+
+## What you get back
+
+A markdown report, capped at 150 lines, with a summary header (repos checked, variables found, documented, missing, confidence level) followed by tables: per-repo counts, missing variables, unused variables, security issues, and any dynamic access patterns the scan could not resolve statically. Secret values are never printed — only the location where one appears. The skill stops and asks you first if it finds an apparent secret file outside `.gitignore`, more than five undocumented variables, or heavy dynamic access that makes the result unreliable.
+
+## Worked example
+
+```
+Skill(skill: "core:env-check")
+Focus: BACKEND_API_URL
+
+Greps the device repo and the infrastructure repo in parallel:
+  src/agents/main_agent.py:12   default "http://localhost:3000"
+  charts/<device>/values.yaml:18   "http://<mainApp>:3000"
+
+Cross-references env.example: not found.
+
+Report entry:
+  | `BACKEND_API_URL` | `src/agents/main_agent.py:12` | `env.example` |
+```
+
+The naming is consistent and the differing defaults are expected (local dev vs in-cluster DNS), so the one real finding is the missing `env.example` entry.
+
+## Related
+
+- `deps-check` — same repo scope, but for package versions instead of variables.
+- `deployment` — pair with it when pipeline variables must match what the application expects.
+- `gcp-cicd-auth` — use it for cloud credential variables and federated identity setup.
+- `security-audit` — broader vulnerability sweep when secrets are only part of the concern.

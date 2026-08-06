@@ -6,6 +6,10 @@ description: "Use this skill when a task spans 3+ files or crosses repo boundari
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob
 color: teal
+docs:
+  status: generated
+  source_sha: 9d0a19d62c88
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -204,3 +208,55 @@ Confidence: HIGH -- codebase-retrieval returned exact telemetry files
 - `code-search` -- defer to code-search for finding all references to a known identifier; context-optimization governs when and how much to load
 - `api-integration` -- compose with api-integration when the task involves understanding the project's API flows across repos
 - `code-quality` -- compose with code-quality after context-optimization has identified the minimal set of files to review
+
+# How to use
+
+## What it does
+
+This skill plans what to read before you read it. On a task that spans several files or more than one repo, it turns "open everything and hope" into a short, ordered context plan: which files, which line ranges, in what phase, and where to `/clear` between phases. It does not change code — it governs how information gets loaded so the skills that do the work still have room to think.
+
+## When to use it
+
+- The task touches 3 or more files, in one repo or across several.
+- The task crosses a repo boundary — for example `apps/<mainApp>` plus `<device>`.
+- Your context window is already past 40% and more reads are coming.
+- You are about to load a large module tree just to extract a verdict or a short list.
+
+## When not to use it
+
+- Single-file edits — a rename or a typo fix. Just make the edit.
+- A read-only question about one function or type — use `code-search` instead.
+- You are already running as a subagent with scoped context; the isolation you would gain is already there.
+
+## How to invoke
+
+```
+Skill(skill: "core:context-optimization")
+```
+
+Invoke it at the start of the task, before any full-file reads. It runs `codebase-retrieval` first, then hands you a plan of targeted reads to execute.
+
+## Inputs
+
+- `task_description` — the request or delegated task summary — required.
+- `repos_involved` — the repos the task may touch, e.g. `["apps/<mainApp>", "<device>"]` — optional; it is inferred from the task and from `.claude/project.json` when you leave it out.
+
+## What you get back
+
+A context plan of at most 30 lines: one table per phase with repo, file, offset, limit and a reason per row; a `/clear` decision with its rationale at each phase boundary; and a budget line giving files-loaded versus files-to-edit plus a HIGH/MEDIUM/LOW confidence rating. The target ratio is no more than 3 files loaded per file edited. If confidence comes back LOW, the skill stops and asks you to narrow the scope rather than handing you an unreliable plan.
+
+## Worked example
+
+```
+Skill(skill: "core:context-optimization")
+Task: fix telemetry latency between the device/edge repo and the main app
+Repos: apps/<mainApp>, <device>
+```
+
+The plan comes back in two phases. Phase 1 reads two main-app files by line range — the WebSocket reconnect logic and the SSE endpoint handler. It then marks `/clear before Phase 2: yes`, because the work switches repos. Phase 2 reads one range in the device sender. Budget: 3 files loaded, 1 edited, ratio 3:1, confidence HIGH.
+
+## Related
+
+- `code-search` — prefer it when you already know the identifier and just need every reference.
+- `code-quality` — run it after this skill has narrowed the review to a minimal file set.
+- `api-integration` — compose with it when the task turns on API flows that span repos.

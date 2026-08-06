@@ -3,6 +3,10 @@ name: design-acquire
 description: "Resolve a design handoff into something measurable: parse a handoff prompt, unpack an exported HTML/zip, pull tokens from a design-system source, or record an honest degraded mode for screenshots-only input. NOT for the implementation workflow itself (that's design-implement) and NOT for measuring a diff (that's design-verify)."
 version: "0.1.0"
 owner: "swarmery-core"
+docs:
+  status: generated
+  source_sha: be52051a970c
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -96,3 +100,57 @@ history.
 - the input shape and the mode (`degraded: …` when applicable);
 - external network resources found in shape 2;
 - for shape 3, an explicit note that screen geometry was not acquired.
+
+# How to use
+
+## What it does
+
+You have a design handoff — a pasted prompt, a downloaded `.zip`, a design-system link, or just screenshots — and you need to know what it can actually support before anyone writes code. This skill resolves that input into a concrete path on disk plus an honest statement of what that path promises: full geometry, tokens only, or an approximation. It stops the common failure where a screenshot gets treated as ground truth and a "pixel match" is claimed over something unmeasurable.
+
+## When to use it
+
+- An operator handed you a design export and you need to unpack it and find the entry document before implementation starts.
+- Someone pasted a design tool's handoff prompt and you have to work out whether it leads to real markup.
+- You have only screenshots and need the degraded mode written down before anyone promises accuracy.
+- The design lives in a design-system source and you need the token layer pulled without over-claiming screen layout.
+
+## When not to use it
+
+- You want the full implementation workflow end to end — use `design-implement`, which calls this skill as its first phase.
+- You already have a built screen and want it measured against the design — use `design-verify`.
+- You are checking UI behaviour with no reference design at all — use `browser-verification` in core.
+
+## How to invoke
+
+```
+Skill(skill: "design-pack:design-acquire")
+```
+
+Invoke it with the handoff you received — a file path, an archive, a URL, or a description of what arrived. It reads the input, picks the matching shape, and does the unpacking or the asking from there.
+
+## Inputs
+
+- **The handoff itself** — a `.zip` or `.html` path, a URL, a pasted handoff prompt, a design-system reference, or a set of screenshots — required.
+- **A screen or slug hint** — which screen is meant, when an archive contains several plausible entry documents — optional; you get asked if it is ambiguous and cannot be inferred.
+
+## What you get back
+
+Sources unpacked under `.design-verify/source/<slug>/` in the project root, and a short handoff back to the caller containing: the design path (entry document or screenshot set), the input shape and mode (`degraded: screenshots` when applicable), any external network resources found in an export, and — for a design-system source — an explicit note that screen geometry was not acquired. You also get a reminder to add `.design-verify/` to `.gitignore` if it is missing.
+
+## Worked example
+
+```
+Skill(skill: "design-pack:design-acquire")
+> input: ~/Downloads/project-html-export.zip, screen "orders/line-items"
+```
+
+The archive is unpacked to `.design-verify/source/orders-line-items/`, the entry
+`index.html` is identified, and a scan finds one remote webfont. You get back the
+entry path, shape "HTML export — full ground truth", and the webfont flagged as a
+resource that will reshape text if it fails to load in the headless run.
+
+## Related
+
+- `design-implement` — the whole workflow; start there unless you only need the input resolved.
+- `design-verify` — measures a built screen against the design once implementation exists.
+- `browser-verification` — behavioural UI checks when there is no design to measure against.

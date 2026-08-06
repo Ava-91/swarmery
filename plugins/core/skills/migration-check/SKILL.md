@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob, Bash
+docs:
+  status: generated
+  source_sha: 5fd5a0178153
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -172,3 +176,59 @@ ALTER TABLE backend.mission ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL
 - `infrastructure-as-code` -- defer for post-incident SQL fix capture; compose when a manual psql fix needs to become a migration
 - `deployment` -- no direct overlap; migrations are not deploy-managed, but the migration tool typically runs via an init container configured in the deployment values
 - auth-domain skill -- no overlap; the identity provider manages its own database; this skill covers the application schema only
+
+# How to use
+
+## What it does
+
+This skill reviews database migrations before they cause an incident. It checks each SQL migration file for the six things that break deploys — irreversibility, destructive statements, locking index builds, `NOT NULL` without a default, bad naming, missing idempotency guards — and then compares what the migrations create against your ORM schema and your Zod/DTO validation types. You get one report that says which migrations are safe and where the database and the TypeScript layer have drifted apart.
+
+## When to use it
+
+- A new migration file is up for review and you want a safety verdict before it is applied.
+- You changed the schema and want to confirm the ORM definitions still match the SQL.
+- A release checklist calls for a pre-deploy migration review.
+- You suspect a table exists in the database but has no Zod input validation behind its route handler.
+
+## When not to use it
+
+- Deploying, or validating deploy config — use the `deployment` skill.
+- Turning a manual SQL hotfix into a committed migration — use `infrastructure-as-code`.
+- Field-by-field contract checks between the ORM, Zod, and handler inputs — use `api-contract`.
+- Database pod health or connection failures — use `troubleshooting`.
+
+## How to invoke
+
+```
+Skill(skill: "core:migration-check")
+```
+
+Ask for it in plain language ("check this migration is safe to apply") and it loads, or invoke it directly with the call above.
+
+## Inputs
+
+- `migration_file` — a single migration file to review — optional; omit it to sweep the whole directory.
+- `scope` — one of `safety-check`, `schema-alignment`, or `full-audit` — pick the depth you need.
+
+## What you get back
+
+A markdown Migration Report: a file inventory with an applied/safe status per migration, a per-check safety assessment, an alignment table with `Migration`, `ORM`, and `Zod/DTO` columns, and recommendations. Budgeted to 60 lines for `safety-check` and 120 for `full-audit`. It reads files only — nothing is applied or modified. It stops and escalates on `DROP TABLE`, `TRUNCATE`, a missing ORM schema, or a migration stuck in a `FAILED` state.
+
+## Worked example
+
+```
+Skill(skill: "core:migration-check")
+Review V1.0.4__add_mission_status.sql before I apply it — scope: safety-check
+```
+
+The skill lists the migrations directory from disk, reads that file, and runs the six
+checks. It reports: reversible YES, no destructive operations, index uses
+`CONCURRENTLY`, `NOT NULL` carries a `DEFAULT`, naming follows the convention — and one
+PARTIAL: the index is guarded with `IF NOT EXISTS` but the `ADD COLUMN` is not. You get
+the corrected line to paste back into the migration.
+
+## Related
+
+- `api-contract` — reach for it once the alignment table shows a Zod/DTO mismatch you need traced field by field.
+- `infrastructure-as-code` — reach for it when a manual database fix needs to become a migration.
+- `deployment` — reach for it for the init container and pipeline that actually run the migration tool.

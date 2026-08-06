@@ -3,6 +3,10 @@ name: gitlab-ci-cd
 description: "Design, review, or debug .gitlab-ci.yml pipelines for the project's repos. Covers stage ordering, job configuration, artifact flow, deploy safety flags, and the 8-stage model. Not for GitHub Actions, Jenkins, GitOps controllers, or GCP auth stanzas."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: d8f99b74bbc0
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -222,3 +226,57 @@ Key points:
 - `helm-chart-expert` -- for Helm chart template authoring and values configuration, even when charts are used inside CI jobs
 - `supply-chain-security` -- for image scanning, SBOM generation, and digest promotion policies
 - `release-promotion` -- when pipeline changes span multiple repos or promotion ordering, coordinate merges through the promotion workflow
+
+# How to use
+
+## What it does
+
+This skill helps you write, review, or debug a GitLab CI/CD pipeline file. It maps every job onto an 8-stage model (validate, build, scan, publish, promote, deploy, verify, rollback) and checks the things that quietly break deploys: image digests that get recomputed instead of passed forward, `helm upgrade` calls with no dry-run, hardcoded namespaces, and merge-request pipelines that can reach a deploy job.
+
+## When to use it
+
+- You are writing a new `.gitlab-ci.yml` for a repo and want the stage order and rules right the first time.
+- You have an existing pipeline and want an annotated review of stage ordering, artifact flow, and deploy safety.
+- A CI job is failing because of stage dependencies, `rules:` conditions, or a missing artifact.
+- You want to confirm every `helm upgrade` in the pipeline carries `--dry-run`, `--wait`, and `--atomic`.
+
+## When not to use it
+
+- GitHub Actions, Jenkins, or any non-GitLab CI system — this skill only reads GitLab pipeline syntax.
+- GitOps controller config (pull-based deployment) — use `gitops-promotion` instead.
+- The cloud authentication stanza inside a pipeline — use `gcp-cicd-auth`, then compose the two.
+- Helm chart templates or values files — use `helm-chart-expert`, even when the chart is invoked from a CI job.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:gitlab-ci-cd")
+```
+
+Invoke it, then say which file you mean and whether you want a review, a new pipeline, or a failure diagnosis.
+
+## Inputs
+
+- `pipeline_path` — path to the `.gitlab-ci.yml` file — required.
+- `mode` — `review` to annotate an existing file, `create` to generate a new one, `debug` to diagnose a failure — required.
+- `repo` — which repo the pipeline belongs to, read from the project overlay — required.
+
+## What you get back
+
+A report under a `## Pipeline Review: <repo>` heading: stage-model compliance with `file:line` citations, a list of unsafe patterns with the recommended fix for each, and an 8-item checklist covering merge-request rules, digest reuse, dry-run ordering, explicit verification, and rollback. In `create` mode you also get pipeline YAML, capped at 100 lines. Any edit to a pipeline file is shown as a diff and waits for your confirmation first.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:gitlab-ci-cd")
+Review .gitlab-ci.yml in apps/<mainApp> — mode: review
+```
+
+The skill reads the file, lists every job with its stage, then checks rules, artifact flow, and deploy safety. It reports that the deploy job pulls `:latest` because the build job never wrote `IMAGE_DIGEST` to a dotenv artifact, and that `helm upgrade` runs with no preceding `--dry-run`. You get the two fixes with line numbers and a checklist showing which items pass.
+
+## Related
+
+- `gitops-promotion` — prefer it once a GitOps controller owns deployment and promotion moves out of the pipeline.
+- `gcp-cicd-auth` — for the cloud authentication block; compose it with this skill.
+- `supply-chain-security` — for image scanning, SBOMs, and digest promotion policy.
+- `release-promotion` — when a pipeline change spans several repos and merge order matters.

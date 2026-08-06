@@ -2,6 +2,10 @@
 description: Thin entry point for `/jira-fix <url|KEY> [--dry-run] [--repo <path>]` — parses and validates the argument shape only, then hands control to @jira-task-runner. No run logic lives here.
 allowed-tools:
   - Bash
+docs:
+  status: generated
+  source_sha: d86bd17e01da
+  updated: 2026-08-06
 ---
 
 # /jira-fix — drive a tracker ticket end-to-end
@@ -93,3 +97,54 @@ given), the `--dry-run` flag state, and the `--repo` value if provided.
   (including `--repo` existence and git-ness).
 - `plugins/core/commands/new-feature-branch.md` — the command-format precedent
   this file follows (frontmatter `description` + `allowed-tools`, prose body).
+
+# How to use
+
+## What it does
+
+This command is the front door for driving a tracker ticket from a link to a finished, commented, transitioned ticket. It does one job itself: it reads the ticket reference and flags you typed, checks their shape, and stops with a usage error if they are malformed. Everything real — config, access checks, triage, the fix, the writeback — happens in the agent it hands off to.
+
+## When to use it
+
+- You have a ticket key or a browse URL and you want the whole run driven end-to-end.
+- You want to see what a run would do without any writes landing on the ticket or board.
+- The ticket lives in a checkout other than the one you are sitting in.
+- A scheduled routine needs a stable entry point to feed a ticket into on a headless session.
+
+## When not to use it
+
+- You only want to read ticket data or list what is assigned to you — use the `jira-tasks` skill.
+- You already know the ticket needs a plan, not a fix attempt — the `jira-escalation` skill covers that path.
+- You want to address the runner directly with your own extra context — call `@jira-task-runner` by name instead.
+
+## How to invoke
+
+```
+/jira-fix <url|KEY> [--dry-run] [--repo <path>]
+```
+
+Type it in an interactive session, or feed the same line to a headless session's stdin. The invocation is identical either way.
+
+## Inputs
+
+- **ticket reference** — a bare key like `ABC-123`, or a browse URL ending in `/browse/<KEY>` — required.
+- **`--dry-run`** — boolean flag, no value. Keeps every write (comment, transition, board card, push, PR) out of the run — optional.
+- **`--repo <path>`** — path to the checkout to work in. Forwarded unchecked; the config skill decides whether it exists — optional.
+
+## What you get back
+
+If the reference or a flag does not parse, you get a usage error and nothing runs. If it parses, control passes to `@jira-task-runner` with the resolved key, the dry-run state, and the repo value, and the rest of the output — access report, triage verdict, evidence, ticket comment — comes from that agent.
+
+## Worked example
+
+```
+/jira-fix https://<jira-base-url>/browse/ABC-123 --dry-run
+```
+
+The key `ABC-123` is extracted from the path after `/browse/` and matched against the key pattern. It passes, so the command hands `ABC-123` plus the dry-run flag to `@jira-task-runner`. You end up with a full triage — access check, class decision, evidence — and printed request bodies where the writes would have gone.
+
+## Related
+
+- `@jira-task-runner` — the agent behind this command; address it directly when you want to pass extra context.
+- `jira-config` — the skill that validates the tracker block in project config and resolves the working repo.
+- `jira-triage` — the skill that classifies the ticket and picks one of five verdicts.

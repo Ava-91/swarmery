@@ -4,6 +4,10 @@ description: "Configure Keycloak realm/client settings, integrate Auth.js v5 OID
 version: "1.0.0"
 owner: "swarmery-infra"
 allowed-tools: Read, Bash, Write, Edit, Grep, Glob, WebFetch, WebSearch
+docs:
+  status: generated
+  source_sha: 47cf71e1a20f
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -226,3 +230,58 @@ kubectl scale deployment <infra-release>-keycloak -n "$NAMESPACE" --replicas=1
 - `kubernetes-deployment` -- defer for GCP firewall, minikube tunnel, and ingress debugging
 - `infrastructure-as-code` -- defer for drift detection; compose when Keycloak Helm values override was applied manually
 - `migration-check` -- no direct overlap; Keycloak manages its own database schema
+
+# How to use
+
+## What it does
+
+This skill gives you working Keycloak patterns for a Kubernetes platform: realm and client setup, Auth.js v5 OIDC wiring in the web portal, two-stage Helm values (init then full with ingress), bootstrap admin recovery, and the `KC_HOSTNAME` vs `KC_HOSTNAME_URL` distinction that causes most issuer mismatches. It knows the traps — OOM-killed bootstrap commands, NetworkPolicy selectors that silently drop ingress traffic, v4 env var names in a v5 project.
+
+## When to use it
+
+- Login fails with `error=Configuration` or a redirect loop, and you suspect the `iss` claim.
+- You are adding Keycloak sign-in to the web portal with Auth.js v5 and need the provider, callbacks, and env vars.
+- You need Keycloak Helm values for a fresh environment, either the init stage or the full stage with ingress.
+- The admin account no longer works on an existing database and you need a safe recovery path.
+
+## When not to use it
+
+- Authoring Helm chart templates or `_helpers.tpl` — use `helm-chart-expert`.
+- Cloud firewall rules, tunnels, or general ingress debugging — use `kubernetes-deployment`.
+- Checking whether a database migration is safe to run — use `migration-check`.
+- Detecting drift between committed IaC and the live cluster — use `infrastructure-as-code`.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:keycloak")
+```
+
+Invoke it, then describe the operation and the target environment. The skill picks the matching pattern and walks the four-step procedure: identify the operation, check that the Keycloak pod is up, apply the config, then verify against the OIDC discovery endpoint.
+
+## Inputs
+
+- `operation` — one of `realm-setup`, `auth-integration`, `debug-auth`, `bootstrap-recovery`, `helm-values` — required.
+- `environment` — the target environment, such as localdev, `<envAlias>`, or prod — required.
+- `symptom` — the error message or observed behavior you are debugging — optional.
+
+## What you get back
+
+Configuration YAML, Auth.js TypeScript, or an ordered sequence of `kubectl`/`curl` commands — capped at about 150 lines, one section per operation. Debugging answers come as ranked diagnosis steps; recovery answers come as a numbered procedure with safety warnings. Passwords always appear as placeholders such as `$KC_ADMIN_PASSWORD`, never as literals.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:keycloak")
+
+"Login on <envAlias> returns error=Configuration after the callback.
+ operation: debug-auth, environment: <envAlias>"
+```
+
+The skill has you decode the JWT and compare its `iss` claim against `KEYCLOAK_ISSUER`. The pod exchanges tokens over internal cluster DNS, so Keycloak stamps the internal URL into `iss` and Auth.js rejects it. You get back Helm `extraEnv` adding `KC_HOSTNAME_URL` with the public HTTPS base URL alongside `KC_HOSTNAME`, plus a `curl <issuer>/.well-known/openid-configuration` check to confirm the fix.
+
+## Related
+
+- `helm-chart-expert` — prefer it when the change is in the chart templates, not the Keycloak values.
+- `kubernetes-deployment` — prefer it when Keycloak is unreachable at the network layer rather than misconfigured.
+- `infrastructure-as-code` — prefer it when Helm values were changed by hand and you need to detect the drift.

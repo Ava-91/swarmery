@@ -14,6 +14,10 @@ skills:
   - code-standards
   - migration-check
   - refactor-plan
+docs:
+  status: generated
+  source_sha: da94a5eb09a5
+  updated: 2026-08-06
 ---
 
 # Role
@@ -204,3 +208,62 @@ The user wants to add a device_status column to the devices table. I should firs
 - **Missing DOWN strategy**: UP migration applied but no way to revert. Every Prisma migrations must have a documented revert path.
 - **Dependency cascade**: upgrading one package breaks 5 others. Update one dependency at a time, test after each.
 - **Data loss without backup**: destructive migration on production without snapshot. Require explicit backup confirmation for any DROP or TRUNCATE.
+
+# How to use
+
+## What it does
+
+This agent runs a migration for you one safe step at a time — a database schema change, a dependency bump, an API version upgrade, or a large refactor. It plans the phases first, writes a rollback for every step, and stops if a step leaves the codebase in a state you could not deploy. Destructive operations never happen silently.
+
+## When to use it
+
+- You need a schema change applied and want the UP migration paired with a documented DOWN strategy before anything runs.
+- You are upgrading a framework or library across a major version and expect breaking changes in many files.
+- You want a rename or a service extraction done with expand-and-contract, so every intermediate commit still ships.
+- You want a migration checked for data loss, table locks, and missing rollbacks before it touches a database.
+
+## When not to use it
+
+- You need the schema itself designed rather than migrated — use `@core:database-designer`.
+- You only want a read-only safety verdict on migration SQL someone else wrote — use `@core:migration-agent`.
+- You need substantial test coverage written for the migration — use `@core:test-writer`.
+- The work is an ordinary feature change with no migration in it — use `@core:implementation-agent`.
+
+## How to invoke
+
+```
+@core:migration-helper add a status column to the devices table
+```
+
+Address the agent and describe the migration in one sentence. Name the repo or the app if the change spans more than one.
+
+## Inputs
+
+- Migration description — what you want changed, in plain words — required.
+- Target repos and affected layers — narrows the search for usages — optional.
+- `Reference:` step file path — the plan step this run completes, used in the report — optional.
+
+## What you get back
+
+A phased migration plan, the modified files, and a completion report naming the migration type, whether it breaks anything, each file changed, whether rollback was verified for every step, and the post-migration health check. Database work also produces a safety report with a **SAFE**, **CAUTION**, or **BLOCKED** verdict, with each finding citing the exact SQL statement and line. Both documents are written into the current task folder in your workspace.
+
+## Worked example
+
+```
+@core:migration-helper upgrade the web framework from v15 to v16 in apps/<mainApp>
+
+→ Phase 1: searches every usage of the changed APIs across the repos
+→ Enumerates the breaking changes and the files each one touches
+→ Upgrades via the package manager, one dependency at a time
+→ Runs tests after each step; reverts rather than stacking a failed step
+→ Verification gate after each phase: /api/ping 200, error rate stable
+
+You end up with: an upgraded app, a plan on disk with per-step rollback,
+and a completion report under 30 lines.
+```
+
+## Related
+
+- `@core:migration-agent` — prefer it when you want validation only and no edits.
+- `@core:database-designer` — prefer it when the schema shape is still undecided.
+- `@core:tech-lead` — prefer it when the migration is one phase inside a larger piece of work.

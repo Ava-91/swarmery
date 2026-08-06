@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - context-optimization
   - monitoring
+docs:
+  status: generated
+  source_sha: 4c3e1967fddb
+  updated: 2026-08-06
 ---
 
 # Role
@@ -186,3 +190,55 @@ The user wants to check the main app's API response times. I should clarify that
 - **Unrealistic SLOs**: thresholds set too tight cause constant violations. Propose adjustments based on baseline data.
 - **Stdout-only report**: report printed to chat but not saved to disk. Save to `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/phases/05-performance.md`.
 - **Scope confusion**: monitoring agent metrics when the user asked about application metrics, or vice versa. Clarify scope at the start.
+
+# How to use
+
+## What it does
+
+This agent turns raw performance data into a report you can act on. It collects metrics from agent harness logs and your application's observability sources, compares them against defined SLO targets, and writes up what is slow, by how much, and what to do about it. It is read-only: it measures and recommends, but never edits code or applies fixes.
+
+## When to use it
+
+- You want to know whether your API response times, WebSocket latency, or DB queries still meet their SLO targets.
+- A retrospective or sprint review needs a data-backed picture of where time is going.
+- Something feels slower than last week and you want the week-over-week numbers instead of a hunch.
+- You need a prioritised list of optimisations, each with an impact and effort estimate, before deciding what to work on.
+
+## When not to use it
+
+- You already know the bottleneck and want it fixed — use `@core:performance-optimizer`.
+- You are chasing one specific bug or failure — use `@core:debugger`.
+- You want the recommendations implemented — hand the report to `@core:implementation-agent`.
+
+## How to invoke
+
+```
+@core:performance-monitor analyse agent performance for the last 24 hours
+```
+
+Say which scope you want — agent harness, application, or both — and the agent collects, analyses, and writes the report.
+
+## Inputs
+
+- `scope` — `agent`, `application`, or `both`. Required; the agent asks if you leave it out.
+- `time_period` — the range to analyse. Optional; defaults to the last 24 hours.
+- `focus` — a single metric or operation to dig into. Optional.
+
+## What you get back
+
+A Markdown report saved to disk under your workspace task directory at `phases/05-performance.md`, kept under 80 lines. It contains a summary (operation count, success rate, SLO violations), a metrics table with pass/fail per target, the five slowest operations, week-over-week trends when baseline data exists, and recommendations split into quick wins, medium wins, and long-term work. Every finding cites a measured value; anything based on thin data is marked `[LOW-CONFIDENCE]`, and unavailable metric sources are listed rather than silently skipped.
+
+## Worked example
+
+```
+@core:performance-monitor check the API response times for orders/line-items
+against their SLOs for the past week
+```
+
+The agent reads the available metric files, aggregates count and avg/p95 duration per endpoint, compares them to the p95 target, and flags any endpoint over threshold for more than 5% of requests. You end up with a report naming the offending endpoint, its measured p95 against the target, the week-over-week change, and a ranked fix list — for example, an index change as a quick win and a caching layer as medium-term work.
+
+## Related
+
+- `@core:performance-optimizer` — when you want the bottleneck fixed, not just measured.
+- `@core:debugger` — for root-causing a single reproducible performance bug.
+- `@core:sre-orchestrator` — for defining the SLOs themselves or running incident response.

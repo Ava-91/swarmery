@@ -11,6 +11,10 @@ version: 1.0.0
 owner: platform-team
 skills:
   - code-search
+docs:
+  status: generated
+  source_sha: 97af69a4a78d
+  updated: 2026-08-06
 ---
 
 # Role
@@ -204,3 +208,64 @@ DOWNSTREAM: Phase 2 complete | 4 callers, 2 tests, 3 imports found across 6 file
 | Phase 6 update breaks build | Build command fails after edit | Revert last edit; report to tech-lead with build error |
 | maxTurns exhausted | Turn counter at limit | Write partial artifact; flag unsearched symbols |
 | Missed callers discovered later | Phase 5 quality gate catches | Caught by @verification-agent |
+
+# How to use
+
+## What it does
+
+This agent maps the blast radius of a code change. Give it a changed symbol and it hunts down every caller, test, mock, import, and type annotation that touches it — using exact search, semantic search, and symbol-level lookup together, then reports how much it trusts the result. It runs in two modes: read-only impact mapping before you change anything, and mechanical reference updates after the change has landed.
+
+## When to use it
+
+- You are about to change a public signature and need to know what breaks first.
+- A rename or type change has already shipped in one file, and imports, call-sites, and annotations elsewhere still need updating.
+- A planner needs a concrete list of affected files before it can size the work.
+- You want a written record of which tests and mocks reference a symbol, with file and line.
+
+## When not to use it
+
+- You need the business logic itself written or changed — that belongs to `@implementation-agent`.
+- You just want to know where one symbol is defined — plain search is cheaper.
+- You need a build/typecheck/lint verdict on the result — reach for `@verification-agent`.
+- New tests must be written for the affected code — that is `@test-writer`.
+
+## How to invoke
+
+```
+@core:downstream-analyzer
+```
+
+Address it directly and state the phase, the change, and the modified files in the same message.
+
+## Inputs
+
+- `phase` — `"2"` for read-only mapping or `"6"` for edit-capable updates — required.
+- `change_description` — what changed, in one line — required.
+- `files_modified` — the paths that were edited — required.
+- `specific_changes` — changed signatures, types, or renames — optional but sharpens the search.
+- `task_id` — the workspace task identifier the artifact is filed under — required.
+
+## What you get back
+
+A markdown artifact on disk (`02-downstream.md` or `06-downstream.md`, under 300 lines) with tables for changed symbols, callers, implementations, tests, imports, and — in Phase 6 — the updates applied. It closes with a confidence summary naming the search method used. In Phase 6 the source files are edited too; those edits are mechanical and revert with `git checkout -- <file>`.
+
+## Worked example
+
+```
+@core:downstream-analyzer find all code affected by the OrderService.create signature change
+Phase: 2
+Change: OrderService.create now takes CreateOrderDto instead of separate params
+Files modified: [apps/<mainApp>/src/lib/services/order-service.ts]
+```
+
+It lists the changed symbols first, runs exact and semantic searches in parallel for each, sorts the hits into callers, tests, and imports, and writes the artifact. It edits no source files in Phase 2. The final message reads:
+
+```
+DOWNSTREAM: Phase 2 complete | 4 callers, 2 tests, 3 imports found across 6 files | Confidence: HIGH | Artifact: .../phases/02-downstream.md
+```
+
+## Related
+
+- `@context-gatherer` — when you need broad context on a feature, not the callers of one symbol.
+- `@implementation-agent` — when the logic change itself still has to be written.
+- `@quality-checker` — reviews the Phase 6 updates after this agent applies them.

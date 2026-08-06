@@ -4,6 +4,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 description: "Document an epic/feature architecture with the C4 model -- system context/container/component/dynamic diagrams as Mermaid .mmd plus a narrative doc. NOT for rendering an existing .mmd (use mermaid-viewer)."
 color: cyan
+docs:
+  status: generated
+  source_sha: ff189543c257
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -211,3 +215,67 @@ c4-architecture-docs/
     example-container.mmd                      (neutral: SPA + API server + DB containers)
     example-dynamic.mmd                        (neutral: checkout/payment command flow)
 ```
+
+# How to use
+
+## What it does
+
+This skill turns a big issue — an epic, a cross-tier feature, an incident review — into house-consistent C4 architecture documentation: a small set of Mermaid `.mmd` diagrams plus a short narrative doc, filed in the task directory and rendered for review. It picks the minimum set of abstraction levels that carries the argument, grounds every box in your project's real repos and containers, and enforces the notation rules so the result reads as a map instead of a tangle of boxes and lines.
+
+## When to use it
+
+- Someone asks you to "document the architecture" or "draw the system context / container diagram" for a feature.
+- A cross-tier epic needs a durable structural picture before implementation starts.
+- An incident post-mortem needs a runtime flow drawn as a numbered dynamic view.
+- You need to show how the containers listed in `.claude/project.json` fit together for one specific change.
+
+## When not to use it
+
+- You already have a `.mmd` file and only want to see it — use your project's Mermaid viewer skill or the `mmdc` CLI.
+- You only need to record a decision with its trade-offs — write an ADR from the ADR template instead.
+- You need a state machine, data model, or business-process view — C4 deliberately omits these; use the right diagram type.
+- The change touches one file — a one-line note in the pull request is enough.
+
+## How to invoke
+
+```
+Skill(skill: "core:c4-architecture-docs")
+```
+
+Invoke it once you know the scope of the issue and which repositories it spans; the skill reads the rest from your project configuration.
+
+## Inputs
+
+- **Issue or epic scope** — the change to document, as a tracker id or prose — required.
+- **Affected repositories** — which of your project's repos the change spans — required.
+- **Task directory slug** — an existing working directory; created if you leave it out — optional.
+- **Promotion target** — where a settled copy should land in your project docs — optional.
+
+## What you get back
+
+Files in the task directory's `reports/`: `architecture.md` (narrative, 200 lines or fewer), one `.mmd` per chosen level, a rendered `.html` per diagram, and an ADR for each boundary or technology decision. In chat you get the task path, each `.mmd` → `.html` pair, which levels were drawn and why, and any do-not-touch path the change overlaps.
+
+## Worked example
+
+```
+Skill(skill: "core:c4-architecture-docs")
+
+Request: document the architecture for the epic "persist per-order event
+history for replay" — it touches the API server and the relational database.
+
+What happens: the skill scopes the issue, picks L1 + L2 plus one L3 for the
+API server, inventories the real containers, fills the starter skeletons,
+writes the narrative, renders and visually inspects each diagram, and
+records the append-only-log vs snapshot-table choice as an ADR.
+
+You end up with: reports/architecture.md, c4-l1-context.mmd,
+c4-l2-container.mmd, c4-l3-api-server.mmd, adr-001-event-store.md,
+plus a rendered .html beside each diagram.
+```
+
+## Related
+
+- **browser-verification** — the render, screenshot, and visual-inspection mechanics this skill leans on for review.
+- **html-reporting** — when you want the narrative wrapped in the canonical report shell.
+- **summary-templates** — for formatting the completion summary once the documentation is filed.
+- **`@architecture-designer`** — the agent that calls this skill for the C4 grammar during its design step.

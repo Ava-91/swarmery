@@ -16,6 +16,10 @@ skills:
   - observability
   - code-standards
   - c4-architecture-docs
+docs:
+  status: generated
+  source_sha: d8a635b77722
+  updated: 2026-08-06
 ---
 
 # Role
@@ -188,3 +192,59 @@ DESIGN COMPLETE | Components: 4 | Assumptions: 2 | Breaking: NO | Artifact: docs
 - **Discovery skipped**: Design based on assumptions → detected by missing Workflow Registry → re-run discovery.
 - **Assumption invalidated**: Design depends on untested assumption → detected by Assumptions Table review → escalate with risk assessment.
 - **Subagent spawn failure**: Invoked as subagent but tries to spawn → fallback to text delegation directives.
+
+# How to use
+
+## What it does
+
+This agent turns a system or feature idea into a written architecture design you can hand to implementers. It first reads the codebase to find what already exists, then produces Mermaid component and data-flow diagrams, a component table, technology choices with rejected alternatives, an assumptions table with risk levels, and a phased rollout plan tied to staging verification.
+
+## When to use it
+
+- You need a design document before anyone writes code for a change that spans several components.
+- You want the trade-offs written down: which technology was chosen, what was rejected, and why.
+- You need a rollout plan that says what ships in each phase and how each phase is verified.
+- You want the risky assumptions in a change surfaced, each with a validation method.
+
+## When not to use it
+
+- You need route contracts, request/response schemas, or endpoint shapes — use `@core:api-designer`.
+- You need table schemas or migration files — use `@core:database-designer`.
+- You want the code written — use `@core:implementation-agent`.
+- You are deploying to production — use `@core:sre-orchestrator`.
+
+## How to invoke
+
+```
+@core:architecture-designer Design the event ingestion pipeline for orders/line-items
+```
+
+Address the agent and describe the system to design. Add any functional requirements, non-functional targets, and constraints you already know — the agent discovers the rest from the codebase.
+
+## Inputs
+
+- `task_description` — what system or component to design — required.
+- `requirements` — functional needs, non-functional targets, and constraints — optional; gathered upstream or supplied by you.
+
+## What you get back
+
+A Markdown design document written to the project's architecture docs directory, for example `docs/architecture/<component>-design.md`, capped at 400 lines. It contains an executive summary, requirements, Mermaid diagrams, component and technology tables, an assumptions table, a cleanup inventory, a rollout plan, and risks. The final message is a one-line status such as `DESIGN COMPLETE | Components: 4 | Assumptions: 2 | Breaking: NO | Artifact: <path>`. No code is changed, so the design is safe to discard.
+
+## Worked example
+
+```
+@core:architecture-designer Design real-time event streaming from edge devices to browser clients
+
+→ runs four parallel discovery queries (routes, workers, migrations, existing code)
+→ builds a workflow registry, then writes docs/architecture/streaming-design.md
+→ returns: DESIGN COMPLETE | Components: 4 | Assumptions: 2 | Breaking: NO
+```
+
+You end up with a design doc that picks server-sent events over websockets and says why, flags "event rate under 10 per second per device" as a medium risk with a staging load test as its validation, and splits the rollout into a single-device phase and a fan-out phase, each with its own pass/fail criterion.
+
+## Related
+
+- `@core:api-designer` — prefer it once the components are settled and you need the contracts between them.
+- `@core:database-designer` — prefer it for schema and migration design inside one component.
+- `@core:implementation-planner` — prefer it when the work is already designed and needs breaking into phases.
+- `c4-architecture-docs` skill — use it for a layered C4 picture of a large epic; this agent calls it when the design warrants one.

@@ -3,6 +3,10 @@ name: monorepo-coordination
 description: "Coordinate changes spanning 2+ repos of a multi-repo workspace or 2+ apps/packages of a monorepo -- merge-order plans, MR/PR templates, post-merge checklists. NOT for single-repo changes, even large ones."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: generated
+  source_sha: d9709fababf4
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -226,3 +230,60 @@ Post-merge validation: connect to a test device, confirm `PROGRESS_UPDATE` messa
 - The project's deployment workflow / infra-pack skills when enabled -- CI pipeline design, Helm chart wiring (Phase 3), GitOps environment promotion, and how the version-pinning repo records each promotion step
 - `troubleshooting` -- diagnostic patterns when a coordination sequence fails post-merge
 - `supply-chain-security` -- digest and retention policies that affect cross-repo image references
+
+# How to use
+
+## What it does
+
+This skill plans the order in which a change lands when it touches more than one repository — or more than one independently deployed app inside a monorepo. You get a phased merge order, an MR/PR description template that spells out what depends on what, CI probes that fail when a required manual step was skipped, and a checklist to run once the last MR merges.
+
+## When to use it
+
+- A feature or fix needs changes in two or more repos, or in two or more monorepo packages that deploy independently.
+- You are adding a runtime environment variable that is seeded in one place, wired in another, and read by the application.
+- A message-format change crosses a contracted boundary between a device or edge service and the app.
+- A chart or config change depends on a manual operator step that has to happen first.
+
+## When not to use it
+
+- A single-repo, single-package change, however large — use `refactor-plan`.
+- A hotfix confined to one repo; just deploy it.
+- A dependency version bump that touches no cross-repo contract.
+- Promoting an existing image between environments with no code change — use your deployment workflow.
+
+## How to invoke
+
+```
+Skill(skill: "core:monorepo-coordination")
+```
+
+Invoke it with the change description and the list of affected repos or packages; the skill reads `${CLAUDE_PROJECT_DIR}/.claude/project.json` to learn whether you are in a multi-repo workspace or a monorepo and adapts the merge mechanics to that shape.
+
+## Inputs
+
+- **Change description** — what the logical change is, in one line — required.
+- **Affected repos or packages** — which code paths are touched — required.
+- **Operator steps** — manual actions needed between merges, such as running a bootstrap script — optional.
+- **Existing MR references** — links to drafts already open — optional.
+
+## What you get back
+
+A single plan, capped at about 200 lines, with four parts: a phase table (foundation → operator action → wire → consume) listing repo, branch and dependencies; per-MR description blocks carrying Depends on, Blocks, Operator steps and Failure mode if merged out of order; CI probe YAML for each required operator step; and a post-merge validation checklist. Nothing is merged or pushed for you — the output is a plan you act on.
+
+## Worked example
+
+```
+Skill(skill: "core:monorepo-coordination")
+Change: add MAPS_API_KEY as a runtime env var. Repos: infrastructure,
+deploy charts, main app. Operator step: run the secret bootstrap script
+on the staging cluster.
+```
+
+The plan comes back as four phases: seed the secret in the infrastructure repo, run the bootstrap script, wire the value into the chart with a guard that fails on a placeholder, then read it in the app. Phase 2 gets a CI probe that reads the cluster secret and fails if it still contains `CHANGE_ME`. Validation closes with a browser check that the value reaches the client.
+
+## Related
+
+- `api-contract` — reach for it first when the change crosses a documented service boundary.
+- `refactor-plan` — for changes that stay inside one repo or package.
+- `troubleshooting` — when a coordinated sequence has already merged and something broke.
+- `supply-chain-security` — for the digest and retention rules behind cross-repo image references.

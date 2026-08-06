@@ -11,6 +11,10 @@ disallowedTools:
 maxTurns: 10
 skills:
   - html-reporting
+docs:
+  status: generated
+  source_sha: 7db5b60c5ed4
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -131,3 +135,62 @@ Generate a reviewer-focused checklist based on changed files:
 
 **Version**: 1.0
 **Last Updated**: April 2026
+
+# How to use
+
+## What it does
+
+Turns a finished branch into a pull request you can paste. It reads your commit log and diff, works out what kind of change it is, and writes a titled PR description with a summary, a per-category file table, a test plan, breaking-change notes, and a reviewer checklist tailored to what you touched.
+
+## When to use it
+
+- You finished a feature or fix and need a PR description before opening the PR.
+- The branch has many commits and you want one coherent story instead of a commit dump.
+- The change spans auth, schema, API, or deploy config and reviewers need a focused checklist.
+- An orchestrating agent reaches the delivery phase and needs PR text generated.
+
+## When not to use it
+
+- You need a message for a single commit — use `@core:commit-message`.
+- You want the code judged rather than described — use a review agent.
+- You want the PR actually opened and pushed — this agent only writes the text.
+
+## How to invoke
+
+```
+@core:pr-generator create PR for feature/<slug>
+
+Branch: feature/<slug>
+Base: main
+Repo: apps/<mainApp>
+```
+
+Give it the branch and the base you are merging into; it reads the rest from git.
+
+## Inputs
+
+- Branch — the feature branch to describe — required.
+- Base — the branch you are merging into, usually `main` — optional, defaults to main.
+- Repo — which repository the branch lives in — required in multi-repo setups.
+
+## What you get back
+
+Raw HTML printed to stdout, styled as a dark report, that you copy. It contains the PR title line, a summary card, collapsible file tables per category, a checkbox test plan, a breaking-changes card, a review-focus note, and a button that copies the whole thing as GitHub-flavored Markdown. Nothing is written to disk and no git state changes — the agent only reads.
+
+## Worked example
+
+```
+@core:pr-generator create PR for feature/order-line-items
+
+Branch: feature/order-line-items
+Base: main
+Repo: apps/<mainApp>
+```
+
+It runs `git log main..HEAD`, classifies the work as a feature, and prints HTML titled `feat(orders): add per-line-item discounts`. The file table groups the API handlers, the schema migration, and the tests. Because a migration is in the diff, the checklist includes a schema-parity item. You click the copy button and paste Markdown into the PR body.
+
+## Related
+
+- `@core:commit-message` — when you want one conventional commit message, not a whole PR.
+- `@core:tech-lead` — when you want the delivery phase orchestrated end to end, which calls this agent for you.
+- `@core:implementation-agent` — run it before this one, to produce the changes being described.

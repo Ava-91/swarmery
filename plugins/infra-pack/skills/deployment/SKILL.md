@@ -3,6 +3,10 @@ name: deployment
 description: "Use this skill for a Helm-upgrade deploy of an app service (the web portal or the edge service) to an EXISTING Kubernetes cluster, plus post-deploy verification. NOT for cluster-level ops -- Minikube/k3s lifecycle, GCP firewall, tunnels, bootstrap secrets (use kubernetes-deployment); NOT for cross-environment promotion (use release-promotion)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: 4112200c69a3
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -199,3 +203,69 @@ Audit trail: skipped (localdev)
 - `gitlab-ci-cd` -- defer to gitlab-ci-cd for pipeline configuration; deployment is the runtime execution
 - `release-promotion` -- defer to release-promotion for cross-environment digest promotion; deployment handles the single-environment Helm upgrade that release-promotion orchestrates
 - `kubernetes-deployment` -- defer to kubernetes-deployment for cluster-level infrastructure (Minikube management, firewall rules, tunnel debugging)
+
+# How to use
+
+## What it does
+
+This skill runs one Helm deploy against one Kubernetes cluster that already exists, then proves the deploy worked. It walks you through prerequisite checks, a mandatory dry-run, the live `helm upgrade --install`, pod and health-endpoint verification, and the audit-trail update for shared environments. You end up with a short status report instead of a pile of raw `kubectl` output.
+
+## When to use it
+
+- You want to ship a built image to local dev, staging, or production and confirm it came up healthy.
+- A deploy already happened and you need post-deploy verification: pod health, health endpoint, ingress routes.
+- A release went bad in one environment and you need `helm rollback` plus the follow-up audit update.
+- You want to read the current state of a release — `helm list`, `helm history`, pod status.
+
+## When not to use it
+
+- Building or pushing the image itself — use the `docker-build` skill.
+- Editing chart templates or values structure — use the `helm-chart-expert` skill.
+- Moving an image digest across environments — use the `release-promotion` skill.
+- Cluster-level work such as Minikube lifecycle, firewall rules, or tunnels — use the `kubernetes-deployment` skill.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:deployment")
+```
+
+Invoke it, then say which environment, chart, values file, and image tag you are deploying.
+
+## Inputs
+
+- `environment` — `localdev`, your staging alias, or `production` — required.
+- `chart_path` — path to the Helm chart, e.g. `charts/<app>/` — required.
+- `values_file` — the environment values file, e.g. `values.localdev.yaml` — required.
+- `image_tag` — a git short hash or semver; never `latest` — required.
+
+## What you get back
+
+A status report of at most 30 lines in the reply: chart and target environment, the deployed image reference, the new Helm revision, pod counts by state, the health-endpoint status code, and whether the audit trail was updated or skipped. Verbose logs and dry-run diffs stay in a collapsible block. Side effects are real: the cluster changes and the Helm revision increments.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:deployment")
+Deploy the web portal to localdev at image tag abc1234, chart charts/<app>/.
+
+→ auth + cluster + registry checks pass
+→ pre-deploy checklist script exits 0
+→ helm upgrade --dry-run reviewed: no PVC deletion, no replica drop
+→ helm upgrade --install runs; history shows revision 12 deployed
+→ 1/1 pod Running, /api/health returns 200
+
+Deploy: <app> -> localdev
+Image: $IMAGE_REGISTRY/<main-app>:abc1234
+Helm revision: 12
+Pod status: 1 Running
+Health endpoint: 200 OK
+Audit trail: skipped (localdev)
+```
+
+## Related
+
+- `docker-build` — build and push the image before you deploy it.
+- `helm-chart-expert` — change chart templates when a deploy failure traces to one.
+- `release-promotion` — promote a digest from one environment to the next.
+- `kubernetes-deployment` — cluster-level infrastructure rather than a single release.

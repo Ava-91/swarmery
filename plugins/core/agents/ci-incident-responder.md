@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - deployment
   - troubleshooting
+docs:
+  status: generated
+  source_sha: 3d94e14aabb8
+  updated: 2026-08-06
 ---
 
 # Role
@@ -159,3 +163,54 @@ The pipeline failed and I need to investigate. I should first get the pipeline m
 - **P-025 trap**: if the only signal is `remote payload exited 1`, the real error is in stderr on the VM. State this explicitly and hand off to the staging environment operations agent for SSH investigation.
 - **Stale failure taxonomy**: if the P-code table does not cover the observed failure, do not force-fit. Flag as novel and document the raw signal.
 - **Retry-before-diagnose temptation**: suggesting "just retry" as the primary recommendation without transient-failure evidence. Diagnose first.
+
+# How to use
+
+## What it does
+
+Turns a red pipeline into a written diagnosis you can act on. It pulls the pipeline metadata and the traces of the failed jobs, builds a timeline, matches the log signals against a known-failure table, and hands you a root cause backed by quoted log lines plus three remediation options ranked by risk. It reads only — it never edits code, retries a job, or runs a deploy.
+
+## When to use it
+
+- A pipeline just failed and you need to know why before you touch anything.
+- You want a forensic timeline of which job failed when, and what it dragged down with it.
+- You are deciding between retrying, patching, or reverting, and want the trade-off spelled out.
+- A failure looks unfamiliar and you want it flagged and written up as a new taxonomy entry.
+
+## When not to use it
+
+- You already know the cause and just want the fix written — hand the report to a domain specialist or `@core:debugger`.
+- The problem is the pipeline definition itself, not a run of it — reach for CI YAML design work instead.
+- You need someone to actually run the remediation — this agent stops at the plan; the deploy or ops agent executes it.
+
+## How to invoke
+
+```
+@core:ci-incident-responder diagnose pipeline #12345 in apps/<mainApp>
+```
+
+Give it the pipeline ID and the repository. Anything you know about what triggered the run is useful but optional.
+
+## Inputs
+
+- `pipeline_id` — the pipeline run to investigate — required.
+- `repo` — repository path, for example `apps/<mainApp>` — required.
+- `context` — what prompted the investigation, such as a failed release or a blocked merge — optional.
+
+## What you get back
+
+A single Markdown report, under 80 lines, printed in the reply — no files are written. It contains a timestamped timeline, the list of failed jobs, a one-sentence root cause with the exact log lines that support it, three remediation tiers (quick retry / targeted fix / revert) each with expected outcome and risk, a recommendation, and a yes/no post-mortem call. Uncertain diagnoses are marked `[LOW-CONFIDENCE]` with a reason. If the traces do not match any known pattern, it says so instead of forcing a fit.
+
+## Worked example
+
+```
+@core:ci-incident-responder why did deploy_<envAlias> fail on the last push to main?
+```
+
+It fetches the pipeline metadata and traces the failed deploy job. The trace ends with `remote payload exited 1` and nothing else — a known trap where the real error is swallowed on the remote host. The report says so explicitly, cites the line, and recommends handing off to the ops agent for a direct look at the host rather than retrying blind. You end up with the timeline, the citation, three tiers, and a clear next owner.
+
+## Related
+
+- `@core:debugger` — when the failure is in application code and you want it fixed, not just diagnosed.
+- `@core:verification-agent` — when you want a fresh pass/fail verdict from running the checks yourself.
+- `@core:tech-lead` — when the incident needs coordination across several agents.

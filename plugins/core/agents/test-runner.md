@@ -15,6 +15,10 @@ skills:
   - testing
   - test-coverage
   - code-standards
+docs:
+  status: generated
+  source_sha: 3140b8bda842
+  updated: 2026-08-06
 ---
 
 # Role
@@ -188,3 +192,67 @@ Delegate to @test-writer: [src/lib/actions/jobRuns.ts, src/app/api/v2/job-runs/r
 | Hanging test suite | npm test runs indefinitely | Prevented by `timeout 300` prefix; report TIMEOUT and move to next suite |
 | Artifact collision | Two agents write to 05-quality.md | Prevented by using distinct `05-tests.md` filename |
 | Environment issue | >50% tests fail | Flag as potential environment issue; recommend checking dependencies/config before debugging individual tests |
+
+# How to use
+
+## What it does
+
+This agent runs the test suites that already exist in your project and tells you what happened. It works out which stacks a change touches, runs each suite with a timeout, then reports pass/fail/skipped counts, coverage numbers, and a root-cause classification for every failing test — test bug or implementation bug. It never writes or edits a test.
+
+## When to use it
+
+- You finished a change and want a quality-gate run across every affected stack before review.
+- Tests are failing and you want each failure classified as a broken test versus a real regression, with the test file and the code under test actually read.
+- You need coverage numbers per module plus a list of the specific files that fall below target.
+- You want a fast local feedback loop over one repo or one file pattern instead of the whole project.
+
+## When not to use it
+
+- You need new tests written or an existing test fixed — that is `@test-writer`.
+- You want a build/typecheck/lint/security verdict, not just tests — use `@verification-agent`.
+- A single failure needs deep interactive investigation — hand it to `@debugger`.
+- You are looking for untested areas before any code exists — use the `test-coverage` command.
+
+## How to invoke
+
+```
+@core:test-runner Run the test suite for apps/<mainApp> with coverage
+```
+
+Call it directly for a local run, or let `@tech-lead` dispatch it as the Phase 5 quality gate. It resolves repos and test commands from `.claude/project.json`, so you do not have to name them.
+
+## Inputs
+
+- `scope` — which tests to run: a file pattern, a single repo, or `"all"` — required.
+- `coverage_requested` — whether to collect and report coverage metrics — optional, and worth setting after implementation work.
+
+## What you get back
+
+A markdown report saved to `.../workspace/working/{YYYY}/{MM}/{DD}/{slug}/phases/05-tests.md` containing a per-suite summary table, a failed-test table with root causes, coverage per module, and a coverage-gap table when anything is below target. In chat you get one line:
+
+```
+TESTS: PASS|FAIL|PARTIAL | Total: N | Passed: N | Failed: N | Skipped: N | Coverage: X% | Artifact: <path>
+```
+
+Error output is capped at 10 lines per failing test; past 20 failures they are grouped by error type. If the framework is misconfigured, it reports BLOCKED rather than installing anything.
+
+## Worked example
+
+```
+@core:test-runner Run tests for apps/<mainApp> after implementing the job runs feature
+```
+
+It runs `npm run test -- --coverage` under a 300-second timeout, parses the results, and reads each failing test alongside the code it exercises. You get back:
+
+```
+TESTS: FAIL | Total: 45 | Passed: 43 | Failed: 2 | Skipped: 0 | Coverage: 72% | Artifact: <workspace>/phases/05-tests.md
+```
+
+The artifact names the two failures with their classification, and flags the coverage gap: `orders/line-items.ts` at 45% against a 70% target, with a recommendation to delegate those files to `@test-writer`.
+
+## Related
+
+- `@test-writer` — writes the missing tests this agent's gap report identifies.
+- `@verification-agent` — the deterministic gate covering build, typecheck, lint, and security alongside tests.
+- `@debugger` — root-cause work on a failure this agent could only classify.
+- `@implementation-agent` — owns fixing the implementation bugs the report surfaces.

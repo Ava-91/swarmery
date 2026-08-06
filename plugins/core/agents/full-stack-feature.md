@@ -17,6 +17,10 @@ skills:
   - functional-design
   - nextjs-migration
   - monorepo-coordination
+docs:
+  status: generated
+  source_sha: a8e538c13d41
+  updated: 2026-08-06
 ---
 
 # Role
@@ -225,3 +229,64 @@ This agent can drive a real browser through the Playwright MCP tools (`mcp__plug
 - `browser_run_code_unsafe` / `browser_evaluate` -- authorized local/staging targets only, never production.
 - Always `browser_close` when finished.
 - A green browser smoke does not replace the automated suite -- `npm run test` + E2E specs still gate the feature.
+
+# How to use
+
+## What it does
+
+This agent runs a feature end to end across every layer it touches: database schema, API routes, UI, deployment config, edge behaviour, and promotion metadata. It builds a task checklist first, works the layers in producer-before-consumer order, and refuses to declare the feature done until the contracts line up and the tests pass.
+
+## When to use it
+
+- A single feature needs schema, API, and UI changes that must stay consistent with each other.
+- Work spans more than one repository and the merge order matters (schema lands before API, API before UI).
+- You want a feature verified end to end — automated suite plus a browser smoke of the real flow — before it ships.
+- You need a written record of which layers were touched and what was skipped.
+
+## When not to use it
+
+- You only need one layer designed in depth — reach for `@core:database-designer`, `@core:api-designer`, or `@core:react-specialist`.
+- You want a plan rather than an implementation — use `@core:implementation-planner`.
+- You are debugging an existing failure — use `@core:debugger`.
+- Do not delegate to it from `@core:tech-lead`; it is a peer orchestrator, not a subagent of another orchestrator.
+
+## How to invoke
+
+```
+@core:full-stack-feature implement device registration with validation
+```
+
+Invoke it directly with the feature description. Add the acceptance criteria and name the layers you expect to change if you already know them.
+
+## Inputs
+
+- Feature description with acceptance criteria — required.
+- Affected layers (DB, API, UI, deploy, edge, promotion) — optional; it works them out if you leave this open.
+- `Reference:` path to a step file — optional; used when writing the completion report.
+
+## What you get back
+
+Implemented code across the affected layers, plus a completion report under 40 lines listing the layers touched, the files changed, unit/integration/E2E results, whether the staging health check came back green, and — if the deploy layer was skipped — the reason. If a step file was referenced, its checkbox in `COMPLETION-SUMMARY.md` is ticked with the date.
+
+## Worked example
+
+```
+@core:full-stack-feature add a planning UI with backend API and DB schema
+
+→ Phase 0  checklist: DB, API, UI affected; deploy layer skipped (no new env vars)
+→ Phase 2  schema + index + migration
+→ Phase 3  route handlers, validation, auth guards
+→ Phase 4  components with loading and error states
+→ Phase 6  service, handler, and component tests
+→ Phase 7  npm run typecheck && npm run build && npm run test  — pass
+           browser smoke of the flow in the dev server        — pass
+
+You end up with the feature merged in order, a green suite, and a
+completion report naming every file changed and the skip reason.
+```
+
+## Related
+
+- `@core:contract-validator` — when you only want the type chain checked, not implemented.
+- `@core:quality-checker` — when the code exists and you want a quality verdict on it.
+- `@core:sre-orchestrator` — when the work is deploy and staging verification alone.

@@ -1,6 +1,10 @@
 ---
 description: Cross-repo impact analysis — graph-aware (Graphify) with a live ripgrep fallback
 color: red
+docs:
+  status: generated
+  source_sha: fc326bb79534
+  updated: 2026-08-06
 ---
 
 # Impact Analysis Command
@@ -68,3 +72,63 @@ rg -n --no-heading "$ARGUMENTS" \
 ```
 
 Now analyze impact of: $ARGUMENTS
+
+# How to use
+
+## What it does
+
+Finds everything that would break if you change a symbol, across every repository in your project. It leads with the Graphify knowledge graph for a real dependency traversal, then falls back to a live ripgrep sweep so nothing is missed when the graph is stale or absent. You get one report with per-repo hits, a break-likelihood rating, and the order to update things in.
+
+## When to use it
+
+- You are about to rename or change the signature of a function, type, or field and need the full caller list first.
+- A change touches a shared contract between the main app and a device or edge repo, and you need to know whether both sides move together.
+- You want to prove or disprove that one symbol actually reaches another before assuming a dependency exists.
+- A reviewer asks "what else does this affect?" and grep alone keeps missing indirect callers.
+
+## When not to use it
+
+- You just want to locate a string or file — use `/search` or `/find`, which are faster and do not build a report.
+- You need a full architecture overview rather than one symbol's blast radius — use `/architecture-map`.
+- You already have the affected list and want a change sequence written up — use `/refactor-plan`.
+
+## How to invoke
+
+```
+/impact createOrder
+```
+
+Type the command followed by the symbol you are changing. Run it from inside the repo you want analyzed so the per-repo graph at `graphify-out/graph.json` resolves, or let the ripgrep fallback sweep the repos listed in your project config.
+
+## Inputs
+
+- **symbol** — the function, type, field, or identifier you are about to change — required. Anything you can name in code works; the more specific the name, the tighter the result.
+
+## What you get back
+
+A single markdown report in the chat. It opens with a summary line (total occurrences, repositories affected, and whether the graph or ripgrep produced the result), then a section per repository listing file paths with line numbers and context. Graph-sourced hits carry a depth rating — `d=1` WILL BREAK, `d=2` LIKELY, `d=3` MAYBE — and an edge-confidence tag (`EXTRACTED` from the syntax tree, `INFERRED` by a model and worth verifying). The report closes with a recommended update order: interfaces, then implementations, then callers, then tests. Nothing is written to disk and no files are edited.
+
+## Worked example
+
+```
+/impact OrderStatus
+
+→ ## Impact Analysis for "OrderStatus"
+  ### Summary
+  - Total occurrences: 14 · Repositories affected: 2 · Source: Graphify graph
+  ### apps/<mainApp> (11)
+  - d=1 (WILL BREAK): src/orders/line-items/route.ts:45 — POST handler [calls, EXTRACTED]
+  ### <device repo> (3)
+  - src/send_data.py:78 — payload["status"] = order_status
+  ### Recommendations
+  - Update the shared enum, then the route handler, then the contract tests.
+  - Cross-tier: the device repo has no shared schema — coordinate the merge.
+```
+
+You end up knowing which eleven call sites break immediately, which three live behind a hand-maintained contract in another repo, and that the two changes have to land together.
+
+## Related
+
+- `/search` — plain ripgrep across repos when you want matches, not analysis.
+- `/refactor-plan` — turns a known blast radius into a sequenced refactor plan.
+- `/graphify` — build or refresh the knowledge graph this command reads from.

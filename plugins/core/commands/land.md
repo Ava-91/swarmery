@@ -7,6 +7,10 @@ allowed-tools:
   - Edit
   - Glob
   - Grep
+docs:
+  status: generated
+  source_sha: 931ee62263d4
+  updated: 2026-08-06
 ---
 
 # /land — land the plane
@@ -173,3 +177,64 @@ Landed:
 - `${CLAUDE_PLUGIN_ROOT}/bin/agent-work.sh` — the task CLI this ritual drives (`init` / `list` / `complete` / `index`)
 - `jira-tasks` skill — read-only Jira access + the `Tickets:` card-line join-key convention
 - `rules/ALWAYS.md` — workspace-artifacts + memory-hygiene gates this ritual enforces
+
+# How to use
+
+## What it does
+
+`/land` closes out a working session cleanly. It reconciles your agent-workspace task cards with what the session actually did: finished tasks get a true `SUMMARY.md` and are archived, genuine work-in-progress stays active, and the one task still in flight gets a short `NEXT.md` handoff. The next session — yours or a teammate's — starts from an accurate state instead of re-deriving it from git history and memory.
+
+## When to use it
+
+- You are about to stop working and the session advanced one or more workspace tasks.
+- You finished a task and want it archived with a filled-in summary, not an empty skeleton.
+- Work is half-done and you want one clear next step recorded before you walk away.
+- Loose ends turned up mid-session and you need them filed somewhere they will not evaporate.
+
+## When not to use it
+
+- You just want to see session stats or the active-task list — run `/dashboard`, which is read-only.
+- Nothing in the workspace changed this session; there is no card to reconcile.
+- You only need to archive one known task — call `agent-work.sh complete <task-id>` directly.
+- You want tickets created in your tracker — that is a write op and needs an explicit request.
+
+## How to invoke
+
+```
+/land
+```
+
+Type it with no arguments. The command finds the tasks this session touched by cross-checking the workspace task list, the task directories on disk, and the session activity tracker, then works its checklist top to bottom.
+
+## Inputs
+
+- No arguments — required inputs are discovered, not typed.
+- `AGENT_PROJECT` — environment variable naming your workspace project — optional; without it the command falls back to a project-local workspace directory.
+- `AGENT_WORKSPACE_ROOT` — environment variable overriding the workspace root — optional.
+- Explicit confirmation — needed only if you want tickets filed in your tracker.
+
+## What you get back
+
+`SUMMARY.md` filled in for each finished task, those task directories moved under `archive/YYYY/MM/DD/`, and the workspace index regenerated. A `NEXT.md` of 3–8 lines is written at the root of the primary still-active task, naming one next action with exact paths and commands. Memory entries that duplicate the card are trimmed to pointers. The final message is a compact landing report listing what closed, what stayed active, where `NEXT.md` landed, and how many follow-ups were filed.
+
+## Worked example
+
+```
+/land
+
+→ finds two active tasks; one you finished, one still in flight
+→ fills SUMMARY.md on the finished task (result, changed files, follow-ups)
+→ archives it and regenerates the index
+→ writes NEXT.md on the in-flight task: merge order, branch name, blocked-on
+→ prints:
+    Closed (→ archive):  <task-id>
+    Kept active:         <task-id>
+    NEXT.md written:     working/2026/08/06/<slug>/NEXT.md
+    Follow-ups filed:    3 in SUMMARY
+```
+
+## Related
+
+- `/dashboard` — read-only session stats and task lists; a good pre-flight check before landing.
+- `jira-tasks` skill — read-only tracker access plus the `Tickets:` card-line convention used when linking filed tickets.
+- `agent-work.sh` — the underlying task CLI (`init` / `list` / `complete` / `index`) if you want one step, not the whole ritual.

@@ -18,6 +18,10 @@ skills:
   - context-optimization
   - summary-templates
   - browser-verification
+docs:
+  status: generated
+  source_sha: 661a1bb07bdd
+  updated: 2026-08-06
 ---
 
 # Role
@@ -421,3 +425,63 @@ parts that are easy to get wrong: login/credential setup, multi-step wizards, st
 per-view verification, and cleanup. If no pack skill exists, fall back to `browser-verification`.
 
 Default target is **localdev**; never run it against staging (project.json → cloud.envAlias) or production without explicit human approval. Apply it whether you drive the flow yourself (Micro / Dynamic mode) or hand it to a delegate (@react-specialist / @verification-agent / @full-stack-feature), which also carry this skill.
+
+# How to use
+
+## What it does
+
+Tech Lead is the orchestrator for structured development work. You hand it a task in plain words; it classifies the task, picks a working mode, writes a plan, and then drives specialized executor agents through a nine-phase chain from understanding to documentation. It never writes the code itself — it delegates, checks that each delegate actually produced its artifact on disk, and logs why it routed each decision the way it did.
+
+## When to use it
+
+- You have a feature or fix that touches several files and you want the whole chain — context, plan, implementation, quality gate, summary — run for you.
+- You want a bug root-caused before anyone plans a fix, rather than a guess turned into a patch.
+- The work spans more than one repository or needs schema changes, so you want design and rollback thinking up front.
+- You want a codebase-wide audit or migration fanned out across many agents and verified independently.
+
+## When not to use it
+
+- The change is a one-line edit you already understand — just make it, or ask `@core:implementation-agent` for a single step.
+- You already have a written plan in the workspace — run `/run-plan` instead of re-planning from scratch.
+- You only want a review of existing changes — reach for `/code-review` or `@core:code-auditor`.
+- You want a different entry point for full-stack feature work — `@core:full-stack-feature` is a peer, not a subordinate.
+
+## How to invoke
+
+```
+@core:tech-lead implement waypoint editing in orders/line-items
+```
+
+Type the mention followed by your task in ordinary language. A scope hint — a repository, an app, or a feature area — helps it target the right code, but is optional.
+
+## Inputs
+
+- `task` — a description of what to implement, fix, or refactor — required.
+- `scope` — a repository or feature-area hint — optional.
+
+Everything else is read from your project configuration: repositories, apps, the main app, and cloud settings.
+
+## What you get back
+
+A task directory under your private workspace, dated by start day, containing a task card, an orchestration plan written before the first delegation, a gap analysis, a pre-mortem risk table, a delegation ledger, a machine-readable checkpoint, and a final `SUMMARY.md`. In the conversation you get one transition line per phase naming the agents used, the artifacts produced, and the routing decision. Source files are modified by the delegates, not by Tech Lead.
+
+## Worked example
+
+```
+@core:tech-lead implement waypoint editing
+
+Mode: Sprint (2-5 files, estimated 4-6h)
+
+PHASE 1 COMPLETE | Agents: [Tech Lead] | Artifacts: [01-understanding.md]
+| Decision: 2 user-only gaps identified (ordering semantics? max per record?);
+blocking Phase 3 until answered. Codebase gaps routed to Phase 2.
+```
+
+It stops and asks you the two questions it cannot answer from the code. Once you reply, it runs the context trio in parallel, plans, pre-mortems the plan, delegates implementation, runs the four-agent quality gate, and closes with a summary and retrospective.
+
+## Related
+
+- `@core:full-stack-feature` — an alternative entry point when the work is clearly one feature across database, API, and UI.
+- `@core:task-planner` — when you only want a plan, not execution.
+- `@core:debugger` — when you already know it is a bug and want root-cause analysis alone.
+- `@core:code-auditor` — when you want a prioritized risk backlog over existing code instead of new work.

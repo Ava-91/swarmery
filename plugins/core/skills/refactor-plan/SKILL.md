@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob
 disable-model-invocation: true
+docs:
+  status: generated
+  source_sha: 5d88f40704d6
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -202,3 +206,59 @@ Rollback: revert steps 6-1 in reverse order. For step 1, apply `V048__revert_dev
 - `code-standards` -- coding standards to apply during the refactor.
 - `migration-check` -- verifying database migration compatibility.
 - `deployment` -- deployment config changes required by the refactor.
+
+# How to use
+
+## What it does
+
+This skill writes a refactoring plan for a change you are considering — and nothing else. It searches the codebase for every real reference with Grep and Glob, maps which repos and files are hit, orders the steps so nothing lands before its dependency, names the risks, and spells out how to undo each step. No file is edited. You read the plan and decide whether the refactor is worth doing before anyone touches code.
+
+## When to use it
+
+- You want to rename a type, table, or module and need to know how far the change reaches before you start.
+- You are moving shared logic into a library, or splitting a module, and the boundaries cross more than one repo.
+- You are changing a streamed message format between a producer service and the app that consumes it.
+- You are migrating one pattern to another — class-based to functional, eager to lazy — across many files.
+
+## When not to use it
+
+- You want the refactor applied, not planned — use `functional-design`, which edits files directly.
+- The change is a dependency version bump — use `deps-check`.
+- It is a one-line fix or a formatting-only edit — just make the change; a plan costs more than it saves.
+- You need release or environment rollback rather than code rollback — use `release-promotion`.
+
+## How to invoke
+
+```
+Skill(skill: "core:refactor-plan")
+```
+
+State the refactoring goal, which repos are in scope, and any constraints. The skill reads only — it has Read, Grep, and Glob and cannot modify your code.
+
+## Inputs
+
+- **Refactoring goal** — what to change and why — required.
+- **Scope boundary** — which repos to search; defaults to all repos listed in the project config — optional.
+- **Constraints** — deadlines, freeze windows, areas that must not be touched — optional.
+
+## What you get back
+
+A markdown plan saved under your workspace task directory at `plan/README.md`, never inside a code repo. It contains current state, target state, an impact table by repo, numbered steps with ordering rationale, a risk table with mitigations, an executable rollback plan, and an effort estimate. Plans stay under 200 lines; if the blast radius passes 50 files, the skill stops and asks you to split the work into phases.
+
+## Worked example
+
+```
+Skill(skill: "core:refactor-plan")
+
+"Rename the legacy_entity table and every reference to device,
+ across apps/<mainApp> and the edge repo."
+```
+
+The skill greps both repos and finds 47 references in 23 files plus 8 in the edge service. The plan orders the migration first, then the ORM schema, then the API route directory, then imports and tests. It flags that renaming the public route breaks external callers and proposes an alias, and its rollback names the exact revert migration to apply.
+
+## Related
+
+- `monorepo-coordination` — use it for merge ordering once the plan spans repos.
+- `functional-design` — use it to execute a pure-function refactor rather than plan one.
+- `migration-check` — use it to verify a database migration the plan introduces.
+- `code-standards` — use it for the conventions to apply while carrying the plan out.

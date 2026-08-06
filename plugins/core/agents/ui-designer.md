@@ -14,6 +14,10 @@ skills:
   - code-standards
   - functional-design
   - nextjs-migration
+docs:
+  status: generated
+  source_sha: 06761f7a0e86
+  updated: 2026-08-06
 ---
 
 # Role
@@ -179,3 +183,55 @@ This agent can drive a real browser through the Playwright MCP tools (`mcp__plug
 - `browser_run_code_unsafe` / `browser_evaluate` run arbitrary JS -- authorized local/staging targets only (project.json → cloud.envAlias), never production.
 - Always `browser_close` when finished.
 - The browser verifies rendering; structural accessibility checks and @test-writer a11y tests still apply.
+
+# How to use
+
+## What it does
+
+This agent builds and audits typed React components for a project's web app. It reads your Tailwind config first, so every color and spacing value comes from real design tokens instead of hardcoded hex or magic numbers. It writes semantic HTML with ARIA, keyboard handlers, and all interactive states, then checks the result against WCAG 2.2 AA — contrast, focus rings, and 44×44px touch targets.
+
+## When to use it
+
+- You need a new component file — a card, a form control, a dialog — written with typed props, variants, and loading/error/disabled states.
+- An existing component fails accessibility: no visible focus indicator, low contrast, or a keyboard trap.
+- A component breaks on small screens or scrolls horizontally at 320px.
+- You want an audit of design-token drift, such as `bg-[#ff5733]` or `p-[17px]` sneaking into the codebase.
+
+## When not to use it
+
+- Wiring a component into pages, routes, or data fetching — that is `@core:implementation-agent`.
+- Writing component or accessibility tests — that is `@core:test-writer`.
+- Broader React 19 / Next.js 15 refactoring and performance budgets — use `@core:react-specialist`.
+- Wireframes, visual prototypes, GraphQL, React Native, or backend work — all explicitly out of scope.
+
+## How to invoke
+
+```
+@core:ui-designer
+```
+
+Address the agent directly with a component description. Add a design reference and, if you want screenshots kept, a task screenshots directory.
+
+## Inputs
+
+- `component_description` — what to build or audit — required.
+- `design_reference` — a design-tool link or an existing component to match — optional.
+- `screenshots_dir` — a task workspace directory; browser screenshots are saved there as `NN-phase{X}-{slug}.png` and referenced in the report — optional.
+
+## What you get back
+
+A TypeScript component file, at most 150 lines, under `src/components/{feature}/` or `src/ui/`. It carries a JSDoc'd props interface, variant and state props, token-only Tailwind classes, and keyboard handlers. The final message is a one-line status: file path, prop count, variant count, accessibility verdict, and token compliance. If the browser check ran, screenshot paths are cited too.
+
+## Worked example
+
+```
+@core:ui-designer Create a MissionCard component for the mission list page
+```
+
+The agent reads `tailwind.config.*` and searches for existing card components in parallel, designs the props interface, applies tokens, and writes the file. It then drives a real browser: resize across 320 / 640 / 768 / 1024 / 1280px, snapshot the accessibility tree, and exercise hover, focus, and keyboard states. You end up with `src/components/missions/MissionCard.tsx` and a line like `COMPONENT COMPLETE | Props: 5 | Variants: 4 | A11y: PASS | Tokens: all from config`.
+
+## Related
+
+- `@core:react-specialist` — prefer it for React 19 and Next.js 15 refactors with performance budgets.
+- `@core:test-writer` — prefer it to add component and accessibility tests once the component exists.
+- `@core:tech-lead` — prefer it when the work needs new design tokens or system-wide patterns, which require review.

@@ -6,6 +6,10 @@ description: "Use this skill when auditing dependency versions, checking for out
 allowed-tools: Read, Bash, Glob, Grep
 disable-model-invocation: true
 color: teal
+docs:
+  status: generated
+  source_sha: e6895cc4f08f
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -254,3 +258,56 @@ None at this severity level.
 - `deployment` -- deps-check should run before deployment to catch vulnerable dependencies
 - `deployment` -- defer deployment config dependency version authoring to deployment; deps-check only reports current state
 - `env-check` -- shares the same repo scope (`project.json → repos`); align repo lists when auditing both dependencies and env vars
+
+# How to use
+
+## What it does
+
+This skill audits the dependency health of every repository in your project and hands you one report. It finds outdated packages, known security vulnerabilities, and cases where two repos pin different versions of the same shared package. It reads and reports only — it never upgrades a package or touches a lockfile.
+
+## When to use it
+
+- You run a periodic security review and need a current picture of dependency risk across all repos.
+- You are about to cut a release and want to confirm no known vulnerability ships with it.
+- A CVE advisory landed and you need to know whether any of your repos are affected.
+- You suspect a shared package drifted out of alignment between the web app and another repo.
+
+## When not to use it
+
+- You want the packages actually upgraded — that is a separate implementation task; hand this report to an implementation agent.
+- The finding is a deployment config or chart template lint error — use the `deployment` skill.
+- You are reviewing one `package.json` for a single new feature, not running a full audit.
+- You have no network access — registry queries fail and the report will be empty.
+
+## How to invoke
+
+```
+Skill(skill: "core:deps-check")
+```
+
+Invoke it with no arguments to scan every repo listed in `.claude/project.json` → `repos`, or name the repos and severity threshold you want in your request.
+
+## Inputs
+
+- `repos` — the list of repos to scan — optional; defaults to all repos from `project.json` → `repos`.
+- `severity_threshold` — the lowest vulnerability severity to include (`critical`, `high`, `moderate`, or `low`) — optional; defaults to `moderate`.
+
+## What you get back
+
+A markdown report returned inline, capped at 200 lines. It opens with the date, how many repos were scanned, and any scans that failed. Then a per-repo summary table, critical and high vulnerabilities with CVE ids and fixed-in versions, cross-repo version mismatches, remaining outdated packages, and a short prioritized recommendation list. One side effect: `helm repo update` refreshes your local chart cache.
+
+## Worked example
+
+```
+Skill(skill: "core:deps-check")
+
+> Run the monthly dependency audit across all repos.
+```
+
+The skill locates each manifest, runs the package-manager and vulnerability scans for the Node and Python repos in parallel, then refreshes the chart cache and checks chart versions. You get back a report like: 3 of 3 repos scanned, no scan failures, 42 npm deps in `apps/<mainApp>` with 2 outdated and 1 moderate CVE, 15 pip deps in `<device>` with 1 outdated, no critical or high findings, and three ranked recommendations naming the exact target versions.
+
+## Related
+
+- `env-check` — same repo scope; use it when the question is about environment variables rather than packages.
+- `code-quality` — reach for it after this audit, to review the pull request that performs the upgrades.
+- `deployment` — use it for deployment config and chart authoring; this skill only reports the current state.

@@ -123,6 +123,11 @@ function splitFrontmatter(content) {
 // open and close with ``` or ~~~ at column 0; a closing fence carries no info
 // string. `raw` is the byte-exact line, `text` has the trailing CR trimmed (§5.2)
 // so heading comparison never sees it.
+//
+// The returned array also carries `fenceOpenAtEnd`: true when the text ran out
+// while a fence was still open. Every line after such a fence is `fenced`, so a
+// guide sitting there is real text that no parser can see — a distinct defect
+// from having no guide at all, and one the callers below report as itself.
 function scanLines(text) {
   const raws = text.split('\n');
   const out = new Array(raws.length);
@@ -155,6 +160,9 @@ function scanLines(text) {
       heading: hm ? { level: hm[1].length, text: hm[2].trim() } : null,
     };
   }
+  // Recorded as a non-index property, so the array still iterates, maps, slices
+  // and reduces exactly as every existing caller expects.
+  out.fenceOpenAtEnd = fenceChar !== null;
   return out;
 }
 
@@ -236,6 +244,12 @@ function guideSubsections(sc, blk) {
 // An empty array means the item is documented. Recommended subsections are
 // never reported here — §2 keeps them at info severity, outside the gate.
 function coverageProblems(sc) {
+  // An unclosed fence swallows everything after it, so a guide sitting in that
+  // region is physically present and invisible to every parser (§5.1). Saying
+  // `no # How to use block` here sends the reader off to write a guide that is
+  // already there — the file needs a closing fence, not a guide. Reported alone
+  // because every check below it reads a document the fence has eaten.
+  if (sc.fenceOpenAtEnd) return ['unclosed fenced block (the guide, if any, is inside it)'];
   const starts = guideStarts(sc);
   if (starts.length === 0) return ['no `# How to use` block'];
   const problems = [];

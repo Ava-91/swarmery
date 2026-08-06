@@ -3,6 +3,10 @@ description: Explain the custom statusline — what every line/field means, data
 allowed-tools:
   - Bash
   - Read
+docs:
+  status: generated
+  source_sha: d5f4c4c76ac3
+  updated: 2026-08-06
 ---
 
 # /statusline-help — Decode the custom statusline
@@ -69,3 +73,47 @@ copy, see `docs/ONBOARDING.md` "Statusline"; wired via the `statusLine` key in
    - Fresh session shows `CONTEXT 0%` / `SESSION $0` / no git block at workspace root — all expected.
 
 Keep the output tight: the live sample first, then the table, then the knobs.
+
+# How to use
+
+## What it does
+
+Prints a full reference for the custom statusline at the bottom of your terminal. You get a live sample render first, then a table explaining every line and field — what it means and where the value comes from — followed by the environment knobs you can set to change what shows up.
+
+## When to use it
+
+- You see a segment on the statusline and cannot tell what the number means.
+- You want the weather segment to show a different city, or no city at all.
+- You want the header to show the subscription email instead of the default title.
+- A field looks wrong or missing and you want to know which data source feeds it.
+
+## When not to use it
+
+- You want to install or wire up the statusline — that is a separate opt-in deploy step, documented in the onboarding guide.
+- You want your official plan-usage numbers, not an explanation of them — run `/usage`.
+- You want session cost totals rather than a field reference — run `/cost`.
+
+## How to invoke
+
+```
+/statusline-help
+```
+
+Type it in any session. It takes no arguments and only reads files and runs the statusline script with a synthetic payload — nothing on disk changes.
+
+## What you get back
+
+Three things, in order: a one-line live sample so you can see the current colors and values; a table keyed by line number (Header, LOC, ENV, CONTEXT, USAGE, SESSION, PWD, MEMORY) with each field's meaning and source; and a short list of knobs — weather location, the email-in-header toggle, the optional extra usage segment and its cache setting.
+
+## Worked example
+
+```
+/statusline-help
+```
+
+You ask because the `CONTEXT` bar turned red and you want to know what triggers that. The command renders a sample line, then the table tells you `CONTEXT` is the context-window fill percentage and that the color thresholds are green under 50, yellow at 50 or more, red at 80 or more. You also learn the value comes straight from the session JSON, so a red bar means the window really is filling — not a display bug.
+
+## Related
+
+- `/usage` — prefer it when you want your current plan limits, not an explanation of the segments that display them.
+- `/dashboard` — prefer it for a broader session and system overview rather than a field-by-field statusline reference.

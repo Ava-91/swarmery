@@ -3,6 +3,10 @@ name: gcp-cicd-auth
 description: "Configure and review GCP authentication for GitLab CI/CD pipelines: Workload Identity Federation, Artifact Registry push, Secret Manager access, and least-privilege service accounts. Not for Keycloak IAM, AWS/Azure auth, or runtime pod identity."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: 7f298c226ea0
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -230,3 +234,63 @@ Step 4 -- Checklist result:
 - `kubernetes-deployment` -- for Helm deploy credentials and cluster access at runtime
 - `gitops-promotion` -- for promotion flow; this skill handles the auth required for image push and secret access
 - `supply-chain-security` -- for image scanning and digest promotion policies that depend on authenticated registry access
+
+# How to use
+
+## What it does
+
+This skill reviews and writes the GCP authentication parts of a GitLab CI/CD pipeline. It checks your pipeline YAML for credential anti-patterns — hardcoded project IDs, committed key files, `gcloud auth login` in a job — and hands you a copy-paste stanza that uses Workload Identity Federation instead. You also get `gcloud` commands to confirm the access actually works, and a pass/fail checklist with file:line citations for every failure.
+
+## When to use it
+
+- A CI job needs to build and push an image to Artifact Registry and you want keyless auth.
+- You are setting up Workload Identity Federation between a GitLab instance and a GCP project.
+- A pipeline job needs to read specific secrets from Secret Manager without project-wide access.
+- You inherited a pipeline that uses a service account key JSON and want to know how bad it is.
+
+## When not to use it
+
+- Pipeline structure, stage order, or job dependencies — use the `gitlab-ci-cd` skill.
+- Cluster RBAC or pod-level identity for running application code — use `kubernetes-deployment`.
+- AWS or Azure CI authentication, or Keycloak service accounts — different skills entirely.
+- Clicking through the GCP console; this skill produces YAML and CLI commands, not UI walkthroughs.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:gcp-cicd-auth")
+```
+
+Invoke it with the pipeline file you want reviewed and which GCP service the job talks to.
+
+## Inputs
+
+- `pipeline_path` — path to the `.gitlab-ci.yml` to review or create — required.
+- `gcp_service` — `artifact-registry`, `secret-manager`, or `both` — required.
+- `auth_method` — `wif` (default) or `service-account-key` (legacy, discouraged) — optional.
+
+## What you get back
+
+One report under 150 lines: the auth method in use, an annotated pipeline stanza (max 50 lines), verification `gcloud` commands you run yourself, and a checklist of up to 15 items each marked pass or fail. Every failure cites file:line. The skill never runs the verification commands for you and never edits a file that holds credential material — it stops and asks instead.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:gcp-cicd-auth")
+pipeline_path: apps/<mainApp>/.gitlab-ci.yml
+gcp_service: artifact-registry
+```
+
+The skill reads the file, greps for auth anti-patterns, and reports that the build job
+hardcodes an Artifact Registry hostname at line 42. You get back a `.gcp-wif-auth`
+template using `id_tokens` plus a `build-and-push` job that pushes by tag and captures the
+image digest into a dotenv artifact — all identifiers as `$GCP_PROJECT_ID`, `$AR_HOSTNAME`,
+and friends. Three `gcloud … --format=json | jq` commands confirm the pool exists, the
+service account holds `roles/artifactregistry.writer`, and WIF can impersonate it. The
+checklist comes back all-pass except the hostname line, with the fix inline.
+
+## Related
+
+- `gitlab-ci-cd` — reach for it first when the problem is job wiring, not credentials; the two compose.
+- `kubernetes-deployment` — when the credentials in question are for a Helm deploy or cluster access at runtime.
+- `supply-chain-security` — for image scanning and digest promotion policy once the registry auth works.

@@ -3,6 +3,10 @@ name: swarmery-board-card
 description: "Create and drive a /board card as a mirror of a jira-task-runner run: born in triage, moved straight to in_progress, finished at in_review or done. The card MUST NEVER pass through the todo column -- see 'The load-bearing rule' below for why. Covers projectId resolution, the exact POST/PATCH bodies, idempotent reuse via the jira-ticket label, the daemon-unavailable fallback, and dry-run request-body printing. NOT for talking to Jira itself (that's jira-tasks / the Atlassian MCP tools) and NOT for working-repo/config resolution (that's jira-config)."
 version: "0.1.0"
 owner: "swarmery-core"
+docs:
+  status: generated
+  source_sha: e80f8ef2f225
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -184,3 +188,63 @@ Any example in this skill uses only `<jira-base-url>`-style placeholders, `<KEY>
   `boardTaskDTO`, `legalTransition`, `normalizeLabels`.
 - `tools/swarmery/internal/dispatch/service.go:343` — the dispatch-candidate query that is the
   reason `todo` is forbidden (see "The load-bearing rule" above).
+
+# How to use
+
+## What it does
+
+This skill is the only place in jira-pack that talks to the swarmery board API. It mirrors a ticket run as a card on `/board` so a person watching the board sees the same lifecycle the run is going through. Crucially, it mints the card straight into `triage` and never into `todo` — a `todo` card is dispatchable, and the dispatcher would spawn a second agent racing the current run on the same ticket.
+
+## When to use it
+
+- A ticket run has passed triage and you want its progress visible on the board.
+- You need to move an existing run card forward: `in_progress` at the start of real work, then `in_review` or `done` at the end.
+- A second run starts on a ticket that may already have a card, and you need the idempotent reuse check before creating anything.
+- You are running with `--dry-run` and need to show the exact request bodies without touching the board.
+
+## When not to use it
+
+- Reading or writing the ticket itself — use `jira-tasks` or the Atlassian MCP tools.
+- Resolving the working repo or the `jira` config block — use `jira-config`.
+- Posting the verdict comment or transitioning the ticket — use `jira-writeback`.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:swarmery-board-card")
+```
+
+Invoke it from inside a ticket run, after the working repo and the Jira tool prefix are already resolved, at each point the card should be created or moved.
+
+## Inputs
+
+- Ticket key and summary — used verbatim as the card title `"<KEY>: <summary>"` — required.
+- Resolved working repo root — matched against the project registry to find `projectId`, and cited in the card prompt — required.
+- Triage verdict and the pinned Jira tool prefix — written into the card prompt — required at creation.
+- Dry-run flag — suppresses every write call — optional.
+
+## What you get back
+
+On creation you get a `201` with the card's `id` and `externalId` (shaped `T-xxxxxx`); keep both for later transitions and the run's final report. Each transition is a `PATCH` that also updates the card prompt with the PR link, verdict, or stop reason. If the local daemon is unreachable or no project matches, the run continues and the final report gains one line: `BOARD: unavailable (<reason>)` — that line never reaches the ticket comment.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:swarmery-board-card")
+
+# Run is at "needs-fix", repo root resolved, no existing card for this key.
+GET  /api/projects                      -> projectId 3 matches the repo path
+GET  /api/board/tasks?label=jira-ticket -> no open card titled "<KEY>: ..."
+POST /api/board/tasks                   -> 201, T-xxxxxx, boardColumn "triage"
+PATCH /api/board/tasks/{id}             -> boardColumn "in_progress"
+# ...fix lands, PR opened...
+PATCH /api/board/tasks/{id}             -> boardColumn "in_review", prompt gains the PR link
+```
+
+You end up with one card that tracked the whole run, never sat in `todo`, and is reused rather than duplicated if the same ticket is run again.
+
+## Related
+
+- `jira-config` — run first, so the card prompt's "Working repo" line has a real value.
+- `jira-access-preflight` — pins the Jira tool prefix the card prompt cites as "Jira provider".
+- `jira-writeback` — for the ticket-side comment and status transition, which this skill never performs.

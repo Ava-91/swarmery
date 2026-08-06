@@ -12,6 +12,10 @@ maxTurns: 15
 skills:
   - migration-check
   - code-standards
+docs:
+  status: generated
+  source_sha: 7a8473d65170
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -136,3 +140,58 @@ Document how to reverse the migration if it causes issues:
 
 **Version**: 1.0
 **Last Updated**: April 2026
+
+# How to use
+
+## What it does
+
+This agent reads a database migration before you apply it and tells you whether it is safe. It checks the SQL or ORM schema change against a three-tier list — blocking issues like unguarded data loss and missing rollbacks, high-priority gaps like missing indexes or NOT NULL columns without defaults, and best-practice nits like naming and version numbering. It also compares the SQL migration against the ORM schema definition so the two do not drift apart.
+
+## When to use it
+
+- You have written a migration file and want it checked before it runs anywhere.
+- You are dropping or renaming a column and need the data-loss risk spelled out.
+- You changed the ORM schema and want to confirm the SQL migration still matches it.
+- A migration is queued for a shared environment and you need a rollback plan on paper first.
+
+## When not to use it
+
+- You are designing the schema change itself — reach for `@core:database-designer`.
+- You want the migration written or applied — this agent never edits files; use `@core:implementation-agent`.
+- You are debugging a migration that already failed in place — use `@core:debugger`.
+
+## How to invoke
+
+```
+@core:migration-agent validate migration V1.2.0__add_order_status.sql
+Type: SQL / ORM schema / both
+Environment: localdev / <envAlias> / prod
+```
+
+Name the migration file or paste the schema change, say which layer it touches, and say where it is headed.
+
+## Inputs
+
+- Migration file path or the schema change itself — required.
+- Type: SQL, ORM schema, or both — optional, helps scope the parity check.
+- Target environment — optional, raises the bar on shared environments.
+
+## What you get back
+
+A Migration Safety Report in your reply: an overall verdict of SAFE, CAUTION, or BLOCKED, then P0 blocking issues, P1 high-priority issues, P2 suggestions, a step-by-step rollback strategy, and the SQL-to-ORM parity status. Nothing is written or changed — the agent is a read-only validator.
+
+## Worked example
+
+```
+@core:migration-agent validate migration V1.4.0__drop_legacy_note.sql
+Type: both
+Environment: staging
+```
+
+The agent reads the file, finds a `DROP COLUMN` with no documented rollback and no backup of the existing values, and checks whether any route or action still reads that column. You get back a **BLOCKED** verdict, one P0 item naming the data-loss risk, a P1 note that the replacement column is `NOT NULL` without a default for existing rows, and a rollback strategy that restores the column and its values.
+
+## Related
+
+- `@core:database-designer` — when the schema change still needs designing.
+- `@core:implementation-agent` — when the migration needs to be written or applied.
+- `@core:tech-lead` — when you want the migration reviewed as part of a larger deployment gate.

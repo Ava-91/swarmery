@@ -16,6 +16,10 @@ skills:
   - testing
   - code-standards
   - monorepo-coordination
+docs:
+  status: generated
+  source_sha: d109b63d9e8d
+  updated: 2026-08-06
 ---
 
 # Role
@@ -226,3 +230,59 @@ Verdict: PASS (0 blockers, 0 new failures, lint/typecheck clean)
 | Test suite hangs | Kill after 5 min timeout; mark as SKIPPED |
 | maxTurns exhausted | Write partial report with phases completed so far |
 | Cannot distinguish new vs pre-existing failure | Mark as [LOW-CONFIDENCE] and flag for manual verification |
+
+# How to use
+
+## What it does
+
+Sprint Review audits everything that landed in your repositories over a time window and hands you one go/no-go verdict. It scopes the commits, fans out read-only audit subagents over the changed files, runs lint, typecheck, and tests in check-only mode, and writes a single report with a `PASS`, `FAIL`, or `PASS WITH BLOCKERS` verdict. It never edits, fixes, or commits anything.
+
+## When to use it
+
+- You are at the end of a sprint and need one report covering every repo instead of a per-repo status hunt.
+- You are about to cut a release tag and want a documented go/no-go decision with blockers listed by severity.
+- You need new test failures separated from ones that were already broken before the window.
+- You want a quality snapshot across repos without anyone touching source files.
+
+## When not to use it
+
+- You want the problems fixed, not just listed — reach for `@core:debugger` or `@core:implementation-agent` after the report names them.
+- You only need one deep security pass — call `@core:security-auditor` directly on the files you care about.
+- You are gating a single change or pull request — that is `@core:verification-agent` or a code review, not a sprint-wide audit.
+
+## How to invoke
+
+```
+@core:sprint-review since 2026-05-11 repos apps/<mainApp>
+```
+
+Both arguments are optional. With no arguments it scopes the last 14 days across every repo listed in your project configuration.
+
+## Inputs
+
+- `since` — the start of the audit window, any date or relative phrase git accepts — optional, defaults to 14 days ago.
+- `repos` — a list limiting the audit to specific repositories — optional, defaults to all configured repos.
+
+## What you get back
+
+A markdown report is written under your workspace at `working/{YYYY}/{MM}/sprint-review-{YYYY-MM-DD}.md`, capped at 500 lines, with eight sections: Verdict, Scope, Blockers, Findings, Style & Type Check, Tests, Cross-Repo Contract Status, and Recommendations. Every finding carries a severity of `BLOCKER`, `MAJOR`, `MINOR`, or `INFO` plus a `file:line` reference. The chat message you see is short: the verdict, the blocker count, and the report path. Repos with no commits in the window are marked `SKIPPED` with a reason. No source file is modified.
+
+## Worked example
+
+```
+@core:sprint-review since 2026-05-11
+
+→ Report: .../working/2026/05/sprint-review-2026-05-25.md
+  Verdict: PASS WITH BLOCKERS (2 pre-existing test failures, 0 new issues)
+  Scope: main-app (23 commits, 14 files), device-repo (8 commits, 5 files),
+         infra-repo (3 commits, 2 files)
+  Skipped: docs-repo (0 commits), terraform-repo (0 commits)
+```
+
+You end up with a file you can paste into a release thread, and a verdict that says the sprint introduced nothing new but two known failures still need an owner.
+
+## Related
+
+- `@core:code-auditor` — when you want one repo audited in depth rather than a window across many.
+- `@core:verification-agent` — when you need a deterministic build, typecheck, lint, and test verdict with no audit narrative.
+- `@core:security-auditor` — when the concern is security specifically and you want the full OWASP and threat-model pass.

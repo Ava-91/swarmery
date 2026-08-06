@@ -6,6 +6,10 @@ description: "Scan application code for security vulnerabilities, OWASP Top 10 c
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob, Bash
 color: teal
+docs:
+  status: generated
+  source_sha: 7aabe12b3053
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -255,3 +259,57 @@ Checkpoint: Report complete with all sections populated.
 - **deployment** -- fixing SecurityContext, NetworkPolicy, and TLS configuration
 - **code-standards** -- general code quality checks (not security-focused)
 - **troubleshooting** -- investigating live incidents (not preventive auditing)
+
+# How to use
+
+## What it does
+
+This skill runs a read-only static security audit over application code, configuration, and deployment manifests. It walks the OWASP Top 10, hunts for hardcoded secrets, injection paths, weak auth, vulnerable dependencies, and unsafe infrastructure settings, then hands you a structured report where every finding carries a `file:line` citation, a severity, an OWASP category, and a concrete fix.
+
+## When to use it
+
+- Someone asks you to audit, scan, or review code for security vulnerabilities.
+- A new feature or module needs a security review before it merges.
+- You want a quick pass for hardcoded secrets or credentials on the current branch.
+- You are investigating a suspected auth bypass or injection risk in application code.
+- You need an OWASP Top 10 compliance picture for one repository or module.
+
+## When not to use it
+
+- CI/CD pipeline hardening, image scanning, or SBOM generation — use `supply-chain-security`.
+- Active penetration testing, fuzzing, or exploit development — this skill is passive analysis only.
+- General code quality review with no security angle — use `code-standards` or `code-quality`.
+- Applying the fixes or changing deployment config — use `deployment`; the audit never edits files.
+
+## How to invoke
+
+```
+Skill(skill: "core:security-audit")
+```
+
+Invoke it and state the scope you want audited; add a depth if you want the fast pass instead of the full sweep.
+
+## Inputs
+
+- **Scope** — the repository or module path to audit, such as `apps/<mainApp>/src/app/api/` or `<device>/src/`. Required.
+- **Depth** — `quick` for hardcoded secrets plus critical injection only, or `full` for all ten OWASP categories. Optional; defaults to `full`.
+
+## What you get back
+
+A markdown report: a severity summary table, one block per finding (severity, OWASP category, CWE, location, evidence, remediation, confidence), an OWASP Top 10 checklist table, a prioritized action plan, and a scope-coverage list naming what was checked and what was skipped. Nothing is written or modified — any secrets found are redacted with `***`. Critical findings are raised to you immediately, before the report is finished.
+
+## Worked example
+
+```
+Skill(skill: "core:security-audit")
+Scope: apps/<mainApp>/src/app/api/orders/
+```
+
+The skill loads its bundled OWASP checklist, checks the auth middleware on the route, looks for injection in query parameters, verifies schema validation and session checks, then reports. You end up with a report listing, for example, one High finding for a missing session check at `orders/route.ts:42` mapped to A01 Broken Access Control, with the exact code change that fixes it.
+
+## Related
+
+- **supply-chain-security** — prefer it for pipeline hardening, image scanning, and SBOMs.
+- **testing** — prefer it when you want a test that reproduces or prevents a security issue.
+- **deployment** — prefer it when the remediation is a service, TLS, or network config change.
+- **troubleshooting** — prefer it for a live incident rather than a preventive audit.

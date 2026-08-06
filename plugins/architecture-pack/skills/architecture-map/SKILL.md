@@ -1,6 +1,10 @@
 ---
 name: architecture-map
 description: Generate or refresh the repo-wide architecture map — architecture-out/architecture-map.json (machine contract with named flows) + architecture-map.html (self-contained viewer). Use when the user asks for an architecture map, repo map, "/architecture-map", or when an agent needs a fresh machine-readable architecture overview. NOT for per-epic C4 deep-dives (use c4-architecture-docs) and NOT for building the knowledge graph itself (use /graphify).
+docs:
+  status: generated
+  source_sha: ff1a7f56a769
+  updated: 2026-08-06
 ---
 
 # Architecture Map
@@ -71,3 +75,61 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/architecture-map/scripts/build.sh" \
 
 Fix every validator error before rendering. Finish by reporting: module/flow
 counts, commit stamp, and the two artifact paths.
+
+# How to use
+
+## What it does
+
+This skill builds a whole-repository architecture map: a machine-readable JSON file with layers, modules, and named end-to-end flows, plus a self-contained HTML viewer rendered from that JSON. It reads the repository as it actually is — manifests, entry points, real file paths — so the map describes shipped code rather than an idealized design. Re-running it is cheap: if the map is already stamped with the current commit it stops, and if it trails behind it only re-describes the modules the diff touched.
+
+## When to use it
+
+- You want a repo-wide picture of layers, modules, and how a request travels across them.
+- Someone new needs to answer "what happens when X" without reading every directory.
+- The map exists but the repo has moved on, and you want it refreshed against the current commit.
+- Another agent needs a machine-readable architecture overview to plan against.
+
+## When not to use it
+
+- You need a deep C4 breakdown of one epic or feature — use the `c4-architecture-docs` skill instead.
+- You need the underlying knowledge graph built or queried — use the `graphify` skill.
+- You only want to render an existing Mermaid diagram — use the `mermaid-viewer` skill.
+
+## How to invoke
+
+```
+Skill(skill: "architecture-pack:architecture-map")
+```
+
+Run it from the repository root you want mapped; everything else is discovered from the repo itself.
+
+## Inputs
+
+- Repository — the working directory the skill runs in — required, and it must be a git checkout, since the freshness gate stamps the map with `HEAD`.
+- `.claude/project.json` — project name, repos, stack, domain terms — optional, used as ground truth when present.
+- `graphify-out/graph.json` — an existing knowledge graph — optional, used only as candidate module groupings.
+
+## What you get back
+
+Two files under `architecture-out/` in the repository: `architecture-map.json` (the source of truth, schema version 1, stamped with the analysis date and commit) and `architecture-map.html` (a self-contained viewer built from that JSON). The JSON is validated before the HTML is rendered, and every validator error is fixed first. The final message reports module and flow counts, the commit stamp, and both artifact paths.
+
+## Worked example
+
+```
+Skill(skill: "architecture-pack:architecture-map")
+
+→ freshness gate: stored commit 4f2a19c, HEAD 9bc7e01 → incremental mode
+→ 6 layers, 23 modules re-checked against the diff, 8 named flows
+→ validate.mjs passed, viewer rendered
+
+architecture-out/architecture-map.json
+architecture-out/architecture-map.html
+```
+
+Open the HTML file in a browser to walk the layers left to right and step through each flow with its file anchors.
+
+## Related
+
+- `c4-architecture-docs` — when the subject is one epic or feature, not the whole repository.
+- `graphify` — when you need the knowledge graph itself, or want to query relationships directly.
+- `impact` — when the question is which code a specific change ripples into.

@@ -12,6 +12,10 @@ version: 1.0.0
 owner: platform-team
 skills:
   - code-standards
+docs:
+  status: generated
+  source_sha: be19e6405547
+  updated: 2026-08-06
 ---
 
 # Role
@@ -221,3 +225,66 @@ Flagged as maintenance risk in feature matrix despite strong feature set.
 - **Stale library recommendation**: recommending a library with no releases in 12+ months -- prevented by recency check
 - **Sub-agent deadlock**: attempting to spawn @context-gatherer when running as subagent -- prevented by explicit degraded-mode instruction
 - **Source cherry-picking**: using different criteria for different options -- prevented by identical-column rule in feature matrix
+
+# How to use
+
+## What it does
+
+This agent researches a technology question for you and writes the answer to disk. You ask it to compare libraries, patterns, or approaches; it checks each option against your project's declared stack, builds a like-for-like comparison matrix, and lands on a single recommendation with an ADR. It never touches production code — you get a research artifact and a two-line pointer to it.
+
+## When to use it
+
+- You are choosing between two or three libraries for the same job and want a written comparison instead of a hunch.
+- You need a decision record (ADR) before adding a new dependency or changing architecture.
+- You want maintenance risk, bundle size, and license checked before a library goes into the codebase.
+- You want a time-boxed proof of concept that ends in "adopt" or "don't adopt", not an open-ended spike.
+
+## When not to use it
+
+- You already picked the library and just want it wired in — use `@core:implementation-agent`.
+- You need to understand what your own codebase currently does — use `@core:context-gatherer`.
+- You need a multi-week adoption broken into phases — use `@core:implementation-planner`.
+- You need someone to own the decision — this agent's output is advisory; `@core:tech-lead` approves it.
+
+## How to invoke
+
+```
+@core:tech-researcher
+  Topic: <what to compare>
+  Context: <current state, why this came up>
+  Criteria: <what matters — performance, bundle size, DX, community>
+```
+
+Only `Topic` is required. Add `Output:` with `comparison`, `recommendation`, `poc`, or `documentation` if you want a particular shape.
+
+## Inputs
+
+- `topic` — the research question — required.
+- `context` — current implementation and why the question came up — optional.
+- `criteria` — what you are optimizing for — optional; without it the agent picks its own and states them.
+- `output` — `comparison` | `recommendation` | `poc` | `documentation` — optional.
+
+## What you get back
+
+A `02-research.md` file under your workspace task directory, at `.../{YYYY}/{MM}/{DD}/{slug}/phases/02-research.md`, under 120 lines. It contains scope and criteria, each option with its stack-compatibility verdict and health signals, a feature matrix using identical criteria for every option, integration-boundary code snippets, the recommendation with risks and effort, and an ADR. The chat reply is exactly two lines: the verdict and the artifact path. Options that conflict with your declared stack are rejected in the artifact with the reason written out.
+
+## Worked example
+
+```
+@core:tech-researcher
+  Topic: two mapping libraries for rendering 100+ live markers
+  Context: current code uses plain map markers; frame rate drops past 50 markers
+  Criteria: render performance at 100+ markers, gzipped size, React compatibility
+
+→ writes .../phases/02-research.md, then replies:
+Research complete: Option A recommended (React compatible, 45 KB gzipped, handles 1000+ markers).
+Artifact: .../workspace/working/2026/08/06/marker-rendering/phases/02-research.md
+```
+
+Inside the artifact, a third candidate was auto-rejected because it required a different API paradigm than the project's declared one, and a fourth was flagged as a maintenance risk — last release 14 months ago, 87 unanswered issues.
+
+## Related
+
+- `@core:tech-lead` — prefer it when the question is "what should we do next", not "which library".
+- `@core:architecture-designer` — prefer it when the decision is about component boundaries rather than a dependency.
+- `@core:implementation-agent` — the downstream consumer that adopts the recommended option.

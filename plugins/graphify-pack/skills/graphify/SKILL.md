@@ -1,6 +1,10 @@
 ---
 name: graphify
 description: "Use for any question about a codebase, its architecture, file relationships, or project content — especially when graphify-out/ exists, where the question should be treated as a graphify query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
+docs:
+  status: generated
+  source_sha: 42fdc00830d4
+  updated: 2026-08-06
 ---
 
 # /graphify
@@ -700,3 +704,56 @@ When the user asks to install the post-commit auto-rebuild hook or wire graphify
 - Always show token cost in the report.
 - Never hide cohesion scores behind symbols - show the raw number.
 - Never run HTML viz on a graph with more than 5,000 nodes without warning the user.
+
+# How to use
+
+## What it does
+
+Turns a folder of code, docs, papers, images, or video into a persistent knowledge graph you can query. You get an interactive HTML graph, a plain-language audit report, and raw JSON — plus community detection that surfaces connections across files you would never have thought to ask about. Once the graph exists, questions about the codebase are answered from it instead of by re-reading files.
+
+## When to use it
+
+- You want a map of an unfamiliar repository — which modules are central, which clusters exist, what bridges them.
+- You have a question about how the code fits together ("what calls this?", "trace the data flow through X") and a graph already exists.
+- You are mixing sources — source files, design docs, PDFs, recorded talks — and want them in one connected view.
+- You need graph data for another tool: a Neo4j or FalkorDB load, a GraphML export for a graph editor, or an MCP server agents can read.
+
+## When not to use it
+
+- You know the file and the symbol already — a direct search is faster than a graph build.
+- You want a rendered architecture diagram rather than a graph — reach for the architecture-map skill instead.
+- Your corpus is one small file; the pipeline's clustering and reporting stages will cost more than they return.
+
+## How to invoke
+
+```
+Skill(skill: "graphify-pack:graphify")
+```
+
+Users type `/graphify` with an optional path, URL, or subcommand. Run `/graphify --help` to print the full flag list without touching any files.
+
+## Inputs
+
+- **path** — a folder, a repository URL, or several of either to merge into one cross-repo graph. Optional; defaults to the current directory.
+- **subcommand** — `query "<question>"`, `path "<a>" "<b>"`, `explain "<node>"`, or `add <url>`. Optional.
+- **flags** — `--mode deep` for richer inferred edges, `--update` for incremental rebuilds, `--obsidian`, `--wiki`, `--svg`, `--graphml`, `--neo4j`, `--falkordb`, `--mcp`, `--watch`, `--no-viz`. All optional.
+- **`GEMINI_API_KEY` / `GOOGLE_API_KEY`** — optional. Speeds up semantic extraction for docs and images. Code needs no key at all.
+
+## What you get back
+
+Everything lands in `graphify-out/` next to the folder you processed: `graph.html` (open it in a browser), `GRAPH_REPORT.md` (the audit report, with token cost and cohesion scores shown as raw numbers), `graph.json` (raw graph data), and `cost.json` (cumulative token spend). In chat you get the corpus summary, the God Nodes, Surprising Connections, and Suggested Questions sections, then an offer to trace the single most interesting question through the graph.
+
+## Worked example
+
+```
+Skill(skill: "graphify-pack:graphify")
+# user typed: /graphify orders/line-items --mode deep
+```
+
+The skill detects the corpus, extracts code structurally and docs semantically in parallel, builds and clusters the graph, names each community in plain language, and writes the outputs. You end with `orders/line-items/graphify-out/graph.html` open-able in a browser, a report naming the hub nodes, and a follow-up prompt such as "Want me to trace how the pricing rules reach the invoice writer?" Answering yes runs `/graphify query` on the existing graph — no rebuild.
+
+## Related
+
+- **architecture-map** — prefer it when you want a rendered repo architecture map rather than a queryable graph.
+- **c4-architecture-docs** — prefer it for a per-epic C4 deep-dive with narrative diagrams.
+- **impact** — prefer it for cross-repo change impact; it reads this skill's graph when one exists.

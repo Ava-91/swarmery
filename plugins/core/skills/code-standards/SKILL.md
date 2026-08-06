@@ -4,6 +4,10 @@ description: "Review code against CONVENTIONS -- type safety (`any` detection), 
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob, Bash
+docs:
+  status: generated
+  source_sha: 07f13623e2e2
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -298,3 +302,62 @@ STANDARDS-VIOLATIONS: 2 | CRITICAL: 1 | HIGH: 1 | MEDIUM: 0 | LOW: 0
 - `code-quality` -- defer to this skill for function length, nesting depth, and cyclomatic complexity checks; compose when a standards review reveals quality issues. Composition is a depth-1 fan-out under `@code-auditor` (runs both as leaves over the SAME scope, aggregates the `QUALITY-SCORE:` + `STANDARDS-VIOLATIONS:` headers) -- never a nested delegation chain or routing handoff.
 - `api-contract` -- defer to this skill for field-level alignment between Prisma, Zod, and route handlers; compose when a naming convention violation affects API field names
 - `code-search` -- defer to this skill when the files to review need to be located first
+
+# How to use
+
+## What it does
+
+This skill reviews code against your project's coding conventions and hands you a report you can act on. It checks type safety (including `any` types), naming, framework patterns, Python type hints and async style, service-config hygiene, and 12-factor build rules. Every finding comes with a `file:line` citation, a severity, and before/after code for the serious ones.
+
+## When to use it
+
+- You changed code in a TypeScript/Next.js app and want a standards pass before merge.
+- You changed Python code on a device or edge service and need type hints and async patterns verified.
+- You edited a service config in an infrastructure repo and need lint, version bump, and defensive template checks.
+- You touched a Dockerfile or CI pipeline and want 12-factor build-once/deploy-anywhere compliance verified.
+
+## When not to use it
+
+- Measuring function length, nesting depth, or cyclomatic complexity — use `code-quality`.
+- Checking field alignment between database schema, validation schemas, and route handlers — use `api-contract`.
+- Locating the files you want reviewed in the first place — use `code-search`.
+- Auto-fixing the violations: this skill reviews and refuses in-place fixes.
+
+## How to invoke
+
+```
+Skill(skill: "core:code-standards")
+```
+
+Give it the paths to review and the repository type; it selects the matching checklist and returns the report.
+
+## Inputs
+
+- `scope` — path to the file, module, or directory to review — required.
+- `repo_type` — one of `web-app`, `device`, `service-config`, `infrastructure`; picks the rule set — required.
+
+## What you get back
+
+A Markdown report, capped at 300 lines: a violations table (`#`, severity, location, violation, fix), before/after code for every Critical and High finding, a one-line summary, and a machine-readable trailer for CI gates or downstream agents:
+
+```
+STANDARDS-VIOLATIONS: 2 | CRITICAL: 1 | HIGH: 1 | MEDIUM: 0 | LOW: 0
+```
+
+Nothing is edited. If a file has more than 20 Critical findings, it stops and asks instead.
+
+## Worked example
+
+```
+Skill(skill: "core:code-standards")
+scope: apps/<mainApp>/src/app/api/orders/route.ts
+repo_type: web-app
+```
+
+The route calls `auth()` but never declares `export const dynamic = 'force-dynamic'`, and a query result is annotated `: any`. You get back two rows — one Critical, one High — each with the exact line, the offending snippet, the corrected snippet, and the summary line `STANDARDS-VIOLATIONS: 2 | CRITICAL: 1 | HIGH: 1 | MEDIUM: 0 | LOW: 0`. Both fixes are single-line edits you apply yourself.
+
+## Related
+
+- `code-quality` — prefer it for length and complexity questions; run both under a code auditor over the same scope when you want a full picture.
+- `api-contract` — prefer it when the concern is field-level alignment across the data layer.
+- `code-search` — prefer it when you still need to find the files to review.

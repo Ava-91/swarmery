@@ -6,6 +6,10 @@ owner: "swarmery-core"
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob, Bash
 color: teal
+docs:
+  status: generated
+  source_sha: 41a89174d34a
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -195,3 +199,56 @@ These targets are maintained here as the single source of truth.
 - **testing** -- patterns for *writing* tests; references the coverage targets defined here
 - **security-audit** -- may identify security-relevant modules to prioritize for testing
 - **code-quality** -- code quality analysis (separate concern from test coverage)
+
+# How to use
+
+## What it does
+
+This skill finds the holes in your test suite without touching a single file. It walks a repository or module, matches every source file to its test file, and reports what has no coverage at all — plus which exported functions inside tested files still have no cases. Each gap comes with a risk level, a suggested test file path that follows your existing conventions, and 3–5 test cases worth writing.
+
+## When to use it
+
+- Someone asks "what's untested?" or "where are our test gaps?" and you need an answer grounded in the actual file tree.
+- You're heading into a release and want confirmation that high-risk paths — auth, streaming, wire protocols, mutating route handlers — have tests behind them.
+- A batch of new modules just landed and you want to know whether tests landed with them.
+- You have testing time for one sprint and need it spent on the modules that matter most.
+
+## When not to use it
+
+- Writing, running, or debugging the tests themselves — that's the `testing` skill.
+- Getting real line and branch percentages — run your coverage command directly (`npm run test -- --coverage` or equivalent); this skill estimates gaps by file mapping, not by execution.
+- Judging code complexity or style — use `code-quality` or `code-standards`.
+- Setting up test jobs in a pipeline — use `deployment`.
+
+## How to invoke
+
+```
+Skill(skill: "core:test-coverage")
+```
+
+Invoke it, then say which path to analyze. Without a scope the skill asks for one before globbing anything.
+
+## Inputs
+
+- **Scope** — required — the repository or module path to analyze, for example `apps/<mainApp>` or a single subdirectory.
+- **Priority filter** — optional — narrow the report to `critical` (auth, telemetry, command handling), `api` (route handlers), or `all`, which is the default.
+
+## What you get back
+
+A markdown gap report in your reply, capped at 200 lines. It opens with source/test file counts and an estimated gap number, then a per-module table with risk levels, then detailed entries for the high-risk gaps — each naming the untested exports, the suggested test file path, and concrete cases to write. It closes with a list of files deliberately excluded (generated code, type declarations, barrel exports), any missing end-to-end flows, and a comparison against the coverage targets the skill maintains. Nothing is written to disk.
+
+## Worked example
+
+```
+Skill(skill: "core:test-coverage")
+
+> Analyze apps/<mainApp>/src/lib, focus on critical modules.
+```
+
+The skill confirms the scope and exclusions, globs the source files, maps each one to its expected test path, and classifies what's missing. You get back a table showing `orders/line-items/` at 4 source files and 1 test file, then a detail block for the untested reducer: its two exported functions, a suggested path of `orders/line-items/__tests__/totals.test.ts`, and cases for the happy path, a rounding edge case, and malformed input. A closing section notes that if more than 50 gaps exist, only the top 10 are detailed and the rest are summarized as a count.
+
+## Related
+
+- **testing** — reach for it right after this one, to actually write the tests this report asks for.
+- **security-audit** — surfaces security-sensitive modules that deserve a higher testing priority.
+- **code-quality** — for complexity and maintainability questions, which are a separate concern from coverage.

@@ -13,6 +13,10 @@ version: 1.0.0
 owner: platform-team
 skills:
   - code-standards
+docs:
+  status: generated
+  source_sha: 4a04ef3fc658
+  updated: 2026-08-06
 ---
 
 # Role
@@ -174,3 +178,60 @@ Full review: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/task-001
 | Missing plan file abort | Agent stops because `03-planning.md` is missing | Graceful fallback: emit PARTIAL verdict with available evidence |
 | Silent requirement skip | Requirement not checked due to turn budget | Triage rule: mark "not reviewed" items explicitly |
 | Verdict inconsistency | APPROVED verdict with Problematic Departures listed | Verdict rule: zero Problematic = APPROVED eligible |
+
+# How to use
+
+## What it does
+
+This agent checks whether what got built matches what was planned. It reads your planning artifacts and the implementation files, marks each requirement as Implemented, Missing, or Partial, sorts every departure from the plan into justified, questionable, or problematic, and ends with one verdict: APPROVED, NEEDS CHANGES, or REJECTED. It never touches your code — it reports and hands corrective work to someone else.
+
+## When to use it
+
+- A feature is coded and quality-checked, and you want to confirm it still matches the plan before moving on.
+- You suspect scope creep: extra work landed that nobody planned for.
+- A reviewer changed the approach mid-implementation and you need that call written down as justified or not.
+- You want a written coverage table showing which requirements actually shipped.
+
+## When not to use it
+
+- You need build, typecheck, lint, or test results — use `@core:verification-agent`, which runs the commands and owns the pass/fail gate.
+- You want the deviations fixed, not just listed — hand the report to `@core:implementation-agent`.
+- You want a quality score on the code itself rather than plan alignment — use `@core:quality-checker`.
+
+## How to invoke
+
+```
+@core:plan-reviewer
+```
+
+Pass the task id and the phase that just completed. The agent finds the workspace directory from the task id and reads the planning and implementation artifacts itself.
+
+## Inputs
+
+- `task_id` — identifies the workspace directory holding the plan and implementation artifacts — required.
+- `completed_phase` — which phase just finished, so the review is scoped correctly — required.
+
+## What you get back
+
+A markdown report at `.../{slug}/phases/05.5-plan-review.md` with five sections: Requirements Coverage, Plan Alignment, Deviations, Issues Found, and the Verdict. Findings cite file and line; uncertain calls are tagged `[LOW-CONFIDENCE]`; at least one thing done well is always noted. In chat you get a two-line pointer, not the report body. If plan files are missing, the agent still writes a partial verdict from whatever evidence exists rather than aborting.
+
+## Worked example
+
+```
+@core:plan-reviewer
+Review the implementation against the plan for the order line-items feature.
+
+→ writes the report skeleton, loads the understanding/planning/implementation
+  artifacts, reads every file they list, then classifies
+
+PLAN REVIEW: NEEDS CHANGES | Requirements: 8/10 covered | Deviations: 2 justified, 1 questionable, 0 problematic
+Full review: .../phases/05.5-plan-review.md
+```
+
+You open the report, see the two uncovered requirements with evidence, and send the questionable deviation back for discussion.
+
+## Related
+
+- `@core:verification-agent` — when you need deterministic build and test verdicts instead of plan alignment.
+- `@core:implementation-agent` — when you want the gaps this review found actually fixed.
+- `@core:downstream-analyzer` — when the question is what else the change breaks, not whether it matched the plan.

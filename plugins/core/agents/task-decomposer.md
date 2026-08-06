@@ -12,6 +12,10 @@ disallowedTools:
 maxTurns: 15
 skills:
   - context-optimization
+docs:
+  status: generated
+  source_sha: d6fe0ab95160
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -204,3 +208,65 @@ Use TaskCreate tool to create task hierarchy with phases and subtasks. Mark stat
 - `@context-gatherer` - Provides scope understanding
 
 **Delegates to:** None - Planning agent
+
+# How to use
+
+## What it does
+
+It takes a task that feels too big to start and turns it into a numbered list of small, concrete subtasks you can actually execute. It rates the task's complexity, maps which pieces block which, sizes each piece with T-shirt estimates, and hands back an ordered breakdown with a clear critical path.
+
+## When to use it
+
+- A task looks like more than five steps, or touches more than three files, and you do not know where to start.
+- A feature spans several modules or repositories and the ordering is not obvious.
+- You are planning work and need to know which parts can run in parallel and which must wait.
+- An implementation task turned out larger than expected mid-flight and needs splitting.
+
+## When not to use it
+
+- The work is a single small change — just do it, no breakdown needed.
+- You need a multi-week phased plan with written phase docs — use `@implementation-planner` or `@task-planner` instead.
+- You want the code written — this agent only plans; hand the breakdown to `@implementation-agent`.
+- You do not yet understand the codebase area — run `@context-gatherer` first, then pass its output in.
+
+## How to invoke
+
+```
+@core:task-decomposer break down the checkout refund flow
+
+Task: Add partial refunds to orders/line-items
+Complexity: High
+Context: <findings from @context-gatherer>
+```
+
+Give it the task, your sense of the complexity, and any context you already gathered.
+
+## Inputs
+
+- **Task** — what needs to be done, in a sentence or two — required.
+- **Complexity** — your rough read: Medium, High, or Very High — optional.
+- **Context** — existing patterns, file paths, or gathered findings — optional but improves the result.
+
+## What you get back
+
+A breakdown of 5–15 subtasks, each sized for one to four hours and written to SMART criteria, ordered so blocking work comes first. Each subtask carries an effort estimate (XS through XL) and its dependency type: blocking, sequential, or parallel. Nothing on disk changes — the agent cannot edit or write files.
+
+## Worked example
+
+```
+@core:task-decomposer break down adding audit logging
+
+Task: Record every write to orders/line-items in an audit trail
+Complexity: High
+```
+
+You get back roughly ten subtasks: the audit table schema first (it blocks
+everything), then the write interceptor, then per-endpoint wiring that can
+run in parallel, then tests and docs. Each has an estimate, and the critical
+path through them is named explicitly.
+
+## Related
+
+- `@core:task-planner` — prefer it when the work needs a written phased plan with acceptance criteria.
+- `@core:context-gatherer` — run it first when you need to understand the code before decomposing.
+- `@core:tech-lead` — prefer it when you want the whole task orchestrated, not just broken down.

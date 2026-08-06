@@ -3,6 +3,10 @@ name: release-promotion
 description: "Use this skill when promoting an image or chart version across environments (dev -> staging -> production), rolling back a promotion, or updating the version-pinning repo's digests. Don't use it for single-environment Helm deploys (use deployment) or code-level rollback (use refactor-plan)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: f263a20f6f5d
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -265,3 +269,59 @@ Cross-repo drift: none detected
 - `gitlab-ci-cd` -- defer to it for CI pipeline design for build, scan, and promotion stages
 - `gitops-promotion` -- defer to it for pull-based GitOps reconciliation (Wave B); release-promotion covers the imperative promotion workflow
 - `kubernetes-deployment` -- defer to it for cluster-level infrastructure issues discovered during promotion
+
+# How to use
+
+## What it does
+
+This skill moves a service's image and chart version from one environment to the next — dev to staging, staging to production — using immutable `sha256:` digests instead of mutable tags. It runs a dry-run gate before every upgrade, verifies health after it, and only then records the new digest in the version-pinning repo, shifting the old one into `previous_digest` so a rollback is one commit away.
+
+## When to use it
+
+- You validated an image in one environment and want it promoted to the next.
+- A deployment went bad and you need to roll back to the previous known-good digest.
+- A verified deploy landed but the version-pinning repo still points at the old digest.
+- A Helm chart version needs to move alongside the image digest.
+
+## When not to use it
+
+- A single-environment Helm upgrade with no cross-environment lifecycle — use `deployment`.
+- Pull-based GitOps reconciliation instead of an imperative promotion — use `gitops-promotion`.
+- A code-level revert rather than an image swap — use `refactor-plan`.
+- A schema-only change that ships without a new service image — use `migration-check`.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:release-promotion")
+```
+
+Invoke it and state the service, the source and target environments, and the digest you want promoted.
+
+## Inputs
+
+- `service` — which service to promote — required.
+- `source_environment` — where the image was validated, e.g. `dev` — required.
+- `target_environment` — where it is going, e.g. `staging` — required.
+- `image_digest` — the immutable `sha256:...` digest, never a tag — required.
+- `chart_version` — the Helm chart version to deploy alongside it — optional.
+
+## What you get back
+
+A promotion report in the reply (max 40 lines) with one line each for digest, chart version, dry-run, deploy, health check, version-repo state, and cross-repo drift. Alongside it: a Helm upgrade applied to the target cluster and a small commit in the version-pinning repo updating `current_digest` and `previous_digest`. Promotions to production stop for your explicit confirmation first.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:release-promotion")
+Promote the web portal from dev to staging, digest sha256:a1b2c3d4e5f6..., chart 1.5.0
+```
+
+The skill captures the digest from the registry, checks cross-repo drift, runs `helm upgrade --dry-run --diff` and shows you the diff, upgrades staging, waits on `kubectl rollout status` and the health endpoint, then commits `current_digest: sha256:a1b2c3d4e5f6...` with the old value moved to `previous_digest`. You end up with a report reading `Deploy: success / Health check: pass / <versions-repo>: committed`.
+
+## Related
+
+- `deployment` — prefer it when you only need one environment's Helm upgrade executed.
+- `helm-chart-expert` — prefer it for chart structure and values-file questions.
+- `gitops-promotion` — prefer it when reconciliation is pull-based rather than imperative.
+- `kubernetes-deployment` — prefer it for cluster-level problems surfaced mid-promotion.

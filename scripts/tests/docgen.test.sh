@@ -442,5 +442,92 @@ DOCGEN_STUB_OMIT_EXAMPLE=1 \
 eq "generate: rejects a block missing a required subsection" "1" "$?"
 eq "generate: that file is untouched too" "$reject_before" "$(cat "$REJECT")"
 
+# ── 12. an unclosed fence is its own problem, never a missing guide ────────
+# The phase-6 backfill hit two real items whose body ended inside a ``` fence
+# that never closed. generate.sh appended a guide to each and reported WROTE;
+# the fence swallowed it; the gate then reported `no # How to use block` over a
+# guide that was physically present in the file. Both halves are fixed here: the
+# gate names the open fence, and generate.sh refuses to produce documentation
+# that is invisible by construction.
+FENCE="$TMP/fence"
+mkdir -p "$FENCE/plugins/testpack/agents"
+UNCLOSED="$FENCE/plugins/testpack/agents/unclosed-fence-agent.md"
+cat > "$UNCLOSED" <<'FIXTURE'
+---
+name: unclosed-fence-agent
+description: Fixture whose body ends inside a fence that never closes.
+---
+
+# Role
+
+Fixture agent whose response-format template opens a fence and never closes it.
+
+## Response Format
+
+```markdown
+## Order summary
+
+Everything from this line to EOF is inside the fence.
+
+# How to use
+
+## What it does
+This guide is physically present in the file and invisible to every parser,
+because the fence opened above it was never closed.
+
+## When to use it
+- Never: no parser can see this block, so it documents nothing at all.
+
+## How to invoke
+
+@testpack:unclosed-fence-agent orders/line-items/1042
+
+## Worked example
+
+The block sits inside the fence, which is precisely the defect under test.
+FIXTURE
+
+fence_out="$(DOCGEN_ROOT="$FENCE" DOCS_MAX_PROBLEMS=999 bash "${DOCGEN}/check-coverage.sh" 2>&1)"
+has "fence: the gate names the unclosed fence" "$fence_out" \
+    "PROBLEM: plugins/testpack/agents/unclosed-fence-agent.md — unclosed fenced block (the guide, if any, is inside it)"
+hasnt "fence: the gate no longer calls it a missing guide" "$fence_out" \
+      "no \`# How to use\` block"
+has "fence: the item counts as undocumented" "$fence_out" "checked=1 documented=0 problems=1"
+
+fence_before="$(cat "$UNCLOSED")"
+fence_gen="$(DOCGEN_STUB_INVOCATION="@testpack:unclosed-fence-agent" \
+  DOCGEN_ROOT="$FENCE" bash "${DOCGEN}/generate.sh" "$UNCLOSED" 2>&1)"
+eq "fence: generate.sh refuses to write into an unclosed fence" "1" "$?"
+has "fence: the refusal names the file" "$fence_gen" \
+    "plugins/testpack/agents/unclosed-fence-agent.md"
+has "fence: the refusal says why" "$fence_gen" "unclosed fenced block"
+eq "fence: the refused file is byte-identical" "$fence_before" "$(cat "$UNCLOSED")"
+
+# --force must not be an escape hatch: the appended guide would be just as
+# invisible, and the WROTE line just as misleading.
+DOCGEN_STUB_INVOCATION="@testpack:unclosed-fence-agent" \
+  DOCGEN_ROOT="$FENCE" bash "${DOCGEN}/generate.sh" --force "$UNCLOSED" >/dev/null 2>&1
+eq "fence: --force does not override the refusal" "1" "$?"
+eq "fence: the file is byte-identical after --force too" "$fence_before" "$(cat "$UNCLOSED")"
+
+# --dry-run is refused for the same reason: the block it would print is a block
+# that cannot legally be written to this file.
+DOCGEN_STUB_INVOCATION="@testpack:unclosed-fence-agent" \
+  DOCGEN_ROOT="$FENCE" bash "${DOCGEN}/generate.sh" --dry-run "$UNCLOSED" >/dev/null 2>&1
+eq "fence: --dry-run is refused as well" "1" "$?"
+
+# The SAME body with the fence closed generates normally — which is what proves
+# the refusal keys on the open fence and not on anything else in the fixture.
+CLOSED="$FENCE/plugins/testpack/agents/closed-fence-agent.md"
+sed 's/^name: unclosed-fence-agent$/name: closed-fence-agent/' "$UNCLOSED" > "$CLOSED"
+printf '```\n' >> "$CLOSED"
+closed_out="$(DOCGEN_STUB_INVOCATION="@testpack:closed-fence-agent" \
+  DOCGEN_ROOT="$FENCE" bash "${DOCGEN}/generate.sh" "$CLOSED" 2>&1)"
+eq "fence: closing the fence lets the same body generate" "0" "$?"
+has "fence: the closed-fence file was written" "$closed_out" "WROTE:"
+has "fence: its guide landed outside the fence" \
+    "$(DOCGEN_ROOT="$FENCE" DOCS_MAX_PROBLEMS=999 bash "${DOCGEN}/check-coverage.sh" 2>&1)" \
+    "checked=2 documented=1 problems=1"
+
 printf 'docgen: %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ]

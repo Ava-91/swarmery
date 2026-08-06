@@ -15,6 +15,10 @@ skills:
   - code-standards
   - security-audit
   - deps-check
+docs:
+  status: generated
+  source_sha: 2e3d86e03f79
+  updated: 2026-08-06
 ---
 
 # Role
@@ -211,3 +215,56 @@ This agent can drive a real browser through the Playwright MCP tools (`mcp__plug
 - Report findings with file:line, confidence %, severity, and remediation -- never apply fixes.
 - A P0 found via the browser follows the same fast-path: write to artifact AND emit chat message immediately.
 - Always `browser_close` when finished.
+
+# How to use
+
+## What it does
+
+This agent runs a read-only security audit over a feature or scope you name. It walks the OWASP Top 10 one item at a time, threat-models your project's own attack surfaces with STRIDE, checks object ownership on parameterized reads, and scans dependencies plus the full git history for leaked secrets. Every finding comes back with a file and line, a confidence percentage, a severity, and a suggested fix. It never edits code and never runs exploits.
+
+## When to use it
+
+- You are at a quality gate before merge or release and need a go/no-go on security.
+- You added or changed authentication, authorization, or an API surface and want the access-control paths checked.
+- You want a dependency and secret-history sweep, not just a look at what is in the current commit.
+- You need a written audit artifact someone else can act on, with severities already assigned.
+
+## When not to use it
+
+- You want the findings fixed — that is an implementation agent's job; this one only reports.
+- You want general code quality, complexity, or naming review — use `@core:code-auditor`.
+- You want a fast, shallow pass over obvious issues — use the `/security-audit` skill instead.
+- You want deterministic build, typecheck, lint, and test verdicts — use `@core:verification-agent`.
+
+## How to invoke
+
+```
+@core:security-auditor
+```
+
+Address the agent and state the feature, the scope, and the mode in plain prose. Scope is one of `authentication`, `authorization`, `data-handling`, `API`, or `full`. Mode is `coverage` (report everything) or `filtered` (only findings above 80% confidence).
+
+## Inputs
+
+- `feature` — what you want audited, in your own words — required.
+- `scope` — which surface to cover: `authentication`, `authorization`, `data-handling`, `API`, or `full` — required.
+- `mode` — `coverage` or `filtered` — optional; `coverage` is the safer default.
+
+## What you get back
+
+A Markdown artifact at `.../phases/05-security.md` in your workspace task directory, capped at 400 lines. It holds a scope header, an A01–A10 table where every row is PASS, FAIL, or N-A with evidence, a STRIDE table for your domain surfaces, findings grouped P0 through P3, dependency and secret-scan results, and a verdict. The final chat message is one line: `SECURITY AUDIT: {verdict} | P0: N | P1: N | P2: N | P3: N | Artifact: {path}`. Any P0 is written and announced the moment it is found, not held back for the report.
+
+## Worked example
+
+```
+@core:security-auditor audit the new device command API endpoints
+(scope: API, mode: coverage)
+```
+
+Mid-run you get an immediate P0 message: an auth bypass on a command route, cited at `src/app/api/v2/devices/command/route.ts:12`. The audit keeps going to completion and closes with `SECURITY AUDIT: FAIL (1 P0) | P0: 1 | P1: 1 | P2: 0 | P3: 0` plus the artifact path. You hand the artifact to whoever is doing the remediation.
+
+## Related
+
+- `@core:code-auditor` — for whole-system risk triage across security, operations, and code debt.
+- `@core:verification-agent` — when you need pass/fail gates from builds and tests, not judgment.
+- `/security-audit` — a quick sweep for common issues when a full OWASP pass is more than you need.

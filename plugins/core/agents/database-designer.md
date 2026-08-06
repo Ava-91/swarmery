@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - migration-check
   - code-standards
+docs:
+  status: generated
+  source_sha: d56fa68f99c1
+  updated: 2026-08-06
 ---
 
 # Role
@@ -219,3 +223,62 @@ After writing the artifact, drop intermediate grep/read output from working memo
 - **Migration/ORM drift**: Column mismatch between SQL and TypeScript → detected by @migration-helper + `npm run typecheck` → re-align the ORM schema.
 - **Missing index**: Foreign key without index → detected by self-check → add index before finalizing.
 - **Breaking migration**: Column drop on hot table → detected by migration safety analysis → escalate with `IRREVERSIBLE` flag.
+
+# How to use
+
+## What it does
+
+This agent designs a PostgreSQL schema change before anyone writes code. You describe the entities and relationships you need; it reads the existing schema and migration history in your repository, then hands back an ER diagram, the migration SQL, a matching ORM schema definition, an index strategy, a safety analysis, and the rollback SQL. It is read-only — it writes a design document, not project files.
+
+## When to use it
+
+- You need a new table or a set of related tables, and want the SQL and the ORM definitions to agree column-for-column.
+- You are adding columns or indexes to an existing table and need to know whether the migration is backward-compatible before it runs.
+- A planning agent flagged database work in a task breakdown and you want the schema settled before implementation starts.
+- You want rollback SQL written up front rather than improvised after a bad migration.
+
+## When not to use it
+
+- You need the migration actually created or applied — that is the implementation agent, then the migration helper.
+- Your project uses MongoDB, DynamoDB, or another non-relational store — this agent designs for PostgreSQL only.
+- You only need query or route-handler code against an existing schema — reach for the API or implementation agents.
+
+## How to invoke
+
+```
+@core:database-designer Design a job_runs table to track individual job executions within pipelines
+```
+
+Address the agent directly and describe the entities and relationships you want. Point it at a context document from an earlier phase if one exists.
+
+## Inputs
+
+- `task_description` — what entities and relationships to design — required.
+- `context_artifact` — path to a context document from an upstream agent — optional.
+- `workspace_path` — the target directory for the output document — optional; it falls back to the task's workspace phase directory.
+
+## What you get back
+
+A Markdown document written to the task's workspace under `phases/03.5-database-design.md`, capped at 500 lines, containing the ER diagram, migration SQL, ORM schema, index strategy table, migration safety notes, and rollback SQL. The final chat message is one line:
+
+```
+DESIGN COMPLETE | Tables: N | Indexes: N | Breaking: YES/NO | Artifact: {path}
+```
+
+## Worked example
+
+```
+@core:database-designer Design a job_runs table to track individual job executions within pipelines
+```
+
+It greps the repository for existing table definitions, checks the highest migration version, then returns a design: a `job_runs` table with a UUID primary key, foreign keys to `pipelines` and `workers`, `created_at`/`updated_at` timestamps, three indexes (one per foreign key plus `status`), the ORM schema mirroring every column, and `DROP TABLE IF EXISTS job_runs;` as rollback. You end up with:
+
+```
+DESIGN COMPLETE | Tables: 1 | Indexes: 3 | Breaking: NO | Artifact: .../phases/03.5-database-design.md
+```
+
+## Related
+
+- `@core:migration-helper` — when the migration already exists and you need it validated or executed.
+- `@core:api-designer` — when the schema is settled and you need the request/response contracts on top of it.
+- `@core:contract-validator` — when you want to check that types stay aligned from schema through to the frontend.

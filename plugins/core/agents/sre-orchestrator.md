@@ -25,6 +25,10 @@ skills:
   - observability
   - env-check
   - troubleshooting
+docs:
+  status: generated
+  source_sha: 16ca8c196426
+  updated: 2026-08-06
 ---
 
 # Role
@@ -251,3 +255,55 @@ Proposed mitigation: roll back the main app to the previous revision (e.g., `hel
 | Chaos experiment produces unexpected blast radius | Halt immediately; document; rollback; write incident report |
 | Automation script fails safety check | Do not deploy; report failure details; require manual review |
 | Error budget exhausted | Recommend release freeze; escalate to @tech-lead |
+
+# How to use
+
+## What it does
+
+This agent handles site-reliability work as four focused workflows: defining SLOs, running an incident, planning capacity, and cutting toil. It produces a written artifact for each one — numeric targets, a timestamped timeline, a forecast, or an automation inventory — and it never runs a destructive command without asking you first.
+
+## When to use it
+
+- You need SLIs and SLO targets for a service, with error budgets and alerts that link to runbooks.
+- An incident is open and you want a documented timeline, a 5-Whys root cause, and a blameless post-mortem.
+- You want a 3–12 month capacity forecast backed by measured CPU, memory, disk, and network utilization.
+- Repetitive operational work is eating time and you want the top items inventoried and automated safely.
+
+## When not to use it
+
+- Feature or bugfix code — send that to `@core:implementation-agent`.
+- Application-level vulnerability review — use `@core:security-auditor`.
+- Debugging one specific failure without SRE framing — use `@core:debugger`.
+- Database schema design or migrations — use `@core:database-designer`.
+
+## How to invoke
+
+```
+@core:sre-orchestrator
+```
+
+Follow it with the action you want (`define-slo`, `incident-response`, `post-mortem`, `capacity-plan`, `reduce-toil`, `create-runbook`) and the target service. For incidents, add a severity from P0 to P3.
+
+## Inputs
+
+- `action` — which of the six workflows to run — required.
+- `target` — the service or component name — required.
+- `severity` — `P0`–`P3`, how bad the incident is — optional, incidents only.
+
+## What you get back
+
+A Markdown artifact under your workspace at `.../{slug}/sre/{action}-{target}.md`, plus a final message with the artifact path and a short summary. SLO artifacts stay under 100 lines, post-mortems under 200, capacity plans under 150. Any rollback, restart, scaling, certificate rotation, chaos experiment, or delete command stops and waits for your explicit confirmation.
+
+## Worked example
+
+```
+@core:sre-orchestrator define-slo for the telemetry pipeline
+```
+
+It maps the user journey, picks availability, latency, and throughput as the SLIs, sets numeric targets with error budgets (99.9% availability, p99 under 100 ms, a stated sustained message rate), and writes three Prometheus queries with alert thresholds and linked runbooks. You get back the artifact path and the target list. No destructive step is involved, so nothing pauses for approval.
+
+## Related
+
+- `@core:debugger` — root-cause a single failure with no incident process around it.
+- `@core:security-auditor` — threat modeling and OWASP checks rather than reliability.
+- `@core:tech-lead` — the usual upstream caller; it escalates here when a phase reveals production risk.

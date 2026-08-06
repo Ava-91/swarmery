@@ -100,6 +100,21 @@ if (fm === null) {
 }
 const body = fm.body.replace(/\r\n/g, '\n');
 const sc = scanLines(body);
+
+// Refuse BEFORE the model is called. Appending a guide to a body whose fence
+// never closed lands it inside that fence, where §5.1 says no parser may see it:
+// the generator reports WROTE, the gate reports a missing guide, and the text is
+// sitting right there in the file. Producing documentation that is invisible by
+// construction is worse than producing none, so this is a hard stop — and
+// --force is deliberately not an escape hatch, because the result is identical.
+if (sc.fenceOpenAtEnd) {
+  console.error(
+    'generate: ' + brief.path + ' — body ends inside an unclosed fenced block; a guide ' +
+      'appended here would be invisible to the docs scanner. Close the fence, then re-run.'
+  );
+  process.exit(2);
+}
+
 const gaps = coverageProblems(sc);
 const current = brief.fm_docs && brief.fm_docs.source_sha === brief.body_sha;
 

@@ -3,6 +3,10 @@ name: infrastructure-as-code
 description: "Use this skill when a task involves detecting config drift between live cluster state and code, capturing manual kubectl/psql/gcloud fixes into Helm values or Terraform, preparing populated values files, or verifying a fresh deploy would succeed from code alone. Don't use it for Helm template authoring (use helm-chart-expert) or migration safety checks (use migration-check)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: 0d9d2e7c1934
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -232,3 +236,58 @@ helm upgrade <infra-release> . -f values.<envAlias>.populated.yaml -n "$NAMESPAC
 - `kubernetes-deployment` -- **defer** to it for k8s cluster operations and the bootstrap-secret pattern (missing secrets); **compose** when drift involves a secret that does not exist at all (vs wrong value)
 - `migration-check` -- **defer** to it for migration safety; **compose** when a manual SQL fix needs to be captured as a migration script
 - `keycloak` -- **defer** to it for Keycloak realm/client configuration; **compose** when Keycloak Helm values drift is detected
+
+# How to use
+
+## What it does
+
+This skill keeps your infrastructure honest: everything a fresh deploy needs must live in code, not in someone's shell history. It compares live cluster and cloud state against what your Helm values, Terraform files, and migration scripts actually say, then tells you exactly which file and key to update so the manual fix survives the next deploy.
+
+## When to use it
+
+- Someone ran `kubectl patch`, `helm --set`, or a console change during an incident, and you need it captured in code before it gets reverted.
+- You are bringing up a new environment and want proof a clean deploy would succeed from the repository alone.
+- A Kubernetes Secret holds a literal `$VARIABLE_NAME` string instead of the real value, and services cannot authenticate.
+- You need to regenerate a populated values file and confirm the render and dry-run both pass.
+
+## When not to use it
+
+- Writing or debugging Helm chart templates — use `helm-chart-expert`.
+- Checking migration safety or schema alignment — use `migration-check`.
+- Cluster operations on edge devices, or a Secret that is missing entirely rather than wrong — use `kubernetes-deployment`.
+- Realm and client configuration for your identity provider — use `keycloak`.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:infrastructure-as-code")
+```
+
+Invoke it directly, or just describe the drift ("we patched the memory limit by hand yesterday") and it activates on its own.
+
+## Inputs
+
+- `environment` — the target environment name, such as `localdev`, `<envAlias>`, or `prod` — required.
+- `drift_source` — what changed: `helm-override`, `kubectl-patch`, `psql-fix`, `gcp-console`, or `terraform-drift` — optional.
+- `values_file` — path to the template values file, e.g. `values.<envAlias>.yaml` — optional.
+
+## What you get back
+
+A drift report table (max 40 lines) with one row per divergence: resource, live value, code value, the `file:key` to change, and the action. Below it, a verification block showing pass or fail for `helm template`, `helm upgrade --dry-run`, and `terraform plan`, plus a HIGH/MEDIUM/LOW confidence label with its rationale. For post-incident work you get a short checklist of files and keys to update instead.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:infrastructure-as-code")
+
+> Redis auth is failing in <envAlias>. The pod env looks fine but the
+> secret seems wrong.
+```
+
+The skill checks the env var is set, has you regenerate the populated values file, and runs `helm upgrade --dry-run` before applying. You end up with a one-row drift report pointing at `values.<envAlias>.yaml:redis.password`, both verification steps passing, and confidence HIGH.
+
+## Related
+
+- `helm-chart-expert` — prefer it when the root cause is a template bug rather than a value that never made it into code.
+- `kubernetes-deployment` — prefer it for the bootstrap-secret pattern when a Secret does not exist at all.
+- `migration-check` — prefer it when a manual SQL fix needs to become a reviewed migration script.

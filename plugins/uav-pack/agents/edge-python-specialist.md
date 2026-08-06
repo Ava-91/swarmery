@@ -14,6 +14,10 @@ skills:
   - embedded-systems
   - code-standards
   - testing
+docs:
+  status: generated
+  source_sha: db4dd7a653dd
+  updated: 2026-08-06
 ---
 
 # Role
@@ -170,3 +174,60 @@ The user wants a WebSocket client with exponential backoff. I should first check
 - **Schema drift**: the edge service sends a field not in the web-portal contract. The schema assertion test catches this.
 - **CPU spike on Pi**: tight loop without `await asyncio.sleep()`. Profile and add cooperative yields.
 - **WebSocket flood**: reconnect loop without backoff. Use exponential backoff with the specified parameters.
+
+# How to use
+
+## What it does
+
+This agent writes the Python that runs on a Raspberry Pi 5 edge device: camera capture with picamera2, WebSocket clients that talk to your web portal, GPIO control, telemetry formatting, and systemd unit files. Every hardware call it writes has a `MOCK_MODE=true` branch, so the code still passes tests on a machine with no Pi attached.
+
+## When to use it
+
+- You need a camera pipeline, GPIO routine, or sensor read implemented in the edge service and it must run in CI without hardware.
+- The edge device's WebSocket connection to the portal needs a reconnect strategy with exponential backoff.
+- Telemetry JSON leaving the device has to match the consumer contract on the portal side, verified by a schema assertion test.
+- A systemd unit for the edge service needs correct restart behaviour after a crash.
+
+## When not to use it
+
+- MAVLink message parsing or protocol-layer work — use `@uav-pack:mavlink-specialist`.
+- WebSocket fan-out past the edge device, or map visualisation — use `@uav-pack:telemetry-processor`.
+- Deploy manifests or container changes for the edge service — use the deployment owner, not this agent.
+- Hardware wiring or electrical faults — escalate to `@tech-lead`; this agent only writes software.
+
+## How to invoke
+
+```
+@uav-pack:edge-python-specialist add a WebSocket client with exponential backoff reconnect
+```
+
+Describe the feature or fix in one line. Add hardware context — GPIO pins, camera resolution, UART settings — if the task depends on it.
+
+## Inputs
+
+- Feature or fix description for the edge service — required.
+- Hardware context (pins, camera config, serial settings) — optional, but it removes guesswork.
+- A step file path to report against — optional.
+
+## What you get back
+
+Python source files and their tests, edited in place, plus a completion report under 30 lines. The report lists each changed file, the result of `MOCK_MODE=true make test`, whether hardware tests ran or were skipped and why, the schema assertion result, and CPU usage on the device when it was measured. Untested hardware paths are marked `[LOW-CONFIDENCE]`.
+
+## Worked example
+
+```
+@uav-pack:edge-python-specialist implement picamera2 capture at 720p with MOCK_MODE fallback
+
+→ reads the existing capture module and its test file together
+→ writes an async capture path; MOCK_MODE returns a synthetic 720p frame
+→ runs MOCK_MODE=true make test (passes in under 30s)
+→ reports: files changed, mock tests pass, hardware tests skipped (no device)
+```
+
+You end up with a capture function that returns a non-empty frame at the configured resolution on real hardware and a synthetic frame everywhere else — with type hints, docstrings, and no bare `except:`.
+
+## Related
+
+- `@uav-pack:embedded-systems` — broader Pi-side work including UART drivers and resource monitoring.
+- `@uav-pack:mavlink-specialist` — the protocol layer above the serial link.
+- `@uav-pack:telemetry-processor` — streaming and fan-out once telemetry leaves the device.

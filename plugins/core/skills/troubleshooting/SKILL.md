@@ -3,6 +3,10 @@ name: troubleshooting
 description: "Debug a specific failure, investigate an incident, analyze error logs, or diagnose connectivity on the project's platform. NOT for proactive instrumentation (use monitoring/observability) or writing tests (use testing)."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: generated
+  source_sha: 268250259d13
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -310,3 +314,67 @@ Save postmortem to the project's incident documentation directory. Do not save t
 - **`resources/common-issues.md`** -- 12+ known issue patterns with verified solutions. Grep for symptom keywords before loading.
 - **`scripts/diagnose.sh`** -- Usage: `scripts/diagnose.sh [namespace]`. Default: `${DEFAULT_NAMESPACE}`.
 - From project root: `.claude/skills/<envAlias>-operations/SKILL.md`, `.claude/commands/` (operational slash commands).
+
+# How to use
+
+## What it does
+
+This skill walks you through a live operational failure on your project's platform — a device that stopped connecting, telemetry missing from the dashboard, a pod stuck pulling an image, a failed deploy job. It searches a bundled catalogue of known issues first, assigns a severity, gathers evidence from logs and cluster state, and proposes recovery commands. It fixes things with operational commands only; it never edits source code, manifests, or deployment values.
+
+## When to use it
+
+- A user reports a concrete symptom: "devices are not connecting", "no telemetry in the UI", "the deploy job failed".
+- A CI pipeline has failed and you need the root cause, not a guess.
+- You need to read service logs and cluster state to explain unexpected behaviour.
+- An incident is live and you need triage, a severity level, and a documented recovery path.
+
+## When not to use it
+
+- Adding metrics, structured logs, or traces — use `monitoring` or `observability`.
+- Writing a test that reproduces the bug — use `testing`.
+- Changing pipeline config or deployment values — use `deployment`.
+- Proactive vulnerability scanning with no failure in hand — use `security-audit`.
+
+## How to invoke
+
+```
+Skill(skill: "core:troubleshooting")
+```
+
+Invoke it as soon as the symptom is stated. It runs its own procedure — known-issue search, triage, diagnosis, resolution — so you do not need to pre-plan the steps.
+
+## Inputs
+
+- **Symptom** — the error message, missing data, or unexpected behaviour you observe. Required.
+- **Environment** — localdev, staging (`<envAlias>`), or production. Optional; inferred from context if omitted.
+- **Severity** — P0 through P3. Optional; the triage step assigns one if you do not.
+
+## What you get back
+
+- A diagnosis under 80 lines, with log excerpts or command output as evidence. Causes that are inferred rather than proven carry a `[SUSPECTED]` prefix, so you can see the confidence level.
+- The recovery commands, listed rather than narrated. Destructive ones (rollback, undo, scaling to zero) are held for your confirmation and preceded by a health snapshot.
+- For P0 and P1 incidents, a postmortem document written to your incident documentation directory — summary, timeline, root cause, action items.
+
+## Worked example
+
+```
+Skill(skill: "core:troubleshooting")
+
+Request: "Device d1 shows as connected but no telemetry reaches the dashboard."
+
+What happens: the bundled known-issues file is grepped for "telemetry" and
+matches "Telemetry Not Appearing" -> main-app logs are read -> the SSE stream
+is probed with curl -> the upstream WebSocket is found refused -> the main app
+is restarted -> telemetry is confirmed flowing again.
+
+You end up with: root cause (the WebSocket to the main app was refused after a
+pod restart), the exact `kubectl rollout restart` that fixed it, and the
+verification output showing telemetry back in the stream.
+```
+
+## Related
+
+- `deployment` — prefer it for pipeline configuration and deployment value changes, including the fix that follows a diagnosis here.
+- `monitoring` — prefer it when you want alerts and metrics that surface a symptom earlier, rather than debugging one now.
+- `observability` — prefer it when the gap is missing logs or traces, not a specific broken service.
+- `testing` — prefer it once the root cause is known and you want a test that prevents the bug returning.

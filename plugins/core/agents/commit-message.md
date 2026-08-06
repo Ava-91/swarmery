@@ -10,6 +10,10 @@ autonomy: semi-auto
 version: 1.0.0
 owner: platform-team
 skills: []
+docs:
+  status: generated
+  source_sha: 85347d079e65
+  updated: 2026-08-06
 ---
 
 # Role
@@ -172,3 +176,60 @@ Closes #42
 - **Empty staging area**: do not fabricate a message. Tell the user to stage files first.
 - **Mixed commit types**: warn and suggest splitting, but proceed if user confirms.
 - **Main branch commit**: warn clearly but do not block -- the user may have a valid reason.
+
+# How to use
+
+## What it does
+
+This agent reads your staged changes and writes a conventional commit message for you — type, scope, emoji, subject, body, and footer. It picks the scope from your project's own list (`.claude/project.json` → commitScopes) so the message fits your repository's conventions instead of a generic guess. It is read-only: it proposes the message and explains its reasoning, then leaves the commit to you.
+
+## When to use it
+
+- You have staged a change and want a well-formed conventional commit message instead of writing one by hand.
+- Your repository uses semantic-release and the subject line has to parse: type first, no emoji prefix, subject under 50 characters.
+- You want a second opinion on whether the staged diff is really one logical change before you commit it.
+
+## When not to use it
+
+- You want the commit actually created — this agent never runs `git commit`; run it yourself, or use a commit command that does.
+- You want a pull-request title and description — reach for `@core:pr-generator`.
+- Nothing is staged yet — stage your files with `git add` first, or the agent will just tell you to.
+
+## How to invoke
+
+```
+@core:commit-message
+@core:commit-message I added device registration with input validation
+```
+
+Call it with no arguments and it works from the staged diff alone. Add a sentence of context when the diff alone would not explain your intent.
+
+## Inputs
+
+- Staged changes — read by the agent via `git diff --cached` — required.
+- Change context — one sentence on what you were doing and why — optional.
+- `.claude/project.json` → commitScopes — your project's scope list; the agent falls back to a generic example table when it is missing — optional.
+
+## What you get back
+
+A single formatted commit message in plain text, plus the list of files in the staged diff and a short explanation of the chosen type, scope, and emoji. You then get three options: commit with the message, adjust it, or cancel. No AI attribution or `Co-Authored-By` line is ever added, and `Closes #N` appears only when the issue number is visible in the diff or you supplied it. The agent warns you if you are on `main`, or if the staged changes look like they mix commit types.
+
+## Worked example
+
+```
+@core:commit-message I added device registration with input validation
+
+→ agent checks the branch and reads the staged diff, then returns:
+
+feat(api): add device registration endpoint with validation
+
+Add POST /api/devices/register with schema-based input validation.
+Includes identifier format check and duplicate detection.
+```
+
+You end up with a message you can paste straight into `git commit`, along with a note that the four staged files all sit under the API layer, which is why the scope is `api`.
+
+## Related
+
+- `@core:pr-generator` — when you need a PR title, description, and review checklist rather than a commit message.
+- `@core:guardrail-checker` — when you want a risk verdict on an action before you run it.

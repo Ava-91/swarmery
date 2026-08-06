@@ -3,6 +3,10 @@ name: run-plan
 description: "EXECUTES an existing @implementation-planner/@task-planner plan -- parses the phase DAG, dispatches per-phase implement+review loops, preserving ASK gates. NOT for creating plans; NOT usable from inside a subagent."
 version: "1.2.0"
 owner: "swarmery-core"
+docs:
+  status: generated
+  source_sha: 6ab5e18010a1
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -193,3 +197,53 @@ same way you own the ticks. A phase without a Completion Report is not done.
 | Context compacted mid-run | ledger has entries you don't remember | Resume from ledger + `git log`; never restart phase 1 |
 | Plan cites files that no longer exist | executor reports drift | Halt phase; send plan back for revision (planner or user) |
 | Phase shipped but its Summary tab is empty | dashboard shows "no summary of the work written" | The doc has no `## Completion Report`; write it now from `reports/phase-<N>-report.md` + the phase's commits — do not leave it for the end of the run |
+
+# How to use
+
+## What it does
+
+Turns a finished plan directory into shipped code. Your main session becomes the controller: it parses the plan's phase graph, picks an execution route, dispatches executor subagents with the plan's own copy-paste prompts, reviews every result, and keeps a durable ledger so a compacted or interrupted session can resume without redoing finished work.
+
+## When to use it
+
+- You have a written plan directory with phase docs and want it executed end to end.
+- The plan has parallel groups, several repositories, or a dependency graph that needs real routing.
+- A previous run stopped partway and you want to pick up from the ledger instead of starting over.
+- The plan needs branch and worktree isolation so concurrent implementers do not overwrite each other.
+
+## When not to use it
+
+- You do not have a plan yet — write one first with a planner agent.
+- You are inside a subagent: subagents cannot spawn subagents, so this must run in the main session.
+- The plan is a flat, strictly sequential step list — hand it whole to the implementation agent instead.
+
+## How to invoke
+
+```
+Skill(skill: "core:run-plan")
+```
+
+Pass the plan directory as the argument. Without one, it finds the newest plan directory under the project workspace and asks you if several look plausible.
+
+## Inputs
+
+- Plan directory — path to a folder holding `README.md` and `phase-N-<slug>.md` docs — optional; inferred when omitted.
+- Your answers to gated questions — branch creation, base-branch pulls, commits, pushes, migrations, and deploys are all surfaced to you — required at those points.
+
+## What you get back
+
+Code on a branch, one reviewed phase at a time. Each phase doc gets its satisfied acceptance-criteria checkboxes ticked and a `## Completion Report` section written into it — that section is the only per-phase summary a dashboard will show. Long-form reports and diffs land under `reports/`, a running event log under `logs/run-ledger.md`, and a `SUMMARY.md` at the task root after the final whole-branch review.
+
+## Worked example
+
+```
+Skill(skill: "core:run-plan") ~/workspace/working/2026/08/06/orders-line-items/plan/
+```
+
+It reads the plan README, derives the phase graph, and sees phases 1 and 2 are independent. It creates a worktree per phase, dispatches both implementers at once, reviews each diff against that phase's acceptance criteria, then merges them in dependency order and runs the plan's verification commands. Phase 3 runs sequentially after. You approve each commit and push. You end with a reviewed branch, ticked checkboxes, a completion report in every phase doc, and cleaned-up worktrees.
+
+## Related
+
+- `core:implementation-planner` and `core:task-planner` — use these to produce the plan this skill consumes.
+- `core:implementation-agent` — prefer it when the plan is a simple sequential step list with no parallel groups.
+- `core:verification-agent` — dispatched automatically for quality-gate phases; invoke it directly for a one-off check.

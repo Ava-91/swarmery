@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 disable-model-invocation: true
 color: teal
+docs:
+  status: generated
+  source_sha: 2125a5dd2def
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -199,3 +203,64 @@ BREAKING CHANGE: NodePort base changed from 30080 to 30100
 
 - `deployment` -- use for pipeline YAML changes; commit messages for pipeline changes use the `ci` type with the infra scope
 - `release-promotion` -- use for promotion flow; version-pin commits use the `chore(versions)` scope
+
+# How to use
+
+## What it does
+
+This skill turns a set of staged changes into a conventional commit message: a `<type>(<scope>): <subject>` subject line, an optional bullet body, and an optional footer. It picks the type from what actually changed, maps the touched files to a scope from the project's own scope list, and keeps the subject under 72 characters in imperative mood. It also refuses to write a message at all when the staged files look like they carry secrets.
+
+## When to use it
+
+- You finished an implementation task, staged the files, and need the commit message.
+- You squashed several commits and need one summary message for the result.
+- You want an existing commit message checked against the project's conventions.
+- Your change spans two repos and you need one correctly scoped message per repo.
+
+## When not to use it
+
+- Writing a git tag or release message — those follow release conventions, not commit conventions.
+- Writing a merge commit message — use the merge request description instead.
+- Writing changelog entries — the changelog format is not the commit format.
+- Just reading `git log` or reviewing history — nothing is being generated.
+
+## How to invoke
+
+```
+Skill(skill: "core:git-commit")
+```
+
+Invoke it once the changes are staged. It reads the staged diff and the target repo, and reads the project's scope list from `.claude/project.json` → `commitScopes`.
+
+## Inputs
+
+- `diff` — the staged diff, or a description of the changes — required.
+- `repo` — which repo the commit targets, which decides the scope — required.
+- `.claude/project.json` → `commitScopes` — the authoritative scope list — optional; illustrative defaults are used when absent.
+
+## What you get back
+
+A commit message string, plus one sentence explaining why that type and scope were chosen. Nothing is written to disk and no git command is run — staging and committing stay yours. If any staged path matches a secret pattern (`.env`, `*.populated.yaml`, `credentials.json`, `*.key`, `*.pem`, `*secret*`), you get a refusal and an instruction to unstage those files instead of a message.
+
+## Worked example
+
+```
+Skill(skill: "core:git-commit")
+
+Staged: apps/<mainApp>/src/orders/line-items.tsx, line-items.test.tsx
+Target repo: the main app
+
+You get back:
+
+feat(app): show per-line-item totals on the orders page
+
+- Add LineItemTotals component with currency formatting
+- Cover empty and single-item states in tests
+
+Type/scope: new user-visible capability in the main app, so feat(app).
+```
+
+## Related
+
+- `deployment` — prefer it for pipeline YAML work; those commits use the `ci` type with the infra scope.
+- `release-promotion` — prefer it for promotion flow work; version-pin commits use the `chore(versions)` scope.

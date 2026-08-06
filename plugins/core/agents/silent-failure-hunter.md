@@ -15,6 +15,10 @@ skills:
   - code-standards
   - code-quality
   - troubleshooting
+docs:
+  status: generated
+  source_sha: f93822d32ac0
+  updated: 2026-08-06
 ---
 
 # Role
@@ -239,3 +243,62 @@ Delegated: @implementation-agent (11 findings), @react-specialist (4), @tech-lea
 - **Silent audit**: findings exist but artifact not written -- prevented by process step 5 (write artifact before emitting chat summary)
 - **Orphaned findings**: findings reported but no agent delegated for fix -- prevented by mandatory delegation step with artifact path in message
 - **Severity inflation**: marking every finding as CRITICAL to seem thorough -- prevented by 5-tier scale with definitions and examples per tier
+
+# How to use
+
+## What it does
+
+This agent reads through code hunting for errors that vanish without a trace — empty catch blocks, `.catch(() => [])` fallbacks that hide API failures, floating promises, missing error boundaries. It never edits anything. It writes a severity-ranked findings report to disk and hands each finding to the agent that should fix it.
+
+## When to use it
+
+- A feature "works" but users report wrong or empty data with no error shown.
+- Before a release, when you want to know which failures your code hides.
+- After inheriting a codebase and you need to see where errors get swallowed.
+- Auditing device or telemetry handlers, where a swallowed error has real-world consequences.
+
+## When not to use it
+
+- You want the fixes applied, not just found — this agent is read-only; the fix agents it delegates to do the editing.
+- You are chasing one specific bug you can already reproduce — reach for `@core:debugger`.
+- You want complexity metrics or style violations — use the `code-quality` skill.
+- You want an OWASP or threat-model pass — use `@core:security-auditor`.
+
+## How to invoke
+
+```
+@core:silent-failure-hunter scope: "full"
+```
+
+Pass a scope, and optionally a `focus` path to narrow the scan to one module.
+
+## Inputs
+
+- `scope` — what to scan: the main app, the device or edge repo, or `full` for both. Required.
+- `focus` — a module or file pattern such as `src/telemetry/`. Optional; narrows the scan.
+
+## What you get back
+
+A findings report saved under your workspace as `phases/05-audit-findings.md`, containing a summary count, a Scan Coverage section listing what was scanned and what was skipped, and findings grouped by severity — SAFETY, CRITICAL, HIGH, MEDIUM, LOW. Every finding carries file and line, how it was found, and a before/after fix snippet. In chat you get a three-line summary only: totals, the artifact path, and which agents were given the fixes. SAFETY and CRITICAL findings are escalated for prioritization.
+
+## Worked example
+
+```
+@core:silent-failure-hunter scope: "full" focus: "src/telemetry/"
+
+→ scans 7 categories, writes 05-audit-findings.md, then replies:
+
+Silent failure audit complete for apps/<mainApp>.
+Findings: 1 SAFETY, 3 CRITICAL, 7 HIGH, 4 MEDIUM, 2 LOW (17 total)
+Artifact: …/phases/05-audit-findings.md
+Delegated: 11 findings to the implementation agent, 4 to the React
+specialist, 1 SAFETY flagged for prioritization.
+```
+
+You end up with a file you can work through finding by finding, and fix work already routed.
+
+## Related
+
+- `@core:code-auditor` — a broader risk-ordered audit of an inherited system, not just error handling.
+- `@core:debugger` — when you have one reproducible failure and need its root cause.
+- `@core:security-auditor` — when the concern is vulnerabilities rather than hidden errors.

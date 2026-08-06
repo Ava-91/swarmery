@@ -3,6 +3,10 @@ name: aws-cicd-auth
 description: "Configure and review AWS auth for GitHub Actions CI/CD — OIDC role assumption, ECR push perms, ECS deploy perms, least-privilege IAM. Not for application IAM/Cognito, not for GCP."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: generated
+  source_sha: b4133a319aa1
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -266,3 +270,64 @@ Fix: detach both managed policies; attach the inline least-privilege policy from
 - `github-actions-cicd` — overall workflow/pipeline structure (triggers, jobs, concurrency, build matrix). Use it for everything around the auth stanza; use this skill for the auth stanza + IAM itself.
 - `docker-build` — image build, tag, and `docker push` mechanics after ECR login. This skill stops at "you can authenticate to ECR"; docker-build owns the image.
 - `security-audit` — review least-privilege IAM policies and the trust-policy `sub` scoping; pair with it whenever a trust-policy change widens who can deploy.
+
+# How to use
+
+## What it does
+
+This skill sets up and reviews how your GitHub Actions workflows sign in to AWS to push images and trigger deploys. The pattern is keyless: the workflow trades a short-lived OIDC token for temporary credentials by assuming an IAM role, so no long-lived access keys live in repo secrets. You get the workflow auth stanza, the trust policy, and the permission policy as one coherent set.
+
+## When to use it
+
+- A new repo or service needs to push to a container registry and deploy a container service from CI.
+- You are writing or auditing the IAM trust policy — the `sub` and `aud` conditions that decide which repo and branch may assume the role.
+- You are tightening a CI role that has broad managed policies attached and needs least-privilege scoping instead.
+- A deploy fails with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, a registry `denied`, or an `AccessDenied` on the service update.
+
+## When not to use it
+
+- Pipeline structure — job order, triggers, concurrency, build matrix — belongs to `github-actions-cicd`.
+- Image build, tag, and push mechanics belong to `docker-build`; this skill stops once you can authenticate.
+- Runtime task roles, application IAM, and end-user auth are out of scope; this covers CI identity only.
+- Any non-AWS cloud — for another provider's CI auth, use that provider's skill.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:aws-cicd-auth")
+```
+
+Invoke it directly, or just describe the task ("wire OIDC auth for the deploy workflow") and the skill is selected for you.
+
+## Inputs
+
+- Target repo (`OWNER/REPO`) — scopes the trust policy `sub` — required.
+- Branch or environment allowed to deploy — required.
+- Registry repository name, cluster name, service name — required.
+- Region — must match the region in the resource ARNs — required.
+- Existing role ARN — only if you are extending a role instead of creating one — optional.
+
+## What you get back
+
+The workflow auth stanza (`permissions:` plus the pinned credentials step), the trust policy JSON, the least-privilege permission policy JSON, the list of secrets to set with their non-secret values, and a verification step whose output proves which role was assumed. Combined policy and YAML output stays under 120 lines — a longer policy is a sign it stopped being least-privilege.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:aws-cicd-auth")
+
+Request: "The admin repo needs to deploy to its own service from GitHub Actions."
+
+You get back:
+  - a dedicated role, not a widened `sub` on the existing one
+  - trust policy sub: repo:<org>/<admin-repo>:ref:refs/heads/main, aud: sts.amazonaws.com
+  - permission policy scoped to that repo's registry ARN and service ARN
+  - the five secrets to set in the admin repo
+  - a verification step: aws sts get-caller-identity
+```
+
+## Related
+
+- `github-actions-cicd` — reach for it for everything around the auth stanza: triggers, jobs, concurrency.
+- `docker-build` — owns the image once you can authenticate to the registry.
+- `security-audit` — pair with it whenever a trust-policy change widens who can deploy.

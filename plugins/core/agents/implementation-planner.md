@@ -15,6 +15,10 @@ skills:
   - context-optimization
   - summary-templates
   - refactor-plan
+docs:
+  status: generated
+  source_sha: 3cb01dd1839a
+  updated: 2026-08-06
 ---
 
 # Role
@@ -192,3 +196,62 @@ Plan written: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/2026/06
 | Plan rejected by tech-lead | Explicit rejection feedback | Incorporate feedback; re-emit (max 2 iterations) |
 | Cannot determine phase breakdown | Insufficient context | Return to @tech-lead requesting Phase 2 re-run with @context-gatherer |
 | Phase count exceeds 10 | Plan too large for single invocation | Split into separate implementation-planner invocations per major phase |
+
+# How to use
+
+## What it does
+
+This agent turns a large, vague piece of work into a plan you can hand straight to executors. It reads the code first, decides the phase breakdown, then writes a plan folder to your private workspace: an overview `README.md`, a machine-readable `manifest.json`, and one document per phase. Each phase document carries a copy-paste prompt that an executor agent can run without reading anything else. It never writes code.
+
+## When to use it
+
+- The task is bigger than a week of work and spans more than three phases of code changes.
+- The change touches several repositories and you need the merge order and dependencies written down.
+- You want a plan that another agent can execute phase by phase, with measurable acceptance criteria and a final quality gate.
+- A previous plan was rejected in review and you want it re-cut with the feedback folded in.
+
+## When not to use it
+
+- The task fits inside a week — use `@core:task-planner`, which produces a lighter plan.
+- You already have a plan and want it run — use the `run-plan` skill.
+- You want the code written, not planned — use `@core:implementation-agent`.
+- You need the full nine-phase orchestration around the plan — start with `@core:tech-lead`.
+
+## How to invoke
+
+```
+@core:implementation-planner create a detailed plan for <task>
+Context: <what the change spans>
+Constraints: <timeline, compatibility, team>
+```
+
+Type `@core:implementation-planner` followed by the task, then add any context and constraints on their own lines. It also runs as a subagent when a lead agent routes planning work to it.
+
+## Inputs
+
+- `task_description` — what needs to be built or migrated — required.
+- `constraints` — timeline, technology, or team limits that shape the phasing — optional but strongly recommended.
+- `context` — a reference to an earlier context-gathering artifact — optional.
+- `task_id` — the workspace task identifier the plan folder is filed under — optional.
+
+## What you get back
+
+A plan tree written to `<workspace>/<project>/workspace/working/{YYYY}/{MM}/{DD}/{slug}/plan/`. It contains `README.md` (objective, architecture decisions with real file paths, a phase sequencing table, critical path, risks, Definition of Done, and a list of every file read), `manifest.json` mirroring that table as a dependency graph, and `phase-N-<slug>.md` for each phase. The last phase is always a quality gate. Nothing inside your code repository is touched. The final chat message is one line: `Plan written: {path} | {N} phases, {L} total lines`.
+
+## Worked example
+
+```
+@core:implementation-planner create a detailed plan for the overlay network migration
+Context: spans the main app, the device service, and the infrastructure repo
+Constraints: must stay backward compatible during rollout
+
+→ Plan written: <workspace>/<project>/workspace/working/2026/06/10/overlay-network-migration/plan/ | 5 phases, 720 total lines
+```
+
+You end up with five phase documents — audit, foundation, incremental migration, testing, deployment — each with an executable prompt and tickable acceptance criteria.
+
+## Related
+
+- `@core:task-planner` — the same shape of output for tasks under a week.
+- `@core:tech-lead` — reviews this plan before implementation starts and routes the executors.
+- `@core:implementation-agent` — consumes a finished plan and writes the code.

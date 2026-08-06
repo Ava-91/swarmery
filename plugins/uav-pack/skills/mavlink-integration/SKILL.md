@@ -4,6 +4,10 @@ description: "Use this skill when a task involves MAVLink protocol communication
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Bash, Grep, Glob
+docs:
+  status: generated
+  source_sha: a12b075c166f
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -322,3 +326,61 @@ In code, check `MOCK_MODE` before attempting hardware access (see `connect()` me
 - The project's deployment workflow -- defer for deploying edge service pods to k3s on Raspberry Pi; `MAVLINK_CONNECTION` and `MOCK_MODE` env vars are set in Helm values there
 - `embedded-systems` -- defer for RPi hardware config (GPIO, UART enable, camera); compose when UART device path needs to be determined
 - `code-standards` -- follow its Python section for type hints, specific exceptions, and `MOCK_MODE` patterns
+
+# How to use
+
+## What it does
+
+This skill produces MAVLink code for talking to a drone from an edge service in Python. It covers pymavlink connection strings for serial, UDP, and TCP, async patterns that wrap blocking pymavlink calls in `asyncio.to_thread`, telemetry message parsing, ArduPilot SITL setup, and a mock mode so tests run without hardware. It also encodes the mistakes that bite here — wrong message names, missing imports, leaked heartbeat tasks.
+
+## When to use it
+
+- You are opening a pymavlink connection over UART, UDP to a simulator, or TCP.
+- You are parsing telemetry — `HEARTBEAT`, `GLOBAL_POSITION_INT`, `ATTITUDE`, `GPS_RAW_INT`.
+- You are writing an async MAVLink reader or writer with a heartbeat loop and clean shutdown.
+- You are setting up ArduPilot SITL locally, or need a hardware-free mode for CI.
+
+## When not to use it
+
+- Raw serial driver code with no MAVLink framing — use `embedded-systems`.
+- Streaming telemetry onward to a browser over WebSocket or SSE — use `api-integration`.
+- Building or pushing container images for the service — use `docker-build`.
+- Diagnosing a failing pod or deployment rather than the protocol — use `troubleshooting`.
+
+## How to invoke
+
+```
+Skill(skill: "uav-pack:mavlink-integration")
+```
+
+Invoke it before writing the MAVLink code, then state the connection type, the connection string, and whether mock mode is on.
+
+## Inputs
+
+- `connection_type` — one of `uart`, `udp`, `tcp` — required.
+- `connection_string` — a pymavlink string such as `udp:127.0.0.1:14550` — required.
+- `message_types` — the MAVLink message names you want to read — optional; defaults to a heartbeat-only connection.
+
+## What you get back
+
+Python code with type hints and specific exception handling: a connection-manager class of up to about 100 lines, or a telemetry-parsing snippet of up to about 30, or SITL setup commands. The code reads its connection string from an environment variable rather than hard-coding a device path, sends heartbeats at 1 Hz, handles `asyncio.CancelledError`, and closes the connection on stop. You also get a short note on the dialect assumed and any baud rate or device path you may need to adjust.
+
+## Worked example
+
+```
+Skill(skill: "uav-pack:mavlink-integration")
+
+You ask: "Read GPS position from SITL and push it into the telemetry queue."
+
+You get back: a reader that connects to udp:127.0.0.1:14550, waits for the
+first HEARTBEAT to confirm the link, then reads GLOBAL_POSITION_INT (#33) and
+scales the fields — lat and lon by 1e7, alt by 1000 — into a plain dict.
+The skill flags that GPS_POSITION is not a real message name, so recv_match
+on it would return None forever.
+```
+
+## Related
+
+- `embedded-systems` — reach for it when the question is the hardware itself: enabling UART, GPIO, or finding the right device path.
+- `api-integration` — reach for it when the MAVLink data has to leave the device and reach a browser.
+- `code-standards` — its Python section is the style the generated code follows.

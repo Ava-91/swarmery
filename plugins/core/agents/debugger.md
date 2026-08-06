@@ -16,6 +16,10 @@ skills:
   - troubleshooting
   - observability
   - env-check
+docs:
+  status: generated
+  source_sha: e5e209dd4553
+  updated: 2026-08-06
 ---
 
 # Role
@@ -247,3 +251,59 @@ This agent can drive a real browser through the Playwright MCP tools (`mcp__plug
 - `browser_run_code_unsafe` / `browser_evaluate` run arbitrary JS -- handy for probing page state during diagnosis, but authorized local/staging targets only, never production.
 - Always `browser_close` when finished.
 - The browser confirms the repro and the fix; a regression test (per Phase 6) is still required.
+
+# How to use
+
+## What it does
+
+This agent hunts down the cause of a bug and fixes it, rather than papering over the symptom. It triages severity, gathers evidence, forms and tests one hypothesis at a time, applies the smallest change that works, adds a regression test, and runs the full verification suite. It records the current commit SHA before touching anything, so a bad fix can be reverted cleanly.
+
+## When to use it
+
+- You have a concrete error — a stack trace, a failing test, a wrong value on screen — and you want it diagnosed and fixed, not just explained.
+- A bug only shows up sometimes, and you need someone to collect enough failure examples to find the race or timing pattern.
+- A frontend defect needs to be reproduced live in a browser, with the console and network state captured at the moment it breaks.
+- A defect was found during other work and you want it closed out with a test that would have caught it.
+
+## When not to use it
+
+- The build or type-check is broken and nothing else is — reach for `@core:build-error-resolver` for a minimal-diff fix.
+- A CI pipeline is failing but the code works locally — that belongs to `@core:ci-incident-responder`.
+- You suspect a widespread pattern of swallowed errors rather than one defect — use `@core:silent-failure-hunter`.
+- The problem is in a device protocol or embedded layer — delegate to the specialist in the enabled domain pack.
+
+## How to invoke
+
+```
+@core:debugger investigate TypeError: Cannot read property 'lat' of undefined in the telemetry map
+```
+
+Mention the agent and describe the defect. Give it the exact error text, and the file, environment, or repo path if you know them.
+
+## Inputs
+
+- **Bug description** — the exact error message, stack trace, file and line, and which environment it happened in — required.
+- **`scope`** — the affected repo path, for example `apps/<mainApp>` — optional but narrows the search.
+- **`Reference:`** — a path to a step or phase file, so the completion report lands in the right place — optional.
+
+## What you get back
+
+Edited source files, a regression test that fails without the fix and passes with it, and a completion report under 30 lines. The report names the root cause in one line, gives a severity from P0 to P3, lists each changed file and what changed in it, names the regression test, and states whether the full suite passed. An uncertain diagnosis is flagged `[LOW-CONFIDENCE]`. If the fix touches more than five files, the report justifies the scope.
+
+## Worked example
+
+```
+@core:debugger fix intermittent WebSocket disconnects in orders/line-items on staging
+
+→ collects 5+ failure examples before concluding, records `git rev-parse HEAD`,
+  finds the reconnect timer is cleared but never re-armed after a 1006 close,
+  applies a 3-line fix, adds a test that reproduces the 1006 path,
+  runs typecheck + build + test
+← completion report: root cause, P1, 2 files changed, regression test named, suite passing
+```
+
+## Related
+
+- `@core:test-writer` — when the regression test itself is complex enough to need its own design.
+- `@core:quality-checker` — when you want the fix reviewed rather than found.
+- `@core:performance-optimizer` — when nothing is broken but something is slow.
