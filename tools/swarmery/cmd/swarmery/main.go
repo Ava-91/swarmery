@@ -35,6 +35,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/advisor"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/api"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/cost"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/economics"
@@ -228,7 +229,7 @@ func defaultProjectsRoots() []string {
 			// An auto scan that finds nothing falls through to the plain
 			// default so failures name a concrete path ("~/.claude/projects
 			// does not exist") instead of an empty list.
-			if roots := globClaudeProjectsRoots(); len(roots) > 0 {
+			if roots := claudeacct.ProjectsRoots(); len(roots) > 0 {
 				return roots
 			}
 		} else if roots := splitRoots(v); len(roots) > 0 {
@@ -248,25 +249,6 @@ func defaultClaudeProjectsRoot() string {
 		return ".claude/projects"
 	}
 	return home + "/.claude/projects"
-}
-
-// globClaudeProjectsRoots discovers every Claude Code config dir's transcript
-// tree under $HOME — ~/.claude/projects plus each ~/.claude-<account>/projects
-// a CLAUDE_CONFIG_DIR setup creates. Only existing directories survive; Glob
-// already returns sorted matches, so the order is stable across runs.
-func globClaudeProjectsRoots() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	matches, _ := filepath.Glob(filepath.Join(home, ".claude*", "projects"))
-	var roots []string
-	for _, m := range matches {
-		if fi, err := os.Stat(m); err == nil && fi.IsDir() {
-			roots = append(roots, m)
-		}
-	}
-	return roots
 }
 
 // splitRoots parses a comma-separated roots list: blanks dropped, order kept,
