@@ -42,9 +42,9 @@ Takes a plan directory that a planner already produced and executes it end to en
 
 ## When not to use it
 
-- The plan does not exist yet — run `@implementation-planner` or `@task-planner` first.
-- You want re-planning, a pre-mortem, and the full quality-gate panel around the work — use `@tech-lead` instead.
-- The plan is a strictly sequential `step-NN` plan — `@implementation-agent` in Plan-execution mode is the lighter single-agent path.
+- The plan does not exist yet — run `@core:implementation-planner` or `@core:task-planner` first.
+- You want re-planning, a pre-mortem, and the full quality-gate panel around the work — use `@core:tech-lead` instead.
+- The plan is a strictly sequential `step-NN` plan — `@core:implementation-agent` in Plan-execution mode is the lighter single-agent path.
 
 ## How to invoke
 
@@ -77,6 +77,6 @@ asking whether to commit.
 
 ## Related
 
-- `@implementation-planner` and `@task-planner` — produce the plan this command consumes.
-- `@tech-lead` — prefer it when the work still needs planning and full quality gates, not just execution.
-- `@implementation-agent` — the single-agent alternative for a strictly sequential plan.
+- `@core:implementation-planner` and `@core:task-planner` — produce the plan this command consumes.
+- `@core:tech-lead` — prefer it when the work still needs planning and full quality gates, not just execution.
+- `@core:implementation-agent` — the single-agent alternative for a strictly sequential plan.

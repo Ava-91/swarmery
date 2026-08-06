@@ -208,9 +208,9 @@ This agent runs the test suites that already exist in your project and tells you
 
 ## When not to use it
 
-- You need new tests written or an existing test fixed — that is `@test-writer`.
-- You want a build/typecheck/lint/security verdict, not just tests — use `@verification-agent`.
-- A single failure needs deep interactive investigation — hand it to `@debugger`.
+- You need new tests written or an existing test fixed — that is `@core:test-writer`.
+- You want a build/typecheck/lint/security verdict, not just tests — use `@core:verification-agent`.
+- A single failure needs deep interactive investigation — hand it to `@core:debugger`.
 - You are looking for untested areas before any code exists — use the `test-coverage` command.
 
 ## How to invoke
@@ -219,7 +219,7 @@ This agent runs the test suites that already exist in your project and tells you
 @core:test-runner Run the test suite for apps/<mainApp> with coverage
 ```
 
-Call it directly for a local run, or let `@tech-lead` dispatch it as the Phase 5 quality gate. It resolves repos and test commands from `.claude/project.json`, so you do not have to name them.
+Call it directly for a local run, or let `@core:tech-lead` dispatch it as the Phase 5 quality gate. It resolves repos and test commands from `.claude/project.json`, so you do not have to name them.
 
 ## Inputs
 
@@ -248,11 +248,11 @@ It runs `npm run test -- --coverage` under a 300-second timeout, parses the resu
 TESTS: FAIL | Total: 45 | Passed: 43 | Failed: 2 | Skipped: 0 | Coverage: 72% | Artifact: <workspace>/phases/05-tests.md
 ```
 
-The artifact names the two failures with their classification, and flags the coverage gap: `orders/line-items.ts` at 45% against a 70% target, with a recommendation to delegate those files to `@test-writer`.
+The artifact names the two failures with their classification, and flags the coverage gap: `orders/line-items.ts` at 45% against a 70% target, with a recommendation to delegate those files to `@core:test-writer`.
 
 ## Related
 
-- `@test-writer` — writes the missing tests this agent's gap report identifies.
-- `@verification-agent` — the deterministic gate covering build, typecheck, lint, and security alongside tests.
-- `@debugger` — root-cause work on a failure this agent could only classify.
-- `@implementation-agent` — owns fixing the implementation bugs the report surfaces.
+- `@core:test-writer` — writes the missing tests this agent's gap report identifies.
+- `@core:verification-agent` — the deterministic gate covering build, typecheck, lint, and security alongside tests.
+- `@core:debugger` — root-cause work on a failure this agent could only classify.
+- `@core:implementation-agent` — owns fixing the implementation bugs the report surfaces.

@@ -164,7 +164,7 @@ HOOK SKIPPED: reason=no change signals (no Edit/Write/git-commit calls in sessio
 
 ## What it does
 
-This agent watches a working session and decides one thing: has a task actually finished, and does it deserve a documentation entry? When both a change signal (an edit, a write, a commit) and a completion signal (an agent reporting done, or you saying "ship it") are present, it hands a filled-in context payload to `@task-documenter`. It never writes the documentation itself — it only detects and delegates, so the documenter does not have to re-read the whole session to reconstruct what changed.
+This agent watches a working session and decides one thing: has a task actually finished, and does it deserve a documentation entry? When both a change signal (an edit, a write, a commit) and a completion signal (an agent reporting done, or you saying "ship it") are present, it hands a filled-in context payload to `@core:task-documenter`. It never writes the documentation itself — it only detects and delegates, so the documenter does not have to re-read the whole session to reconstruct what changed.
 
 ## When to use it
 
@@ -174,7 +174,7 @@ This agent watches a working session and decides one thing: has a task actually 
 
 ## When not to use it
 
-- You want the documentation written now — call `@task-documenter` directly instead.
+- You want the documentation written now — call `@core:task-documenter` directly instead.
 - The session was read-only or exploratory; this agent will correctly skip, so there is nothing to gain.
 - You need a full task report with metrics — reach for the summary generator.
 
@@ -193,7 +193,7 @@ Call it after a change-producing task reports complete. It runs in the backgroun
 
 ## What you get back
 
-One decision line, then either nothing or a delegation. On a fire: `HOOK FIRED: task={id}, trigger={condition}, files={count}` followed by a structured call to `@task-documenter` carrying task_id, phase, trigger, files_modified, files_created, and agent. On a skip: `HOOK SKIPPED: reason={reason}`. If the documenter does not confirm within three turns, you get a one-line warning telling you to check the workspace by hand — the gap is surfaced, never swallowed.
+One decision line, then either nothing or a delegation. On a fire: `HOOK FIRED: task={id}, trigger={condition}, files={count}` followed by a structured call to `@core:task-documenter` carrying task_id, phase, trigger, files_modified, files_created, and agent. On a skip: `HOOK SKIPPED: reason={reason}`. If the documenter does not confirm within three turns, you get a one-line warning telling you to check the workspace by hand — the gap is surfaced, never swallowed.
 
 ## Worked example
 
@@ -203,7 +203,7 @@ One decision line, then either nothing or a delegation. On a fire: `HOOK FIRED: 
 # after an implementation agent edits two files and creates one:
 HOOK FIRED: task=task-2026-05-25-001, trigger=implementation-agent reported complete, files=3
 
-@task-documenter document task
+@core:task-documenter document task
   task_id: task-2026-05-25-001
   phase: 4
   trigger: implementation-agent reported complete
@@ -212,7 +212,7 @@ HOOK FIRED: task=task-2026-05-25-001, trigger=implementation-agent reported comp
     - apps/<mainApp>/src/lib/actions/orders.ts
   files_created:
     - apps/<mainApp>/src/lib/validation/orders.ts
-  agent: @implementation-agent
+  agent: @core:implementation-agent
 ```
 
 You end up with a documentation entry in the working task folder, written by the documenter from a payload it did not have to guess at.

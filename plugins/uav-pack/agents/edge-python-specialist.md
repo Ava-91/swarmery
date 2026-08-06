@@ -193,7 +193,7 @@ This agent writes the Python that runs on a Raspberry Pi 5 edge device: camera c
 - MAVLink message parsing or protocol-layer work — use `@uav-pack:mavlink-specialist`.
 - WebSocket fan-out past the edge device, or map visualisation — use `@uav-pack:telemetry-processor`.
 - Deploy manifests or container changes for the edge service — use the deployment owner, not this agent.
-- Hardware wiring or electrical faults — escalate to `@tech-lead`; this agent only writes software.
+- Hardware wiring or electrical faults — escalate to `@core:tech-lead`; this agent only writes software.
 
 ## How to invoke
 

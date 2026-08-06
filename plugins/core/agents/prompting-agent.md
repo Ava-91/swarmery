@@ -217,7 +217,7 @@ This agent turns a plan into a prompt another agent can execute without asking y
 Feature: <what needs to be built>
 Context: <path to the phase-2 context artifact>
 Complexity: Simple | Medium | Complex
-Target Agent: @implementation-agent
+Target Agent: @core:implementation-agent
 ```
 
 Address the agent directly and give it the four inputs below in the same message.
@@ -241,10 +241,10 @@ A markdown file under the task's `artifacts/prompts/` directory, plus a pointer 
 Feature: Add create, read, update, delete for order line items
 Context: <task-dir>/phases/02-context.md
 Complexity: Medium
-Target Agent: @implementation-agent
+Target Agent: @core:implementation-agent
 ```
 
-The agent reads the context file, searches for existing route handlers, validation schemas, and auth checks, then writes the prompt with each example citing a real `file:line`. You get back a line like `Prompt written: <task-dir>/artifacts/prompts/implementation-agent-prompt.md | ~1800 tokens | Target: @implementation-agent | All 9 sections complete`, and the executor can start without a follow-up question.
+The agent reads the context file, searches for existing route handlers, validation schemas, and auth checks, then writes the prompt with each example citing a real `file:line`. You get back a line like `Prompt written: <task-dir>/artifacts/prompts/implementation-agent-prompt.md | ~1800 tokens | Target: @core:implementation-agent | All 9 sections complete`, and the executor can start without a follow-up question.
 
 ## Related
 

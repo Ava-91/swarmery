@@ -240,10 +240,10 @@ This agent finds out why something is slow, then fixes it without surprising you
 
 ## When not to use it
 
-- You only want a report and no edits — ask for analysis-only mode, or use `@code-auditor`.
-- The bottleneck is schema shape rather than query shape — `@database-designer` owns that.
-- The fix is scaling, provisioning, or service config — that is out of scope; escalate to `@tech-lead`.
-- You want build, lint, and test verdicts after a change — that is `@verification-agent`.
+- You only want a report and no edits — ask for analysis-only mode, or use `@core:code-auditor`.
+- The bottleneck is schema shape rather than query shape — `@core:database-designer` owns that.
+- The fix is scaling, provisioning, or service config — that is out of scope; escalate to `@core:tech-lead`.
+- You want build, lint, and test verdicts after a change — that is `@core:verification-agent`.
 
 ## How to invoke
 

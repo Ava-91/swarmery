@@ -239,10 +239,10 @@ This agent runs your project's quality checks — build, typecheck, lint, tests,
 
 ## When not to use it
 
-- You want the errors fixed, not just reported — send the failures to `@implementation-agent` or `@debugger`.
-- You only need tests run and counted, with no build, lint, or security pass — use `@test-runner`.
-- You want a judgment call on code quality rather than pass/fail commands — use `@quality-checker`.
-- You want a deep vulnerability review instead of a dependency audit — use `@security-auditor`.
+- You want the errors fixed, not just reported — send the failures to `@core:implementation-agent` or `@core:debugger`.
+- You only need tests run and counted, with no build, lint, or security pass — use `@core:test-runner`.
+- You want a judgment call on code quality rather than pass/fail commands — use `@core:quality-checker`.
+- You want a deep vulnerability review instead of a dependency audit — use `@core:security-auditor`.
 
 ## How to invoke
 
@@ -277,11 +277,11 @@ Lint:      0 errors
 Tests:     42/42 passed
 Security:  0 high vulns
 Diff:      3 files, +34 -8 lines
-Next: @implementation-agent fix TypeScript errors in LineItem.tsx and useOrder.ts
+Next: @core:implementation-agent fix TypeScript errors in LineItem.tsx and useOrder.ts
 ```
 
 ## Related
 
-- `@quality-checker` — scores quality with a language-model judge; report-only, not the gate.
-- `@contract-validator` — traces types across the database-to-frontend chain rather than running commands.
-- `@test-runner` — runs test suites alone when you do not need a full gate.
+- `@core:quality-checker` — scores quality with a language-model judge; report-only, not the gate.
+- `@core:contract-validator` — traces types across the database-to-frontend chain rather than running commands.
+- `@core:test-runner` — runs test suites alone when you do not need a full gate.

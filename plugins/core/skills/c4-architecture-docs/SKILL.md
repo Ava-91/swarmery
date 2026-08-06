@@ -278,4 +278,4 @@ plus a rendered .html beside each diagram.
 - **browser-verification** — the render, screenshot, and visual-inspection mechanics this skill leans on for review.
 - **html-reporting** — when you want the narrative wrapped in the canonical report shell.
 - **summary-templates** — for formatting the completion summary once the documentation is filed.
-- **`@architecture-designer`** — the agent that calls this skill for the C4 grammar during its design step.
+- **`@core:architecture-designer`** — the agent that calls this skill for the C4 grammar during its design step.

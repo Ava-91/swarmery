@@ -236,7 +236,7 @@ It takes a task that feels too big to start and turns it into a numbered list of
 
 Task: Add partial refunds to orders/line-items
 Complexity: High
-Context: <findings from @context-gatherer>
+Context: <findings from @core:context-gatherer>
 ```
 
 Give it the task, your sense of the complexity, and any context you already gathered.

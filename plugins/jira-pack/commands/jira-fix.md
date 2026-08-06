@@ -115,7 +115,7 @@ This command is the front door for driving a tracker ticket from a link to a fin
 
 - You only want to read ticket data or list what is assigned to you — use the `jira-tasks` skill.
 - You already know the ticket needs a plan, not a fix attempt — the `jira-escalation` skill covers that path.
-- You want to address the runner directly with your own extra context — call `@jira-task-runner` by name instead.
+- You want to address the runner directly with your own extra context — call `@jira-pack:jira-task-runner` by name instead.
 
 ## How to invoke
 
@@ -133,7 +133,7 @@ Type it in an interactive session, or feed the same line to a headless session's
 
 ## What you get back
 
-If the reference or a flag does not parse, you get a usage error and nothing runs. If it parses, control passes to `@jira-task-runner` with the resolved key, the dry-run state, and the repo value, and the rest of the output — access report, triage verdict, evidence, ticket comment — comes from that agent.
+If the reference or a flag does not parse, you get a usage error and nothing runs. If it parses, control passes to `@jira-pack:jira-task-runner` with the resolved key, the dry-run state, and the repo value, and the rest of the output — access report, triage verdict, evidence, ticket comment — comes from that agent.
 
 ## Worked example
 
@@ -141,10 +141,10 @@ If the reference or a flag does not parse, you get a usage error and nothing run
 /jira-fix https://<jira-base-url>/browse/ABC-123 --dry-run
 ```
 
-The key `ABC-123` is extracted from the path after `/browse/` and matched against the key pattern. It passes, so the command hands `ABC-123` plus the dry-run flag to `@jira-task-runner`. You end up with a full triage — access check, class decision, evidence — and printed request bodies where the writes would have gone.
+The key `ABC-123` is extracted from the path after `/browse/` and matched against the key pattern. It passes, so the command hands `ABC-123` plus the dry-run flag to `@jira-pack:jira-task-runner`. You end up with a full triage — access check, class decision, evidence — and printed request bodies where the writes would have gone.
 
 ## Related
 
-- `@jira-task-runner` — the agent behind this command; address it directly when you want to pass extra context.
+- `@jira-pack:jira-task-runner` — the agent behind this command; address it directly when you want to pass extra context.
 - `jira-config` — the skill that validates the tracker block in project config and resolves the working repo.
 - `jira-triage` — the skill that classifies the ticket and picks one of five verdicts.

@@ -259,7 +259,7 @@ Task: Added CRUD operations for order line items
 Files changed: 3 created, 2 modified
 Metrics: {files: 5, lines: 340, duration: 2d, coverage: 70->82}
 Audience: All
-Next steps: bulk line-item import (owner: @implementation-agent, timeline: Short-term)
+Next steps: bulk line-item import (owner: @core:implementation-agent, timeline: Short-term)
 ```
 
 It classifies this as a feature summary, runs `git log` and `git diff --stat` over the task range to confirm the counts, cites that range under Data Sources, and writes the file. You get back: `Summary written: .../orders/line-items/SUMMARY.md (mirrored to phases/08-summary.md)` and `Type: Feature Summary | Metrics: 7 quantified | Status: COMPLETE`.

@@ -144,5 +144,5 @@ You end up knowing that retrying is pointless and which repository to fix.
 ## Related
 
 - `/env-check` — prefer it for a broad environment configuration snapshot.
-- `@ci-incident-responder` — prefer it when one run has several plausible causes.
+- `@core:ci-incident-responder` — prefer it when one run has several plausible causes.
 - `troubleshooting` skill — fuller treatment of the failure patterns behind this command.
