@@ -376,6 +376,7 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 		Cwd:          acq.Path,
 		Agent:        agent,
 		SettingsFile: repopath.InheritedSettings(info.ProjectPath, info.RepoRoot, acq.Path),
+		ProjectPath:  info.ProjectPath,
 	}
 	if spec.SettingsFile != "" {
 		log.Printf("planrun: plan=%d inheriting project settings %s (worktree is a checkout of %s)",

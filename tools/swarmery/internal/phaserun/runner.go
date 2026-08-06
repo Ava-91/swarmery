@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
@@ -50,6 +51,16 @@ type RunSpec struct {
 	// (see repopath.InheritedSettings). It carries the project's enabled plugins,
 	// permissions and additionalDirectories.
 	SettingsFile string
+
+	// ProjectPath is the phase's project — phaseInfo.ProjectPath (projects.path),
+	// the SAME value SettingsFile is derived from. Used ONLY to resolve the
+	// Claude account this run must execute under: Cwd is the acquired
+	// WORKTREE, which carries no .claude/settings.local.json of its own, so
+	// resolving the account from Cwd here would silently fall back to the
+	// default account — plan A3, extended from dispatch/verify to this spawn
+	// site. "" (no known project path) means no account resolution at all;
+	// see accountEnvFor's guard.
+	ProjectPath string
 }
 
 // Run is the outcome of a completed phase-run process.
@@ -129,6 +140,14 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = spec.Cwd
+	// Account comes from spec.ProjectPath, not from cmd.Dir: cmd.Dir is the
+	// phase's acquired worktree, which has no .claude/settings.local.json of
+	// its own, so claudeacct.EnvFor(cmd.Dir) here would resolve nothing and
+	// silently run the phase under the default account (plan A3). The service
+	// resolves the project path from phaseInfo and puts it in spec.ProjectPath.
+	// nil delta for an unbound/unknown project ⇒ cmd.Env is a byte-identical
+	// copy of os.Environ() — behaviour unchanged from before.
+	cmd.Env = append(os.Environ(), accountEnvFor(spec.ProjectPath)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// Own process group: cancellation/timeout must reach the whole tree, and Wait
@@ -168,6 +187,21 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 	run.ExitCode = 0
 	return run, nil
+}
+
+// accountEnvFor resolves the CLAUDE_CONFIG_DIR env delta for projectPath.
+// Mirrors internal/api/term.go's termAccountEnv (plan A3, extended to this
+// spawn site): claudeacct.Binding joins its argument with
+// ".claude/settings.local.json" unconditionally, so claudeacct.EnvFor("")
+// would resolve that RELATIVE path against the daemon's OWN process working
+// directory and silently bind the run to whatever unrelated settings file
+// happens to sit there. An empty projectPath must short-circuit to nil before
+// EnvFor is ever called.
+func accountEnvFor(projectPath string) []string {
+	if projectPath == "" {
+		return nil
+	}
+	return claudeacct.EnvFor(projectPath)
 }
 
 // tail returns the last <= n bytes of s, trimmed.
