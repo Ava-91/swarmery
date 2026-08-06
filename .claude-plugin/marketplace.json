@@ -60,6 +60,11 @@
       "description": "Issue-tracker pack: /jira-fix drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition. Opt-in; requires core."
     },
     {
+      "name": "accounts-pack",
+      "source": "./plugins/accounts-pack",
+      "description": "Multi-account pack: bind a project to one of several Claude Code accounts and run every session under it — /account, a shell wrapper, an optional shell function, and a wrong-account warning. Opt-in; requires the swarmery CLI."
+    },
+    {
       "name": "design-pack",
       "source": "./plugins/design-pack",
       "description": "Design-handoff pack: /design-implement takes an exported design and re-expresses it in the project's stack pixel-accurately — computed-style token inventory, reuse-vs-create recon, an approval gate, and a measured pixel diff as the completion criterion. Opt-in; requires core."
