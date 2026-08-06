@@ -4,7 +4,7 @@ description: "Configure and review GCP authentication for GitLab CI/CD pipelines
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 7f298c226ea0
   updated: 2026-08-06
 ---

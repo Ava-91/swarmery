@@ -16,7 +16,7 @@ skills:
   - summary-templates
   - refactor-plan
 docs:
-  status: generated
+  status: reviewed
   source_sha: 3cb01dd1839a
   updated: 2026-08-06
 ---

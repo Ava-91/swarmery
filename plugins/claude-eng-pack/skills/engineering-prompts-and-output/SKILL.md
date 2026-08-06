@@ -2,7 +2,7 @@
 name: engineering-prompts-and-output
 description: Use when writing or reviewing system prompts, few-shot examples, structured output via tool use, JSON schema validation with retry loops, Message Batches API processing, or multi-instance/multi-pass review pipelines such as automated PR reviewers. Also when outputs are inconsistent between runs, JSON fails validation, false positives erode reviewer trust, hallucinated fields appear, or self-review keeps missing defects.
 docs:
-  status: generated
+  status: reviewed
   source_sha: cc1f93195328
   updated: 2026-08-06
 ---

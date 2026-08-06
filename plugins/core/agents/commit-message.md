@@ -11,7 +11,7 @@ version: 1.0.0
 owner: platform-team
 skills: []
 docs:
-  status: generated
+  status: reviewed
   source_sha: 85347d079e65
   updated: 2026-08-06
 ---

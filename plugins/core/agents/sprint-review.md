@@ -17,7 +17,7 @@ skills:
   - code-standards
   - monorepo-coordination
 docs:
-  status: generated
+  status: reviewed
   source_sha: d109b63d9e8d
   updated: 2026-08-06
 ---

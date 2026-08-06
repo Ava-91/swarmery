@@ -6,7 +6,7 @@ owner: "swarmery-core"
 disable-model-invocation: true
 color: teal
 docs:
-  status: generated
+  status: reviewed
   source_sha: 2125a5dd2def
   updated: 2026-08-06
 ---

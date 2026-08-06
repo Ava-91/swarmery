@@ -2,7 +2,7 @@
 description: Check environment variables across repos - find missing, unused, or undocumented vars
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4fd6e382fc43
   updated: 2026-08-06
 ---

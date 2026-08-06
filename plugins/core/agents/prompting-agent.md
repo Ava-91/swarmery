@@ -15,7 +15,7 @@ skills:
   - context-optimization
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: 22eacd962834
   updated: 2026-08-06
 ---

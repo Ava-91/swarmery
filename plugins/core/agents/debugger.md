@@ -17,7 +17,7 @@ skills:
   - observability
   - env-check
 docs:
-  status: generated
+  status: reviewed
   source_sha: e5e209dd4553
   updated: 2026-08-06
 ---

@@ -15,7 +15,7 @@ skills:
   - functional-design
   - nextjs-migration
 docs:
-  status: generated
+  status: reviewed
   source_sha: 06761f7a0e86
   updated: 2026-08-06
 ---
@@ -225,10 +225,10 @@ A TypeScript component file, at most 150 lines, under `src/components/{feature}/
 ## Worked example
 
 ```
-@core:ui-designer Create a MissionCard component for the mission list page
+@core:ui-designer Create an OrderCard component for the order list page
 ```
 
-The agent reads `tailwind.config.*` and searches for existing card components in parallel, designs the props interface, applies tokens, and writes the file. It then drives a real browser: resize across 320 / 640 / 768 / 1024 / 1280px, snapshot the accessibility tree, and exercise hover, focus, and keyboard states. You end up with `src/components/missions/MissionCard.tsx` and a line like `COMPONENT COMPLETE | Props: 5 | Variants: 4 | A11y: PASS | Tokens: all from config`.
+The agent reads `tailwind.config.*` and searches for existing card components in parallel, designs the props interface, applies tokens, and writes the file. It then drives a real browser: resize across 320 / 640 / 768 / 1024 / 1280px, snapshot the accessibility tree, and exercise hover, focus, and keyboard states. You end up with `src/components/orders/OrderCard.tsx` and a line like `COMPONENT COMPLETE | Props: 5 | Variants: 4 | A11y: PASS | Tokens: all from config`.
 
 ## Related
 

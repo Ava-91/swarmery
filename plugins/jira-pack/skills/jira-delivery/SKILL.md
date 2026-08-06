@@ -4,7 +4,7 @@ description: "Close the needs-fix branch for both ticket classes: isolated git w
 version: "0.2.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 96adf6ea9003
   updated: 2026-08-06
 ---
@@ -429,7 +429,7 @@ Normally invoked by the ticket-runner agent at the `needs-fix` fork, not typed b
 
 ## What you get back
 
-A branch `fix/<KEY>-<slug>` or `feat/<KEY>-<slug>` living in its own worktree, real commits with the class-matching conventional type and the ticket key in the subject, an open PR linking the ticket, a summary comment on the ticket, and the card moved to the QA status. On budget exhaustion you instead get a handoff to escalation with the branch path and the trigger that fired — and the ticket left untouched.
+A branch `fix/<KEY>-<slug>` or `feat/<KEY>-<slug>` living in its own worktree, real commits with the class-matching conventional type and the ticket key in the subject, an open PR linking the ticket, a summary comment on the ticket, a QA-status transition attempt on the ticket itself, and the board card moved to `in_review`. On budget exhaustion you instead get a handoff to escalation with the branch path and the trigger that fired — and the ticket left untouched.
 
 ## Worked example
 

@@ -22,7 +22,7 @@ skills:
   - code-search
   - nextjs-migration
 docs:
-  status: generated
+  status: reviewed
   source_sha: cbf1cd62868f
   updated: 2026-08-06
 ---

@@ -2,7 +2,7 @@
 description: Quick security audit - find common vulnerabilities and security issues
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: cf5c51719359
   updated: 2026-08-06
 ---

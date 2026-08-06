@@ -14,7 +14,7 @@ skills:
   - summary-templates
   - code-quality
 docs:
-  status: generated
+  status: reviewed
   source_sha: 85560302466f
   updated: 2026-08-06
 ---
@@ -255,7 +255,7 @@ One markdown file at `<task-dir>/phases/09-retrospective.md`, 150 lines or fewer
 ```
 @core:retrospective-agent
 Analyze task completion.
-Task: Waypoint editing
+Task: Line-item editing
 Duration: Estimated 6h, Actual 8h
 Outcome: Success
 Issues: type errors from wrong generated types; quality gate failed on first pass

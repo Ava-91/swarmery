@@ -4,7 +4,7 @@ description: "EXECUTES an existing @implementation-planner/@task-planner plan --
 version: "1.2.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 6ab5e18010a1
   updated: 2026-08-06
 ---

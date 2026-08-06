@@ -12,7 +12,7 @@ owner: platform-team
 skills:
   - code-search
 docs:
-  status: generated
+  status: reviewed
   source_sha: 97af69a4a78d
   updated: 2026-08-06
 ---
@@ -224,10 +224,10 @@ This agent maps the blast radius of a code change. Give it a changed symbol and 
 
 ## When not to use it
 
-- You need the business logic itself written or changed — that belongs to `@implementation-agent`.
+- You need the business logic itself written or changed — that belongs to `@core:implementation-agent`.
 - You just want to know where one symbol is defined — plain search is cheaper.
-- You need a build/typecheck/lint verdict on the result — reach for `@verification-agent`.
-- New tests must be written for the affected code — that is `@test-writer`.
+- You need a build/typecheck/lint verdict on the result — reach for `@core:verification-agent`.
+- New tests must be written for the affected code — that is `@core:test-writer`.
 
 ## How to invoke
 
@@ -266,6 +266,6 @@ DOWNSTREAM: Phase 2 complete | 4 callers, 2 tests, 3 imports found across 6 file
 
 ## Related
 
-- `@context-gatherer` — when you need broad context on a feature, not the callers of one symbol.
-- `@implementation-agent` — when the logic change itself still has to be written.
-- `@quality-checker` — reviews the Phase 6 updates after this agent applies them.
+- `@core:context-gatherer` — when you need broad context on a feature, not the callers of one symbol.
+- `@core:implementation-agent` — when the logic change itself still has to be written.
+- `@core:quality-checker` — reviews the Phase 6 updates after this agent applies them.

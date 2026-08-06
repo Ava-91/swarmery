@@ -6,7 +6,7 @@ owner: "swarmery-core"
 allowed-tools: Read, Write, Bash, Grep, Glob
 color: teal
 docs:
-  status: generated
+  status: reviewed
   source_sha: 86527cbef0ee
   updated: 2026-08-06
 ---

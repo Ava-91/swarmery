@@ -6,7 +6,7 @@ owner: "swarmery-core"
 disable-model-invocation: true
 allowed-tools: Read, Grep, Glob, Bash
 docs:
-  status: generated
+  status: reviewed
   source_sha: 5fd5a0178153
   updated: 2026-08-06
 ---
@@ -218,7 +218,7 @@ A markdown Migration Report: a file inventory with an applied/safe status per mi
 
 ```
 Skill(skill: "core:migration-check")
-Review V1.0.4__add_mission_status.sql before I apply it — scope: safety-check
+Review V1.0.4__add_order_status.sql before I apply it — scope: safety-check
 ```
 
 The skill lists the migrations directory from disk, reads that file, and runs the six

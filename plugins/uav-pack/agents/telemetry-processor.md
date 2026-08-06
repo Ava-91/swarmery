@@ -15,7 +15,7 @@ skills:
   - code-standards
   - testing
 docs:
-  status: generated
+  status: reviewed
   source_sha: 2de9033a8c30
   updated: 2026-08-06
 ---

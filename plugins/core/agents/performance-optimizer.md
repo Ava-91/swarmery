@@ -14,7 +14,7 @@ skills:
   - code-standards
   - observability
 docs:
-  status: generated
+  status: reviewed
   source_sha: f75cf83c0fa2
   updated: 2026-08-06
 ---

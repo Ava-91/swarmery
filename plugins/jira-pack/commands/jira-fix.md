@@ -3,7 +3,7 @@ description: Thin entry point for `/jira-fix <url|KEY> [--dry-run] [--repo <path
 allowed-tools:
   - Bash
 docs:
-  status: generated
+  status: reviewed
   source_sha: d86bd17e01da
   updated: 2026-08-06
 ---

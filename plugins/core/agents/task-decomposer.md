@@ -13,7 +13,7 @@ maxTurns: 15
 skills:
   - context-optimization
 docs:
-  status: generated
+  status: reviewed
   source_sha: d6fe0ab95160
   updated: 2026-08-06
 ---
@@ -225,9 +225,9 @@ It takes a task that feels too big to start and turns it into a numbered list of
 ## When not to use it
 
 - The work is a single small change — just do it, no breakdown needed.
-- You need a multi-week phased plan with written phase docs — use `@implementation-planner` or `@task-planner` instead.
-- You want the code written — this agent only plans; hand the breakdown to `@implementation-agent`.
-- You do not yet understand the codebase area — run `@context-gatherer` first, then pass its output in.
+- You need a multi-week phased plan with written phase docs — use `@core:implementation-planner` or `@core:task-planner` instead.
+- You want the code written — this agent only plans; hand the breakdown to `@core:implementation-agent`.
+- You do not yet understand the codebase area — run `@core:context-gatherer` first, then pass its output in.
 
 ## How to invoke
 

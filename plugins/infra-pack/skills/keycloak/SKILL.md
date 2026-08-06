@@ -5,7 +5,7 @@ version: "1.0.0"
 owner: "swarmery-infra"
 allowed-tools: Read, Bash, Write, Edit, Grep, Glob, WebFetch, WebSearch
 docs:
-  status: generated
+  status: reviewed
   source_sha: 47cf71e1a20f
   updated: 2026-08-06
 ---

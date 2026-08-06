@@ -4,7 +4,7 @@ description: "Use this skill when a task involves detecting config drift between
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 0d9d2e7c1934
   updated: 2026-08-06
 ---

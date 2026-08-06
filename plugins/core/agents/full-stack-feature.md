@@ -18,7 +18,7 @@ skills:
   - nextjs-migration
   - monorepo-coordination
 docs:
-  status: generated
+  status: reviewed
   source_sha: a8e538c13d41
   updated: 2026-08-06
 ---

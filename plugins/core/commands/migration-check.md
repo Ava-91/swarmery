@@ -2,7 +2,7 @@
 description: Check database migrations and schema consistency
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: dfab6adee002
   updated: 2026-08-06
 ---

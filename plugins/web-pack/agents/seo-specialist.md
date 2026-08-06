@@ -8,7 +8,7 @@ maxTurns: 20
 skills:
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: 3a0db341ad2c
   updated: 2026-08-06
 ---

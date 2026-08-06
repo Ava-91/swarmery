@@ -4,7 +4,7 @@ description: "Configure and review AWS auth for GitHub Actions CI/CD — OIDC ro
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: b4133a319aa1
   updated: 2026-08-06
 ---

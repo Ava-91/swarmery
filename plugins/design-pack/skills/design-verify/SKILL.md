@@ -4,7 +4,7 @@ description: "Measure an implemented screen against its design export with a hea
 version: "0.1.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 311ddb363ffb
   updated: 2026-08-06
 ---
@@ -149,7 +149,7 @@ An artefact directory containing `design.png`, `impl.png`, `diff.png`, `side-by-
 ```
 Skill(skill: "design-pack:design-verify")
 → dev server already answering on the local dev URL
-→ node screenshot-diff.mjs --design ./export/checkout/index.html \
+→ node screenshot-diff.mjs --design ./export/line-items/index.html \
     --url <devUrl>/orders/line-items --viewport 1440x900 \
     --threshold 0.5 --out .design-verify/report/line-items
 → diffPercent 0.02, threshold 0.5, pass: true

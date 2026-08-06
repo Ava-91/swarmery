@@ -14,7 +14,7 @@ owner: platform-team
 skills:
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4a04ef3fc658
   updated: 2026-08-06
 ---

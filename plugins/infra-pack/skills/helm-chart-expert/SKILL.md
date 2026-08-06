@@ -4,7 +4,7 @@ description: "Use this skill when a task involves Helm chart templating, values 
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 9ca1ca2b31c7
   updated: 2026-08-06
 ---

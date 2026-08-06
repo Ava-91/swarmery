@@ -26,7 +26,7 @@ skills:
   - env-check
   - troubleshooting
 docs:
-  status: generated
+  status: reviewed
   source_sha: 16ca8c196426
   updated: 2026-08-06
 ---

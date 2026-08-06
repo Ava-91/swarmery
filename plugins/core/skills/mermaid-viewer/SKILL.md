@@ -7,7 +7,7 @@ allowed-tools: Read, Bash, Write
 color: teal
 mermaid-version: "11.4.1"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 03d848ecd091
   updated: 2026-08-06
 ---

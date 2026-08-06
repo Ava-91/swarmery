@@ -4,7 +4,7 @@ allowed-tools:
   - Bash
   - Read
 docs:
-  status: generated
+  status: reviewed
   source_sha: d5f4c4c76ac3
   updated: 2026-08-06
 ---

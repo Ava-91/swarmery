@@ -3,7 +3,7 @@ description: Branch-from-fresh-main boilerplate — checkout main, pull, create 
 allowed-tools:
   - Bash
 docs:
-  status: generated
+  status: reviewed
   source_sha: b80f82ce0995
   updated: 2026-08-06
 ---

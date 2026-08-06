@@ -12,7 +12,7 @@ owner: platform-team
 skills:
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: eec1cddd7b4c
   updated: 2026-08-06
 ---
@@ -241,10 +241,10 @@ Phase files under the task's `phases/` directory, a verified `README.md` task ca
 
 ```
 @core:task-documenter document this task
-  task_id: 2026-05-24-add-mission-filter
-  file_list: [apps/<mainApp>/src/app/missions/page.tsx, apps/<mainApp>/src/components/MissionFilter.tsx]
+  task_id: 2026-05-24-add-order-filter
+  file_list: [apps/<mainApp>/src/app/orders/page.tsx, apps/<mainApp>/src/components/OrderFilter.tsx]
 
-→ Task documented: 2026-05-24-add-mission-filter
+→ Task documented: 2026-05-24-add-order-filter
   Phase files: 8/8 created (02-context.md: N/A -- insufficient history)
   Manifest: files_modified=2, lines_added=47, lines_removed=12 (source: git diff)
   Indexes: index.json and metrics.json updated

@@ -14,7 +14,7 @@ skills:
   - deployment
   - troubleshooting
 docs:
-  status: generated
+  status: reviewed
   source_sha: 3d94e14aabb8
   updated: 2026-08-06
 ---

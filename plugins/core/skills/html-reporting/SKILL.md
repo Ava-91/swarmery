@@ -6,7 +6,7 @@ description: "Render a self-contained HTML report or dashboard (task summaries, 
 disable-model-invocation: true
 color: teal
 docs:
-  status: generated
+  status: reviewed
   source_sha: 70bbc7ba9aea
   updated: 2026-08-06
 ---

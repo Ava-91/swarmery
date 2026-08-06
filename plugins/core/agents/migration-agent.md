@@ -13,7 +13,7 @@ skills:
   - migration-check
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: 7a8473d65170
   updated: 2026-08-06
 ---

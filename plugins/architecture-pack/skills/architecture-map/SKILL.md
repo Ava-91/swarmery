@@ -2,7 +2,7 @@
 name: architecture-map
 description: Generate or refresh the repo-wide architecture map — architecture-out/architecture-map.json (machine contract with named flows) + architecture-map.html (self-contained viewer). Use when the user asks for an architecture map, repo map, "/architecture-map", or when an agent needs a fresh machine-readable architecture overview. NOT for per-epic C4 deep-dives (use c4-architecture-docs) and NOT for building the knowledge graph itself (use /graphify).
 docs:
-  status: generated
+  status: reviewed
   source_sha: ff1a7f56a769
   updated: 2026-08-06
 ---

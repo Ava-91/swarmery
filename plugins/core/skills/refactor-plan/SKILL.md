@@ -6,7 +6,7 @@ owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob
 disable-model-invocation: true
 docs:
-  status: generated
+  status: reviewed
   source_sha: 5d88f40704d6
   updated: 2026-08-06
 ---

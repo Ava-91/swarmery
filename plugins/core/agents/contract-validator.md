@@ -15,7 +15,7 @@ skills:
   - api-integration
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: 11388754fc2f
   updated: 2026-08-06
 ---

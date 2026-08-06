@@ -16,7 +16,7 @@ skills:
   - nextjs-migration
   - browser-verification
 docs:
-  status: generated
+  status: reviewed
   source_sha: f19c4eb405b6
   updated: 2026-08-06
 ---

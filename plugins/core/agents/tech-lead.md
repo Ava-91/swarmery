@@ -19,7 +19,7 @@ skills:
   - summary-templates
   - browser-verification
 docs:
-  status: generated
+  status: reviewed
   source_sha: 661a1bb07bdd
   updated: 2026-08-06
 ---
@@ -443,13 +443,13 @@ Tech Lead is the orchestrator for structured development work. You hand it a tas
 
 - The change is a one-line edit you already understand — just make it, or ask `@core:implementation-agent` for a single step.
 - You already have a written plan in the workspace — run `/run-plan` instead of re-planning from scratch.
-- You only want a review of existing changes — reach for `/code-review` or `@core:code-auditor`.
+- You only want a review of existing changes — reach for `@core:code-auditor`.
 - You want a different entry point for full-stack feature work — `@core:full-stack-feature` is a peer, not a subordinate.
 
 ## How to invoke
 
 ```
-@core:tech-lead implement waypoint editing in orders/line-items
+@core:tech-lead implement bulk edit for orders/line-items
 ```
 
 Type the mention followed by your task in ordinary language. A scope hint — a repository, an app, or a feature area — helps it target the right code, but is optional.
@@ -468,7 +468,7 @@ A task directory under your private workspace, dated by start day, containing a 
 ## Worked example
 
 ```
-@core:tech-lead implement waypoint editing
+@core:tech-lead implement bulk edit for orders/line-items
 
 Mode: Sprint (2-5 files, estimated 4-6h)
 

@@ -4,7 +4,7 @@ description: "Use this skill for a Helm-upgrade deploy of an app service (the we
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4112200c69a3
   updated: 2026-08-06
 ---

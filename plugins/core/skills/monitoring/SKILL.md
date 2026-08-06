@@ -4,7 +4,7 @@ description: "Prometheus metrics, Grafana dashboards, alert rules, ServiceMonito
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 8d2277869557
   updated: 2026-08-06
 ---

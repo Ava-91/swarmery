@@ -2,7 +2,7 @@
 name: configuring-claude-code
 description: Use when setting up or auditing Claude Code in a repository — CLAUDE.md hierarchy and imports, .claude/rules, custom slash commands and skills, path-specific rules, plan mode vs direct execution, iterative refinement workflow, or CI/CD integration with headless -p mode. Also when instructions get ignored, conventions load in the wrong scope, CLAUDE.md has grown bloated, or a CI pipeline needs non-interactive Claude runs.
 docs:
-  status: generated
+  status: reviewed
   source_sha: 9a1c1d7a1acc
   updated: 2026-08-06
 ---

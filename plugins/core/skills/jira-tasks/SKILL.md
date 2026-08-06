@@ -4,7 +4,7 @@ description: "Read-only Jira for the project's tracker: my tickets, open tickets
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 29018bba26b7
   updated: 2026-08-06
 ---

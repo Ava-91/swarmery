@@ -8,7 +8,7 @@ allowed-tools:
   - view
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: 697acbe8f32a
   updated: 2026-08-06
 ---

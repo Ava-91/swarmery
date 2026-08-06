@@ -14,7 +14,7 @@ skills:
   - code-quality
   - browser-verification
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4a2634321356
   updated: 2026-08-06
 ---

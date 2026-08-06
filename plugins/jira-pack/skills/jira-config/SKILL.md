@@ -4,7 +4,7 @@ description: "Read and validate the jira block in .claude/project.json for jira-
 version: "0.1.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 0b1d68abed0c
   updated: 2026-08-06
 ---

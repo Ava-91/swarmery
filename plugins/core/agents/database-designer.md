@@ -14,7 +14,7 @@ skills:
   - migration-check
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: d56fa68f99c1
   updated: 2026-08-06
 ---

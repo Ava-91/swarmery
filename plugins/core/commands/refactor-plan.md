@@ -2,7 +2,7 @@
 description: Generate comprehensive refactoring plan with impact analysis
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: 61862657360c
   updated: 2026-08-06
 ---

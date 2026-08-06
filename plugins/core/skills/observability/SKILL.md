@@ -4,7 +4,7 @@ description: "Structured logging and OpenTelemetry distributed tracing, incl. lo
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 3c7676ebd024
   updated: 2026-08-06
 ---

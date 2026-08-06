@@ -12,7 +12,7 @@ maxTurns: 10
 skills:
   - html-reporting
 docs:
-  status: generated
+  status: reviewed
   source_sha: 7db5b60c5ed4
   updated: 2026-08-06
 ---

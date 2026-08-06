@@ -4,7 +4,7 @@ description: "Create and drive a /board card as a mirror of a jira-task-runner r
 version: "0.1.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: e80f8ef2f225
   updated: 2026-08-06
 ---

@@ -9,7 +9,7 @@ skills:
   - code-standards
   - functional-design
 docs:
-  status: generated
+  status: reviewed
   source_sha: f0cd02ab7901
   updated: 2026-08-06
 ---
@@ -225,8 +225,8 @@ Concrete recommendations plus the component changes that implement them: revised
 → Reviews the current form: 4 fields, generic "Submit" button, no success state.
 → Returns and applies: email-only first step, action-oriented button label,
   inline validation with helpful errors, a success state with next steps,
-  micro-copy under the CTA ("No credit card required"), and pet-type asked
-  after the email as progressive profiling.
+  micro-copy under the CTA ("No credit card required"), and one optional
+  attribute asked after the email as progressive profiling.
 ```
 
 You end up with a shorter form, a clearer promise above it, and a stated hypothesis you can A/B test.

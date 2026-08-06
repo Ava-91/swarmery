@@ -14,7 +14,7 @@ skills:
   - context-optimization
   - monitoring
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4c3e1967fddb
   updated: 2026-08-06
 ---

@@ -4,7 +4,7 @@ description: "Audit and harden container supply-chain controls: image scanning, 
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: c2261d65d4d6
   updated: 2026-08-06
 ---

@@ -7,7 +7,7 @@ disable-model-invocation: true
 allowed-tools: Read, Grep, Glob
 color: teal
 docs:
-  status: generated
+  status: reviewed
   source_sha: 1cd8c6fbf3fd
   updated: 2026-08-06
 ---

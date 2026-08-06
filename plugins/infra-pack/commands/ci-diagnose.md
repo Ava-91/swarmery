@@ -3,7 +3,7 @@ description: Deep-dive diagnostic on a failed GitLab pipeline — fetches failed
 allowed-tools:
   - Bash
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4f4e4db6fe21
   updated: 2026-08-06
 ---

@@ -2,7 +2,7 @@
 description: Find feature flags, env vars, and config keys referenced in code but absent from env-check / settings — dead toggles that pretend to gate behaviour
 color: yellow
 docs:
-  status: generated
+  status: reviewed
   source_sha: 20462a0637b4
   updated: 2026-08-06
 ---

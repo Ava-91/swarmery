@@ -4,7 +4,7 @@ description: "Debug a specific failure, investigate an incident, analyze error l
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 268250259d13
   updated: 2026-08-06
 ---

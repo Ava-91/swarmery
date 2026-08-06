@@ -4,7 +4,7 @@ description: "Use this skill to create and drive a UAV mission end-to-end throug
 version: "2.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 7e603f84b77e
   updated: 2026-08-06
 ---

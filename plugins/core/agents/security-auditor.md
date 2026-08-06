@@ -16,7 +16,7 @@ skills:
   - security-audit
   - deps-check
 docs:
-  status: generated
+  status: reviewed
   source_sha: 2e3d86e03f79
   updated: 2026-08-06
 ---

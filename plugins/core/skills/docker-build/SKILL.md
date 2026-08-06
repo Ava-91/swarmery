@@ -4,7 +4,7 @@ description: "Use this skill when building or pushing Docker images for the proj
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: bcd522a1fbe6
   updated: 2026-08-06
 ---

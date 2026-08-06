@@ -3,7 +3,7 @@ description: Thin entry point for `/design-implement <export-path|url> [--route 
 allowed-tools:
   - Bash
 docs:
-  status: generated
+  status: reviewed
   source_sha: f801c707a561
   updated: 2026-08-06
 ---

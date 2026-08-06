@@ -2,7 +2,7 @@
 description: Find missing tests for a module/feature and suggest test cases
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: 2c48903a7e77
   updated: 2026-08-06
 ---

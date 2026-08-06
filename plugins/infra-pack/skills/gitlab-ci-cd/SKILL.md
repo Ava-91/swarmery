@@ -4,7 +4,7 @@ description: "Design, review, or debug .gitlab-ci.yml pipelines for the project'
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: d8f99b74bbc0
   updated: 2026-08-06
 ---

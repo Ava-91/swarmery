@@ -2,7 +2,7 @@
 description: Check code quality issues (long functions, complexity, violations)
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: 2463d1f0a870
   updated: 2026-08-06
 ---

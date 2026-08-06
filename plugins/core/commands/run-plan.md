@@ -2,7 +2,7 @@
 description: Execute an existing plan (implementation-planner / task-planner output) — triage the phase DAG, dispatch isolated executor subagents, review each phase, keep durable progress
 color: green
 docs:
-  status: generated
+  status: reviewed
   source_sha: 80900278c81b
   updated: 2026-08-06
 ---

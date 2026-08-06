@@ -8,7 +8,7 @@ allowed-tools:
   - Glob
   - Grep
 docs:
-  status: generated
+  status: reviewed
   source_sha: 931ee62263d4
   updated: 2026-08-06
 ---

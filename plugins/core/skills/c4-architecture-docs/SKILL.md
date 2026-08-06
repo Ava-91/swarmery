@@ -5,7 +5,7 @@ owner: "swarmery-core"
 description: "Document an epic/feature architecture with the C4 model -- system context/container/component/dynamic diagrams as Mermaid .mmd plus a narrative doc. NOT for rendering an existing .mmd (use mermaid-viewer)."
 color: cyan
 docs:
-  status: generated
+  status: reviewed
   source_sha: ff189543c257
   updated: 2026-08-06
 ---

@@ -15,7 +15,7 @@ skills:
   - migration-check
   - refactor-plan
 docs:
-  status: generated
+  status: reviewed
   source_sha: da94a5eb09a5
   updated: 2026-08-06
 ---

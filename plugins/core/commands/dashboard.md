@@ -6,7 +6,7 @@ allowed-tools:
   - Glob
   - Grep
 docs:
-  status: generated
+  status: reviewed
   source_sha: 393094f45f6b
   updated: 2026-08-06
 ---

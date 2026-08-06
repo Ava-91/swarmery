@@ -12,7 +12,7 @@ owner: swarmery-core
 skills:
   - design-verify
 docs:
-  status: generated
+  status: reviewed
   source_sha: 4a66e9bc0ebf
   updated: 2026-08-06
 ---

@@ -16,7 +16,7 @@ skills:
   - test-coverage
   - code-standards
 docs:
-  status: generated
+  status: reviewed
   source_sha: 3140b8bda842
   updated: 2026-08-06
 ---

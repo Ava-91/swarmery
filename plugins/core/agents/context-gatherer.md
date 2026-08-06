@@ -13,7 +13,7 @@ skills:
   - context-optimization
   - code-search
 docs:
-  status: generated
+  status: reviewed
   source_sha: af0a2b147231
   updated: 2026-08-06
 ---

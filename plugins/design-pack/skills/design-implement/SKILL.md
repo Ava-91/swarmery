@@ -4,7 +4,7 @@ description: "Use when a finished visual design has to be re-expressed in this p
 version: "0.1.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 8192d35c7790
   updated: 2026-08-06
 ---

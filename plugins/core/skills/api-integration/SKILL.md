@@ -5,7 +5,7 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Grep, Glob
 docs:
-  status: generated
+  status: reviewed
   source_sha: 608ee7571769
   updated: 2026-08-06
 ---

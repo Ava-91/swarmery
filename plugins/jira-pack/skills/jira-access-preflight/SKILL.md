@@ -4,7 +4,7 @@ description: "Provider-agnostic Jira access verification -- the first unconditio
 version: "0.1.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 6c6c80d7bc0f
   updated: 2026-08-06
 ---

@@ -17,7 +17,7 @@ skills:
   - code-standards
   - c4-architecture-docs
 docs:
-  status: generated
+  status: reviewed
   source_sha: d8a635b77722
   updated: 2026-08-06
 ---

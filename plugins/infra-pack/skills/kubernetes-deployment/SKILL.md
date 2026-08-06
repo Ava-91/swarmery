@@ -4,7 +4,7 @@ description: "Use this skill for CLUSTER-LEVEL Kubernetes operations: Minikube/k
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: f43e8968c4b3
   updated: 2026-08-06
 ---

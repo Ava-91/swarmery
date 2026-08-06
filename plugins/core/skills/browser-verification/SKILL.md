@@ -5,7 +5,7 @@ version: "1.0.0"
 owner: "swarmery-core"
 color: cyan
 docs:
-  status: generated
+  status: reviewed
   source_sha: 0ddbb7f8ca8e
   updated: 2026-08-06
 ---

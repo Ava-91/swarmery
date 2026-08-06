@@ -4,7 +4,7 @@ description: "Use this skill when the project uses a pull-based GitOps controlle
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: eada1ac3d745
   updated: 2026-08-06
 ---

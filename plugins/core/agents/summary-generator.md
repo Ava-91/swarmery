@@ -14,7 +14,7 @@ skills:
   - summary-templates
   - html-reporting
 docs:
-  status: generated
+  status: reviewed
   source_sha: 527cd79174b5
   updated: 2026-08-06
 ---

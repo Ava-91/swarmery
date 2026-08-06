@@ -4,7 +4,7 @@ description: "Parse a Jira ticket past access preflight, classify it as a defect
 version: "0.2.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: 0d923e9ce784
   updated: 2026-08-06
 ---

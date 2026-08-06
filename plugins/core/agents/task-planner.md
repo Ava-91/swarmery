@@ -13,7 +13,7 @@ owner: platform-team
 skills:
   - deployment
 docs:
-  status: generated
+  status: reviewed
   source_sha: 0c3e13e6a296
   updated: 2026-08-06
 ---

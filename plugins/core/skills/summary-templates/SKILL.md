@@ -6,7 +6,7 @@ description: "Use this skill when a task involves summarizing completed work, wr
 disable-model-invocation: true
 color: teal
 docs:
-  status: generated
+  status: reviewed
   source_sha: 0e2c64e63f23
   updated: 2026-08-06
 ---

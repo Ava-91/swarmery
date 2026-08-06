@@ -4,7 +4,7 @@ description: "Coordinate changes spanning 2+ repos of a multi-repo workspace or 
 version: "1.0.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: d9709fababf4
   updated: 2026-08-06
 ---

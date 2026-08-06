@@ -20,7 +20,7 @@ skills:
   - testing
   - troubleshooting
 docs:
-  status: generated
+  status: reviewed
   source_sha: f443accd1014
   updated: 2026-08-06
 ---

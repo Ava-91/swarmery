@@ -9,7 +9,7 @@ skills:
   - code-standards
   - functional-design
 docs:
-  status: generated
+  status: reviewed
   source_sha: 06a1e0222898
   updated: 2026-08-06
 ---

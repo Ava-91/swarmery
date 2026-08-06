@@ -17,7 +17,7 @@ skills:
   - release-promotion
   - supply-chain-security
 docs:
-  status: generated
+  status: reviewed
   source_sha: c602127ff811
   updated: 2026-08-06
 ---

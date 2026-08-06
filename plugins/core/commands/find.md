@@ -5,7 +5,7 @@ allowed-tools:
   - WebFetch
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: d9eb863dfb47
   updated: 2026-08-06
 ---

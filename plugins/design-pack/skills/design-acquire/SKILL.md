@@ -4,7 +4,7 @@ description: "Resolve a design handoff into something measurable: parse a handof
 version: "0.1.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: be52051a970c
   updated: 2026-08-06
 ---

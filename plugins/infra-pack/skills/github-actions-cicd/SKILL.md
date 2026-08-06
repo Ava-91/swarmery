@@ -4,7 +4,7 @@ description: "Design, review, or debug GitHub Actions workflows — CI jobs (typ
 version: "1.0.0"
 owner: "swarmery-infra"
 docs:
-  status: generated
+  status: reviewed
   source_sha: a9f533021609
   updated: 2026-08-06
 ---

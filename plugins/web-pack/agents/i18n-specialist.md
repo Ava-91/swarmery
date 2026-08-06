@@ -9,7 +9,7 @@ skills:
   - code-standards
   - code-search
 docs:
-  status: generated
+  status: reviewed
   source_sha: ebdae703a0c7
   updated: 2026-08-06
 ---

@@ -2,7 +2,7 @@
 description: Cross-repo impact analysis — graph-aware (Graphify) with a live ripgrep fallback
 color: red
 docs:
-  status: generated
+  status: reviewed
   source_sha: fc326bb79534
   updated: 2026-08-06
 ---

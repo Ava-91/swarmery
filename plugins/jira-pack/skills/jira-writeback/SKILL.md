@@ -4,7 +4,7 @@ description: "Post the run's verdict comment (rendered from the plugins/jira-pac
 version: "0.2.0"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: abec8fdeeb3c
   updated: 2026-08-06
 ---

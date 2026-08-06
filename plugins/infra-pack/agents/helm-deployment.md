@@ -19,7 +19,7 @@ skills:
   - code-standards
   - helm-chart-expert
 docs:
-  status: generated
+  status: reviewed
   source_sha: f787511f69c1
   updated: 2026-08-06
 ---

@@ -16,7 +16,7 @@ skills:
   - code-quality
   - html-reporting
 docs:
-  status: generated
+  status: reviewed
   source_sha: 75a7b3ff0e79
   updated: 2026-08-06
 ---
@@ -284,10 +284,10 @@ This agent audits a running system in risk order and hands you a fix list you ca
 
 ## When not to use it
 
-- You need a deep OWASP or STRIDE pass — reach for `@security-auditor`.
-- You need backups, SLOs, or capacity depth — reach for `@sre-orchestrator`.
-- You want the fixes applied, not listed — hand the backlog to `@implementation-agent`, `@performance-optimizer`, or `@test-writer`.
-- You want a product-portfolio and business-thesis review — reach for `@founder-reality-check`.
+- You need a deep OWASP or STRIDE pass — reach for `@core:security-auditor`.
+- You need backups, SLOs, or capacity depth — reach for `@core:sre-orchestrator`.
+- You want the fixes applied, not listed — hand the backlog to `@core:implementation-agent`, `@core:performance-optimizer`, or `@core:test-writer`.
+- You want a product-portfolio and business-thesis review — reach for `@core:founder-reality-check`.
 
 ## How to invoke
 
@@ -320,7 +320,7 @@ AUDIT COMPLETE | Score: 6/10 | P0 Stop-bleed: 1 | P1 Safety-net: 1 | P2 Debt: 4 
 
 ## Related
 
-- `@security-auditor` — when the security dimension needs full depth rather than triage.
-- `@sre-orchestrator` — when the question is operational maturity, backups, or SLOs.
-- `@founder-reality-check` — when you need a portfolio-wide inventory and business critique.
-- `@tech-lead` — when you want the audit run as part of the wider workflow and its findings acted on.
+- `@core:security-auditor` — when the security dimension needs full depth rather than triage.
+- `@core:sre-orchestrator` — when the question is operational maturity, backups, or SLOs.
+- `@core:founder-reality-check` — when you need a portfolio-wide inventory and business critique.
+- `@core:tech-lead` — when you want the audit run as part of the wider workflow and its findings acted on.

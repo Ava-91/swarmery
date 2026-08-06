@@ -16,7 +16,7 @@ skills:
   - code-quality
   - troubleshooting
 docs:
-  status: generated
+  status: reviewed
   source_sha: f93822d32ac0
   updated: 2026-08-06
 ---

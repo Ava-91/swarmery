@@ -4,7 +4,7 @@ description: "Convert a needs-fix attempt that has outgrown /jira-fix's autonomy
 version: "0.1.1"
 owner: "swarmery-core"
 docs:
-  status: generated
+  status: reviewed
   source_sha: d78ef1825edc
   updated: 2026-08-06
 ---
