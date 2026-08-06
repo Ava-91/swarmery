@@ -206,9 +206,8 @@ case, and two of them are planted in the fixtures.
 ### §5.1 Fenced regions are skipped
 
 A line starting with `#` at column 0 **inside a fenced code block** is a comment, not a
-heading. Fences are opened and closed by ``` or `~~~` at column 0 (optionally with an
-info string); track fence state while scanning and ignore every heading candidate while
-a fence is open. The planted trap is a bash block whose first line is:
+heading. Track fence state while scanning and ignore every heading candidate while a
+fence is open. The planted trap is a bash block whose first line is:
 
 ```bash
 # deploy the thing
@@ -216,6 +215,44 @@ a fence is open. The planted trap is a bash block whose first line is:
 
 That must **not** terminate the `# How to use` block, and must **not** register as an H1.
 `testdata/sysconfig/claude/skills/documented-skill/SKILL.md` carries exactly this trap.
+
+**Fence state is not a toggle.** A scanner that flips a boolean on every line beginning
+with a fence character gets all three of the cases below wrong, and each one moves both
+the block extent and the §4 fingerprint. The rules are CommonMark's, narrowed to what
+this contract needs:
+
+1. **A delimiter is a run of at least three** `` ` `` **or** `~` **at column 0.** Fewer
+   than three is ordinary text; indented is ordinary text (column 0 is normative here for
+   the same reason it is for headings, §1.1).
+2. **An opening delimiter may carry an info string** — the text after the run, e.g.
+   ```` ```bash ````. It opens a region and records two things: its **character** and its
+   **run length**.
+3. **A closing delimiter must match on all three counts**: the **same character**, a run
+   **at least as long** as the opener's, and **no info string** — only trailing whitespace
+   may follow. Anything else is content inside the region.
+
+So, concretely:
+
+| Inside a region opened by | This line | Verdict |
+|---|---|---|
+| ```` ``` ```` | `~~~` | content — wrong character |
+| ```` ```` ```` | ```` ``` ```` | content — run is shorter than the opener's |
+| ```` ```js ```` | ```` ```js ```` | content — a closing delimiter carries no info string |
+| ```` ```js ```` | ```` ``` ```` | **closes** |
+| ```` ``` ```` | ```` ```` ```` | **closes** — longer than the opener is fine |
+
+A region left open at EOF simply runs to EOF; an unterminated fence is never an error.
+
+Both implementations of this section — `internal/sysscan/docs.go` (`docsScanLines`,
+`parseDocsFence`) and the JavaScript prelude in `scripts/docgen/lib.sh` (`scanLines`) —
+are pinned against each other by `internal/sysscan/docs_parity_test.go`, which fingerprints
+one fence-torture fixture set through both and requires identical output.
+
+One more scanner detail, because getting it wrong silently changes a fingerprint: the
+scanner keeps **two views** of every line. Trimming a trailing `\r` (§5.2) is for
+**comparison** — heading text, subsection titles, fence delimiters. It is **not** applied
+before hashing: §4 removes CRLF *pairs* and then trims spaces and tabs and nothing else,
+so a bare `\r` the author typed is item content and must move `source_sha`.
 
 ### §5.2 CRLF is tolerated
 

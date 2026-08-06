@@ -77,8 +77,8 @@ func TestLintRulesFireOnFixtures(t *testing.T) {
 		{RuleClaudeMDOversized, "claude_md:" + claudeMD, "warn", 1},
 		{RuleHookNoTimeout, fmt.Sprintf("hook:%d", slowHook), "warn", 1},
 		{RuleAgentNameDuplicate, fmt.Sprintf("agent:%d", dupTarget), "warn", 1},
-		// 8 live agents, 1 marked alive → 7 dead by available telemetry.
-		{RuleAgentDead, fmt.Sprintf("agent:%d", lintPoor), "info", 7},
+		// 10 live agents, 1 marked alive → 9 dead by available telemetry.
+		{RuleAgentDead, fmt.Sprintf("agent:%d", lintPoor), "info", 9},
 	}
 	for _, tc := range tests {
 		t.Run(tc.rule, func(t *testing.T) {
@@ -246,7 +246,7 @@ func TestLintThresholdEnvOverride(t *testing.T) {
 		t.Errorf("active skill_short_description with env min=5: %d, want 0", n)
 	}
 
-	// Explicit config wins over env: min=100 flags all three fixture skills.
+	// Explicit config wins over env: min=100 flags all four fixture skills.
 	strict := cfg
 	strict.MinSkillDescription = 100
 	if _, err := Lint(db, strict); err != nil {
@@ -254,7 +254,7 @@ func TestLintThresholdEnvOverride(t *testing.T) {
 	}
 	if n := count(t, db,
 		`SELECT COUNT(*) FROM config_lint_findings WHERE rule = ? AND resolved_at IS NULL`,
-		RuleSkillShortDesc); n != 3 {
-		t.Errorf("active skill_short_description with config min=100: %d, want 3", n)
+		RuleSkillShortDesc); n != 4 {
+		t.Errorf("active skill_short_description with config min=100: %d, want 4", n)
 	}
 }

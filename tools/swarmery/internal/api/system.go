@@ -115,6 +115,64 @@ type systemVersionDTO struct {
 	ContentHash string  `json:"contentHash"`
 }
 
+// systemDocsDTO is the item's parsed `# How to use` usage guide
+// (docs/system-docs-format.md), served on the detail endpoints.
+type systemDocsDTO struct {
+	Present   bool     `json:"present"`
+	Duplicate bool     `json:"duplicate"`
+	Markdown  string   `json:"markdown"` // redacted
+	Sections  []string `json:"sections"`
+	Missing   []string `json:"missing"`
+	Status    string   `json:"status"` // generated | reviewed | ""
+	Stale     bool     `json:"stale"`
+}
+
+// emptyDocsDTO is the no-guide shape. Sections/Missing are non-nil so they
+// serialize as [] and never null — the client treats the guide as a list-shaped
+// object unconditionally.
+func emptyDocsDTO() systemDocsDTO {
+	return systemDocsDTO{Sections: []string{}, Missing: []string{}}
+}
+
+// docsDTO parses a component file into the wire guide, redacting it exactly as
+// splitRedacted does for the body.
+//
+// EVERY author-controlled string in the guide goes through redact(), not just
+// the markdown: a `## Bearer sk-ant-…` heading is author content that reaches
+// the wire as a section TITLE, and `docs.status` is stored verbatim by §3
+// precisely so an unknown value survives to the UI. `missing` is a fixed
+// vocabulary (sysscan.RequiredDocSections) rather than author text, but it is
+// filtered too so the rule is "the whole docs object is redacted" with no
+// exception a future field can quietly fall through.
+//
+// The rune floor comes from sysscan.MinDocsSection() rather than the bare
+// default so the `missing` list the UI renders can never disagree with the
+// coverage findings the linter writes under the same SWARMERY_LINT_* override.
+func docsDTO(content string) systemDocsDTO {
+	d := sysscan.ParseDocs([]byte(content), sysscan.MinDocsSection())
+	out := systemDocsDTO{
+		Present:   d.Present,
+		Duplicate: d.Duplicate,
+		Markdown:  redact(d.Markdown),
+		Sections:  redactEach(d.Sections),
+		Missing:   redactEach(d.Missing),
+		Status:    redact(d.Status),
+		Stale:     d.Stale,
+	}
+	return out
+}
+
+// redactEach redacts every element of a string slice, always returning a
+// non-nil slice so the field serializes as [] and never null — the client
+// treats sections/missing as list-shaped unconditionally.
+func redactEach(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, redact(s))
+	}
+	return out
+}
+
 // systemItemDetailDTO is GET /api/system/{agents|skills}/{id}.
 type systemItemDetailDTO struct {
 	systemItemDTO
@@ -122,6 +180,7 @@ type systemItemDetailDTO struct {
 	CurrentVersionID *int64             `json:"currentVersionId"`
 	Frontmatter      string             `json:"frontmatter"` // raw YAML block (redacted)
 	Body             string             `json:"body"`        // markdown body (redacted)
+	Docs             systemDocsDTO      `json:"docs"`        // parsed usage guide
 	Versions         []systemVersionDTO `json:"versions"`    // newest first
 }
 
@@ -502,7 +561,9 @@ func (h *Handler) getSystemItem(w http.ResponseWriter, r *http.Request, k system
 		d.Tasks30d = u.tasks30d
 	}
 
-	// Current content → redacted frontmatter/body split.
+	// Current content → redacted frontmatter/body split + parsed usage guide.
+	// An item with no current version still serves the empty guide shape.
+	d.Docs = emptyDocsDTO()
 	if d.CurrentVersionID != nil {
 		var content string
 		err := h.DB.QueryRow(`SELECT content FROM `+k.verTable+` WHERE id = ?`,
@@ -512,6 +573,7 @@ func (h *Handler) getSystemItem(w http.ResponseWriter, r *http.Request, k system
 			return
 		}
 		d.Frontmatter, d.Body = splitRedacted(content)
+		d.Docs = docsDTO(content)
 	}
 
 	// Version history, newest first.

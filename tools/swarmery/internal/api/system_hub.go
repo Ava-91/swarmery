@@ -135,8 +135,9 @@ type systemLintFindingDTO struct {
 // an APPROXIMATE usage rollup (slash-command text match is best-effort).
 type commandHubDTO struct {
 	systemCommandDTO
-	Frontmatter string `json:"frontmatter"` // redacted
-	Content     string `json:"content"`     // redacted body
+	Frontmatter string        `json:"frontmatter"` // redacted
+	Content     string        `json:"content"`     // redacted body
+	Docs        systemDocsDTO `json:"docs"`        // parsed usage guide
 	Usage       struct {
 		WindowDays  int   `json:"windowDays"`
 		Invocations int64 `json:"invocations"`
@@ -437,9 +438,12 @@ func (h *Handler) commandHub(w http.ResponseWriter, r *http.Request) {
 
 	out := commandHubDTO{systemCommandDTO: c}
 	// Content is read live off disk (commands are not versioned); a vanished
-	// file degrades to empty content rather than failing the profile.
+	// file degrades to empty content and an absent guide rather than failing
+	// the profile.
+	out.Docs = emptyDocsDTO()
 	if raw, rerr := os.ReadFile(c.Path); rerr == nil {
 		out.Frontmatter, out.Content = splitRedacted(string(raw))
+		out.Docs = docsDTO(string(raw))
 	}
 	out.Usage.WindowDays = hubUsageWindowDays
 	out.Usage.Approximate = true // slash-command usage is always best-effort
