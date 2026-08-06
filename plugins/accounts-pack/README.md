@@ -98,10 +98,23 @@ holds no logic of its own.
 
 `hooks/hooks.json` wires `SessionStart` → `hooks/warn-wrong-account.sh`, which
 warns when a session is running under an account other than the project's
-binding. **That script is currently a skeleton**: it drains stdin and exits 0.
-It is wired now and filled in a later phase, so the wiring can be reviewed and
-proven harmless on its own. Like every hook here it is fail-open — a hook that
-can fail is a hook that can block a session.
+binding. The actual account comes from `$CLAUDE_CONFIG_DIR` (falling back to
+`$HOME/.claude`) — the same env Claude Code itself uses to pick a login, read
+straight from the hook's process environment, never from `transcript_path`
+(the SessionStart payload doesn't carry one). The binding comes from the
+hook's own `cwd` (falling back to `$CLAUDE_PROJECT_DIR`) resolving
+`<project>/.claude/settings.local.json` → `.swarmery.claudeAccount`.
+
+It stays silent (no stdout, exit 0) when: there is no binding; the binding
+matches the actual account; the settings file is missing, unparseable, or
+`jq` is unavailable; or the stored binding fails the same validity check
+`swarmery` itself uses for a key (a hand-edited file can't smuggle arbitrary
+text into the model's context this way). On an actual mismatch it prints
+exactly one line of SessionStart hook JSON —
+`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`
+— so Claude Code sees the warning from the first message of the session.
+Like every hook here it is fail-open — a hook that can fail is a hook that
+can block a session.
 
 ## Known edges
 
