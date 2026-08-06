@@ -31,10 +31,22 @@ account_key_from_config_dir() {
   printf '%s' "${name:-default}"
 }
 
-# Mirror of claudeacct.ValidKey (internal/claudeacct/claudeacct.go:131-139). Go's
-# Binding() returns "" for a stored key that fails this check; the bash port MUST
-# agree, or a garbled settings file makes the hook claim a binding Go says does
-# not exist — and its text lands verbatim in the model's context.
+# Intentionally STRICTER than claudeacct.ValidKey (internal/claudeacct/
+# claudeacct.go:158-180) for the characters that matter here — this is NOT
+# a mirror of it, despite what an earlier version of this comment claimed.
+# This only allows [A-Za-z0-9._-]; ValidKey's own rules (reject "", ".",
+# "..", a leading dot, "/", "\", ".." as a substring, whitespace, and
+# non-printable runes) still leave it accepting "wörk", "a$b", "a;b", a
+# bare backtick, or a double quote. Diverging by rejecting MORE than
+# ValidKey does is the safe direction: every extra character this refuses
+# is exactly the class — whitespace, quotes, backticks, non-ASCII — that
+# turns a config-dir name into something that reads like an instruction
+# once it lands in additionalContext below. The failure mode is silence,
+# not injection: a real key Go would accept can be turned down here, the
+# same fail-open outcome as Go's Binding() returning "" for a key that
+# fails ValidKey — never the other way around for these characters. Cost:
+# an operator whose account key contains a non-ASCII character gets no
+# mismatch warning at all.
 valid_account_key() {
   case "${1:-}" in
     ''|'.'|'..')          return 1 ;;
@@ -47,6 +59,13 @@ valid_account_key() {
 # ${HOME:-} — not $HOME: `set -u` turns an unset HOME into a fatal error, and a
 # hook that exits non-zero is a hook that can block a session (FAIL-OPEN).
 ACTUAL="$(account_key_from_config_dir "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}")"
+
+# ACTUAL and BOUND both flow verbatim into additionalContext below, which
+# Claude Code injects as trusted context. Validating only BOUND (below) and
+# leaving ACTUAL unchecked WAS the defect: one sink, two inputs — both must
+# pass the same gate, or an attacker just targets whichever one was left
+# unchecked. Fail-open on failure, same as an invalid BOUND: silence.
+valid_account_key "$ACTUAL" || exit 0
 
 # cwd comes from the hook's own stdin JSON (verified shape: internal/hookshim/
 # shim_test.go:203 — session_id, cwd, hook_event_name; NO transcript_path).
