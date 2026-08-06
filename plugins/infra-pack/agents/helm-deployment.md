@@ -18,6 +18,10 @@ skills:
   - kubernetes-deployment
   - code-standards
   - helm-chart-expert
+docs:
+  status: reviewed
+  source_sha: f787511f69c1
+  updated: 2026-08-06
 ---
 
 # Role
@@ -193,3 +197,60 @@ Rollback tested: Yes (helm rollback verified previous digest)
 | Dry-run passes but real deploy fails | Check env vars and secret mounts -- likely config mismatch between dry-run values and actual environment |
 | ImagePullBackOff | Verify image exists in registry, check pull secrets, confirm digest is correct |
 | Defensive template missing `with`/`if` guard | Template renders nil pointer; add guard and re-validate |
+
+# How to use
+
+## What it does
+
+This agent owns Kubernetes delivery through Helm. It writes and maintains charts, wires namespaces, RBAC, ingress and secrets, layers values per environment, and pins images to immutable digests so a promoted deploy is repeatable and a rollback is one command. Every change is linted, rendered and dry-run before it reaches a cluster.
+
+## When to use it
+
+- You need a chart change: health probes, resource limits, a new template, an ingress route.
+- You are promoting a build and must swap a mutable tag for an immutable image digest.
+- A deploy failed with `ImagePullBackOff`, a stale `Chart.lock`, or a template that renders nil.
+- You need a rollback path verified before shipping to a shared environment.
+
+## When not to use it
+
+- Pipeline YAML and CI job design — use `@infra-pack:gitlab-ci-specialist` for that.
+- A live incident on a running cluster — hand it to `@core:sre-orchestrator`.
+- Application source changes — that belongs to `@core:implementation-agent`.
+
+## How to invoke
+
+```
+@infra-pack:helm-deployment Add readiness and liveness probes to the <device> service chart
+```
+
+Address the agent directly and state the change plus the target environment.
+
+## Inputs
+
+- `task` — the deployment change you want, in one line — required.
+- `environment` — `localdev`, `<envAlias>` (staging), or `production` — required, since it decides whether mutable tags are allowed.
+- `plan` — a reference to an existing plan or phase doc — optional.
+
+## What you get back
+
+Modified chart files in your chart and infrastructure repos, plus a Completion Report of 30 lines or less listing each file changed, the `helm lint` / `helm template` / dry-run results, the image digest, and whether rollback was tested. The final chat message repeats the diff summary and validation results. Anything targeting staging or above stops for your explicit confirmation before `helm upgrade` runs.
+
+## Worked example
+
+```
+@infra-pack:helm-deployment Pin the web portal image digest for the staging rollout
+
+→ Updated values.<envAlias>.yaml
+    image.digest: sha256:abc123… (from CI build #142)
+    previous digest recorded for rollback
+→ Validation: helm lint pass | helm template pass | dry-run pass
+→ Rollback tested: Yes (helm rollback verified the previous digest)
+```
+
+You end up with a staging values file pinned to an immutable digest, the prior digest saved so `helm rollback` has somewhere to go, and a logged record of every validation command.
+
+## Related
+
+- `@infra-pack:gitlab-ci-specialist` — prefer it when the question is about pipeline stages, not chart contents.
+- `@core:sre-orchestrator` — prefer it for incident response and pod readiness that exceeds the deploy budget.
+- `Skill(skill: "core:supply-chain-security")` — prefer it for image scanning, SBOMs, and signing readiness.

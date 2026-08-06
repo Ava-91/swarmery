@@ -367,12 +367,14 @@ export function SystemHub({
       case 'skills':
         return [
           { id: 'overview', label: 'Overview' },
+          { id: 'docs', label: 'Docs' },
           { id: 'usage', label: 'Usage' },
           { id: 'definition', label: 'Definition' },
         ];
       case 'commands':
         return [
           { id: 'overview', label: 'Overview' },
+          { id: 'docs', label: 'Docs' },
           { id: 'content', label: 'Content' },
         ];
       case 'templates':
@@ -594,7 +596,7 @@ function ProfileFor({
       return (
         <SkillProfile
           id={id}
-          tab={tab === 'usage' || tab === 'definition' ? tab : 'overview'}
+          tab={tab === 'docs' || tab === 'usage' || tab === 'definition' ? tab : 'overview'}
           projectId={scopeSlug}
           projectNames={projectNames}
           defRefresh={defRefresh}
@@ -603,7 +605,13 @@ function ProfileFor({
       );
     case 'commands':
       if (Number.isNaN(id)) return <Empty>invalid command</Empty>;
-      return <CommandProfile id={id} tab={tab === 'content' ? 'content' : 'overview'} projectId={scopeSlug} />;
+      return (
+        <CommandProfile
+          id={id}
+          tab={tab === 'docs' || tab === 'content' ? tab : 'overview'}
+          projectId={scopeSlug}
+        />
+      );
     case 'hooks':
       if (Number.isNaN(id)) return <Empty>invalid hook</Empty>;
       return <HookProfile id={id} />;

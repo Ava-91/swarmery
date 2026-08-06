@@ -14,6 +14,10 @@ skills:
   - mavlink-integration
   - code-standards
   - testing
+docs:
+  status: reviewed
+  source_sha: aa19e681159d
+  updated: 2026-08-06
 ---
 
 # Role
@@ -185,3 +189,60 @@ SITL test: 10 command sequences, all ACKed within 2s
 | Command safety (COMMAND_LONG merge without review) | Never auto-merge; require explicit human review on every PR with COMMAND_LONG |
 | Connection retry storm (rapid reconnect consuming CPU) | Add jitter to backoff delay; cap max retry rate |
 | Field conversion error (wrong scale factor) | Verify against MAVLink XML definitions; add regression test |
+
+# How to use
+
+## What it does
+
+This agent implements MAVLink communication in an edge service written in Python with pymavlink. It parses telemetry messages, generates commands, manages UART, UDP, and TCP connections, and verifies the result against ArduPilot SITL before calling anything done. It treats command-sending messages as safety-critical and stops for a human before they merge.
+
+## When to use it
+
+- You need a parser for a MAVLink telemetry message such as `GLOBAL_POSITION_INT`, `ATTITUDE`, or `VFR_HUD`, with correct field scaling.
+- Your edge service drops messages, fails to reconnect, or blocks the asyncio event loop on pymavlink calls.
+- You are adding command generation (`COMMAND_LONG`, mission upload) and want ACK handling plus a human sign-off gate.
+- A parser change needs an end-to-end SITL run before it reaches real hardware.
+
+## When not to use it
+
+- Fanning parsed telemetry out over WebSocket or SSE to a web client — use `@uav-pack:telemetry-processor`.
+- Raw UART, camera, GPIO, or systemd work with no MAVLink framing — use `@uav-pack:embedded-systems`.
+- Deployment manifests or chart changes — those belong to your deployment agent, not this one.
+
+## How to invoke
+
+```
+@uav-pack:mavlink-specialist Add GPS position parsing for GLOBAL_POSITION_INT
+```
+
+Name the messages or commands you want handled; the agent researches the pymavlink API, implements, unit-tests, and runs SITL.
+
+## Inputs
+
+- `task` — which MAVLink messages or commands to implement — required.
+- `plan` — a reference to an existing implementation plan — optional.
+- `context` — a reference to a gathered-context artifact — optional.
+
+## What you get back
+
+Modified or created Python source files in the edge service repo, plus unit tests for every parser function. The final message is a diff summary and SITL results. A Completion Report of 30 lines or less lists each file changed, the messages affected, the SITL outcome with duration, frequency, and drop count, and an explicit `COMMAND_LONG included: Yes/No` line. When the answer is yes, the agent waits for your sign-off instead of merging.
+
+## Worked example
+
+```
+@uav-pack:mavlink-specialist Add GPS position parsing for GLOBAL_POSITION_INT
+
+→ parser added: lat/lon int32 / 1e7 → degrees, alt mm / 1000 → meters,
+  hdg cdeg / 100 → degrees
+→ 3 unit tests covering field conversion accuracy
+→ SITL test: 60s @ 5Hz, 0 drops, lat/lon within +/-1e-7 degrees
+→ COMMAND_LONG included: No
+```
+
+You end up with a tested parser and a report you can paste into a phase doc.
+
+## Related
+
+- `@uav-pack:telemetry-processor` — prefer it once messages are parsed and you need them streamed to a client.
+- `@uav-pack:embedded-systems` — prefer it for hardware-layer faults under the MAVLink link.
+- `@uav-pack:edge-python-specialist` — prefer it for non-MAVLink Python work in the same service.

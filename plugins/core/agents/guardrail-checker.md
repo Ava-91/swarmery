@@ -11,6 +11,10 @@ version: 1.0.0
 owner: platform-team
 skills:
   - code-standards
+docs:
+  status: reviewed
+  source_sha: 4a0034b84439
+  updated: 2026-08-06
 ---
 
 # Role
@@ -169,3 +173,60 @@ Use `<thinking>` to reason through the risk matrix before emitting the recommend
 - **TypeScript-only checks on Python change**: Guardrail runs npm checks but misses pytest failures → detected by stack detection from affected files → fix by conditional stack detection.
 - **Auto-approved Critical action**: Data deletion approved without user confirmation → prevented by Critical-always-escalate rule.
 - **Missing rollback plan**: Report says "revert" without specific commands → detected by self-check → fix by requiring specific commands or SQL statements.
+
+# How to use
+
+## What it does
+
+This agent is a safety check you run before doing something risky. You describe the action you are about to take; it scores the risk from impact and reversibility, runs the deterministic checks for whatever stack the change touches, and hands back a single APPROVED or REJECTED verdict with conditions and a concrete rollback plan. It never runs the action itself — you stay in control of the decision.
+
+## When to use it
+
+- Before a destructive or hard-to-undo database change: dropping a column, rewriting rows, running a migration without a tested rollback.
+- Before touching deployment or infrastructure config, where a bad render only shows up after it ships.
+- Before pushing to a protected branch or force-pushing, when you want the check on record.
+- Whenever an orchestrating agent needs a written safety opinion before letting an executor proceed.
+
+## When not to use it
+
+- For a security deep-dive on the code itself — use `@core:security-auditor`.
+- To actually run build, typecheck, lint, and tests as the gate — use `@core:verification-agent`.
+- To perform the migration once it is approved — use `@core:migration-agent` or `@core:migration-helper`.
+- For read-only work like viewing files or running tests; it will just approve in one turn.
+
+## How to invoke
+
+```
+@core:guardrail-checker
+```
+
+Address it directly in chat, then describe the action you want validated. Any agent can call it mid-workflow, and the caller keeps the decision to proceed.
+
+## Inputs
+
+- `action` — plain-language description of what you want to do — required.
+- `risk_level_hint` — your own guess: Low, Medium, High, or Critical — optional.
+- `affected_systems` — the repos or services the action touches — optional, but it drives which stack checks run.
+
+## What you get back
+
+A markdown artifact under your workspace task directory at `phases/guardrail-<action-slug>.md`, holding the risk assessment, a table of the checks that ran with their commands, and the recommendation. In chat you get one line: `GUARDRAIL: APPROVED | Risk: Low | Checks: … | Artifact: <path>`. Critical risk, or confidence under 70%, is escalated to you instead of auto-approved.
+
+## Worked example
+
+```
+@core:guardrail-checker validate dropping the users.legacy_role column
+
+→ GUARDRAIL: REJECTED | Risk: High
+  Reason: irreversible column drop; 3 route handlers still read legacy_role
+  Required: two-phase deprecation — add the new column, migrate data,
+            drop in a later release
+```
+
+You end up with the rejection reason, the exact call sites, and a safer sequence — plus the artifact on disk as an audit trail.
+
+## Related
+
+- `@core:verification-agent` — when you want the actual PASS/FAIL gate on build, typecheck, lint, and tests.
+- `@core:security-auditor` — when the question is vulnerability exposure, not action risk.
+- `@core:plan-reviewer` — when you are judging finished work against a plan rather than a pending action.

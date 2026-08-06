@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Edit, Grep
 color: teal
+docs:
+  status: reviewed
+  source_sha: 0de9c6a109eb
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -209,3 +213,59 @@ const getAvailableDevices = (
 - `code-standards` -- defer for general code quality, naming conventions, and Next.js patterns; also for Python refactoring
 - `code-quality` -- defer for broader code review beyond functional patterns
 - `refactor-plan` -- defer when the user wants a structured plan before executing changes
+
+# How to use
+
+## What it does
+
+This skill rewrites TypeScript business logic so it stops mutating its inputs. It turns functions that modify their arguments into functions that return new values, replaces hand-written loops with `.filter()`/`.map()`/`.reduce()` chains, and marks interface properties `readonly`. It edits your files directly and shows you a before/after snippet for every change.
+
+## When to use it
+
+- A service function in `src/lib/` mutates the object passed into it, and you want it to return a result instead.
+- An imperative `for` loop with nested conditionals would read better as a chain of small named predicates.
+- A route handler has calculation logic tangled with its I/O, and you want the calculation pulled out into `src/lib/`.
+- A class holds mutable state that could be plain data plus functions.
+
+## When not to use it
+
+- You want a refactor plan, not applied edits — use `refactor-plan`.
+- The code is Python, or the issue is naming, imports, or framework conventions — use `code-standards`.
+- The target is a route handler's own I/O structure, an ORM fluent query builder, or React `useState`/`useReducer` code — each already has its own contract.
+- The path is a hot per-tick telemetry loop, where spread copies cost more than they buy.
+
+## How to invoke
+
+```
+Skill(skill: "core:functional-design")
+```
+
+Then name the file, and optionally one function inside it. The skill reads the file, picks candidates, verifies the types it will touch, and applies the edits.
+
+## Inputs
+
+- `file_path` — the file to refactor — required.
+- `function_name` — a single function to target; omit it to scan the whole file — optional.
+
+## What you get back
+
+Edits applied to the file, capped at three per invocation, plus a summary of under 30 lines. Each entry names the function, the principle applied (immutability, pure function, composition, data flow), and a short before/after snippet. Functions it skipped are listed with the reason, and anything needing manual testing is flagged `[VERIFY]`. It stops and asks you first when a function mixes calculation with I/O, has no tests but a changing return type, or has more than three call sites.
+
+## Worked example
+
+```
+Skill(skill: "core:functional-design")
+→ "Refactor calculateOrderCost in src/lib/orders/pricing.ts"
+```
+
+The function used to assign `baseCost`, `shippingCost`, `totalCost`, and `status`
+straight onto the `Order` it was handed. Afterwards it takes `readonly OrderItem[]`
+and returns a new `OrderCostResult` with all three fields `readonly`. The
+`status = 'PRICED'` line is gone — a status transition is a side effect, and the
+summary tells you to move it into the caller.
+
+## Related
+
+- `refactor-plan` — when you want the plan reviewed before any file changes.
+- `code-standards` — for general code quality, naming, and Python refactoring.
+- `code-quality` — for broader review beyond functional patterns.

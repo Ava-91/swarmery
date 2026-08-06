@@ -7,6 +7,10 @@ color: teal
 maxTurns: 20
 skills:
   - code-standards
+docs:
+  status: reviewed
+  source_sha: 3a0db341ad2c
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -165,3 +169,59 @@ Each comparison page should target specific search queries:
 **Version**: 1.0
 **Created**: April 2026
 **Maintained by**: swarmery web-pack
+
+# How to use
+
+## What it does
+
+This agent handles search-engine optimization for marketing and landing pages. It audits what meta tags, structured data, and canonical URLs you already have, fills the gaps, and works on the Core Web Vitals that search ranking depends on. It knows the shape of a React SPA with client-side routing, so it also flags when crawlers need prerendering or server-side rendering to see your content.
+
+## When to use it
+
+- A landing or comparison page ships without unique titles, descriptions, or Open Graph tags.
+- You want JSON-LD structured data on product and pricing pages so search results show rich snippets.
+- Core Web Vitals are failing their targets — LCP over 2.5s, CLS over 0.1, or INP over 200ms.
+- A multilingual site needs `hreflang` tags, correct `lang` attributes, and a matching sitemap.
+
+## When not to use it
+
+- You want higher signup or click-through rates on a page that already ranks — use `landing-page-specialist` for conversion work.
+- The task is adding or fixing translation strings rather than search visibility — use `i18n-specialist`.
+- The performance problem is bundle size or render cost with no SEO angle — use `performance-optimizer`.
+
+## How to invoke
+
+```
+@web-pack:seo-specialist audit SEO for the landing page
+```
+
+Address the agent directly and name the page or the specific SEO concern. It reads the project's `CLAUDE.md` and `.claude/project.json` for brand and domain vocabulary, so you do not need to restate them.
+
+## Inputs
+
+- **Target page or route** — which page to work on, for example `/pricing` or the comparison pages — required.
+- **Task focus** — audit, meta tags, structured data, Core Web Vitals, or sitemap — optional; it runs a full audit when you leave this out.
+- **Target keywords or competitors** — useful for comparison pages, where each page targets specific search queries — optional.
+
+## What you get back
+
+An audit of the current state (meta tags, JSON-LD, canonicals, alt text, heading hierarchy, `robots.txt`, sitemap), then edits to the page components — usually `Helmet` blocks, JSON-LD script tags, and image attributes. It closes against a quality checklist covering unique titles, Open Graph coverage, single `h1` per page, `hreflang` pairs, and the Core Web Vitals targets, so you can see what passed and what is still open.
+
+## Worked example
+
+```
+@web-pack:seo-specialist optimize meta tags for comparison pages
+```
+
+The agent reads each comparison route, finds three pages sharing one generic title and no
+Open Graph tags. It writes a unique `<title>` and description per page targeting that
+page's search query, adds `og:` and `twitter:` tags plus a canonical URL, and sets the
+`h1` to a distinct comparison headline. You end up with edited page components and a
+checklist showing which items now pass.
+
+## Related
+
+- `landing-page-specialist` — prefer it when the goal is conversion rate, not search visibility.
+- `performance-optimizer` — prefer it for deep performance work beyond the SEO-facing vitals.
+- `i18n-specialist` — prefer it when translation coverage is the problem; the two coordinate on multilingual SEO.
+- `react-specialist` — prefer it when the fix is an SPA rendering strategy change, such as adopting prerendering.

@@ -6,6 +6,10 @@ description: "Use this skill when the user has a Mermaid source file (.mmd) and 
 allowed-tools: Read, Bash, Write
 color: teal
 mermaid-version: "11.4.1"
+docs:
+  status: reviewed
+  source_sha: 03d848ecd091
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -219,3 +223,64 @@ mermaid-viewer/
 ## Real-world provenance
 
 Every gotcha above corresponds to a bug observed and fixed in the session that authored this skill (a database schema viewer, April 2026). Full Playwright verification trail is in git history.
+
+# How to use
+
+## What it does
+
+Turns an existing Mermaid source file (`.mmd`) into a single self-contained HTML page you can open in a browser. The page renders the diagram, gives you pan and zoom, a search filter for ER diagrams, and a button to download the original Mermaid source. The styling is a dark theme with a cyan-green accent, so the output looks finished rather than raw.
+
+## When to use it
+
+- You have a `.mmd` file on disk and want to look at it in a browser instead of a text editor.
+- Someone asks you to "convert this mermaid to HTML" or "make a viewer for this diagram".
+- A database schema in an ER diagram needs to be explorable — you want to search entities by name.
+- You want to hand a reviewer one file they can open, with no build step or server on their side.
+
+## When not to use it
+
+- You want a new diagram written from scratch — this skill needs an existing `.mmd` file as input.
+- You need a PNG, PDF, or standalone SVG — this produces interactive HTML only.
+- You want the diagram content changed — this renders the source, it never edits it.
+- You are wiring this into a CI job — call `scripts/build.sh` directly and skip the orchestration.
+
+## How to invoke
+
+```
+Skill(skill: "core:mermaid-viewer")
+```
+
+Point it at the `.mmd` file. Add `--out <path>` when you do not want the HTML written next to the source, and `--title` / `--subtitle` when the leading `%%` comments do not already carry a good heading.
+
+## Inputs
+
+- `.mmd` file path — the Mermaid source to render — required.
+- Output path (`--out <path>`) — where the HTML lands; defaults to the source directory with an `.html` extension — optional.
+- Title — the heading and browser tab text; inferred from `%%` comments or the diagram declaration when omitted — optional.
+- Subtitle — one line under the heading — optional.
+
+## What you get back
+
+One HTML file at the output path. It loads Mermaid 11.4.1 and svg-pan-zoom 3.6.2 from a public CDN when opened, so the browser needs network access. Inside you get the rendered diagram, pan/zoom controls, an entity search box, meta badges with counts parsed from the source, and a download button that returns the original `.mmd` text. You also get told the file path, whether the golden-file smoke test passed, and any browser console errors seen during verification.
+
+## Worked example
+
+```
+Skill(skill: "core:mermaid-viewer")
+
+Request: "render docs/architecture.mmd, write it to /tmp/arch-viewer.html"
+
+What happens: the source is read, stats.sh reports a flowchart with a node
+count, build.sh fills the template, verify.sh serves the file so a browser
+check can confirm zero console errors, then the server is stopped.
+
+You end up with: /tmp/arch-viewer.html — open it and pan around.
+```
+
+Note the default output path writes next to the source. If the `.mmd` lives in a git-tracked directory, pass `--out` so you do not accidentally stage generated HTML.
+
+## Related
+
+- `c4-architecture-docs` — prefer it when you still need to author the diagrams; it produces the `.mmd` files this skill renders.
+- `testing` — prefer it when you want Playwright tests written against the generated viewer.
+- `supply-chain-security` — prefer it when the CDN dependency is a problem and you need a self-hosting plan.

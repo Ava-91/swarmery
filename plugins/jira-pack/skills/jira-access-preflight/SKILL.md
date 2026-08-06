@@ -3,6 +3,10 @@ name: jira-access-preflight
 description: "Provider-agnostic Jira access verification -- the first unconditional step of every jira-pack run. Resolves the Atlassian MCP tools by NAME (never by channel prefix), pins the discovered prefix for the run, resolves cloudId, and smoke-reads the target ticket. Any failed step stops the run with a JIRA ACCESS: FAILED report before any write call is made. NOT for reading/writing ticket content itself (that's jira-tasks / the write tools) and NOT for validating the jira config block (that's jira-config)."
 version: "0.1.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 6c6c80d7bc0f
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -164,3 +168,58 @@ accounts).
   failure block, explicit "what's missing" + "how to fix" shape) this skill's failure report
   follows.
 - `references/setup.md` -- step-by-step enablement for both channels.
+
+# How to use
+
+## What it does
+
+This skill checks that a run can actually reach your tracker before it touches a real ticket. It finds the Atlassian MCP tools by name instead of guessing which channel registered them, locks onto the prefix it found, resolves the site id, and reads the target ticket once. If any of that fails, the run stops with a report that names the broken step and how to fix it — no half-working run that reads a ticket but silently fails to comment on it.
+
+## When to use it
+
+- You are starting any jira-pack run and have not yet verified access this session.
+- Two tracker channels may be registered at once (a plugin and a personal connector), and you need one of them pinned for the whole run.
+- A run failed with a permissions or 404 error and you want to know whether the token can see the site at all.
+- You are writing a flow that will comment on or transition a ticket, and you want every write gated behind a passing read.
+
+## When not to use it
+
+- You want to read ticket content — use the `jira-tasks` skill once preflight has passed.
+- You want to check the `jira` config block for missing keys — use the `jira-config` skill.
+- You want to post a verdict or move a ticket — use `jira-writeback`.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:jira-access-preflight")
+```
+
+Run it as the unconditional first action of a jira-pack run, before any read and long before any write.
+
+## Inputs
+
+- Target ticket key — the ticket the run is about — required for the smoke read in Step 4.
+- `jira.baseUrl` — the site URL from the config block — required, used to pick the right channel and resolve the site id.
+
+## What you get back
+
+On success: a pinned tool prefix and a resolved site id that every later call in the run reuses, plus the ticket's summary, status, description, and comments. The chosen channel is printed so a reader can see which one the run used. On failure: a `JIRA ACCESS: FAILED` block naming the failed step, what is unavailable, the guarantee that nothing was written, and enablement steps for both channels.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:jira-access-preflight")
+
+→ resolves 5 tool names; one prefix found, pinned for the run
+→ site id resolved from the resource whose URL matches jira.baseUrl
+→ ticket read: summary, status, description, comments
+→ preflight passed; the run continues to triage
+```
+
+If the fifth tool had not resolved, you would get the failure block instead and nothing downstream would run.
+
+## Related
+
+- `jira-config` — prefer it when the question is whether the config block itself is valid.
+- `jira-tasks` — read-only ticket queries after preflight has passed.
+- `troubleshooting` — the diagnostic-report style this skill's failure block follows.

@@ -16,6 +16,10 @@ skills:
   - gitops-promotion
   - release-promotion
   - supply-chain-security
+docs:
+  status: reviewed
+  source_sha: c602127ff811
+  updated: 2026-08-06
 ---
 
 # Role
@@ -160,3 +164,58 @@ The user wants to add a deploy verification job. I should first inspect the curr
 - **Missing rollback path**: pipeline deploys but has no rollback job. Every deploy pipeline must document the rollback command.
 - **Auth credential leak**: long-lived service account key in CI variables. Use Workload Identity Federation instead.
 - **Duplicate jobs on MR and default branch**: wastes CI minutes and can cause race conditions. Separate with `rules:` conditions.
+
+# How to use
+
+## What it does
+
+This agent designs and maintains GitLab CI/CD pipelines for you: build, scan, deploy, verify, promote, and roll back. It reads your existing CI files, reshapes jobs so merge-request checks and default-branch deploys stay separate, wires the image digest captured at build through to deploy and promotion, and validates every change with `glab ci lint`. It does not write application code.
+
+## When to use it
+
+- Your `.gitlab-ci.yml` runs the same jobs twice — once on merge requests and once on the default branch — and you want them separated with `rules:`.
+- A deploy pipeline has no verification step, and you want one that checks the chart upgrade exits clean, the health endpoint returns 200, and no pods crash-loop.
+- You promote by a mutable tag such as `latest` and want digest-based promotion instead.
+- A deploy pipeline ships to production with no documented rollback command or manual approval gate.
+
+## When not to use it
+
+- You need live cluster surgery or an actual chart rollout — use `@infra-pack:helm-deployment`.
+- The pipeline fails because the application code does not compile — use `@core:build-error-resolver`.
+- An environment is already broken and you are in incident response — use `@core:sre-orchestrator`.
+
+## How to invoke
+
+```
+@infra-pack:gitlab-ci-specialist add a deploy verification job that checks the health endpoint
+```
+
+Address the agent and state the pipeline change you want in one sentence. Name the repository if the work is not in the one you are currently sitting in.
+
+## Inputs
+
+- **Pipeline change request** — what you want the pipeline to do differently — required.
+- **Repository path** — which repo holds the CI files to change — optional; defaults to the current one.
+- **`Reference:` step file path** — a plan step doc the agent should attach its completion report to — optional.
+
+## What you get back
+
+Modified `.gitlab-ci.yml` files (and any included CI files it touched), plus a completion report under 30 lines listing each file changed, the `glab ci lint` result, whether digest propagation was verified, and the documented rollback command. Anything with an uncertain interaction with existing jobs is flagged `[LOW-CONFIDENCE]` rather than shipped silently.
+
+## Worked example
+
+```
+@infra-pack:gitlab-ci-specialist add digest-based promotion through the version-pinning repo
+```
+
+The agent reads the current CI files, finds that the deploy job resolves a floating tag,
+adds a build-stage step that captures the image digest into a job artifact, rewrites the
+deploy and promote jobs to consume that digest, and puts `when: manual` on the production
+promotion. It runs `glab ci lint`, then reports the changed files, the lint result, and the
+rollback command for the promotion pipeline.
+
+## Related
+
+- `@infra-pack:helm-deployment` — when the change is in the chart or the rollout itself, not the pipeline.
+- `@core:ci-incident-responder` — when a pipeline is already red and you need failure forensics first.
+- `@core:build-error-resolver` — when the fix belongs in application code, not CI configuration.

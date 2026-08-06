@@ -3,6 +3,10 @@ name: jira-tasks
 description: "Read-only Jira for the project's tracker: my tickets, open tickets, ticket status, jira backlog, link a workspace task to a ticket. NOT for write ops (create/transition/comment/log-work) and NOT for Confluence."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 29018bba26b7
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -130,3 +134,58 @@ for the same boundary stated from the other side.
 - Atlassian plugin skills (`atlassian:generate-status-report`,
   `atlassian:capture-tasks-from-meeting-notes`) — heavier report/write workflows; this skill
   is the lightweight read path.
+
+# How to use
+
+## What it does
+
+This skill answers Jira questions without changing anything. Ask what you are working on, what a ticket's status is, or what changed in the last week, and you get a compact table back instead of raw issue JSON. It also links tickets to your workspace task cards in both directions, so a ticket lookup surfaces prior work you already have on disk.
+
+## When to use it
+
+- You want your open tickets, a team's in-progress list, or a project backlog view.
+- You need the live status, assignee, and labels of one ticket by key.
+- You are writing up a workspace task and want its `Tickets:` line reconciled against real Jira status.
+- You are about to start work and want to check whether a task card for that ticket already exists.
+
+## When not to use it
+
+- You want to create, transition, comment on, or log work against a ticket — those are writes, and each needs an explicit request from you first.
+- You want a full autonomous run on a ticket (reproduce, fix, evidence comment, QA transition) — use `/jira-fix` instead.
+- You want a formatted status report published to a wiki — use `atlassian:generate-status-report`.
+- You need Confluence pages rather than issues — this skill is Jira-only.
+
+## How to invoke
+
+```
+Skill(skill: "core:jira-tasks")
+```
+
+Invoke it, then state the question in plain words — "my open tickets", "status of `<PROJECT-KEY>-115`", "what moved this week".
+
+## Inputs
+
+- Question or ticket key — what you want to know — required.
+- Jira base URL and project key — read from the project's `CLAUDE.md` or `.claude/project.json`; you are asked once if neither records them.
+- Pinned cloudId — optional; it is re-resolved automatically if a call returns 404.
+
+## What you get back
+
+A table sorted most-recently-updated first, with key, status, summary, and updated date. Summaries are truncated to one line. For a single ticket you get a short field list instead — status, assignee, labels, updated, and the gist of the description. If a workspace task card already references the ticket, its slug is named inline. Nothing in Jira is modified.
+
+## Worked example
+
+```
+Skill(skill: "core:jira-tasks")
+> what am I working on in <PROJECT-KEY>?
+```
+
+The skill loads the Atlassian tools by name, resolves the site's cloudId, and runs
+`assignee = currentUser() AND project = <PROJECT-KEY> AND statusCategory != Done ORDER BY updated DESC`.
+You get a four-column table of your open tickets, with a note where an existing task card already carries one of those keys on its `Tickets:` line.
+
+## Related
+
+- `jira-pack:jira-fix` — prefer it when you want a ticket driven end to end, not just read.
+- `jira-pack:jira-config` — prefer it when the Jira settings themselves need validating.
+- `atlassian:triage-issue` — prefer it when checking a bug report for duplicates before filing.

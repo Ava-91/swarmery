@@ -15,6 +15,10 @@ skills:
   - functional-design
   - nextjs-migration
   - browser-verification
+docs:
+  status: reviewed
+  source_sha: f19c4eb405b6
+  updated: 2026-08-06
 ---
 
 # Role
@@ -190,3 +194,57 @@ The user wants to refactor the telemetry map into a streaming Suspense boundary.
 # Browser verification (Playwright MCP)
 
 Use the browser to verify the components you build render correctly, are keyboard-navigable, and emit no console/hydration errors -- closing the loop on the accessibility and performance gates above. Follow the **`browser-verification` skill** (canonical Step 0 / core loop / guardrails). Role-specific note: full interactive loop is allowed; the browser confirms behavior but does not replace authoring/running tests.
+
+# How to use
+
+## What it does
+
+This agent builds and refactors React 19 / Next.js 15 components in your project's main app. It decides the server/client boundary for you, keeps the route's client bundle under 150 KB gzipped, and holds every component it ships to an accessibility gate (Lighthouse ≥ 90, zero axe-core violations). You get working component code plus a short report of the numbers it hit.
+
+## When to use it
+
+- You need a new component, hook, or Suspense/streaming pattern inside the App Router.
+- A page mixes data fetching and interaction, and you want it split into a server shell with a client island.
+- A route's bundle has grown past budget and you want it split or lazy-loaded.
+- An existing component has no keyboard support or ARIA attributes and needs to pass the accessibility gate.
+
+## When not to use it
+
+- You need a net-new design token or visual language — invoke `@core:ui-designer` first.
+- The work is a backend route handler or server action — use `@core:api-designer`.
+- You want a cross-page performance audit rather than one component — use `@core:performance-optimizer`.
+- The change is a compile or type error with no component design in it — use `@core:build-error-resolver`.
+
+## How to invoke
+
+```
+@core:react-specialist <what to build or refactor>
+```
+
+Address it directly with the component, hook, or pattern you want. It reads the surrounding code first, so a route or file path in your request makes the result better.
+
+## Inputs
+
+- Requirement — the component, hook, or pattern to build — required.
+- Design reference — an existing screen, mockup, or token set to match — optional.
+- `Reference:` step file path — the plan step this work belongs to, for the completion report — optional.
+- `screenshots_dir` — a task workspace directory; browser-verification screenshots are saved there as `NN-phase{X}-{slug}.png` — optional.
+
+## What you get back
+
+Component and hook source files, plus tests with an axe-core check, written into your repo. The final message is a completion report under 40 lines: files changed, the server/client component split, route bundle size, LCP and INP, the axe-core and Lighthouse results, and test status. Anything it could not measure in this environment is marked `[LOW-CONFIDENCE]` rather than guessed.
+
+## Worked example
+
+```
+@core:react-specialist split the order-detail page into a server shell
+plus a client island for the line-item editor
+```
+
+It reads the current page and nearby components, keeps the data fetch server-side with an `error.tsx` beside it, moves only the editor behind `"use client"`, wraps the slow region in a co-located `<Suspense>`, and adds keyboard and ARIA support to the editor controls. Then it runs typecheck, build, and tests. You end up with the split files, a passing test that includes an axe-core assertion, and a report showing the new route bundle size against the 150 KB budget.
+
+## Related
+
+- `@core:ui-designer` — when the component needs new design tokens or a fresh visual pattern.
+- `@core:performance-optimizer` — when the slowdown spans several pages, not one component.
+- `@core:quality-checker` — when you want the shipped work reviewed rather than written.

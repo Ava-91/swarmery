@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob
 disable-model-invocation: true
+docs:
+  status: reviewed
+  source_sha: 863955755827
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -207,3 +211,55 @@ CONTRACT-ISSUES: device | CRITICAL: 0 | HIGH: 0 | MEDIUM: 2 | LOW: 1
 - `code-standards` -- defer to this skill for coding convention violations (naming, type safety, style); compose when a contract issue overlaps with a naming convention issue
 - `api-integration` -- defer to this skill for implementing new API routes or integration patterns; compose when a contract check reveals a missing integration pattern
 - `code-quality` -- defer to this skill for function length, complexity, and code smell audits; the contract check is narrower and field-level specific
+
+# How to use
+
+## What it does
+
+This skill checks that one API entity means the same thing in every layer that defines it. It reads the ORM table, the Zod validation schema, the route handler's JSON response, and the SQL migration, then compares them field by field. You get a report of every field-name mismatch, type mismatch, and nullable/optional inconsistency, each with a `file:line` citation and a suggested fix. It reads only — it never edits your code.
+
+## When to use it
+
+- You added, renamed, or retyped a column in the ORM schema and want to know what else drifted.
+- You changed a route handler's response shape and need to confirm the Zod schema still matches it.
+- A SQL migration landed and you want to verify the ORM table definition kept up.
+- You wrote a new Zod schema and want a field-by-field check against the database before shipping.
+
+## When not to use it
+
+- You are writing a new route handler from scratch — use `api-integration`.
+- The problem is a naming *convention* preference or an `any` type — use `code-standards`.
+- You want function length, complexity, or code-smell findings — use `code-quality`.
+- You are running a migration with no schema-alignment question attached.
+
+## How to invoke
+
+```
+Skill(skill: "core:api-contract")
+```
+
+Name the entity you want checked and whether you want one entity or a full scan. The skill locates the four sources itself; you do not need to supply file paths.
+
+## Inputs
+
+- `entity` — the entity name to verify, such as `order-line-item` — required.
+- `scope` — either `single-entity` or `full-scan` — required.
+
+## What you get back
+
+A Markdown report per entity: the route handler DTO, the shared client type, the database schema, an Issues Found table (severity, location, issue, fix), an Action Required list, and a final summary line in the form `CONTRACT-ISSUES: {entity} | CRITICAL: {n} | HIGH: {n} | MEDIUM: {n} | LOW: {n}`. Findings below 80% confidence are marked `[LOW-CONFIDENCE]`. A full scan is capped at 500 lines. Nothing is written or changed — fixes are handed to a developer or an implementation agent.
+
+## Worked example
+
+```
+Skill(skill: "core:api-contract")
+entity: order-line-item, scope: single-entity
+```
+
+The skill reads the ORM table `order_line_item`, the Zod schema beside it, the route handler under `apps/<mainApp>/src/app/api/`, and the matching `CREATE TABLE` migration. It finds that Zod declares `productId` while the ORM and SQL both use `product_id`, and that the handler returns raw ORM rows with no output validation. You end up with three findings — two Medium, one Low — each citing a line, plus the closing line `CONTRACT-ISSUES: order-line-item | CRITICAL: 0 | HIGH: 0 | MEDIUM: 2 | LOW: 1`.
+
+## Related
+
+- `api-integration` — prefer it when you are building the route rather than checking it.
+- `code-standards` — prefer it for convention, naming, and type-safety review.
+- `code-quality` — prefer it for complexity and code-smell audits across a file.

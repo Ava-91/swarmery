@@ -2,6 +2,10 @@
 description: Thin entry point for `/design-implement <export-path|url> [--route <path>] [--viewport WxH] [--from-screenshots] [--dry-run]` — parses and validates the argument shape only, then hands control to the design-implement skill. No run logic lives here.
 allowed-tools:
   - Bash
+docs:
+  status: reviewed
+  source_sha: f801c707a561
+  updated: 2026-08-06
 ---
 
 # /design-implement — turn a design handoff into an implemented screen
@@ -101,3 +105,56 @@ here are the flags."
   invokes for Phases 5-6, with its autonomy contract and eight STOP triggers.
 - `plugins/jira-pack/commands/jira-fix.md` — the thin-proxy command format this
   file follows.
+
+# How to use
+
+## What it does
+
+You have a design handoff — an exported HTML file, a zip, a share URL, or a folder of screenshots — and a screen in your project that should match it. This command is the entry point that turns that handoff into an implemented, verified screen. It checks only that your argument and flags are well formed, then hands the whole run to the `design-implement` skill, which acquires the export, reads ground truth, plans the change, implements it, and measures the result with a pixel diff.
+
+## When to use it
+
+- You have a design export on disk (`.html`, `.zip`, or a directory) and want the matching route in your app built or corrected to match it.
+- You want to see the plan and the file list before anything is written — run it with `--dry-run`.
+- You only have screenshots of the design and accept the reduced accuracy that implies.
+- You need a stable entry point for a headless or scheduled run, where no one is there to address an agent by name.
+
+## When not to use it
+
+- You want to measure an already-implemented screen against a design without changing code — use the `design-verify` skill.
+- You only need the export parsed or the tokens pulled out of a design system — use the `design-acquire` skill.
+- You want to check UI behaviour with no reference design at all — use the `browser-verification` skill in core.
+
+## How to invoke
+
+```
+/design-implement <export-path|url> [--route <path>] [--viewport WxH] [--from-screenshots] [--dry-run]
+```
+
+Type it in an interactive session, or send it as the prompt of a headless run.
+
+## Inputs
+
+- `<export-path|url>` — required. A path ending in `.html` or `.zip`, an existing directory, or an `http(s)` URL.
+- `--route <path>` — optional. The route in your app the design belongs to; must start with `/`.
+- `--viewport WxH` — optional. Authoring viewport, e.g. `1440x900`. Omitted, the export's own viewport is used.
+- `--from-screenshots` — optional. Declares the degraded mode where only screenshots exist. Rejected together with a `.html` or `.zip` argument, because markup is better ground truth.
+- `--dry-run` — optional. Stop at the plan; nothing in your project is written.
+
+## What you get back
+
+A plan you approve before any project file changes, then the implemented screen and a pixel diff measuring it against the design. On a malformed argument you get a usage error and the run stops — the skill never starts on input that does not parse.
+
+## Worked example
+
+```
+/design-implement ./handoff/checkout.zip --route /checkout --viewport 1440x900
+```
+
+The argument shape checks out, so control passes to the skill. It unpacks the export, reads your design tokens and components, inspects the current `/checkout` route, and shows you a plan naming the exact files it wants to touch. You approve it; the executor writes those files, screenshots the live route, and reports the diff regions it still needs to close.
+
+## Related
+
+- `design-implement` skill — the six phases behind this command; read it when you want to know how a phase decides something.
+- `design-implementer` agent — the executor the skill runs for the implement-and-verify phases, with its stop conditions.
+- `design-verify` skill — prefer it when the screen already exists and you only want the diff.

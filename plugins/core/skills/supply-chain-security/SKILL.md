@@ -3,6 +3,10 @@ name: supply-chain-security
 description: "Audit and harden container supply-chain controls: image scanning, SBOM generation, immutable digest promotion, rollback retention, and image signing readiness. Not for application code vulnerabilities (use security-audit) or pipeline YAML structure (use deployment)."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: c2261d65d4d6
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -199,3 +203,58 @@ Process: Read the CI config -> verify Trivy runs after build -> verify severity 
 - the cloud pack's CI/CD auth skill -- registry authentication for image push and secret access in CI
 - `release-promotion` -- the `general/versions` promotion workflow
 - `monorepo-coordination` -- when supply-chain changes span multiple repos
+
+# How to use
+
+## What it does
+
+This skill audits the container image lifecycle in your CI/CD pipeline against four baseline controls — image scanning, SBOM generation, immutable digest promotion, and rollback retention — plus two roadmap controls (image signing and provenance attestation). You get back a gap report that says, for each control, what you have today, whether there is a gap, and exactly what to change.
+
+## When to use it
+
+- You want to know whether your pipeline blocks a build on a critical CVE, and where the scan runs.
+- Your deployments reference mutable tags like `:main` or `:v1.2.3` and you want to move to `@sha256:` digests.
+- Someone asks "should we start signing our images?" and you need a readiness answer, not an opinion.
+- You just added a scanner to CI and want the configuration checked — threshold, ordering, artifact storage.
+
+## When not to use it
+
+- Application code vulnerabilities (injection, auth bypass, secrets in source) — use `security-audit`.
+- Pipeline YAML structure, stage ordering, or job dependencies — use `deployment`.
+- Dependency-level checks like `npm audit` or `pip-audit` — those live in `security-audit`.
+- Deployments that ship over SSH to `<device>` rather than as container images — the security model is different and out of scope.
+
+## How to invoke
+
+```
+Skill(skill: "core:supply-chain-security")
+```
+
+Say what you want audited and, if you want the roadmap controls included, ask for `roadmap` depth.
+
+## Inputs
+
+- **Scope** — required — which pipeline or repository to audit, for example `apps/<mainApp>` CI or the full promotion path.
+- **Depth** — optional — `baseline` covers the four baseline controls; `roadmap` adds signing and provenance. Defaults to `baseline`.
+
+You also need read access to the CI configuration and, if your project pins promoted versions in files, read access to those.
+
+## What you get back
+
+A single gap report, capped at 150 lines. It opens with scope, date, and depth, then a table with one row per control: target state, current state, gap yes/no, and remediation steps. Below that comes a list of unsafe patterns with `file:line` citations, then prioritized recommendations. Roadmap items are labeled future work, never blockers. Nothing is written or changed — the audit is read-only.
+
+## Worked example
+
+```
+Skill(skill: "core:supply-chain-security")
+"Is the CI pipeline for apps/<mainApp> supply-chain hardened?"
+```
+
+The skill reads your CI config and finds a build-and-publish job with no scan stage, no SBOM step, a promotion entry using the mutable tag `:main`, and no retention policy. You get back a four-row table: add a scanner after build with `--severity CRITICAL,HIGH --exit-code 1`, emit a CycloneDX SBOM as an artifact, switch promotion to a `@sha256:` digest, and configure a registry cleanup policy with a 30-day window — each cited to the line that proves it.
+
+## Related
+
+- `security-audit` — reach for it when the question is about application code or secrets rather than images.
+- `deployment` — reach for it when the pipeline's structure, not its controls, is what needs review.
+- `release-promotion` — reach for it when you are changing the promotion workflow itself.
+- `monorepo-coordination` — reach for it when a supply-chain fix has to land across several repositories at once.

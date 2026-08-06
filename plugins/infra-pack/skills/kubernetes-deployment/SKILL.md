@@ -3,6 +3,10 @@ name: kubernetes-deployment
 description: "Use this skill for CLUSTER-LEVEL Kubernetes operations: Minikube/k3s lifecycle, GCP firewall rules, minikube tunnel debugging, and bootstrap-secret patterns. NOT for app-service Helm deploys or upgrade orchestration (use deployment) or Helm chart template authoring (use helm-chart-expert)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: reviewed
+  source_sha: f43e8968c4b3
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -178,3 +182,59 @@ Verification: kubectl get secret confirms all 3 secrets in the $NAMESPACE namesp
 - `docker-build` -- defer to it for image builds; this skill only consumes image tags/digests
 - `release-promotion` -- defer to it for cross-environment promotion; compose when a drift check reveals promotion state mismatch
 - `gitops-promotion` -- defer to it for GitOps pull-based reconciliation patterns
+
+# How to use
+
+## What it does
+
+This skill handles the Kubernetes layer underneath your Helm deploys: bringing local, edge, or cloud clusters up and keeping them reachable. It covers cluster lifecycle, cloud firewall rules for the cluster VM, tunnel and ingress connectivity debugging, bootstrap-secret checks, NetworkPolicy selectors, and version-drift diagnosis. You get a read-only diagnosis or a reviewed command sequence — never a silent change to shared infrastructure.
+
+## When to use it
+
+- Traffic to a cluster VM is blocked and you suspect a missing or misplaced firewall rule.
+- Ports 80/443 stop responding after an ingress upgrade and you need to trace the tunnel.
+- A first deploy into a fresh cluster fails because bootstrap secrets were never created.
+- Cluster state no longer matches the pinned image digest and you need to find the drift.
+
+## When not to use it
+
+- Running the Helm upgrade-and-verify cycle — use the `deployment` skill.
+- Writing or fixing chart templates and `_helpers.tpl` — use `helm-chart-expert`.
+- Building or pushing container images — use `docker-build`.
+- Moving an image from one environment to the next — use `release-promotion`.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:kubernetes-deployment")
+```
+
+Invoke it, then state the operation, the target environment, and the symptom you are seeing.
+
+## Inputs
+
+- `operation` — one of `cluster-mgmt`, `firewall`, `tunnel-debug`, `bootstrap-secrets`, `networkpolicy`, `drift-check` — required.
+- `environment` — the target environment, for example `localdev` or `<envAlias>` — required.
+- `symptom` — the error message or the behavior you are debugging — optional.
+
+## What you get back
+
+A short report: the operation and cluster status, a pre-flight result, a numbered list of commands with the output each should produce, and one verification command. Cluster commands stay under 80 lines; connectivity diagnosis under 120. Nothing destructive runs without asking you first, and every proposed change is shown before it is applied.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:kubernetes-deployment")
+"HTTPS to the cluster VM times out in <envAlias>. Open port 443."
+
+→ Pre-flight lists existing rules and finds no HTTPS rule on the cluster network.
+→ You review the create command, with an explicit --network flag, before it runs.
+→ Verification: the rules list shows the new rule on the correct network, not the default VPC.
+```
+
+## Related
+
+- `deployment` — prefer it when the Helm release itself is what you are changing.
+- `helm-chart-expert` — prefer it when the failure traces back to a chart template.
+- `infrastructure-as-code` — prefer it to capture a manual cluster fix back into code.
+- `keycloak` — prefer it for identity config; compose the two when an auth pod fails on ingress.

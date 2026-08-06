@@ -14,6 +14,10 @@ skills:
   - embedded-systems
   - code-standards
   - testing
+docs:
+  status: reviewed
+  source_sha: bea451ba8fa6
+  updated: 2026-08-06
 ---
 
 # Role
@@ -190,3 +194,64 @@ CPU usage on Pi: 18%
 | Thermal throttle (Pi CPU hits 80C under load) | Reduce polling frequency or capture resolution before investigating further |
 | asyncio blocking (sync call on event loop) | Wrap in `asyncio.to_thread()` and retest |
 | systemd service fails to restart | Check journald logs, verify RestartSec/WatchdogSec config, test with `systemctl restart` |
+
+# How to use
+
+## What it does
+
+This agent writes the hardware-facing Python for a Raspberry Pi 5 edge device: UART readers, camera capture, GPIO control, and systemd units. Every hardware call it writes has a `MOCK_MODE` fallback, so the code you get back is testable in CI where no board exists. It works to fixed resource targets (CPU, latency, recovery time) and reports whether it met them.
+
+## When to use it
+
+- You need an async UART, camera, or GPIO driver written or fixed inside the edge service.
+- Hardware code exists but has no mock path, so CI cannot run it.
+- A systemd unit needs restart and watchdog behaviour that survives device failures.
+- Edge code is over its CPU or frame-latency budget and needs profiling and repair.
+
+## When not to use it
+
+- MAVLink message framing or protocol parsing — use `@uav-pack:mavlink-specialist`.
+- Streaming telemetry out to the web portal — use `@uav-pack:telemetry-processor`.
+- Container or Helm deployment changes — use `@infra-pack:helm-deployment`.
+- Multi-phase work spanning several repos — start with `@core:tech-lead`.
+
+## How to invoke
+
+```
+@uav-pack:embedded-systems Implement UART reader for MAVLink with reconnect
+```
+
+State the hardware interface you want. You may also pass a plan reference or a context artifact when a lead agent dispatches this agent as part of a larger phase.
+
+## Inputs
+
+- `task` — the hardware interface to implement or fix — required.
+- `plan` — a phase plan document with step files — optional.
+- `context` — a prior context-gathering artifact — optional.
+
+## What you get back
+
+New or modified Python files in the edge service repo, with type hints, docstrings, and unit tests that use mocked hardware. The final chat message is a diff summary plus test results. The agent also writes a Completion Report of 30 lines or fewer listing every file touched, mock-mode and hardware test outcomes, and measured CPU usage on the device — or the reason a measurement was skipped.
+
+## Worked example
+
+```
+@uav-pack:embedded-systems Add picamera2 capture at 720p with MOCK_MODE fallback
+```
+
+The agent reads the existing camera code first, then writes a 720p pipeline with
+exposure controls, a synthetic JPEG for mock mode, an async frame grab, and camera
+release in a `finally` block. You end up with the capture module, three tests
+covering capture, mock, and cleanup, and a report like:
+
+```
+MOCK_MODE tests: pass (3/3, 1.8s)
+Hardware tests: pass (latency 142ms at 720p)
+CPU usage on Pi: 18%
+```
+
+## Related
+
+- `@uav-pack:edge-python-specialist` — broader edge-service Python work, including WebSocket transport.
+- `@uav-pack:mavlink-specialist` — when the problem is protocol semantics rather than the wire or the board.
+- The `embedded-systems` skill — guidance for reviewing edge code you are writing yourself.

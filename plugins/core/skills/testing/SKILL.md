@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Bash, Grep, Glob
 color: teal
+docs:
+  status: reviewed
+  source_sha: 86527cbef0ee
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -316,3 +320,62 @@ Apply the fix, then run the test again. Also run the full suite to check for reg
 ## Coverage targets (reference)
 
 See `test-coverage` skill for the authoritative coverage target table. This skill is responsible for writing tests to meet those targets, not defining them.
+
+# How to use
+
+## What it does
+
+This skill is your hands-on test engineer. It writes new tests, runs existing suites, and debugs failures across a multi-repo project — Python with pytest, TypeScript with Jest and React Testing Library, browser flows with Playwright, and deployment config through template renders and dry-run installs. It picks the right framework, file location, and naming convention for the repo you point it at, then runs the test to prove it passes.
+
+## When to use it
+
+- You want tests written for a module you just implemented, or added to existing code.
+- You want to run a suite and see pass/fail — a single file, unit-only, or the full run.
+- A test is failing or flaky and you want the root cause found and fixed.
+- You are unsure which testing pattern fits a piece of code and want a worked answer.
+
+## When not to use it
+
+- Finding out *what* lacks tests — run `test-coverage` first, then come back here to write them.
+- Adding test jobs to a CI pipeline — that is `deployment`.
+- Linting or type checking — use `code-standards` or `code-quality`.
+- Debugging a live application rather than a test — use `troubleshooting`.
+
+## How to invoke
+
+```
+Skill(skill: "core:testing")
+```
+
+Invoke it and state your goal (`write`, `run`, or `debug`) plus the target module, test file, or test name.
+
+## Inputs
+
+- **Goal** — one of `write`, `run`, or `debug` — required.
+- **Target** — a module path, test file, or test name to work on — required.
+- **Repository** — which repo the target lives in — optional; inferred from the path unless it is ambiguous.
+
+## What you get back
+
+For `write`: a new test file in the correct location following the repo's conventions, capped at 200 lines per file, already executed so you know it passes. For `run`: the execution output with a pass/fail summary. For `debug`: the identified root cause, with the fix applied or recommended, plus a full-suite re-run to catch regressions.
+
+## Worked example
+
+```
+Skill(skill: "core:testing")
+
+"Write unit tests for the coordinate formatter in apps/<mainApp>."
+
+→ Confirms the repo uses Jest, reads src/lib/utils/formatCoordinates.ts,
+  writes src/lib/utils/__tests__/formatCoordinates.test.ts with AAA-style
+  cases for the normal path and the zero-value edge case, then runs
+  `npx jest src/lib/utils/__tests__/formatCoordinates.test.ts`.
+
+You end up with a passing test file and the runner output showing 2 passed.
+```
+
+## Related
+
+- **test-coverage** — prefer it when you need to know which code lacks tests; it owns the coverage targets.
+- **code-standards** — prefer it for naming conventions and code quality review rather than test authoring.
+- **troubleshooting** — prefer it when the application itself is misbehaving, not the test.

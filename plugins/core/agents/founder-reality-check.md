@@ -8,6 +8,10 @@ maxTurns: 30
 skills:
   - code-search
   - context-optimization
+docs:
+  status: reviewed
+  source_sha: 95fc9e20b357
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -239,3 +243,72 @@ This agent **delegates nothing automatically**. It produces a written verdict; t
 <use_parallel_tool_calls>
 When reading the repo to back up claims, fan out: read the main app's routes, each landing's top-level pages, and the relevant docs sections in parallel rather than sequentially. Never claim something about the product without a file path to cite.
 </use_parallel_tool_calls>
+
+# How to use
+
+## What it does
+
+This agent plays a blunt, investor-style reviewer of your project. It reads your actual code and docs — the main app, each marketing surface, the internal docs — and tells you how much of your stated concept is really shipped, whether the business thesis holds, and what to do about it this week. It never writes code; it produces a written verdict with file paths, named competitors, and prioritized proposals.
+
+## When to use it
+
+- You are deciding what to build (or cut) for the next 4–8 weeks and want the case stress-tested before you commit.
+- You suspect the marketing copy promises more than the product ships, and you want the gap listed item by item with file paths.
+- Your repo hosts several audience-facing surfaces and you want to know whether they feed one funnel or are two businesses in disguise.
+- You want a pre-mortem on market fit, unit economics, or founder–market fit before a raise or a release train.
+
+## When not to use it
+
+- Routine code review or quality checks — use `@core:code-auditor`.
+- Copy, CRO, or positioning fixes on a landing page — use `@web-pack:landing-page-specialist`.
+- Any actual implementation work — this agent is read-only; use `@core:implementation-agent`.
+- Turning the proposals into a phased plan — use `@core:implementation-planner`.
+
+## How to invoke
+
+```
+@core:founder-reality-check how much of the stated concept is actually shipped, and what to fix first?
+```
+
+Address it directly with your question. It reads `.claude/project.json` and `CLAUDE.md` first to learn which apps exist and which one is the real product, then reads the code before it opines.
+
+## Inputs
+
+- Your question — what you want judged (the whole repo, one surface, pricing, the thesis) — required.
+- `.claude/project.json` with an `apps` list and `mainApp` — read from the repo — optional but strongly recommended; without it the agent infers the layout from `CLAUDE.md`.
+- Web access — used to find and cite real competitors — optional; without it the agent says so instead of guessing.
+
+## What you get back
+
+A written answer in chat, no files and no edits. It leads with one of three verdicts — PASS, CONDITIONAL, or PROMISING — then gives a concept-conformance table (each promised capability marked SHIPPED, PARTIAL, STUB, or MISSING with the file path that proves it), a headline conformance percentage, the structural killers, 3–7 prioritized improvement proposals tagged with the specialist who should execute them, and a concrete plan for the next seven days.
+
+## Worked example
+
+```
+@core:founder-reality-check are the marketing sites telling the same story as the main app?
+```
+
+It reads the pages under each marketing app and the routes, data model, and billing code
+in `apps/<mainApp>`, then reports back something like:
+
+```
+Verdict: CONDITIONAL — continue only if the B2B pricing page is backed by real billing
+within 30 days.
+
+| Concept item          | Status  | Evidence                                    |
+| --------------------- | ------- | ------------------------------------------- |
+| Team seats + billing  | STUB    | apps/<mainApp>/src/app/billing/page.tsx     |
+| Live data ingest      | MISSING | (no route under /api/devices)               |
+
+Concept conformance: 4 of 9 critical-path items shipped (~44%).
+
+[P1] Wire the billing page to a real payment provider
+  Specialist : @core:implementation-agent to execute
+```
+
+## Related
+
+- `@core:code-auditor` — prefer it when you want a technical risk backlog rather than a business verdict.
+- `@core:implementation-planner` — prefer it once you have accepted the proposals and need phased plan docs.
+- `@web-pack:seo-specialist` — prefer it for positioning and content changes on the marketing surfaces.
+- `@core:implementation-agent` — prefer it to actually make any change this agent proposes.

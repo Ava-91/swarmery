@@ -14,6 +14,10 @@ owner: platform-team
 skills:
   - context-optimization
   - code-standards
+docs:
+  status: reviewed
+  source_sha: 22eacd962834
+  updated: 2026-08-06
 ---
 
 # Role
@@ -187,3 +191,63 @@ Prompt written: ${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY
 | No existing patterns found | codebase-retrieval returns no relevant results | Flag as [NO-EXISTING-PATTERN]; provide best-practice pattern with explicit note |
 | Prompt exceeds 2000 tokens | Token count estimate > 2000 | Split into sequential prompts with clear ordering |
 | maxTurns exhausted | Turn counter at limit | Write partial prompt; flag incomplete sections |
+
+# How to use
+
+## What it does
+
+This agent turns a plan into a prompt another agent can execute without asking you anything. It reads the context artifact for the task, hunts the codebase for the patterns the work should follow, and writes a nine-section prompt document: objective, requirements, real code examples with `file:line` citations, exact files to modify and create, constraints, falsifiable acceptance criteria, and edge cases. It writes documentation only — it never touches source code.
+
+## When to use it
+
+- You have a plan and a target agent, and you want the handoff to be self-contained instead of a paragraph the executor has to interpret.
+- An executor agent came back with clarifying questions or drifted from existing conventions, and you want the next attempt pinned to real patterns.
+- You are about to hand work to a specialist (an implementation agent, a test writer, a domain agent) and want acceptance criteria that a command can check.
+
+## When not to use it
+
+- You need the code written — send the work to an implementation agent instead.
+- You have no plan yet — a planning agent should produce the phase breakdown first.
+- The task is a one-line change where writing the prompt costs more than the edit.
+
+## How to invoke
+
+```
+@core:prompting-agent create prompt for <feature>
+Feature: <what needs to be built>
+Context: <path to the phase-2 context artifact>
+Complexity: Simple | Medium | Complex
+Target Agent: @core:implementation-agent
+```
+
+Address the agent directly and give it the four inputs below in the same message.
+
+## Inputs
+
+- `feature` — one line on what needs to be built — required.
+- `context` — path to the context artifact gathered earlier in the task — required; without it the agent asks for more context gathering rather than guessing.
+- `complexity` — `Simple`, `Medium`, or `Complex` — required; it calibrates how deep the prompt goes.
+- `target_agent` — who will execute the prompt — required; it selects the prompt shape (route handler, component, service, or test).
+- `task_id` — the workspace task identifier — required; it decides where the file lands.
+
+## What you get back
+
+A markdown file under the task's `artifacts/prompts/` directory, plus a pointer file in the task's `phases/` directory. The prompt stays under 2000 tokens; longer work is split into ordered prompts. The chat message you see names the path, the token estimate, the target agent, and whether all nine sections are complete. Patterns that were inferred rather than observed are tagged, and missing patterns are called out instead of invented.
+
+## Worked example
+
+```
+@core:prompting-agent create prompt for order line-item CRUD
+Feature: Add create, read, update, delete for order line items
+Context: <task-dir>/phases/02-context.md
+Complexity: Medium
+Target Agent: @core:implementation-agent
+```
+
+The agent reads the context file, searches for existing route handlers, validation schemas, and auth checks, then writes the prompt with each example citing a real `file:line`. You get back a line like `Prompt written: <task-dir>/artifacts/prompts/implementation-agent-prompt.md | ~1800 tokens | Target: @core:implementation-agent | All 9 sections complete`, and the executor can start without a follow-up question.
+
+## Related
+
+- `@core:task-planner` — use it first when the work still needs a phase breakdown.
+- `@core:implementation-agent` — the usual downstream target that consumes the prompt.
+- `@core:context-gatherer` — reach for it when the context artifact is thin or missing.

@@ -4,6 +4,10 @@ description: "Implement REST route handlers, ORM queries, WebSocket telemetry, o
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Grep, Glob
+docs:
+  status: reviewed
+  source_sha: 608ee7571769
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -287,3 +291,57 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 - `code-standards` -- defer for style and convention checks on implemented code
 - `code-quality` -- defer for function length, complexity, and code smell checks
 - `observability` -- compose when adding metrics or tracing to an endpoint
+
+# How to use
+
+## What it does
+
+This skill writes the integration code that connects your layers: a REST route handler, an ORM query, a server-side WebSocket client that ingests device telemetry, or an SSE endpoint that fans that telemetry out to browsers. It checks your real schema before it writes anything, then applies your project's conventions — lazy database init, a session check on authenticated routes, and Zod validation at every external boundary.
+
+## When to use it
+
+- You need a new route handler under `apps/<mainApp>/src/app/api/**/route.ts`.
+- You need an ORM select, insert, update, or delete inside a route handler or Server Component.
+- You need the web app to subscribe to a device or edge WebSocket endpoint for telemetry.
+- You need an SSE streaming endpoint, or the browser `EventSource` hook that reads from one.
+
+## When not to use it
+
+- Changing the ORM schema itself with no queries to write — use `api-contract`.
+- Writing deploy manifests or infrastructure config — use `deployment`.
+- Reviewing code that already exists for style or complexity — use `code-standards` or `code-quality`.
+- Adding metrics or tracing to an endpoint — compose with `observability`.
+
+## How to invoke
+
+```
+Skill(skill: "core:api-integration")
+```
+
+Invoke it, then describe the integration in plain words. The skill picks the layer, verifies the schema, and stops to ask you if the table or column names do not check out.
+
+## Inputs
+
+- `task` — a description of the integration to implement — required.
+- `entity` — the ORM table or entity involved, such as `orders` or `line-items` — required.
+- `integration_type` — one of `rest`, `orm`, `websocket`, `sse` — optional; the skill infers it from the task when you leave it out.
+
+## What you get back
+
+TypeScript files written under `apps/<mainApp>/src/`, sized to a budget: route handlers stay under 80 lines, hooks under 50. Each written file is read back and checked against eight rules — `getDb()` only, `await auth()` with a 401, `dynamic = 'force-dynamic'`, Zod on external data, no hardcoded URLs, cleanup on every socket. You are told the file path, the pattern applied, and any assumption the skill had to make. It then runs `api-contract` to confirm fields line up across schema, Zod, and handler.
+
+## Worked example
+
+```
+Skill(skill: "core:api-integration")
+"Add a route handler to get a single order by ID with its line items."
+```
+
+The skill greps the schema to confirm the `orders` table and the join table exist, globs the target path to check nothing is there to overwrite, then writes the handler: session check first, ID parsed and rejected with a 400 if it is not a number, a `getDb()` query with two left joins, a 404 on an empty result. You end up with one file, a note that the path was new, and a contract check confirming the response fields match the schema.
+
+## Related
+
+- `api-contract` — run it after any write here; it is the mandatory field-alignment check.
+- `code-standards` — prefer it when the code exists already and you want a convention review.
+- `code-quality` — prefer it for function length, complexity, and code smells.
+- `observability` — compose with it when the new endpoint also needs metrics or tracing.

@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - summary-templates
   - code-quality
+docs:
+  status: reviewed
+  source_sha: 85560302466f
+  updated: 2026-08-06
 ---
 
 # Role
@@ -199,3 +203,68 @@ Key findings:
 | No issues encountered | Document "No significant challenges" with evidence; focus on wins and process optimization |
 | Cannot determine actual duration | Note "Duration data unavailable"; skip variance metric |
 | Git log unavailable | Note "Git data unavailable"; rely on workspace artifacts and task inputs |
+
+# How to use
+
+## What it does
+
+This agent turns a finished task into a written retrospective. It reads what actually happened — the plan, the quality report, the delegation ledger, the git log — and writes one artifact with wins, challenges traced to root cause, numeric metrics, a check for five cognitive biases, and concrete recommendations. It only documents; it never edits code, agent files, or conventions.
+
+## When to use it
+
+- A task just finished and you want a durable record of what went well, what cost time, and why.
+- Actual duration missed the estimate and you need the variance explained, not just noted.
+- Re-dispatches or a failed quality gate happened, and you want the root cause written down before it repeats.
+- You are about to plan similar work and want evidence-based recommendations for which agent, skill, or phase to change.
+
+## When not to use it
+
+- You want the task's final report for a reader — use `@core:summary-generator` instead.
+- You want the change actually applied to an agent or skill file — this agent recommends only; hand the recommendation to an executor.
+- You want the task's phase files and indexes written — that's `@core:task-documenter`.
+
+## How to invoke
+
+```
+@core:retrospective-agent
+Analyze task completion.
+Task: <task name>
+Duration: Estimated 6h, Actual 8h
+Outcome: Success
+Issues: <what went wrong, one per line>
+```
+
+Give it the task name, the duration, the outcome, and the issues you hit; it finds the rest on disk.
+
+## Inputs
+
+- `task` — the task name or description — required.
+- `duration` — estimated vs actual time — required for the variance metric.
+- `outcome` — `Success`, `Partial`, or `Failed` — required.
+- `issues` — problems encountered during execution — optional; an empty list is fine.
+- `task_id` — the workspace task identifier — required, so it can find the artifacts.
+
+It also reads the delegation ledger at `<task-id>/logs/agents.md`. The per-agent quality and mistakes rows there are the evidence base for challenges and recommendations. If the ledger is missing, the agent says so rather than guessing.
+
+## What you get back
+
+One markdown file at `<task-dir>/phases/09-retrospective.md`, 150 lines or fewer, with fixed sections: Task Summary, What Went Well, What Didn't Go Well, Lessons Learned, Metrics, Bias Check, Decision Transparency, Improvement Recommendations, and Feedback Loop Targets. The chat message is two lines: the artifact path with its line count, then the counts of lessons, recommendations, and metrics. Lessons that are not evidence-based are marked `[LOW-CONFIDENCE]`.
+
+## Worked example
+
+```
+@core:retrospective-agent
+Analyze task completion.
+Task: Line-item editing
+Duration: Estimated 6h, Actual 8h
+Outcome: Success
+Issues: type errors from wrong generated types; quality gate failed on first pass
+```
+
+It reads the workspace artifacts and git log, traces the +33% variance to two hours of debugging generated type mismatches, flags anchoring bias in the original estimate (based on a task with no schema change), and writes an 87-line retrospective with 3 lessons, 2 recommendations, and 5 metrics.
+
+## Related
+
+- `@core:summary-generator` — runs alongside this agent; writes the task's outward-facing final report.
+- `@core:task-documenter` — writes the task's phase documentation and indexes.
+- `@core:tech-lead` — reads the finished retrospective when planning the next task.

@@ -37,6 +37,7 @@ import (
 	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/plugindrift"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysscan"
 )
 
 // ---- DTOs (mirrored in web/src/api/types.ts, "phase 4+: insights") ---------
@@ -88,11 +89,29 @@ type deadComponentDTO struct {
 	Hint        string  `json:"hint"`
 }
 
+// undocumentedItemDTO is one item the linter reports as having no usage guide
+// (docs_missing) or an incomplete one (docs_incomplete). Read-only and
+// display-only, exactly like every other insight list: the fix is an edit to
+// the item's own file, never an API call.
+type undocumentedItemDTO struct {
+	Kind        string   `json:"kind"` // agent | skill | command
+	ID          int64    `json:"id"`
+	Name        string   `json:"name"`
+	Scope       string   `json:"scope"`
+	ProjectSlug *string  `json:"projectSlug"`
+	PluginName  *string  `json:"pluginName"`
+	Path        string   `json:"path"`
+	Rule        string   `json:"rule"`    // docs_missing | docs_incomplete
+	Missing     []string `json:"missing"` // required subsection names, never null
+	Hint        string   `json:"hint"`
+}
+
 // systemInsightsDTO is GET /api/system/insights.
 type systemInsightsDTO struct {
 	PromotionCandidates []promotionCandidateDTO `json:"promotionCandidates"`
 	StaleOverrides      []staleOverrideDTO      `json:"staleOverrides"`
 	Dead                []deadComponentDTO      `json:"dead"`
+	Undocumented        []undocumentedItemDTO   `json:"undocumented"`
 	// PluginDrift is the ONLY cross-project view of plugin drift. Nothing else
 	// renders it for free: every other consumer of config_lint_findings joins on
 	// a kind-specific target expression ('agent:' || a.id and the like), and a
@@ -118,6 +137,7 @@ const (
 	staleIdenticalHint = "identical to the plugin copy — the local override is pointless; delete the local file and rely on the plugin"
 	staleDivergedHint  = "diverged from the plugin copy — intentional override or drift; review the diff, then re-sync or delete the local copy"
 	deadHint           = "0 telemetry mentions in 30 days (advisory — events.agent_id is only partially attributed); consider deleting or archiving"
+	undocumentedHint   = "add the missing `# How to use` subsections to the item's own file (docs/system-docs-format.md §2), then re-run the scan"
 )
 
 // Shared SQL predicates — spliced into BOTH the full compute queries
@@ -202,6 +222,7 @@ func computeInsights(db *sql.DB, esc *effectiveScope) (systemInsightsDTO, error)
 		PromotionCandidates: []promotionCandidateDTO{},
 		StaleOverrides:      []staleOverrideDTO{},
 		Dead:                []deadComponentDTO{},
+		Undocumented:        []undocumentedItemDTO{},
 		PluginDrift:         []pluginDriftDTO{},
 	}
 	var err error
@@ -212,6 +233,9 @@ func computeInsights(db *sql.DB, esc *effectiveScope) (systemInsightsDTO, error)
 		return out, err
 	}
 	if out.Dead, err = deadComponents(db, esc); err != nil {
+		return out, err
+	}
+	if out.Undocumented, err = undocumentedItems(db, esc); err != nil {
 		return out, err
 	}
 	// Best effort, like the fields above: a drift query failure must not take
@@ -507,6 +531,81 @@ func deadComponents(db *sql.DB, esc *effectiveScope) ([]deadComponentDTO, error)
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// undocumentedItems reframes the linter's ACTIVE docs_missing / docs_incomplete
+// findings (sysscan/lint.go) into the insights payload — one source of truth,
+// no second parse of any file here. Every registrable kind participates, so the
+// list joins per insightKind exactly as the other insight queries do.
+// A project scope keeps only the items EFFECTIVE there (effectiveScope): another
+// project's undocumented component is that project's problem.
+func undocumentedItems(db *sql.DB, esc *effectiveScope) ([]undocumentedItemDTO, error) {
+	out := []undocumentedItemDTO{}
+	pred, args := esc.predicate("t.", true)
+	for _, k := range insightKinds {
+		// One cursor at a time: the store caps the pool at a single connection
+		// (store.go), so the rows of one kind are drained and closed before the
+		// next kind is queried (same discipline as staleOverrideList).
+		rows, err := db.Query(`
+			SELECT t.id, t.name, t.scope, p.slug, t.plugin_name, t.`+k.pathCol+`, f.rule, f.message
+			FROM config_lint_findings f
+			JOIN `+k.table+` t ON f.target = '`+k.kind+`:' || t.id
+			LEFT JOIN projects p ON p.id = t.project_id
+			WHERE f.resolved_at IS NULL AND f.rule IN ('`+sysscan.RuleDocsMissing+`', '`+sysscan.RuleDocsIncomplete+`')
+			  AND t.deleted = 0`+pred+`
+			ORDER BY t.name, t.id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			d := undocumentedItemDTO{Kind: k.kind, Hint: undocumentedHint}
+			var message string
+			if err := rows.Scan(&d.ID, &d.Name, &d.Scope, &d.ProjectSlug, &d.PluginName,
+				&d.Path, &d.Rule, &message); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			d.Missing = missingSections(d.Rule, message)
+			out = append(out, d)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// missingSections resolves the required subsections an item lacks.
+//
+// docs_missing means there is no guide at all, so ALL four required subsections
+// are missing — the linter deliberately does not enumerate them in that message
+// (sysscan/docs.go keeps Docs.Missing empty when the block is absent, so the two
+// findings never double-report), and the useful answer for a reader is still the
+// full list. docs_incomplete carries its gaps after DocsMissingSectionsMarker;
+// the marker is searched from the RIGHT because the message names the file first
+// and a path may itself contain ": ".
+func missingSections(rule, message string) []string {
+	if rule == sysscan.RuleDocsMissing {
+		return append([]string{}, sysscan.RequiredDocSections...)
+	}
+	out := []string{}
+	i := strings.LastIndex(message, sysscan.DocsMissingSectionsMarker)
+	if i < 0 {
+		return out
+	}
+	tail := message[i+len(sysscan.DocsMissingSectionsMarker):]
+	// The linter appends a parenthetical rune-floor note after the list.
+	if j := strings.Index(tail, " ("); j >= 0 {
+		tail = tail[:j]
+	}
+	for _, s := range strings.Split(tail, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // ---- helpers ------------------------------------------------------------------

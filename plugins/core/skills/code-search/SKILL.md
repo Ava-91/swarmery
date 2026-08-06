@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Grep, Glob, Read
 disable-model-invocation: true
+docs:
+  status: reviewed
+  source_sha: ccc8c6baa5c1
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -212,3 +216,56 @@ codebase-retrieval("How does order creation work in the main app, from route han
 - `code-quality` -- compose when search results need to be audited for structural quality (search first, then audit); pass results as `file:line:snippet` tuples
 - `api-contract` -- compose when search results reveal API layer files that need contract verification; pass results as `file:line:snippet` tuples
 - `code-standards` -- compose when search results reveal code that needs convention review; pass results as `file:line:snippet` tuples
+
+# How to use
+
+## What it does
+
+This skill picks the right search tool for a lookup and runs it, so you stop guessing between exact match, file-name pattern, and "how does this work?" It classifies your query, scopes it to the repository most likely to hold the answer, runs Grep, Glob, or a semantic retrieval tool, and hands back matches with `file:line` citations and surrounding context. It only reads code — it never edits anything.
+
+## When to use it
+
+- You need every occurrence of a function, type, or variable name across the workspace.
+- You need files that follow a naming convention: all route handlers, all test files, all deployment values files.
+- You are starting a task cold and need orientation on where the relevant code lives.
+- You have a natural-language question about a data flow that spans more than one repository.
+
+## When not to use it
+
+- You are writing new code or implementing a feature — use `api-integration` or the matching implementation skill.
+- You want the code judged, not located — use `code-quality` or `code-standards`.
+- You already know the file and roughly which lines — read it directly instead.
+- The question is conceptual (protocol semantics, deployment architecture) — read the documentation, not the code.
+
+## How to invoke
+
+```
+Skill(skill: "core:code-search")
+```
+
+Call it with your query in plain words. If you know the search type or want to limit the blast radius, say so — otherwise the skill classifies the query and picks a default scope from the repository names in `.claude/project.json`.
+
+## Inputs
+
+- `query` — the symbol name, file pattern, or natural-language question — required.
+- `search_type` — `exact`, `pattern`, or `semantic`; decides which tool runs — optional, inferred when omitted.
+- `scope` — a path restriction such as `apps/<mainApp>/src/` — optional.
+
+## What you get back
+
+A list of matches, each with a `file:line` citation and three lines of context, sorted with exact matches first and capped at 50 results per search. The tool used and the exact query executed are stated alongside the results. Semantic results are spot-checked by reading the top two files; anything that fails that check is marked `[POTENTIALLY-STALE]` rather than presented as fact. A search that finds nothing reports the alternatives that were tried before giving up.
+
+## Worked example
+
+```
+Skill(skill: "core:code-search")
+query: "telemetryEmitter", search_type: "exact", scope: "apps/<mainApp>/src/"
+```
+
+The query is classified as an exact symbol lookup, so Grep runs over `*.ts` under that path. You get back five matches across two files: the emitter is declared at `apps/<mainApp>/src/lib/telemetry/ws-client.ts:5` and emitted on at line 12, then imported and subscribed in `apps/<mainApp>/src/app/api/telemetry/stream/route.ts` at lines 2, 11, and 14 — enough to see the definition and every consumer in one pass.
+
+## Related
+
+- `code-quality` — prefer it once you have the files and want structural quality audited; feed it the `file:line:snippet` tuples from this search.
+- `api-contract` — prefer it when the search surfaces API-layer files whose contracts need verifying.
+- `code-standards` — prefer it when the found code needs a convention and type-safety review.

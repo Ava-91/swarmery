@@ -13,6 +13,10 @@ skills:
   - git-commit
   - summary-templates
   - html-reporting
+docs:
+  status: reviewed
+  source_sha: 527cd79174b5
+  updated: 2026-08-06
 ---
 
 # Role
@@ -207,3 +211,61 @@ Type: Bug Fix Summary | Metrics: 5 quantified | Status: COMPLETE
 | maxTurns exhausted | Write partial summary with available data |
 | Audience not specified | Default to "All" with role-specific collapsible sections |
 | No files_changed provided | Derive from git diff if possible; note "[ESTIMATED]" if inferred |
+
+# How to use
+
+## What it does
+
+This agent writes the final report for a finished task. It reads your git history, the workspace artifacts, and any build or test output, then produces a `SUMMARY.md` at the task root with numbers instead of adjectives — "8 files removed, 340 lines changed", never "many files". It also flags where the actual work drifted from the plan, and lists any screenshots that were captured along the way.
+
+## When to use it
+
+- A task is done and you need the canonical closing report written to the workspace task directory.
+- You are running the 9-phase workflow and have reached Phase 8, where the summary and the retrospective run together.
+- Someone outside the work — a lead, a product owner, a stakeholder — needs a readable account of what shipped and what changed.
+
+## When not to use it
+
+- You want lessons learned and process improvement rather than a change report — that is the retrospective agent's job.
+- You need the per-phase task documentation and indexes — reach for the task documenter instead.
+- You are still mid-implementation; this agent only reads code and writes the summary artifact, it never edits source.
+
+## How to invoke
+
+```
+@core:summary-generator
+```
+
+Mention it by name and describe the completed task. Pass whatever you already know — files changed, metrics, audience, next steps — and it fills the gaps from git.
+
+## Inputs
+
+- `task` — a description of the completed work — required.
+- `task_id` — the workspace task identifier — required.
+- `files_changed` — created, modified, and deleted file lists — optional; derived from `git diff` when absent.
+- `metrics` — files, lines, duration, coverage — optional; measured where possible, marked `[ESTIMATED]` when inferred.
+- `audience` — Developers, PM, Tech Lead, Stakeholders, or All — optional; defaults to All with collapsible sections per role.
+- `next_steps` — action, owner, and timeline for each follow-up — optional.
+
+## What you get back
+
+`SUMMARY.md` at the task root, at most 300 lines, with seven fixed sections plus a metrics table and a status line reading exactly COMPLETE, PARTIAL, or FAILED. A mirror copy lands at `phases/08-summary.md` when the 9-phase flow is active. In chat you get two lines: the artifact path, the summary type, and how many metrics were quantified.
+
+## Worked example
+
+```
+@core:summary-generator
+Task: Added CRUD operations for order line items
+Files changed: 3 created, 2 modified
+Metrics: {files: 5, lines: 340, duration: 2d, coverage: 70->82}
+Audience: All
+Next steps: bulk line-item import (owner: @core:implementation-agent, timeline: Short-term)
+```
+
+It classifies this as a feature summary, runs `git log` and `git diff --stat` over the task range to confirm the counts, cites that range under Data Sources, and writes the file. You get back: `Summary written: .../orders/line-items/SUMMARY.md (mirrored to phases/08-summary.md)` and `Type: Feature Summary | Metrics: 7 quantified | Status: COMPLETE`.
+
+## Related
+
+- `@core:retrospective-agent` — runs alongside this one in Phase 8+9; prefer it for lessons learned and improvement recommendations.
+- `@core:task-documenter` — prefer it for the structured per-phase documentation and workspace indexes in Phase 10.
+- `@core:tech-lead` — dispatches both closing agents and reads the summary as part of closing the task.

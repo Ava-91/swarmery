@@ -14,8 +14,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
-import type { SystemHubSummary } from '../api/types';
+import type { SystemHubSummary, SystemSummary } from '../api/types';
 import { fetchSystemHubSummary } from '../api/systemHub';
+import { fetchSystemSummary } from '../api/system';
 import { ScopeChip } from '../components/ScopeChip';
 import { useProjectScope, useScope } from '../lib/scope';
 import { useLiveUpdates } from '../lib/ws';
@@ -116,6 +117,27 @@ export function SystemShell(): JSX.Element {
     },
   );
 
+  // Usage-guide coverage. A separate fetch on purpose: the hub summary
+  // (/api/system/hub/summary) carries only the nav badge counts, while the
+  // docs block lives on /api/system/summary (systemDocsCoverageDTO). Coverage
+  // is the whole point of the docs contract -- "we went through every item"
+  // has to be a number on the page, not a claim in a commit message -- so it
+  // belongs in the header rather than only in the Insights tab.
+  const [docs, setDocs] = useState<SystemSummary['docs'] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchSystemSummary()
+      .then((s) => {
+        if (!cancelled) setDocs(s.docs);
+      })
+      .catch(() => {
+        if (!cancelled) setDocs(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const badges: Record<SystemTab, number | undefined> = useMemo(
     () =>
       summary === null
@@ -150,6 +172,21 @@ export function SystemShell(): JSX.Element {
         <ScopeChip />
         {tab !== 'insights' && (
           <FiltersRow inline scope={originScope} onScope={setOriginScope} />
+        )}
+        {docs !== null && docs.total > 0 && (
+          <span
+            className="font-mono text-[11px] text-ink-dim"
+            data-tip="usage-guide coverage: every agent, skill and command the marketplace ships must carry a '# How to use' block"
+          >
+            <span className={docs.documented === docs.total ? 'text-green' : 'text-amber'}>
+              {docs.documented}/{docs.total}
+            </span>
+            <span className="text-ink-faint"> documented · </span>
+            <span className={docs.reviewed === docs.total ? 'text-green' : 'text-amber'}>
+              {docs.reviewed}/{docs.total}
+            </span>
+            <span className="text-ink-faint"> reviewed</span>
+          </span>
         )}
       </div>
       <div

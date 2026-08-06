@@ -15,6 +15,10 @@ skills:
   - testing
   - test-coverage
   - code-standards
+docs:
+  status: reviewed
+  source_sha: 0e37d26777ca
+  updated: 2026-08-06
 ---
 
 # Role
@@ -202,3 +206,61 @@ This agent can drive a real browser through the Playwright MCP tools (`mcp__plug
 - `browser_run_code_unsafe` / `browser_evaluate` -- authorized local/staging targets only, never production.
 - Always `browser_close` when finished.
 - Live exploration informs the spec; the deterministic spec file is what ships and runs in CI.
+
+# How to use
+
+## What it does
+
+This agent writes tests for you. You point it at a file, module, or feature, and it reads the implementation, builds an explicit list of cases to cover, writes the test files, and runs them so you know they pass. It handles unit, integration, component, and end-to-end tests, and it can work through a red-green TDD cycle when you want tests first.
+
+## When to use it
+
+- A coverage report flagged a file below target and you need tests written for it.
+- You are implementing a feature and want tests authored alongside the code.
+- You want an end-to-end spec for a user flow, including selector discovery in a live browser.
+- You want to work test-first: tests written before the implementation, committed after each green cycle.
+
+## When not to use it
+
+- You want the existing suite run and reported on — use `@core:test-runner` instead.
+- The implementation itself is broken and needs fixing — use `@core:implementation-agent`.
+- You want to find out *where* coverage is missing before writing anything — run the `test-coverage` skill first.
+
+## How to invoke
+
+```
+@core:test-writer
+```
+
+Add the target and the test type after the invocation. If a coverage tool gave you specific gaps, paste them in — the agent builds its case inventory from all of them before writing a line.
+
+## Inputs
+
+- `target` — the file, module, or feature to test — required.
+- `type` — one of `unit`, `integration`, `component`, `e2e`, or `all` — required.
+- `coverage_gaps` — specific files or functions that need coverage, usually copied from a coverage report — optional.
+
+## What you get back
+
+Test files written into the project's existing test directories, following its naming convention. In chat you get a numbered inventory of the cases covered, then a single status line:
+
+```
+TESTS WRITTEN | Files: N | Tests: N | All passing | Coverage: X% (target: Y%)
+```
+
+The agent runs only the tests it wrote, not the whole suite. It works in a separate git worktree, so your working tree stays untouched, and every file it creates is new — revert by deleting them.
+
+## Worked example
+
+```
+@core:test-writer
+Coverage gap: orders/line-items.ts is at 45%, target is 70%. Write unit tests.
+```
+
+The agent reads the implementation and any existing test file, lists the cases it plans to cover (happy path, missing required field, invalid identifier, empty result, pagination, not-found, partial update), writes them with visible Arrange/Act/Assert blocks and a mocked database, runs them, and reports coverage at 78% against the 70% target.
+
+## Related
+
+- `@core:test-runner` — runs the full suite and reports pass/fail and coverage; hand off to it after tests are written.
+- `@core:implementation-agent` — fixes the implementation when tests reveal a real bug.
+- `@core:quality-checker` — judges overall quality in the Phase 5 gate rather than authoring tests.

@@ -3,6 +3,10 @@ name: jira-config
 description: "Read and validate the jira block in .claude/project.json for jira-pack: required keys, defaults, working-repo resolution. NOT for talking to Jira itself (that's jira-tasks / the Atlassian MCP tools) and NOT for Confluence."
 version: "0.1.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 0b1d68abed0c
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -82,3 +86,63 @@ under `scripts/scan-flavor.sh` (`docs/NEUTRALITY.md`).
 - `plugins/core/skills/jira-tasks/SKILL.md` — read-only Jira queries once a run is underway;
   this skill only resolves and validates config, it never calls the Atlassian MCP tools itself.
 - `plugins/core/agents/debugger.md` — source of the `budget` defaults above.
+
+# How to use
+
+## What it does
+
+This skill reads the `jira` block from your project's `.claude/project.json`, checks that everything a run needs is actually there, and works out which repository the run will operate against. Because jira-pack runs unattended, nothing can be guessed at runtime — so this gate either hands back a validated config or stops the run with a message telling you exactly which keys to add.
+
+## When to use it
+
+- Before any other jira-pack skill or agent touches a ticket, so a run never starts on a half-configured project.
+- When a ticket run failed with a config complaint and you want the precise list of missing keys plus a paste-ready fix.
+- When you are setting up jira-pack in a new project and want to confirm the `jira` block is complete.
+- When you need to know which repository a run will work in, including a `--repo <path>` override.
+
+## When not to use it
+
+- To read or search tickets — use the `jira-tasks` skill, which handles read-only tracker queries.
+- To verify that tracker access and credentials actually work — that is the `jira-access-preflight` skill.
+- To classify a ticket as a defect or a change — that is the `jira-triage` skill.
+- For Confluence pages of any kind; this skill only touches the local config file.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:jira-config")
+```
+
+Call it first in a jira-pack run. It reads the config file itself, so you do not pass the values in.
+
+## Inputs
+
+- `--repo <path>` — an alternative working repository root — optional; must exist and be a git repository, otherwise the run stops.
+- `.claude/project.json` — the config file it reads, with a `jira` block holding `baseUrl`, `projectKey`, `qaStatus`, and `repro.test` as required keys — required.
+
+## What you get back
+
+A short report naming the resolved working-repo root and the effective settings, including defaults it filled in (`budget.maxFiles` = 5, `budget.maxAttempts` = 3 when absent; a missing `repro.setup` simply skips the setup step). If a required key is missing, you instead get a hard stop listing only the keys that are actually absent, plus a JSON fragment with neutral placeholders to paste into your config. The resolved repo root is what downstream jira-pack steps operate against.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:jira-config")
+
+→ jira-config: missing required keys — jira.projectKey, jira.qaStatus
+
+  Paste this into .claude/project.json (fill in the placeholders):
+
+    "jira": {
+      "projectKey": "<PROJECT-KEY>",
+      "qaStatus": "QA"
+    }
+```
+
+You add the two keys, run it again, and it reports a valid config with the working repo resolved to your project root.
+
+## Related
+
+- `jira-access-preflight` — run it right after this one to confirm the tracker itself is reachable.
+- `jira-triage` — prefer it once config is valid and you need the ticket classified.
+- `jira-tasks` — prefer it for read-only ticket queries during a run.

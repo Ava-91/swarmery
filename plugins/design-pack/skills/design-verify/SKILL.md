@@ -3,6 +3,10 @@ name: design-verify
 description: "Measure an implemented screen against its design export with a headless pixel diff and report the regions, the number and the side-by-side image. NOT for choosing what to build (that's design-implement), NOT for resolving the design input (that's design-acquire), and NOT for behavioural UI checks without a reference design (that's browser-verification in core)."
 version: "0.1.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 311ddb363ffb
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -100,3 +104,63 @@ an approximation.
 
 Stop the dev server if step 1 started it. Leave the artefact directory in place — the operator
 may want to look at `diff.png` after the summary.
+
+# How to use
+
+## What it does
+
+This skill measures an implemented screen against its design export. It starts the dev server if needed, runs a headless pixel diff, and turns the raw numbers into named findings — "the summary row sits 2px low" rather than "region at 240,880". You end up with a percentage, a side-by-side image, and a mapped list of the regions that differ.
+
+## When to use it
+
+- You have implemented a screen from a design export and need to know how close it actually is.
+- A diff run passed the threshold but the screen still looks wrong, and you need the region list read properly.
+- You are finishing a design handoff and need a number and an image before you can call the work done.
+- You want the same measurement procedure applied outside the full implementation workflow.
+
+## When not to use it
+
+- You are deciding what to build or how to structure the implementation — use `design-implement`.
+- You still need to unpack, parse, or resolve the design input itself — use `design-acquire`.
+- You are checking UI behaviour with no reference design to compare against — use `browser-verification` in core.
+
+## How to invoke
+
+```
+Skill(skill: "design-pack:design-verify")
+```
+
+Invoke it directly when you want a measurement pass, or let `design-implement` reach it as its verification phase.
+
+## Inputs
+
+- Design export path — an `.html` file, a directory containing one (`index.html`, or a single `.html`), or a `.zip` of either — required. A bare `.png` is not an accepted export: nothing rejects it, and the run silently measures against the browser's image viewer.
+- Route under test — appended to the local dev URL from `design.devUrl` — required.
+- Authoring viewport — the breakpoint the design was drawn at, not a convenient one — required.
+- Threshold and pixel tolerance — read from `design.diff` in project config — optional, defaults come from config.
+- Full-page flag — add it when the screen is taller than the viewport and the part below the fold is in scope.
+
+## What you get back
+
+An artefact directory containing `design.png`, `impl.png`, `diff.png`, `side-by-side.png`, and `report.json`. The final message carries `side-by-side.png`, `diffPercent` with its `threshold` and `pass`, the region list mapped to concrete elements, and the result of the project's own lint and typecheck. The directory is left in place so you can open `diff.png` afterwards; any dev server the run started is stopped.
+
+## Worked example
+
+```
+Skill(skill: "design-pack:design-verify")
+→ dev server already answering on the local dev URL
+→ node screenshot-diff.mjs --design ./export/line-items/index.html \
+    --url <devUrl>/orders/line-items --viewport 1440x900 \
+    --threshold 0.5 --out .design-verify/report/line-items
+→ diffPercent 0.02, threshold 0.5, pass: true
+→ regions: one at 61% of the diff → "the summary row sits 2px low"
+→ lint green, typecheck green
+```
+
+You get `pass: true` and a real finding in the same report — the 2px shift is reported as work to do, not closed on the verdict.
+
+## Related
+
+- `design-implement` — prefer it when you are implementing a screen end to end; it calls this skill as its final phase.
+- `design-acquire` — prefer it when the design input is not yet a measurable file.
+- `browser-verification` — prefer it for behavioural checks where no reference design exists.

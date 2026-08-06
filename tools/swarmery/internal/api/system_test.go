@@ -186,6 +186,18 @@ func TestSystemSummary(t *testing.T) {
 	if ins["promotions"].(float64) != 0 || ins["staleOverrides"].(float64) != 0 {
 		t.Errorf("summary.insights = %v, want 0/0 on the quiet fixture", ins)
 	}
+	// Docs coverage: total is live agents + skills + commands (hooks are not
+	// registrable items and carry no usage guide). This fixture has no docs
+	// findings, so every item counts as documented and reviewed — the populated
+	// case lives in TestSystemSummaryDocsCoverage.
+	docs := s["docs"].(map[string]any)
+	want := s["agents"].(float64) + s["skills"].(float64) + s["commands"].(float64)
+	if docs["total"].(float64) != want {
+		t.Errorf("summary.docs.total = %v, want %v (agents + skills + commands)", docs["total"], want)
+	}
+	if docs["documented"].(float64) != want || docs["reviewed"].(float64) != want {
+		t.Errorf("summary.docs = %v, want all %v on a fixture with no docs findings", docs, want)
+	}
 }
 
 func TestSystemAgentsList(t *testing.T) {

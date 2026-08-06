@@ -88,14 +88,16 @@ func TestScanCounts(t *testing.T) {
 	}
 
 	// Per-source counts. Global agents: global-agent, x, broken-agent,
-	// nested/deep-agent, lint-poor (README.md skipped — no frontmatter).
+	// nested/deep-agent, lint-poor, documented-agent, stale-docs-agent
+	// (README.md skipped — no frontmatter).
 	// Project agents: proj-agent + x (the agent_name_duplicate fixture).
-	if st.Agents != (SourceCounts{Global: 5, Project: 2, Plugin: 1}) {
-		t.Errorf("agents counts = %+v, want {5 2 1}", st.Agents)
+	if st.Agents != (SourceCounts{Global: 7, Project: 2, Plugin: 1}) {
+		t.Errorf("agents counts = %+v, want {7 2 1}", st.Agents)
 	}
-	// Global skills: global-skill + short-desc (the lint fixture).
-	if st.Skills != (SourceCounts{Global: 2, Project: 0, Plugin: 1}) {
-		t.Errorf("skills counts = %+v, want {2 0 1}", st.Skills)
+	// Global skills: global-skill + short-desc (the lint fixture) +
+	// documented-skill (the docs-contract fixture).
+	if st.Skills != (SourceCounts{Global: 3, Project: 0, Plugin: 1}) {
+		t.Errorf("skills counts = %+v, want {3 0 1}", st.Skills)
 	}
 	if st.Commands != (SourceCounts{Global: 1}) {
 		t.Errorf("commands counts = %+v, want {1 0 0}", st.Commands)
@@ -108,8 +110,8 @@ func TestScanCounts(t *testing.T) {
 		t.Errorf("parse errors = %d, want 1 (broken-agent)", st.ParseErrors)
 	}
 
-	if n := count(t, db, `SELECT COUNT(*) FROM agents WHERE deleted = 0`); n != 8 {
-		t.Errorf("agents rows = %d, want 8", n)
+	if n := count(t, db, `SELECT COUNT(*) FROM agents WHERE deleted = 0`); n != 10 {
+		t.Errorf("agents rows = %d, want 10", n)
 	}
 	// README.md never registers.
 	if n := count(t, db, `SELECT COUNT(*) FROM agents WHERE name = 'README'`); n != 0 {
@@ -119,8 +121,92 @@ func TestScanCounts(t *testing.T) {
 	if n := count(t, db, `SELECT COUNT(*) FROM agents WHERE current_version_id IS NULL`); n != 0 {
 		t.Errorf("%d agents without current_version_id", n)
 	}
-	if n := count(t, db, `SELECT COUNT(*) FROM agent_versions`); n != 8 {
-		t.Errorf("agent_versions rows = %d, want 8 (one per agent)", n)
+	if n := count(t, db, `SELECT COUNT(*) FROM agent_versions`); n != 10 {
+		t.Errorf("agent_versions rows = %d, want 10 (one per agent)", n)
+	}
+}
+
+// TestSkillWithoutFrontmatterIsNotAnItem pins the §5.5 rule for the SKILL.md
+// scanner: a file whose first line is not `---` is not a registrable item.
+//
+// The skill scanner used to be the only one of the three that did not check
+// isFrontmatterStart. The CI coverage gate (scripts/docgen/lib.sh) honours
+// §5.5 and skips such a file, so the disagreement failed OPEN: a real skill
+// dir carrying a frontmatter-less SKILL.md registered as a live skill with an
+// active docs_missing finding while `check-coverage.sh` reported problems=0.
+func TestSkillWithoutFrontmatterIsNotAnItem(t *testing.T) {
+	db, cfg, _ := setup(t)
+	s := New(db, cfg, nil)
+	st, err := s.Scan()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	// The frontmatter-less fixture dir registers nothing and is not counted.
+	if n := count(t, db, `SELECT COUNT(*) FROM skills WHERE name = 'no-frontmatter'`); n != 0 {
+		t.Errorf("skills/no-frontmatter/SKILL.md registered as a skill (%d rows) — §5.5 says it is not an item", n)
+	}
+	if st.Skills.Global != 3 {
+		t.Errorf("global skills = %d, want 3 (global-skill, short-desc, documented-skill; no-frontmatter skipped)", st.Skills.Global)
+	}
+	// Skipped silently, exactly like agents/README.md: no parse_error of its
+	// own (errNoFrontmatter is "not an item", not "failed to parse") and no
+	// warning. broken-agent stays the only parse error in the fixture tree.
+	if st.ParseErrors != 1 {
+		t.Errorf("ParseErrors = %d, want 1 (broken-agent only — a missing frontmatter is not a parse failure)", st.ParseErrors)
+	}
+	if st.Warnings != 1 {
+		t.Errorf("Warnings = %d, want 1 (broken-agent's parse_error only — the §5.5 skip is silent)", st.Warnings)
+	}
+
+	// A valid SKILL.md next door still registers — the guard rejects only the
+	// frontmatter-less file, it does not disable the scanner.
+	if n := count(t, db,
+		`SELECT COUNT(*) FROM skills WHERE name = 'global-skill' AND deleted = 0 AND current_version_id IS NOT NULL`); n != 1 {
+		t.Errorf("valid global-skill rows = %d, want 1", n)
+	}
+
+	// Sweep symmetry: an ALREADY-registered item that loses its frontmatter is
+	// soft-deleted, because the guard returns before seen[id] is marked. This
+	// must hold identically for a skill and for an agent.
+	stripFrontmatter := func(path string) {
+		t.Helper()
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		_, body, serr := SplitFrontmatter(raw)
+		if serr != nil {
+			t.Fatalf("split %s: %v", path, serr)
+		}
+		if werr := os.WriteFile(path, body, 0o644); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	stripFrontmatter(filepath.Join(cfg.ClaudeDir, "skills", "global-skill", "SKILL.md"))
+	stripFrontmatter(filepath.Join(cfg.ClaudeDir, "agents", "global-agent.md"))
+
+	st, err = s.Scan()
+	if err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	if st.Deleted != 2 {
+		t.Errorf("Deleted = %d, want 2 (the de-frontmattered skill AND agent)", st.Deleted)
+	}
+	for _, tc := range []struct{ table, name string }{{"skills", "global-skill"}, {"agents", "global-agent"}} {
+		var deleted int
+		if qerr := db.QueryRow(
+			`SELECT deleted FROM `+tc.table+` WHERE name = ?`, tc.name).Scan(&deleted); qerr != nil {
+			t.Fatalf("%s %s row vanished physically: %v", tc.table, tc.name, qerr)
+		}
+		if deleted != 1 {
+			t.Errorf("%s %s deleted = %d, want 1 (soft delete)", tc.table, tc.name, deleted)
+		}
+	}
+	// Versions survive the soft delete — the row is still a rollback source.
+	if n := count(t, db,
+		`SELECT COUNT(*) FROM skill_versions v JOIN skills sk ON sk.id = v.skill_id WHERE sk.name = 'global-skill'`); n != 1 {
+		t.Errorf("global-skill versions after soft delete = %d, want 1 (kept)", n)
 	}
 }
 
@@ -496,7 +582,7 @@ func TestRunWatchPicksUpEdit(t *testing.T) {
 	}
 
 	waitFor("initial scan", func() bool {
-		return count(t, db, `SELECT COUNT(*) FROM agents WHERE deleted = 0`) == 8
+		return count(t, db, `SELECT COUNT(*) FROM agents WHERE deleted = 0`) == 10
 	})
 
 	agentPath := filepath.Join(cfg.ClaudeDir, "agents", "x.md")

@@ -135,8 +135,9 @@ type systemLintFindingDTO struct {
 // an APPROXIMATE usage rollup (slash-command text match is best-effort).
 type commandHubDTO struct {
 	systemCommandDTO
-	Frontmatter string `json:"frontmatter"` // redacted
-	Content     string `json:"content"`     // redacted body
+	Frontmatter string        `json:"frontmatter"` // redacted
+	Content     string        `json:"content"`     // redacted body
+	Docs        systemDocsDTO `json:"docs"`        // parsed usage guide
 	Usage       struct {
 		WindowDays  int   `json:"windowDays"`
 		Invocations int64 `json:"invocations"`
@@ -437,9 +438,12 @@ func (h *Handler) commandHub(w http.ResponseWriter, r *http.Request) {
 
 	out := commandHubDTO{systemCommandDTO: c}
 	// Content is read live off disk (commands are not versioned); a vanished
-	// file degrades to empty content rather than failing the profile.
+	// file degrades to empty content and an absent guide rather than failing
+	// the profile.
+	out.Docs = emptyDocsDTO()
 	if raw, rerr := os.ReadFile(c.Path); rerr == nil {
 		out.Frontmatter, out.Content = splitRedacted(string(raw))
+		out.Docs = docsDTO(string(raw))
 	}
 	out.Usage.WindowDays = hubUsageWindowDays
 	out.Usage.Approximate = true // slash-command usage is always best-effort
@@ -864,10 +868,10 @@ func matchProjectID(p sysscan.TemplateProject, pid string) bool {
 func (h *Handler) systemItemByID(k systemKind, id int64) (systemItemDTO, bool, error) {
 	var it systemItemDTO
 	var sev sql.NullInt64
-	var dead int64
+	var dead, undoc int64
 	err := h.DB.QueryRow(systemItemSelect(k)+` WHERE t.id = ? AND t.deleted = 0`, id).Scan(
 		&it.ID, &it.Name, &it.Scope, &it.ProjectSlug, &it.Origin, &it.PluginName,
-		&it.Model, &it.Description, &it.Path, &sev, &dead)
+		&it.Model, &it.Description, &it.Path, &sev, &dead, &undoc)
 	if errors.Is(err, sql.ErrNoRows) {
 		return it, false, nil
 	}
@@ -879,6 +883,7 @@ func (h *Handler) systemItemByID(k systemKind, id int64) (systemItemDTO, bool, e
 		it.LintMax = &name
 	}
 	it.Dead = dead != 0
+	it.Documented = undoc == 0
 
 	usage, err := h.usageByName(k, usageCutoff())
 	if err != nil {

@@ -3,6 +3,10 @@ name: jira-delivery
 description: "Close the needs-fix branch for both ticket classes: isolated git worktree, a red test BEFORE any implementation on change tickets, delegation to a core executor, every publish action (push / PR / comment / QA transition) gated behind a green @verification-agent verdict, commit + push + PR, then writeback via jira-writeback. NOT for classifying the ticket (that's jira-triage) and NOT for turning an over-budget attempt into a plan (that's jira-escalation, which this skill hands off to when a trigger fires)."
 version: "0.2.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 96adf6ea9003
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -386,3 +390,63 @@ diff.
   `class: change`.
 - `plugins/core/agents/test-writer.md` — the executor Step 2a dispatches to
   produce the red test a change ticket arrives without.
+
+# How to use
+
+## What it does
+
+This skill takes a ticket that triage marked `needs-fix` and turns it into published, verified work. It creates an isolated git worktree so nothing races the shared checkout, makes sure red evidence exists before any code is written, hands the actual editing to a core executor agent, and refuses to push, open a PR, comment, or move the ticket until a verification agent returns `PASS` and the diff stays inside the file budget.
+
+## When to use it
+
+- A ticket has been triaged as `class: defect` with a reproduction that ran red, and you now want the fix built and shipped.
+- A ticket has been triaged as `class: change` with numbered acceptance criteria and an absence proof, and you want a failing test written first, then the implementation.
+- You want the whole publish path — push, PR, ticket comment, QA transition — held behind a single verification gate.
+- You want to preview the branch name, commit format, and PR shape without spending executor budget (dry-run).
+
+## When not to use it
+
+- The ticket has not been classified yet — run `jira-triage` first; it produces the evidence bundle this skill builds its executor prompt from.
+- The attempt has blown its attempt or file budget — hand off to `jira-escalation`, which turns it into a phased plan instead.
+- You only need the verdict comment posted or the QA transition attempted — that is `jira-writeback`.
+- The verdict is `too-large`; that never reaches this skill.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:jira-delivery")
+```
+
+Normally invoked by the ticket-runner agent at the `needs-fix` fork, not typed by hand.
+
+## Inputs
+
+- Ticket key, title, and class (`defect` or `change`) — required.
+- The triage evidence bundle — required. For a defect: repro steps, command, exit code, output fragment. For a change: green baseline, absence proof, numbered acceptance criteria.
+- Budget values (`maxFiles`, `maxAttempts`) and the QA status name, read from the project's config block — required.
+- Working root and a worktree root outside the shared checkout — optional; defaults come from config.
+- Dry-run flag — optional.
+
+## What you get back
+
+A branch `fix/<KEY>-<slug>` or `feat/<KEY>-<slug>` living in its own worktree, real commits with the class-matching conventional type and the ticket key in the subject, an open PR linking the ticket, a summary comment on the ticket, a QA-status transition attempt on the ticket itself, and the board card moved to `in_review`. On budget exhaustion you instead get a handoff to escalation with the branch path and the trigger that fired — and the ticket left untouched.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:jira-delivery")
+# class: change, criteria: "line items must reject a zero quantity"
+```
+
+A worktree is created on `feat/<KEY>-reject-zero-quantity`. A test writer produces a
+test against the criterion; it is run and observed failing. Only then does the
+implementation executor run against that red test. Verification comes back `PASS`,
+the diff touches 3 files against a budget of 8, and the same test is still in the
+green run — so the commit `feat(orders/line-items): reject zero quantity  [<KEY>]`
+is pushed, a PR is opened, and the change-summary comment lands on the ticket.
+
+## Related
+
+- `jira-triage` — run it first; it decides the class and produces the evidence.
+- `jira-escalation` — where an over-budget or over-scope attempt goes instead.
+- `jira-writeback` — owns the comment template and the QA transition this skill calls into.
