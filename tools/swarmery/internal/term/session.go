@@ -56,8 +56,11 @@ type process interface {
 // osPTYStarter; tests inject a stub that never touches the OS.
 type ptyStarter interface {
 	// start launches `shell -l` in cwd on a PTY sized cols×rows and returns the
-	// master file plus a handle to the process group.
-	start(shell, cwd string, cols, rows uint16) (ptyFile, process, error)
+	// master file plus a handle to the process group. env is an environment
+	// DELTA appended after the daemon's own environment — the caller's account
+	// binding (CLAUDE_CONFIG_DIR), so a `claude` typed into the dock runs under
+	// the same account the daemon would spawn for that project. nil = no delta.
+	start(shell, cwd string, env []string, cols, rows uint16) (ptyFile, process, error)
 }
 
 // Resize is a control message from the client (JSON text frame).
@@ -195,7 +198,19 @@ func (m *Manager) Count() int {
 
 // Start spawns a new PTY in cwd sized cols×rows. Returns ErrTooManySessions when
 // the cap is reached. The caller owns the returned Session and MUST Close it.
-func (m *Manager) Start(cwd string, cols, rows uint16) (*Session, error) {
+//
+// env is an environment DELTA for the shell, appended after the daemon's own
+// environment. The HTTP handler fills it with claudeacct.EnvFor(cwd) so the dock
+// session runs under the project's Claude account; nil leaves the child's
+// environment exactly as it was before this parameter existed.
+//
+// The Manager takes the delta rather than resolving it, because only the caller
+// knows what its cwd IS. The dock's cwd is a registered project path (settings
+// file present ⇒ resolves) or a live task worktree (no settings file ⇒ resolves
+// to the default account, exactly like dispatch's Cwd would — plan A3). Keeping
+// the resolve out of here means that gap is closable at the handler without
+// touching the PTY layer.
+func (m *Manager) Start(cwd string, env []string, cols, rows uint16) (*Session, error) {
 	if cols == 0 {
 		cols = 80
 	}
@@ -212,7 +227,7 @@ func (m *Manager) Start(cwd string, cols, rows uint16) (*Session, error) {
 	m.live[placeholder] = struct{}{}
 	m.mu.Unlock()
 
-	f, proc, err := m.starter.start(m.shell(), cwd, cols, rows)
+	f, proc, err := m.starter.start(m.shell(), cwd, env, cols, rows)
 	if err != nil {
 		m.mu.Lock()
 		delete(m.live, placeholder)
@@ -328,10 +343,21 @@ func (p osProcess) SignalGroup(sig syscall.Signal) error {
 
 func (p osProcess) Wait() error { return p.cmd.Wait() }
 
-func (osPTYStarter) start(shell, cwd string, cols, rows uint16) (ptyFile, process, error) {
+// ptyEnv composes the child environment for a dock session: the daemon's own
+// environment, the terminal type the frontend's xterm expects, then the caller's
+// delta LAST so an account binding (CLAUDE_CONFIG_DIR) wins over anything the
+// daemon inherited — os/exec keeps the last occurrence of a duplicated key.
+//
+// A nil delta must leave the result byte-identical to what this line produced
+// before the env parameter existed; that is what the term tests pin.
+func ptyEnv(extra []string) []string {
+	return append(append(os.Environ(), "TERM=xterm-256color"), extra...)
+}
+
+func (osPTYStarter) start(shell, cwd string, env []string, cols, rows uint16) (ptyFile, process, error) {
 	cmd := exec.Command(shell, "-l")
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = ptyEnv(env)
 	// pty.StartWithSize forces Setsid=true + Setctty=true, so the child becomes a
 	// session AND process-group leader (pgid == pid). kill(-pid) therefore reaps
 	// the shell AND every descendant it spawned — no orphaned processes.

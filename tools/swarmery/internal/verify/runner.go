@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
@@ -17,6 +19,13 @@ type RunSpec struct {
 	SessionUUID string // daemon-generated; passed as --session-id (explicit link)
 	Cwd         string // the task's worktree path — the process runs here
 	Model       string // optional --model override ("" = account default at the spawn layer; the service fills defaultModel before building the spec)
+
+	// Account is the Claude Code account key this run must execute under,
+	// resolved by the CALLER from the task's PROJECT — never from Cwd. Cwd is a
+	// worktree, which carries no project settings file, so resolving it here
+	// would silently fall back to the default account (plan A3).
+	// "" means the default account and produces no env delta.
+	Account string
 }
 
 // Run is the outcome of a completed verifier process. Unlike the dispatcher,
@@ -91,6 +100,14 @@ func (r ClaudeRunner) Run(ctx context.Context, spec RunSpec) (*Run, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = spec.Cwd
+	// Account comes from the SPEC, not from cmd.Dir: cmd.Dir is the task's
+	// worktree, which has no .claude/settings.local.json of its own, so
+	// claudeacct.EnvFor(cmd.Dir) here would resolve nothing and silently verify
+	// under the default account (plan A3). The service resolves the binding from
+	// the project path and puts the key in spec.Account.
+	// EnvForAccount("") returns nil, so an unbound project's cmd.Env is a
+	// byte-identical copy of os.Environ() — behaviour unchanged from before.
+	cmd.Env = append(os.Environ(), claudeacct.EnvForAccount(spec.Account)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

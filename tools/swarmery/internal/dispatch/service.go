@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
@@ -717,6 +718,16 @@ func (s *Service) failAdmission(id int64, msg string) {
 func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resolvedStage, firstUUID string) {
 	defer s.clearActive(c.ID)
 
+	// The Claude account every stage of this task runs under, resolved ONCE from
+	// the PROJECT path. It cannot be resolved at the spawn site: that runs with
+	// cwd=acq.Path (the worktree), and a worktree carries no
+	// .claude/settings.local.json, so resolving there would silently yield the
+	// default account (plan A3). "" = unbound project = default account = no env
+	// delta. Read once rather than per stage: every stage of one playbook belongs
+	// to the same project, and a re-read mid-chain could split one task across two
+	// accounts if the operator rebinds while it runs.
+	account := claudeacct.Binding(c.ProjectPath)
+
 	var prevOutput string
 	for i, st := range stages {
 		last := i == len(stages)-1
@@ -745,7 +756,7 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resol
 		// "@<agent>: " prefix site. Every stage of a playbook runs as the same agent
 		// — the selection belongs to the card, not to one recipe step.
 		spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path, Model: model,
-			Agent: c.Agent.String}
+			Agent: c.Agent.String, Account: account}
 
 		run, err := s.runStage(spec)
 		if err != nil {

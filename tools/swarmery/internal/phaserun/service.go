@@ -370,6 +370,7 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		SessionUUID:  uuid,
 		Cwd:          acq.Path,
 		SettingsFile: repopath.InheritedSettings(info.ProjectPath, info.RepoRoot, acq.Path),
+		ProjectPath:  info.ProjectPath,
 	}
 	if spec.SettingsFile != "" {
 		log.Printf("phaserun: phase=%d inheriting project settings %s (worktree is a checkout of %s)",

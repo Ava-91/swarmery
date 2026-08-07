@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
@@ -86,6 +88,14 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 	cmd := exec.CommandContext(ctx, bin, "-p", spec.Prompt, "--session-id", spec.SessionUUID, "--model", model)
 	cmd.Dir = spec.Cwd
+	// Resolving the account from cwd is correct HERE — and only here and in
+	// provision. A planner run's Cwd is the PROJECT path (see RunSpec.Cwd), so it
+	// carries the project's .claude/settings.local.json. dispatch and verify look
+	// the same but are not: their Cwd is a worktree with no settings file, which
+	// is why they take the key from the caller instead (plan A3).
+	// EnvFor returns nil for an unbound project, so cmd.Env is then a
+	// byte-identical copy of os.Environ() — behaviour unchanged from before.
+	cmd.Env = append(os.Environ(), claudeacct.EnvFor(spec.Cwd)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// Own process group — survive daemon restarts (same rationale as the session

@@ -354,6 +354,20 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /api/usage/accounts/{account}/login/complete", requireLocalOrigin(h.usageLoginComplete))
 	mux.HandleFunc("DELETE /api/usage/accounts/{account}/login", requireLocalOrigin(h.usageLoginDisconnect))
 
+	// multi-account: the accounts THEMSELVES (accounts.go), as opposed to the
+	// swarmery-side quota credential the three routes above manage. Provisioning
+	// creates a config dir and nothing else — the login is delegated to the
+	// `claude` CLI via the loginCommand the POST returns, because the phase-1
+	// spike measured that the CLI owns that credential and deletes any file a
+	// second writer leaves behind. Same D4 origin hardening on the two
+	// state-changing routes; the list is read-only and unfenced like /api/usage.
+	// Per-project binding lives under the projects tree, next to .../plugins.
+	mux.HandleFunc("GET /api/accounts", h.listAccounts)
+	mux.HandleFunc("POST /api/accounts", requireLocalOrigin(h.createAccount))
+	mux.HandleFunc("DELETE /api/accounts/{account}", requireLocalOrigin(h.deleteAccount))
+	mux.HandleFunc("GET /api/projects/{id}/account", h.projectAccount)
+	mux.HandleFunc("PUT /api/projects/{id}/account", requireLocalOrigin(h.putProjectAccount))
+
 	// fusion phase 17: agent hub — agent-centric READ-ONLY aggregation over the
 	// registry + retro scorecards + analytics cost + sessions (agent_hub.go).
 	// Two GETs, no new tables, no new write paths: the roster and the per-agent

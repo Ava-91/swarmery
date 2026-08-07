@@ -1,0 +1,266 @@
+// AccountsSection — the operator's Claude accounts (multi-account, phase 7):
+// self-fetching global list, matching ConnectorsSection's state shape (see
+// that component for the loading/error/empty pattern this mirrors).
+//
+// `connected` is THREE states, not two: true/false = the question was asked
+// and answered, null = it could not be asked at all (SWARMERY_USAGE_OAUTH=0).
+// Rendering null as "not connected" would misstate the operator's real
+// subscription state, so every state gets its own dot AND its own text — a
+// coloured dot alone is never the only signal (accessibility).
+//
+// The default account has no delete button at all (not a disabled one): it
+// is the account swarmery falls back to when a project has no explicit
+// binding, and there is nothing meaningful to remove it to. Deleting any
+// other account can leave projects still pointing at it via their stored
+// project.json binding; the server reports those back as `danglingBindings`,
+// and that banner is dismiss-only — it must never disappear on its own while
+// the operator hasn't acknowledged it.
+
+import { useEffect, useState } from 'react';
+import { deleteAccount, fetchAccounts } from '../api';
+import type { Account } from '../api/types';
+import { CreateAccountModal } from './CreateAccountModal';
+import { ConfirmDialog, Empty, ErrorBox, Loading } from './ui';
+
+type State =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; accounts: Account[] };
+
+type ConnectedState = 'yes' | 'no' | 'unknown';
+
+const CONNECTED_DOT: Record<ConnectedState, string> = {
+  yes: 'bg-green',
+  no: 'bg-red',
+  unknown: 'bg-line',
+};
+
+const CONNECTED_LABEL: Record<ConnectedState, string> = {
+  yes: 'connected',
+  no: 'not connected',
+  unknown: 'connection status unknown',
+};
+
+function connectedState(connected: boolean | null): ConnectedState {
+  if (connected === true) return 'yes';
+  if (connected === false) return 'no';
+  return 'unknown';
+}
+
+/** Hairline pill, matching ConnectorsSection's Chip styling. */
+function Pill({ children }: { children: string }): JSX.Element {
+  return (
+    <span className="shrink-0 rounded-full border border-line px-1.5 py-0.5 font-mono text-[9.5px] whitespace-nowrap text-ink-dim">
+      {children}
+    </span>
+  );
+}
+
+function ConnectedBadge({ connected }: { connected: boolean | null }): JSX.Element {
+  const state = connectedState(connected);
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <span
+        aria-hidden="true"
+        className={`inline-block h-[7px] w-[7px] rounded-full ${CONNECTED_DOT[state]}`}
+      />
+      <span className="font-mono text-[9.5px] text-ink-dim">{CONNECTED_LABEL[state]}</span>
+    </span>
+  );
+}
+
+function AccountRow({
+  a,
+  onRequestDelete,
+}: {
+  a: Account;
+  onRequestDelete: (key: string) => void;
+}): JSX.Element {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3.5 py-2.5">
+      <ConnectedBadge connected={a.connected} />
+
+      <span className="min-w-0 truncate font-mono text-[12px] text-ink" title={a.key}>
+        {a.key}
+      </span>
+
+      {a.isDefault && <Pill>default</Pill>}
+      {a.plan !== '' && <Pill>{a.plan}</Pill>}
+
+      <span
+        className="order-last basis-full truncate font-mono text-[11px] text-ink-dim sm:order-none sm:min-w-0 sm:flex-1 sm:basis-0"
+        title={a.configDir}
+      >
+        {a.configDir}
+      </span>
+
+      {!a.isDefault && (
+        <button
+          type="button"
+          onClick={() => onRequestDelete(a.key)}
+          className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:border-red/40 hover:text-red"
+        >
+          remove
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function AccountsSection(): JSX.Element {
+  const [state, setState] = useState<State>({ kind: 'loading' });
+  const [retry, setRetry] = useState(0);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Dangling-bindings banner is intentionally decoupled from `state`/`retry`:
+  // a refetch after deletion must not make it vanish before the operator
+  // dismisses it themselves.
+  const [dangling, setDangling] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ kind: 'loading' });
+
+    void fetchAccounts()
+      .then((resp) => {
+        if (!cancelled) setState({ kind: 'ready', accounts: resp.accounts });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setState({
+          kind: 'error',
+          message: err instanceof Error ? err.message : 'could not read accounts',
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [retry]);
+
+  function requestDelete(key: string): void {
+    setDeleteError(null);
+    setConfirmKey(key);
+  }
+
+  async function confirmDelete(): Promise<void> {
+    const key = confirmKey;
+    if (key === null) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const resp = await deleteAccount(key);
+      if (resp.danglingBindings !== undefined && resp.danglingBindings.length > 0) {
+        setDangling(resp.danglingBindings);
+      }
+      setConfirmKey(null);
+      setRetry((n) => n + 1);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <>
+      {dangling !== null && dangling.length > 0 && (
+        <div
+          className="mb-2.5 rounded-lg border border-amber/25 bg-amber/5 px-3.5 py-3"
+          role="alert"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="font-mono text-[11.5px] text-amber">
+              removed account still bound in{' '}
+              {dangling.length === 1 ? '1 project' : `${String(dangling.length)} projects`}
+            </div>
+            <button
+              type="button"
+              onClick={() => setDangling(null)}
+              className="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:bg-surface2"
+            >
+              dismiss
+            </button>
+          </div>
+          <ul className="mt-1.5 space-y-0.5">
+            {dangling.map((path) => (
+              <li
+                key={path}
+                className="truncate font-mono text-[10.5px] text-ink-dim"
+                title={path}
+              >
+                {path}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {state.kind === 'loading' && <Loading label="reading accounts…" />}
+
+      {state.kind === 'error' && (
+        <ErrorBox
+          message={state.message}
+          onRetry={() => {
+            setRetry((n) => n + 1);
+          }}
+        />
+      )}
+
+      {state.kind === 'ready' && state.accounts.length === 0 && (
+        <Empty>no accounts configured</Empty>
+      )}
+
+      {state.kind === 'ready' && state.accounts.length > 0 && (
+        <div className="divide-y divide-line rounded-xl border border-line bg-surface">
+          {state.accounts.map((a) => (
+            <AccountRow key={a.key} a={a} onRequestDelete={requestDelete} />
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 flex justify-end">
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className="rounded-lg border border-line bg-surface px-3 py-1.5 font-mono text-[11px] text-ink-2 transition-colors hover:bg-surface2"
+        >
+          + add account
+        </button>
+      </div>
+
+      <CreateAccountModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onCreated={() => {
+          setModalOpen(false);
+          setRetry((n) => n + 1);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmKey !== null}
+        title="Remove account"
+        confirmLabel="remove"
+        danger
+        busy={deleting}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (!deleting) setConfirmKey(null);
+        }}
+      >
+        {confirmKey !== null && (
+          <>
+            Remove account <span className="font-mono text-ink">{confirmKey}</span>? Projects
+            explicitly bound to it will fall back to the default account.
+          </>
+        )}
+        {deleteError !== null && (
+          <div className="mt-2 font-mono text-[11px] text-red">{deleteError}</div>
+        )}
+      </ConfirmDialog>
+    </>
+  );
+}

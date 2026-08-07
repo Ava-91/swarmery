@@ -42,6 +42,9 @@ import type {
   Turn,
 } from '../api/types';
 import type {
+  Account,
+  AccountBinding,
+  AccountsResponse,
   AdviseStats,
   AnalyticsDimension,
   AnalyticsMetric,
@@ -58,8 +61,10 @@ import type {
   PlaybookRollup,
   ProductivityResp,
   ProposalsResp,
+  ProvisionResponse,
   Recommendation,
   RecommendationsResp,
+  RemoveAccountResponse,
   RetroAgentsResp,
   RetroFrictionResp,
   RetroLessonsResp,
@@ -251,6 +256,7 @@ export const mockSessions: Session[] = [
     source: 'jsonl',
     tokens: 141_000,
     costUsd: 0.34,
+    account: 'nabu-org',
   },
   {
     id: 3,
@@ -1728,6 +1734,43 @@ const mockProjectRecs: Recommendation[] = [
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// ── Accounts (multi-account, phase 7) ── mutable module state so
+// create/delete round-trip inside a single mock session (mirrors mockRoutines
+// below). The real single-account-machine fixture for the "unbound project"
+// screenshot is verified live against the actual daemon, not this mock — so
+// this fixture instead demos all three `connected` tri-states (true/false/
+// null) across ≥2 accounts, which needs a second account to be visible at all
+// (AccountsSection/AccountSelector render nothing below 2 accounts).
+let mockAccounts: Account[] = [
+  {
+    key: 'default',
+    configDir: '~/.claude',
+    isDefault: true,
+    connected: true,
+    plan: 'max20x',
+    ingested: true,
+    projects: [],
+  },
+  {
+    key: 'nabu-org',
+    configDir: '~/.claude-nabu-org',
+    isDefault: false,
+    connected: false,
+    plan: 'pro',
+    ingested: true,
+    projects: ['/Users/user/work/orders-api'],
+  },
+  {
+    key: 'sandbox',
+    configDir: '~/.claude-sandbox',
+    isDefault: false,
+    connected: null,
+    plan: '',
+    ingested: false,
+    projects: [],
+  },
+];
+
 export interface MockFilters {
   project?: string;
   status?: string;
@@ -2632,6 +2675,49 @@ export const mockApi = {
           source: '.mcp.json',
         },
       ],
+    };
+  },
+
+  // ── Accounts (multi-account, phase 7) ──
+  async accounts(): Promise<AccountsResponse> {
+    await delay(90);
+    return { accounts: mockAccounts.map((a) => ({ ...a, projects: [...a.projects] })) };
+  },
+  async createAccount(key: string): Promise<ProvisionResponse> {
+    await delay(150);
+    const account: Account = {
+      key,
+      configDir: `~/.claude-${key}`,
+      isDefault: false,
+      connected: false,
+      plan: '',
+      ingested: false,
+      projects: [],
+    };
+    mockAccounts = [...mockAccounts, account];
+    return {
+      account,
+      loginCommand: `CLAUDE_CONFIG_DIR=~/.claude-${key} claude`,
+      hint: 'restart the daemon to ingest this account',
+    };
+  },
+  async deleteAccount(key: string): Promise<RemoveAccountResponse> {
+    await delay(120);
+    mockAccounts = mockAccounts.filter((a) => a.key !== key);
+    return { ok: true };
+  },
+  async projectAccount(_id: number | string): Promise<AccountBinding> {
+    await delay(80);
+    return { account: '', effective: 'default', configDir: '~/.claude', source: 'default' };
+  },
+  async putProjectAccount(_id: number | string, account: string): Promise<AccountBinding> {
+    await delay(120);
+    const eff = account === '' ? 'default' : account;
+    return {
+      account,
+      effective: eff,
+      configDir: account === '' ? '~/.claude' : `~/.claude-${account}`,
+      source: account === '' ? 'default' : 'binding',
     };
   },
 

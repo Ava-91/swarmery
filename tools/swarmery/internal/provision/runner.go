@@ -7,8 +7,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 )
 
 // Runner executes the claude binary. It is the ONLY seam that touches a real
@@ -36,9 +39,23 @@ type ClaudeRunner struct{}
 
 func (ClaudeRunner) Claude(ctx context.Context, dir, stdin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	// Resolving the account from `dir` is correct HERE — and only here and in
+	// planning. A provision run's dir IS the project path, so it carries the
+	// project's .claude/settings.local.json. dispatch and verify look the same but
+	// are not: their cwd is a worktree with no settings file, which is why they
+	// take the key from the caller instead (plan A3).
+	//
+	// dir=="" means "inherit the daemon cwd" and names no project at all —
+	// claudeacct.EnvFor("") would probe a RELATIVE .claude/settings.local.json and
+	// could bind the run to whatever project the daemon happens to sit in, so that
+	// case resolves nothing.
+	var acctEnv []string
 	if dir != "" {
 		cmd.Dir = dir
+		acctEnv = claudeacct.EnvFor(dir)
 	}
+	// nil delta for an unbound project ⇒ a byte-identical copy of os.Environ().
+	cmd.Env = append(os.Environ(), acctEnv...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

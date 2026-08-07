@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procfind"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
@@ -231,6 +232,11 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 		SessionUUID: uuid,
 		Cwd:         tk.worktreePath,
 		Model:       model,
+		// Resolved from the PROJECT path, never from Cwd: Cwd is the task's
+		// worktree and carries no .claude/settings.local.json, so a cwd-side
+		// resolve would silently verify under the default account (plan A3).
+		// "" = unbound project = default account = no env delta.
+		Account: claudeacct.Binding(tk.projectPath),
 	}
 	run, rerr := s.Run.Run(ctx, spec)
 	if rerr != nil {

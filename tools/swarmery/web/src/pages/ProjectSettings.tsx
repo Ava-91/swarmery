@@ -10,6 +10,7 @@ import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { ProjectActions } from '../components/ProjectActions';
 import { ProjectPlugins } from '../components/ProjectPlugins';
 import { PermissionPresets } from '../components/PermissionPresets';
+import { AccountSelector } from '../components/AccountSelector';
 import { Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 
 export function ProjectSettings(): JSX.Element {
@@ -83,6 +84,13 @@ export function ProjectSettings(): JSX.Element {
           management state, so it shows for every project. */}
       <div className="mt-5">
         <PermissionPresets projectId={project.id} />
+      </div>
+
+      {/* Multi-account picker: invisible on a single-account machine (see
+          AccountSelector's own return-null guard), so it never disturbs the
+          settings page for the common case. */}
+      <div className="mt-5">
+        <AccountSelector projectId={project.id} />
       </div>
     </>,
   );
