@@ -239,8 +239,24 @@ func configFor(dir string, cfg map[string]json.RawMessage, row *projectPluginDTO
 	row.ConfigSchema = chosen.Schema
 	row.ConfigCurrent, _ = pluginreq.Block(cfg, chosen.Key)
 	if chosen.Probe != nil {
-		row.ConfigProbe = &configProbeDTO{Needs: chosen.Probe.Needs, Fields: chosen.Probe.Fields}
+		// jsonList, not the slices as parsed: `needs` is optional in a pack's
+		// requirements.json, and a nil slice marshals to null. The browser reads
+		// both of these as arrays — one pack omitting `needs` took the whole
+		// plugins route down with "Cannot read properties of null".
+		row.ConfigProbe = &configProbeDTO{
+			Needs:  jsonList(chosen.Probe.Needs),
+			Fields: jsonList(chosen.Probe.Fields),
+		}
 	}
+}
+
+// jsonList renders a possibly-nil slice as an empty JSON array rather than
+// null, for fields a client is entitled to iterate without a guard.
+func jsonList(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // configSuppressedBy reports whether a drift verdict outranks the config

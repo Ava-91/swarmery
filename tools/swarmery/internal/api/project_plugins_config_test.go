@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -324,5 +325,47 @@ func TestProjectPluginsRefusesParentTraversalInSource(t *testing.T) {
 	row := pluginRowByName(t, srv.URL, "1", "escaped")
 	if row.ConfigStatus != "" || row.ConfigSchema != nil {
 		t.Errorf("traversal was followed: %+v", row)
+	}
+}
+
+// `needs` is OPTIONAL in a pack's requirements.json, and design-pack is the
+// first shipped pack to omit it. A nil slice marshals to JSON null, which the
+// browser then iterates — one omitted key took the entire plugins route down
+// with "Cannot read properties of null (reading 'filter')". Both probe lists
+// are arrays on the wire, always.
+func TestProjectPluginsProbeListsAreNeverNull(t *testing.T) {
+	noNeeds := `{
+	  "version": 1,
+	  "projectConfig": [
+	    {
+	      "key": "jira",
+	      "title": "Jira tracker",
+	      "why": "declared without a needs list",
+	      "schema": {
+	        "type": "object",
+	        "properties": {"baseUrl": {"type": "string"}},
+	        "required": ["baseUrl"]
+	      },
+	      "probe": {"fields": ["baseUrl"], "prompt": "report only JSON"}
+	    }
+	  ]
+	}`
+	srvURL, _ := configTestServer(t, noNeeds)
+
+	row := pluginRowByName(t, srvURL, "1", "jira-pack")
+	if row.ConfigProbe == nil {
+		t.Fatal("configProbe is absent, want the declared probe")
+	}
+	if row.ConfigProbe.Needs == nil {
+		t.Error("configProbe.needs is nil — it marshals to null and crashes the browser")
+	}
+	// The serialized shape is what the browser actually reads, so assert on it
+	// rather than on the Go value alone.
+	body, err := json.Marshal(row.ConfigProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body); !strings.Contains(got, `"needs":[]`) {
+		t.Errorf("configProbe JSON = %s, want an empty needs array", got)
 	}
 }

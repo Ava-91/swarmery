@@ -27,6 +27,21 @@ interface SchemaNode {
   required?: string[];
   default?: unknown;
   minimum?: number;
+  maximum?: number;
+  enum?: unknown[];
+}
+
+/** A leaf whose value must reach project.json as a JSON number, not a string. */
+function isNumeric(schema: SchemaNode): boolean {
+  return schema.type === 'integer' || schema.type === 'number';
+}
+
+/** A closed set of allowed values — rendered as a select, because a free-text
+ * box over an enum asks the operator to guess a vocabulary the form is holding
+ * and the daemon's validator does not enforce. */
+function enumOptions(schema: SchemaNode): string[] | null {
+  if (!Array.isArray(schema.enum) || schema.enum.length === 0) return null;
+  return schema.enum.filter((v): v is string => typeof v === 'string');
 }
 
 type FormValue = Record<string, unknown>;
@@ -63,7 +78,7 @@ function isEmptyValue(value: unknown): boolean {
 
 /** Builds the JSON value to submit: typed leaves, empty optional leaves and
  * empty optional objects OMITTED entirely (never a silently-saved default). */
-function buildSubmitValue(schema: SchemaNode, value: unknown): unknown {
+export function buildSubmitValue(schema: SchemaNode, value: unknown): unknown {
   if (isObjectSchema(schema)) {
     const out: FormValue = {};
     for (const [key, child] of Object.entries(schema.properties)) {
@@ -73,7 +88,7 @@ function buildSubmitValue(schema: SchemaNode, value: unknown): unknown {
     }
     return out;
   }
-  if (schema.type === 'integer') {
+  if (isNumeric(schema)) {
     if (typeof value === 'number') return value;
     if (typeof value === 'string' && value.trim() !== '') {
       const n = Number(value);
@@ -144,9 +159,46 @@ function valueAt(value: unknown, dotted: string): unknown {
   return cur;
 }
 
-/** The probe's own inputs that are still empty. Empty result = it can run. */
+/** The probe's own inputs that are still empty. Empty result = it can run.
+ *
+ * `needs` is optional in a pack's requirements.json, and a daemon older than
+ * the jsonList fix serves the omission as null — hence the guard, which keeps
+ * this modal open against a daemon this build did not ship with. */
 function unfilledNeeds(probe: PluginConfigProbe, value: FormValue): string[] {
-  return probe.needs.filter((path) => isEmptyValue(valueAt(value, path)));
+  return (probe.needs ?? []).filter((path) => isEmptyValue(valueAt(value, path)));
+}
+
+/**
+ * Writes each field's FIRST candidate into the form — but only into fields that
+ * are still empty.
+ *
+ * The probe already knows the answers; leaving them in a datalist made the
+ * operator retype what the agent just read off their own repo. Filling is
+ * therefore the default, and the review gate stays exactly where it was: the
+ * form is populated, `save` is still a deliberate press, and every filled field
+ * says where its value came from.
+ *
+ * Never an overwrite. A value the operator typed, and a value already saved in
+ * project.json, both outrank a suggestion — the probe is one read of a
+ * repository, and the operator may know something it could not see. Only paths
+ * the schema actually renders are touched, so a pack that nominates a field it
+ * no longer declares cannot smuggle a key past the form.
+ */
+export function fillEmptyFrom(
+  value: FormValue,
+  suggestions: Record<string, string[]>,
+  knownLeaves: string[],
+): { next: FormValue; filled: string[] } {
+  let next = value;
+  const filled: string[] = [];
+  for (const dotted of knownLeaves) {
+    const candidate = suggestions[dotted]?.[0];
+    if (candidate === undefined || candidate === '') continue;
+    if (!isEmptyValue(valueAt(next, dotted))) continue;
+    next = setAt(next, dotted.split('.'), candidate);
+    filled.push(dotted);
+  }
+  return { next, filled };
 }
 
 type Phase = { kind: 'editing' } | { kind: 'saving' };
@@ -180,9 +232,21 @@ export function PluginConfigModal({
   const busy = phase.kind === 'saving';
   const firstPath = useMemo(() => (schema !== undefined ? firstLeafPath(schema) : null), [schema]);
   const knownLeaves = useMemo(() => (schema !== undefined ? leafPaths(schema) : []), [schema]);
+  const filledCount = knownLeaves.filter((dotted) => !isEmptyValue(valueAt(value, dotted))).length;
+  const errorCount = Object.keys(fieldErrors).length;
+  // The scrolling field body — held so a rejected save can bring the first
+  // complaint back into view.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   const probe = row.configProbe;
   const [probePhase, setProbePhase] = useState<ProbePhase>({ kind: 'idle' });
+  // Fields this modal filled from the probe rather than from project.json or
+  // the operator's typing. Kept so each one can say so, and dropped per field
+  // the moment it is edited — after that the value is the operator's.
+  const [autoFilled, setAutoFilled] = useState<string[]>([]);
+  // Latest form contents for the probe's late callback to merge into.
+  const valueRef = useRef(value);
+  valueRef.current = value;
   // Held in a ref rather than state: aborting is a side effect on an in-flight
   // request, and re-rendering the form because one was cancelled would be noise.
   const probeAbort = useRef<AbortController | null>(null);
@@ -206,6 +270,13 @@ export function PluginConfigModal({
       .then((res) => {
         if (controller.signal.aborted) return;
         setProbePhase({ kind: 'done', suggestions: res.suggestions, reason: res.reason });
+        // Read through the ref, not this closure: a probe runs for minutes and
+        // the operator may have typed into the form the whole time. Filling and
+        // marking are two setStates over one snapshot rather than a side effect
+        // inside an updater, which React is free to run twice.
+        const { next, filled } = fillEmptyFrom(valueRef.current, res.suggestions, knownLeaves);
+        setValue(next);
+        setAutoFilled(filled);
       })
       .catch((e: unknown) => {
         if (controller.signal.aborted) return;
@@ -234,6 +305,14 @@ export function PluginConfigModal({
     runProbe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A field that fails validation may now be scrolled out of sight, so a
+  // rejected save has to go and fetch it — otherwise the press reads as a modal
+  // that did nothing. Runs after the errors have rendered, hence the effect.
+  useEffect(() => {
+    if (errorCount === 0) return;
+    bodyRef.current?.querySelector('[aria-invalid="true"]')?.scrollIntoView({ block: 'center' });
+  }, [fieldErrors, errorCount]);
 
   // An unmount mid-probe must cancel the request: the daemon's timeout hangs off
   // the request context, so aborting kills the agent process instead of leaving
@@ -294,69 +373,101 @@ export function PluginConfigModal({
       onKeyDown={onKeyDown}
     >
       <div
-        className="w-full max-w-lg rounded-xl border border-line bg-surface px-4 py-4"
+        className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-line bg-surface px-4 py-4"
         onClick={(e) => e.stopPropagation()}
       >
-        <div id={titleId} className="font-display text-[14px] font-bold text-ink">
-          {row.configTitle ?? row.name}
+        <div className="shrink-0">
+          <div id={titleId} className="font-display text-[14px] font-bold text-ink">
+            {row.configTitle ?? row.name}
+          </div>
+          {row.configWhy !== undefined && row.configWhy !== '' && (
+            <div className="mt-1 text-[12px] leading-relaxed text-ink-dim">{row.configWhy}</div>
+          )}
+          {row.configDocs !== undefined && row.configDocs !== '' && (
+            <div className="mt-1.5 font-mono text-[10.5px] text-ink-faint">docs: {row.configDocs}</div>
+          )}
         </div>
-        {row.configWhy !== undefined && row.configWhy !== '' && (
-          <div className="mt-1 text-[12px] leading-relaxed text-ink-dim">{row.configWhy}</div>
-        )}
-        {row.configDocs !== undefined && row.configDocs !== '' && (
-          <div className="mt-1.5 font-mono text-[10.5px] text-ink-faint">docs: {row.configDocs}</div>
-        )}
 
         {schema === undefined || !isObjectSchema(schema) || row.configKey === undefined ? (
           <ErrorBox message="this pack's config schema is missing or malformed" />
         ) : (
           <form
-            className="mt-3"
+            className="mt-3 flex min-h-0 flex-1 flex-col"
             onSubmit={(e) => {
               e.preventDefault();
               void save();
             }}
           >
-            <SchemaFields
-              schema={schema}
-              path={[]}
-              value={value}
-              onChange={(path, v) => setValue((cur) => setAt(cur, path, v))}
-              fieldErrors={fieldErrors}
-              firstPath={firstPath}
-              suggestions={suggestions}
-            />
-
-            {probe !== undefined && (
-              <ProbeRow
-                probing={probing}
-                canProbe={canProbe}
-                blockers={probeBlockers}
-                reason={probePhase.kind === 'done' ? probePhase.reason : undefined}
-                found={Object.keys(suggestions).length}
-                onRun={runProbe}
-                onSkip={skipProbe}
+            {/* Only the fields scroll. A pack declares as many as it needs —
+                design-pack alone renders twelve across three fieldsets — and a
+                form taller than the viewport used to push `save` off-screen with
+                no way to reach it. Header and footer stay put; the count below
+                says how much is out of sight. */}
+            <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <SchemaFields
+                schema={schema}
+                path={[]}
+                value={value}
+                onChange={(path, v) => {
+                  setValue((cur) => setAt(cur, path, v));
+                  // Editing a filled field ends its provenance: from here the
+                  // value is the operator's, whatever the probe had said.
+                  const dotted = path.join('.');
+                  setAutoFilled((cur) => (cur.includes(dotted) ? cur.filter((p) => p !== dotted) : cur));
+                }}
+                fieldErrors={fieldErrors}
+                firstPath={firstPath}
+                suggestions={suggestions}
+                autoFilled={autoFilled}
               />
-            )}
+            </div>
 
-            {generalError !== null && <ErrorBox message={generalError} />}
+            <div className="mt-3 shrink-0 border-t border-line-soft">
+              {probe !== undefined && (
+                <ProbeRow
+                  probing={probing}
+                  canProbe={canProbe}
+                  blockers={probeBlockers}
+                  reason={probePhase.kind === 'done' ? probePhase.reason : undefined}
+                  found={Object.keys(suggestions).length}
+                  filled={autoFilled.length}
+                  onRun={runProbe}
+                  onSkip={skipProbe}
+                />
+              )}
 
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={busy}
-                className="rounded-lg border border-line bg-surface px-3.5 py-1.5 font-mono text-[11.5px] text-ink-2 transition-colors hover:bg-surface2 disabled:opacity-50"
-              >
-                cancel
-              </button>
-              <button
-                type="submit"
-                disabled={busy}
-                className="rounded-lg border border-green/40 bg-green/10 px-3.5 py-1.5 font-mono text-[11.5px] font-semibold text-green transition-colors hover:bg-green/20 disabled:opacity-50"
-              >
-                {busy ? '…' : 'save'}
-              </button>
+              {generalError !== null && <ErrorBox message={generalError} />}
+
+              <div className="mt-3 flex items-center justify-between gap-2">
+                {/* The one thing a scrolled form hides: how many fields are left
+                    and whether any of them is complaining. */}
+                <span className="font-mono text-[10px] text-ink-faint">
+                  {errorCount > 0 ? (
+                    <span className="text-red">
+                      {errorCount} field{errorCount === 1 ? '' : 's'} need attention
+                    </span>
+                  ) : (
+                    `${filledCount}/${knownLeaves.length} fields`
+                  )}
+                </span>
+                <span className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    disabled={busy}
+                    className="rounded-lg border border-line bg-surface px-3.5 py-1.5 font-mono text-[11.5px] text-ink-2 transition-colors hover:bg-surface2 disabled:opacity-50"
+                  >
+                    cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="rounded-lg border border-green/40 bg-green/10 px-3.5 py-1.5 font-mono text-[11.5px] font-semibold text-green transition-colors hover:bg-green/20 disabled:opacity-50"
+                  >
+                    {busy ? '…' : 'save'}
+                  </button>
+                </span>
+              </div>
             </div>
           </form>
         )}
@@ -391,6 +502,7 @@ function ProbeRow({
   blockers,
   reason,
   found,
+  filled,
   onRun,
   onSkip,
 }: {
@@ -399,6 +511,8 @@ function ProbeRow({
   blockers: string[];
   reason: string | undefined;
   found: number;
+  /** How many empty fields the probe's answers were written into. */
+  filled: number;
   onRun: () => void;
   onSkip: () => void;
 }): JSX.Element {
@@ -430,8 +544,12 @@ function ProbeRow({
       {!canProbe && <span>needs {blockers.join(', ')}</span>}
       {canProbe && reason !== undefined && reason !== '' && <span>probe: {reason}</span>}
       {canProbe && reason === undefined && found > 0 && (
+        // Filled, not merely suggested — and the sentence says so, because a
+        // form that populated itself must not read as one the operator filled.
         <span>
-          suggested values for {found} field{found === 1 ? '' : 's'}
+          {filled > 0
+            ? `filled ${filled} field${filled === 1 ? '' : 's'} from this project — review, then save`
+            : `suggested values for ${found} field${found === 1 ? '' : 's'}`}
         </span>
       )}
     </div>
@@ -446,6 +564,7 @@ function SchemaFields({
   fieldErrors,
   firstPath,
   suggestions,
+  autoFilled,
 }: {
   schema: SchemaNode & { properties: Record<string, SchemaNode> };
   path: string[];
@@ -454,6 +573,8 @@ function SchemaFields({
   fieldErrors: Record<string, string>;
   firstPath: string | null;
   suggestions: Record<string, string[]>;
+  /** Dotted paths this modal filled from the probe — rendered as provenance. */
+  autoFilled: string[];
 }): JSX.Element {
   const required = schema.required ?? [];
   return (
@@ -481,6 +602,7 @@ function SchemaFields({
                 fieldErrors={fieldErrors}
                 firstPath={firstPath}
                 suggestions={suggestions}
+                autoFilled={autoFilled}
               />
             </fieldset>
           );
@@ -497,6 +619,7 @@ function SchemaFields({
             autoFocus={dotted === firstPath}
             onChange={onChange}
             suggestions={suggestions[dotted]}
+            autoFilled={autoFilled.includes(dotted)}
           />
         );
       })}
@@ -514,6 +637,7 @@ function LeafField({
   autoFocus,
   onChange,
   suggestions,
+  autoFilled,
 }: {
   fieldKey: string;
   path: string[];
@@ -524,13 +648,16 @@ function LeafField({
   autoFocus: boolean;
   onChange: (path: string[], value: unknown) => void;
   suggestions: string[] | undefined;
+  /** This field's value came from the probe and has not been edited since. */
+  autoFilled: boolean;
 }): JSX.Element {
   const dotted = path.join('.');
   const fieldId = `cfg-${dotted.replace(/\./g, '-')}`;
   const hintId = `${fieldId}-hint`;
   const errorId = `${fieldId}-error`;
   const listId = `${fieldId}-suggestions`;
-  const isInteger = schema.type === 'integer';
+  const numeric = isNumeric(schema);
+  const options = enumOptions(schema);
   const hasDescription = schema.description !== undefined && schema.description !== '';
   const hasSuggestions = suggestions !== undefined && suggestions.length > 0;
   const describedBy = [hasDescription ? hintId : null, error !== undefined ? errorId : null]
@@ -543,26 +670,51 @@ function LeafField({
         {fieldKey}
         {required ? <span className="text-red"> *</span> : null}
       </label>
-      <input
-        id={fieldId}
-        type={isInteger ? 'number' : 'text'}
-        min={isInteger ? schema.minimum : undefined}
-        // A datalist, never a select. The probe reads what it can reach, and
-        // what it reaches is not guaranteed to be the whole truth — a workflow
-        // it could not see, or a script the manifest does not declare, would be
-        // unreachable in a closed dropdown. Suggestions accelerate typing; they
-        // never take it away.
-        list={hasSuggestions ? listId : undefined}
-        value={typeof value === 'string' || typeof value === 'number' ? value : ''}
-        placeholder={schema.default !== undefined ? String(schema.default) : undefined}
-        autoFocus={autoFocus}
-        aria-describedby={describedBy === '' ? undefined : describedBy}
-        aria-invalid={error !== undefined}
-        onChange={(e) => onChange(path, e.target.value)}
-        className={`mt-1 w-full rounded-lg border bg-bg px-2.5 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-line-strong ${
-          error !== undefined ? 'border-red/50' : 'border-line'
-        }`}
-      />
+      {options !== null ? (
+        // A select only where the SCHEMA closed the set. Everywhere else the box
+        // stays free text — see the datalist note below.
+        <select
+          id={fieldId}
+          value={typeof value === 'string' ? value : ''}
+          autoFocus={autoFocus}
+          aria-describedby={describedBy === '' ? undefined : describedBy}
+          aria-invalid={error !== undefined}
+          onChange={(e) => onChange(path, e.target.value)}
+          className={`mt-1 w-full rounded-lg border bg-bg px-2.5 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-line-strong ${
+            error !== undefined ? 'border-red/50' : 'border-line'
+          }`}
+        >
+          <option value="">{schema.default !== undefined ? String(schema.default) : '—'}</option>
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          id={fieldId}
+          type={numeric ? 'number' : 'text'}
+          min={numeric ? schema.minimum : undefined}
+          max={numeric ? schema.maximum : undefined}
+          step={schema.type === 'number' ? 'any' : undefined}
+          // A datalist, never a select. The probe reads what it can reach, and
+          // what it reaches is not guaranteed to be the whole truth — a workflow
+          // it could not see, or a script the manifest does not declare, would be
+          // unreachable in a closed dropdown. Suggestions accelerate typing; they
+          // never take it away.
+          list={hasSuggestions ? listId : undefined}
+          value={typeof value === 'string' || typeof value === 'number' ? value : ''}
+          placeholder={schema.default !== undefined ? String(schema.default) : undefined}
+          autoFocus={autoFocus}
+          aria-describedby={describedBy === '' ? undefined : describedBy}
+          aria-invalid={error !== undefined}
+          onChange={(e) => onChange(path, e.target.value)}
+          className={`mt-1 w-full rounded-lg border bg-bg px-2.5 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-line-strong ${
+            error !== undefined ? 'border-red/50' : 'border-line'
+          }`}
+        />
+      )}
       {hasSuggestions && (
         <datalist id={listId}>
           {suggestions.map((s) => (
@@ -577,7 +729,9 @@ function LeafField({
       )}
       {hasSuggestions && (
         <p className="mt-1 font-mono text-[10px] text-ink-faint">
-          {suggestions.length} suggested by probe
+          {autoFilled
+            ? `filled by probe${suggestions.length > 1 ? ` · ${suggestions.length - 1} more suggested` : ''}`
+            : `${suggestions.length} suggested by probe`}
         </p>
       )}
       {error !== undefined && (
