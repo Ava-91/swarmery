@@ -21,6 +21,10 @@ skills:
   - api-integration
   - code-search
   - nextjs-migration
+docs:
+  status: reviewed
+  source_sha: cbf1cd62868f
+  updated: 2026-08-06
 ---
 
 # Role
@@ -298,3 +302,59 @@ PLAN EXECUTION COMPLETE | steps: 4/4 | loops: 1 | summary: .../task-video-screen
 | (Plan-exec) 3 loops exhausted on one step | Loop counter | Escalate to user with step doc + loops log + last report |
 | (Plan-exec) `task_dir` received while running as subagent | Upstream is an orchestrator, not the user | Refuse; return to dispatcher (anti-nesting guard) |
 | (Plan-exec) agent-work.sh env unresolved | `AGENT_WORKSPACE_ROOT`/`AGENT_PROJECT` missing | Report archive step blocked; do not invent paths |
+
+# How to use
+
+## What it does
+
+This agent writes the code for an approved plan. Give it one step document and it edits files itself inside an isolated worktree, verifies every signature before touching a line, and runs the repo's typecheck and build. Give it a whole task directory instead and it flips roles: it reads the plan, dispatches each phase to the right executor, re-runs the verification commands itself, and refuses to trust anyone's completion claim.
+
+## When to use it
+
+- You have an approved plan or step doc and want the code written without scope creep.
+- You want a ready workspace plan driven to completion end to end, one phase at a time.
+- A phase came back failing and you want bounded correction loops instead of an open-ended retry.
+- You need each finished phase ticked and reported inside the plan doc, not just claimed in chat.
+
+## When not to use it
+
+- The plan does not exist yet — use `@core:task-planner` or `@core:implementation-planner` first.
+- You only want the build or test suite run and judged — use `@core:verification-agent`.
+- You want a quality opinion on code already written — use `@core:quality-checker`.
+- You need the full multi-phase workflow orchestrated around this — use `@core:tech-lead`.
+
+## How to invoke
+
+```
+@core:implementation-agent
+```
+
+Mode is chosen by input shape, never by intent: pass `step_file=<path>` for a single step and it writes code itself; pass `task_dir=<path>` for a whole plan and it orchestrates. The two are mutually exclusive.
+
+## Inputs
+
+- `step_file` — path to one step or phase doc — optional, selects leaf mode.
+- `task_dir` — path to a workspace task dir holding `plan/README.md` plus `plan/phase-N-*.md` — optional, selects plan-execution mode, user invocation only.
+- `plan` — the approved plan with its file list and acceptance criteria — required in leaf mode.
+- `context` — the earlier context artifact for the task — optional but recommended.
+
+## What you get back
+
+In leaf mode: edited and created files on disk in the worktree, a `## Completion Report` section written inside the step doc, and a one-line close such as `Estimated diff size: ~4 files, ~120 lines changed | typecheck: PASS | build: PASS`.
+
+In plan-execution mode: `ORCHESTRATION.md` written before the first dispatch, ticked acceptance checkboxes and a Completion Report in every phase doc, a delegation ledger at `logs/agents.md`, a final `SUMMARY.md`, and the task archived.
+
+## Worked example
+
+```
+@core:implementation-agent step_file=<workspace>/working/2026/08/06/order-line-items/plan/phase-1-line-item-crud.md
+```
+
+It reads the phase doc, confirms the existing order schema and service signatures, then adds the line-item table, service, and route handler using Edit for existing files and Write for new ones. It runs the formatter, typecheck, and build, walks the eight scope checks, fills the `## Completion Report` stub in the phase doc, and closes with the one-line diff summary. Anything it could not verify is tagged `[LOW-CONFIDENCE]` rather than asserted.
+
+## Related
+
+- `@core:tech-lead` — prefer it when the work still needs planning, review, and phase routing around the code changes.
+- `@core:verification-agent` — prefer it for a standalone PASS/FAIL verdict on build, lint, and tests.
+- `@core:plan-reviewer` — prefer it to compare finished work against the original plan.
+- `@core:debugger` — prefer it when the task is finding a root cause, not executing a plan.

@@ -3,6 +3,10 @@ name: mission-creation
 description: "Use this skill to create and drive a UAV mission end-to-end through the web UI with the Playwright MCP browser tools on LOCALDEV (https://<localdev-host>) — rebuild/redeploy, Keycloak login, the multi-step BY_ROUTE/REALTIME mission wizard, pre-flight, the Start-Mission FSM, AND the full per-drone flight-command lifecycle (arm → take-off → hover → start/fly → stop → observation divert → resume → home/land/disarm), per-tab verification, and cleanup. Use it for E2E UI verification (incl. verifying a controlbox/FSM change against real SITL), demos, or reproducing mission-flow bugs. Do NOT use it against staging or production (shared/real environments), for API-only or DB-seeded mission creation (no browser), or when localdev is not running."
 version: "2.0.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 7e603f84b77e
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -280,3 +284,63 @@ The **divert** ("go to observation") sends a *flying/waiting* drone to an observ
 See [`resources/playwright-snippets.md`](resources/playwright-snippets.md) for copy-pasteable
 `browser_run_code_unsafe` snippets (login, drone selection via map marker, hold-to-confirm arm,
 arm→take-off loop, observation report, divert, resume, terminate-DOM-modal).
+
+# How to use
+
+## What it does
+
+This skill walks a UAV mission through the real web UI on a local development stack, using Playwright browser tools. It covers the whole lifecycle: optional rebuild of the code under test, sign-in, the mission wizard, pre-flight, activation, the per-drone flight commands (arm, take-off, start, divert, resume, land, disarm), tab-by-tab verification, and cleanup. It exists because the mission UI is full of traps — hold-to-confirm buttons, newline labels, map markers that ignore synthetic clicks — and naive automation fails silently on all of them.
+
+## When to use it
+
+- You changed mission code and want an end-to-end check through the real interface, not just unit or API tests.
+- You changed the drone state machine or protocol layer and need to fly a simulated drone to prove it.
+- You are reproducing a bug that only shows up in the live flow: wizard, pre-flight, telemetry, camera, or the divert/resume path.
+- You need a running demo mission with simulated drones.
+
+## When not to use it
+
+- You are targeting a shared or real environment — stop and get human approval first; this skill is local-only.
+- You want to create missions over the API or by seeding the database — this skill drives a browser and nothing else.
+- The local stack is not running — bring it up first instead of improvising.
+- You are writing Playwright spec files — reach for the `testing` skill; this one is interactive.
+
+## How to invoke
+
+```
+Skill(skill: "uav-pack:mission-creation")
+```
+
+Invoke it, then state the mission parameters you want in plain language: mission type, name, how many simulated drones, start location, route legs, and which parts of the flight lifecycle to exercise.
+
+## Inputs
+
+- Mission type — route-based or real-time manual — required.
+- Mission name — required by the wizard.
+- Drone count and which simulated drones to pick — required; only drones with a live simulator backend can fly.
+- Start location and take-off altitude — optional; sensible defaults exist.
+- Waypoints — required for route missions; space legs a few hundred metres apart if you plan to test a mid-leg divert.
+- Whether to rebuild and redeploy first — optional.
+
+## What you get back
+
+A mission you can see in the UI, with its identifier captured from the URL, and a verified trail through each step. Every state change is confirmed against the drone service log, which the skill treats as the ground truth rather than the rendered UI. You also get the failure-mode table: when a button "does nothing", the skill tells you which of the known traps you hit. Missions you create are terminated at the end.
+
+## Worked example
+
+```
+Skill(skill: "uav-pack:mission-creation")
+
+"Create a route mission 'Resume Smoke' with one simulated drone on a
+3-waypoint route with ~500 m legs. Start it, arm, take off, and start
+flying. While it is mid-leg, report an observation, divert to it, then
+resume — and confirm from the service log that it flies back to the
+interruption point before continuing. Terminate when done."
+```
+
+You end up with a log excerpt showing the guided-mode hop back to the interruption point, then the switch to autonomous mode — proof the resume-to-point behaviour is correct — and a terminated mission with its drones freed.
+
+## Related
+
+- `testing` — prefer it when you are authoring Playwright spec files rather than driving the UI interactively.
+- `browser-verification` — a lighter general-purpose browser check when you do not need the full mission lifecycle.

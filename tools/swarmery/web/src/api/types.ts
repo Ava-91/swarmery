@@ -1568,10 +1568,21 @@ export interface SystemSummary {
   hooks: number;
   commands: number;
   overlays: number;
-  /** Active findings (resolved_at IS NULL) split by severity. */
+  /**
+   * Active findings (resolved_at IS NULL) split by severity. Usage-guide
+   * findings (docs_*) are NOT counted here — they saturate the corpus and would
+   * make these click-to-filter badges disagree with the `lintMax` list they
+   * filter. Guide coverage is `docs` below.
+   */
   lint: { error: number; warn: number; info: number };
   /** Go: systemInsightCountsDTO — promotion/drift badge counters. */
   insights: { promotions: number; staleOverrides: number };
+  /**
+   * Go: systemDocsCoverageDTO — `# How to use` coverage over live agents +
+   * skills + commands, derived from the linter's active docs findings.
+   * `documented` ⊇ `reviewed`; both are clamped at 0.
+   */
+  docs: { total: number; documented: number; reviewed: number };
 }
 
 /** Go: systemItemDTO — one row of GET /api/system/{agents|skills}?scope=&project=. */
@@ -1587,10 +1598,19 @@ export interface SystemItem {
   description: string | null;
   /** agents.file_path / skills.dir_path. */
   path: string;
-  /** Worst ACTIVE lint finding severity; null = clean. */
+  /**
+   * Worst ACTIVE lint finding severity; null = clean. Usage-guide findings
+   * (docs_*) are deliberately excluded — see `documented`.
+   */
   lintMax: LintSeverity | null;
   /** Active agent_dead finding (advisory — sparse events attribution). */
   dead: boolean;
+  /**
+   * false while a docs_missing or docs_incomplete finding is active — the item
+   * has no usable `# How to use` guide. Carries the docs axis that `lintMax`
+   * deliberately drops.
+   */
+  documented: boolean;
   /** MAX(events.ts) by agent_id/skill_id; null while never referenced. */
   lastUsed: string | null;
   /** COUNT(DISTINCT session_id) over the last 30 days. */
@@ -1605,6 +1625,32 @@ export interface SystemVersion {
   contentHash: string;
 }
 
+/**
+ * Go: systemDocsDTO — the item's parsed `# How to use` usage guide, served on
+ * every detail endpoint (contract: tools/swarmery/docs/system-docs-format.md).
+ * Every string in it is redacted server-side, including the section titles.
+ */
+export interface SystemDocs {
+  /** A `# How to use` block was found (§1). */
+  present: boolean;
+  /** Two blocks in one file — a violation; the parser kept the first (§1.4). */
+  duplicate: boolean;
+  /** The whole block as markdown, redacted; '' when absent. */
+  markdown: string;
+  /** H2 subsection titles found, in file order. Never null — [] when absent. */
+  sections: string[];
+  /** Required §2 subsections absent or under the rune floor, in contract order.
+   * Never null, and always [] when `present` is false ("no guide at all" is a
+   * distinct finding from "guide with gaps"). */
+  missing: string[];
+  /** frontmatter docs.status (§3): 'generated' | 'reviewed' | '' when absent.
+   * An unrecognised value is kept verbatim so the UI can report it. */
+  status: string;
+  /** docs.source_sha is well-formed and no longer matches the body (§4) — the
+   * item changed after its guide was written. Unknown staleness is not stale. */
+  stale: boolean;
+}
+
 /** Go: systemItemDetailDTO — GET /api/system/{agents|skills}/{id} (numeric row id). */
 export interface SystemItemDetail extends SystemItem {
   deleted: boolean;
@@ -1613,6 +1659,8 @@ export interface SystemItemDetail extends SystemItem {
   frontmatter: string;
   /** Markdown body of the current version (redacted). */
   body: string;
+  /** Parsed `# How to use` guide of the current version. */
+  docs: SystemDocs;
   /** Version history, newest first. */
   versions: SystemVersion[];
 }
@@ -1690,11 +1738,32 @@ export interface SystemDeadComponent {
   hint: string;
 }
 
+/** Go: undocumentedItemDTO — one item the linter reports as having no usable
+ * `# How to use` guide (docs/system-docs-format.md), in insight framing. */
+export interface SystemUndocumentedItem {
+  kind: 'agent' | 'skill' | 'command';
+  id: number;
+  name: string;
+  scope: 'global' | 'project';
+  projectSlug: string | null;
+  pluginName: string | null;
+  /** agents/commands: file path; skills: dir path. */
+  path: string;
+  /** Which guide rule fired. */
+  rule: 'docs_missing' | 'docs_incomplete';
+  /** Required §2 subsection names still absent. Never null — all of them when
+   * the guide is missing entirely. */
+  missing: string[];
+  hint: string;
+}
+
 /** Go: systemInsightsDTO — GET /api/system/insights. */
 export interface SystemInsights {
   promotionCandidates: SystemPromotionCandidate[];
   staleOverrides: SystemStaleOverride[];
   dead: SystemDeadComponent[];
+  /** Items with an active docs_missing / docs_incomplete finding. */
+  undocumented: SystemUndocumentedItem[];
   /**
    * Active plugin_* findings across every project — the only cross-project view
    * of plugin drift. Additive optional: absent on a daemon older than the
@@ -1796,6 +1865,24 @@ export interface SystemCommand {
   pluginName: string | null;
   description: string | null;
   path: string;
+}
+
+/** Go: commandHubDTO — GET /api/system/commands/{id}/hub. Read-only: commands
+ * have no write surface, so this carries no versions and no base_hash. */
+export interface SystemCommandHub extends SystemCommand {
+  /** Raw YAML frontmatter block (redacted). */
+  frontmatter: string;
+  /** Markdown body (redacted). */
+  content: string;
+  /** Parsed `# How to use` guide. */
+  docs: SystemDocs;
+  usage: {
+    windowDays: number;
+    invocations: number;
+    /** ALWAYS true — slash-command invocations are inferred from prompt text,
+     * never an authoritative event. Render the caveat, never a bare number. */
+    approximate: boolean;
+  };
 }
 
 // --- Phase 4: system — Stage 2 write surface (steps 09–12). Request/response
@@ -2271,6 +2358,51 @@ export interface Connector {
 
 export interface ConnectorsResponse {
   connectors: Connector[];
+}
+
+// ── Accounts (multi-account, phase 7) ────────────────────────────────────────
+
+/** Go: accountDTO (internal/api/accounts.go:82) */
+export interface Account {
+  key: string;
+  configDir: string;
+  isDefault: boolean;
+  /** Tri-state, NOT boolean: true/false = the question was asked and answered,
+   * null = it could not be asked at all (SWARMERY_USAGE_OAUTH=0). Rendering
+   * null as false is a false statement about the operator's subscription. */
+  connected: boolean | null;
+  /** Raw rateLimitTier, "" when unresolved — display as-is, do not re-derive. */
+  plan: string;
+  ingested: boolean;
+  /** Project paths EXPLICITLY bound to this account (not "every unbound project"). */
+  projects: string[];
+}
+
+export interface AccountsResponse {
+  accounts: Account[];
+}
+
+/** Go: provisionResponse (internal/api/accounts.go:113) */
+export interface ProvisionResponse {
+  account: Account;
+  /** "CLAUDE_CONFIG_DIR=<dir> claude" — the OPERATOR runs this, we never do. */
+  loginCommand: string;
+  hint?: string;
+}
+
+/** Go: removeAccountResponse (internal/api/accounts.go:126) */
+export interface RemoveAccountResponse {
+  ok: boolean;
+  danglingBindings?: string[];
+}
+
+/** Go: accountBindingDTO (internal/api/accounts.go:137) */
+export interface AccountBinding {
+  /** Stored binding, "" when the project has none. */
+  account: string;
+  effective: string;
+  configDir: string;
+  source: 'binding' | 'default';
 }
 
 // --- Project overview (GET /api/projects/{id}/overview, Canvas v2 phase 1) ----
@@ -2754,6 +2886,10 @@ export interface CommandHub extends SystemCommand {
   frontmatter: string;
   /** Redacted markdown body. */
   content: string;
+  /** Parsed `# How to use` guide. Go: commandHubDTO, always populated
+   * (internal/api/system_hub.go:136-140, :443-446 — out.Docs = emptyDocsDTO()
+   * first, so the JSON key is never absent). */
+  docs: SystemDocs;
   usage: {
     windowDays: number;
     invocations: number;

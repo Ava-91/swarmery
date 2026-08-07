@@ -4,6 +4,10 @@ description: "Use this skill when writing or reviewing Python code for Raspberry
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Edit, Bash, Grep, Glob
+docs:
+  status: reviewed
+  source_sha: 36398d0f597c
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -366,3 +370,55 @@ sudo systemctl edit <device>@ubuntu
 - `docker-build` -- defer for creating the edge service Docker image (ARM64)
 - `code-standards` -- code-standards defines Python style rules (black, isort, flake8, mypy) that apply to all edge service code
 - `api-integration` -- the edge service WebSocket server (port 8081) that the web portal connects to is documented in api-integration
+
+# How to use
+
+## What it does
+
+This skill writes and reviews Python that talks to real hardware on a single-board edge computer — serial ports, camera capture, GPIO lines, resource monitoring, and the service unit that keeps it running. It bakes in the habits that hardware code fails without: explicit imports, specific exception types, cleanup in `finally`, loops that can be stopped, and a mock path so the module still imports on a CI box with no hardware attached.
+
+## When to use it
+
+- You are writing or reviewing Python that opens a serial port, drives GPIO pins, or captures frames from a CSI camera.
+- You need a service unit file for the edge service, parameterized by user and home directory rather than hardcoded paths.
+- A hardware call is failing — the port is busy, the camera never initializes, the process holds a device after exit.
+- You are adding CPU temperature, memory, or throttling checks to a device agent.
+
+## When not to use it
+
+- Parsing MAVLink messages, choosing dialects, or sequencing commands — use `mavlink-integration`; this skill only supplies the transport underneath it.
+- Server-side TypeScript for a web portal — use `api-integration` or `code-standards`.
+- Building the container image for the edge service — use `docker-build`.
+- Auditing Python dependencies — use `deps-check`.
+
+## How to invoke
+
+```
+Skill(skill: "uav-pack:embedded-systems")
+```
+
+Invoke it before you write the code, not after. Tell it which subsystem you are on — `uart`, `camera`, `gpio`, `systemd`, or `monitoring` — and whether the result must run without hardware.
+
+## Inputs
+
+- `component` — which subsystem: `uart`, `camera`, `gpio`, `systemd`, or `monitoring` — required.
+- `mock_mode` — whether the generated code must run with no hardware attached, for CI — optional, defaults to supporting it.
+
+## What you get back
+
+Typed Python with a module-level logger, a runtime `MOCK_MODE` check, specific `except` clauses, and every acquired resource released in a `finally` block. Classes stay under 120 lines, standalone functions under 40, service unit files under 25. Before any edit to an existing file you get a before/after diff and a note on which hardware subsystem it touches.
+
+## Worked example
+
+```
+Skill(skill: "uav-pack:embedded-systems")
+"Add a camera streamer to the edge service that pushes JPEG frames to a callback."
+```
+
+You get an async class with `initialize`, `capture_jpeg`, a `stream_loop` that runs `while not stop_event.is_set()`, and a `cleanup` that stops and closes the device. Blocking capture is wrapped in `asyncio.to_thread`. With `MOCK_MODE=true` the module imports and returns a stub JPEG, so the test suite passes on a machine with no camera.
+
+## Related
+
+- `mavlink-integration` — compose with it when the bytes on the wire are MAVLink frames rather than raw serial.
+- `code-standards` — the underlying style rules (formatting, import order, lint, type checking) for all Python here.
+- `api-integration` — for the socket server the portal connects to, rather than the device-side driver.

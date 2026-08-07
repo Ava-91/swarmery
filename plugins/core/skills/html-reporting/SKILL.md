@@ -5,6 +5,10 @@ owner: "swarmery-core"
 description: "Render a self-contained HTML report or dashboard (task summaries, code/operational audits) in one canonical dark-terminal shell. NOT for markdown-only output or the mermaid viewer (use mermaid-viewer)."
 disable-model-invocation: true
 color: teal
+docs:
+  status: reviewed
+  source_sha: 70bbc7ba9aea
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -147,3 +151,62 @@ Checkpoint: artifact on disk.
 - **mermaid-viewer** — for diagrams (do not hand-roll mermaid here)
 - **code-standards** — review findings that feed an audit report
 
+# How to use
+
+## What it does
+
+This skill turns content you have already written into a single self-contained HTML file — one dark terminal-style page with inline CSS, no external assets, and no build step. Every report an agent emits shares the same visual language: severity-coded cards, metric tables, and collapsible sections. It formats what you hand it; it never gathers data, computes metrics, or invents a number.
+
+## When to use it
+
+- An agent finished its analysis and needs the result as a browsable HTML page instead of terminal text.
+- You are rendering a task summary dashboard with a status header, metrics table, and per-role guidance.
+- You are rendering an audit report with a health score and a P0–P3 remediation backlog.
+- A report has more than three sections, or you will share it with someone outside the terminal.
+
+## When not to use it
+
+- The output should stay markdown — the canonical `SUMMARY.md` or audit markdown is the source of truth; HTML is the optional mirror.
+- You still need to measure or compute the numbers — do the analysis first, then call this skill to format it.
+- You want a rendered diagram — use `mermaid-viewer` instead.
+- You need code, tests, or configuration written — this skill only produces one `.html` document.
+
+## How to invoke
+
+```
+Skill(skill: "core:html-reporting")
+```
+
+Invoke it once the section content exists, and pass the report kind, title, sections, and output path along with the call.
+
+## Inputs
+
+- **Report kind** — `summary` or `audit`; selects the section skeleton — required.
+- **Title** — the text for the report's `<h1>` — required.
+- **Sections** — your already-authored content blocks (metrics, findings, backlog) — required.
+- **Output path** — where the `.html` file is written — required.
+- **Health score** — an integer 1–10 for the audit header badge — audit reports only.
+
+## What you get back
+
+One `.html` file at your output path, written and verified non-empty on disk. It opens offline in any browser and survives being copied between machines. The `<main>` body stays within a budget of 300 lines for a summary and 500 for an audit; lowest-priority sections are trimmed rather than padded.
+
+## Worked example
+
+```
+Skill(skill: "core:html-reporting")
+
+kind: audit
+title: "Audit — orders/line-items"
+output: .../{slug}/phases/05-audit.html
+health score: 6
+sections: metrics table, dimension coverage, 9 findings across P0–P3
+```
+
+The skill picks the audit skeleton, pastes the canonical shell, renders the score badge and tables, and emits each finding as a `.card.sev-pN` block with What → Risk/Cost → Fix → How-to-verify. You end up with one offline HTML file at that path.
+
+## Related
+
+- **summary-templates** — authors the summary content this skill renders; run it first.
+- **mermaid-viewer** — prefer it whenever the artifact is a diagram.
+- **code-standards** — produces the review findings that feed an audit report.

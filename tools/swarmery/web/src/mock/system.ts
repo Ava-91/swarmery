@@ -9,9 +9,11 @@
 import type {
   AgentHistory,
   SystemCommand,
+  SystemCommandHub,
   SystemCreateAgentRequest,
   SystemCreateResponse,
   SystemDiff,
+  SystemDocs,
   SystemHook,
   SystemInsights,
   SystemItem,
@@ -50,6 +52,10 @@ export const mockSystemSummary: SystemSummary = {
   // Consistent with mockSystemInsights below: 1 promotion candidate + 1 stale
   // override.
   insights: { promotions: 1, staleOverrides: 1 },
+  // Consistent with docsFor() below: of the 15 live items (6 agents + 4 skills
+  // + 5 commands) only id 1 carries a complete guide, and it is the reviewed
+  // one. The lopsided ratio is the real corpus, not a placeholder.
+  docs: { total: 15, documented: 1, reviewed: 1 },
 };
 
 // --- GET /api/system/agents ------------------------------------------------------
@@ -67,6 +73,7 @@ export const mockSystemAgents: SystemItem[] = [
     path: '~/.claude/plugins/cache/swarmery/core/agents/tech-lead.md',
     lintMax: null,
     dead: false,
+    documented: true,
     lastUsed: iso(3 * 60 * MIN),
     tasks30d: 14,
   },
@@ -82,6 +89,7 @@ export const mockSystemAgents: SystemItem[] = [
     path: '~/.claude/plugins/cache/swarmery/core/agents/implementation-agent.md',
     lintMax: 'warn',
     dead: false,
+    documented: false,
     lastUsed: iso(40 * MIN),
     tasks30d: 22,
   },
@@ -97,6 +105,7 @@ export const mockSystemAgents: SystemItem[] = [
     path: '~/.claude/plugins/cache/swarmery/core/agents/commit-message.md',
     lintMax: null,
     dead: false,
+    documented: false,
     lastUsed: iso(2 * DAY),
     tasks30d: 9,
   },
@@ -112,6 +121,7 @@ export const mockSystemAgents: SystemItem[] = [
     path: '/Users/user/work/swarmery/.claude/agents/quality-checker.md',
     lintMax: 'error',
     dead: false,
+    documented: false,
     lastUsed: iso(5 * DAY),
     tasks30d: 3,
   },
@@ -127,6 +137,7 @@ export const mockSystemAgents: SystemItem[] = [
     path: '~/.claude/agents/legacy-deploy-bot.md',
     lintMax: 'info',
     dead: true,
+    documented: false,
     lastUsed: null,
     tasks30d: 0,
   },
@@ -142,6 +153,7 @@ export const mockSystemAgents: SystemItem[] = [
     path: '/Users/user/work/orders-api/.claude/agents/orders-reviewer.md',
     lintMax: null,
     dead: false,
+    documented: false,
     lastUsed: iso(26 * 60 * MIN),
     tasks30d: 6,
   },
@@ -162,6 +174,7 @@ export const mockSystemSkills: SystemItem[] = [
     path: '~/.claude/plugins/cache/swarmery/core/skills/code-standards',
     lintMax: null,
     dead: false,
+    documented: false,
     lastUsed: iso(90 * MIN),
     tasks30d: 11,
   },
@@ -177,6 +190,7 @@ export const mockSystemSkills: SystemItem[] = [
     path: '~/.claude/plugins/cache/swarmery/core/skills/api-integration',
     lintMax: null,
     dead: false,
+    documented: false,
     lastUsed: iso(4 * DAY),
     tasks30d: 5,
   },
@@ -192,6 +206,7 @@ export const mockSystemSkills: SystemItem[] = [
     path: '/Users/user/work/orders-api/.claude/skills/release-notes',
     lintMax: 'warn',
     dead: false,
+    documented: false,
     lastUsed: iso(9 * DAY),
     tasks30d: 2,
   },
@@ -207,6 +222,7 @@ export const mockSystemSkills: SystemItem[] = [
     path: '/Users/user/work/swarmery/.claude/skills/db-migrate',
     lintMax: null,
     dead: false,
+    documented: false,
     lastUsed: iso(12 * 60 * MIN),
     tasks30d: 4,
   },
@@ -331,6 +347,100 @@ function isDeleted(kind: 'agents' | 'skills', item: SystemItem): boolean {
   return itemState.get(`${kind}:${String(item.id)}`)?.deleted ?? false;
 }
 
+/* ----- usage guides (docs/system-docs-format.md) -----
+ * The real corpus is undocumented end to end today, so the fixtures cover the
+ * states the UI must survive rather than a happy path only: a complete
+ * reviewed guide, a generated one that is stale AND missing a required
+ * subsection, and — for everything else — the empty guide, which is what most
+ * items actually serve. Sections/missing are never null on the wire. */
+
+const EMPTY_DOCS: SystemDocs = {
+  present: false,
+  duplicate: false,
+  markdown: '',
+  sections: [],
+  missing: [],
+  status: '',
+  stale: false,
+};
+
+const REVIEWED_DOCS: SystemDocs = {
+  present: true,
+  duplicate: false,
+  markdown: [
+    '# How to use',
+    '',
+    '## What it does',
+    '',
+    'Orchestrates a change across the repositories of a workspace, from context',
+    'gathering to the quality gate, so one request does not turn into six.',
+    '',
+    '## When to use it',
+    '',
+    '- A change touches more than one repository and the order matters.',
+    '- The task is large enough that a plan is cheaper than a retry.',
+    '',
+    '## How to invoke',
+    '',
+    '```',
+    '@tech-lead ship the order line-item editor',
+    '```',
+    '',
+    'Give it the goal, not the steps — it triages the task type itself.',
+    '',
+    '## Worked example',
+    '',
+    '```',
+    '@tech-lead add line-item editing to orders',
+    '```',
+    '',
+    'You end up with a phased plan, the implementation behind it, and a report.',
+  ].join('\n'),
+  sections: ['What it does', 'When to use it', 'How to invoke', 'Worked example'],
+  missing: [],
+  status: 'reviewed',
+  stale: false,
+};
+
+const STALE_DOCS: SystemDocs = {
+  present: true,
+  duplicate: false,
+  markdown: [
+    '# How to use',
+    '',
+    '## What it does',
+    '',
+    'Runs the deterministic checks of a change — build, typecheck, lint, tests —',
+    'and reports one verdict instead of a wall of logs.',
+    '',
+    '## When to use it',
+    '',
+    '- Before a phase is declared done.',
+    '- After a fix, to prove the fix landed.',
+    '',
+    '## How to invoke',
+    '',
+    '```',
+    '@verification-agent verify the current branch',
+    '```',
+    '',
+    'It never edits code; a failing verdict comes back with the failing command.',
+  ].join('\n'),
+  sections: ['What it does', 'When to use it', 'How to invoke'],
+  missing: ['Worked example'],
+  status: 'generated',
+  stale: true,
+};
+
+/** Fixture guide of an item: id 1 is complete, id 2 shows every warning tone,
+ * the rest are undocumented (the honest majority). */
+function docsFor(id: number): SystemDocs {
+  if (id === 1) return { ...REVIEWED_DOCS, sections: [...REVIEWED_DOCS.sections], missing: [] };
+  if (id === 2)
+    return { ...STALE_DOCS, sections: [...STALE_DOCS.sections], missing: [...STALE_DOCS.missing] };
+  return { ...EMPTY_DOCS, sections: [], missing: [] };
+}
+
 function detailFor(kind: 'agents' | 'skills', item: SystemItem): SystemItemDetail {
   const st = stateOf(kind, item);
   return {
@@ -339,6 +449,7 @@ function detailFor(kind: 'agents' | 'skills', item: SystemItem): SystemItemDetai
     currentVersionId: st.currentVersionId,
     frontmatter: st.frontmatter,
     body: st.body,
+    docs: docsFor(item.id),
     versions: st.versions.map((v) => ({ ...v })),
   };
 }
@@ -791,6 +902,35 @@ export const mockSystemInsights: SystemInsights = {
       hint: '0 telemetry mentions in 30 days (advisory — events.agent_id is only partially attributed); consider deleting or archiving',
     },
   ],
+  // Both guide rules, so the section renders each shape: agent 2 has a guide
+  // with a hole (docs_incomplete — matches STALE_DOCS below), skill 103 has no
+  // guide at all (docs_missing). Kept short on purpose; the real list is long.
+  undocumented: [
+    {
+      kind: 'agent',
+      id: 2,
+      name: 'implementation-agent',
+      scope: 'global',
+      projectSlug: null,
+      pluginName: 'core',
+      path: '~/.claude/plugins/cache/swarmery/core/agents/implementation-agent.md',
+      rule: 'docs_incomplete',
+      missing: ['Worked example'],
+      hint: "add the missing `# How to use` subsections to the item's own file (docs/system-docs-format.md §2), then re-run the scan",
+    },
+    {
+      kind: 'skill',
+      id: 103,
+      name: 'release-notes',
+      scope: 'project',
+      projectSlug: 'orders-api',
+      pluginName: null,
+      path: '/Users/user/work/orders-api/.claude/skills/release-notes',
+      rule: 'docs_missing',
+      missing: ['What it does', 'When to use it', 'How to invoke', 'Worked example'],
+      hint: "add a `# How to use` section to the item's own file (docs/system-docs-format.md §1), then re-run the scan",
+    },
+  ],
 };
 
 // --- Mock API (the fetchers in ../api/system.ts dispatch here when MOCK) ----------
@@ -881,6 +1021,27 @@ export const mockSystemApi = {
   async commands(filters: SystemMockFilters = {}): Promise<SystemCommand[]> {
     await delay(120);
     return applyFilters(mockSystemCommands, filters);
+  },
+
+  async commandHub(id: number): Promise<SystemCommandHub> {
+    await delay(140);
+    const cmd = mockSystemCommands.find((c) => c.id === id);
+    if (!cmd) throw new Error(`mock: system command ${String(id)} not found`);
+    return {
+      ...cmd,
+      frontmatter: `description: ${cmd.description ?? cmd.name}\nallowed-tools: Bash, Read, Grep`,
+      content: [
+        `Run the ${cmd.name} workflow.`,
+        '',
+        '1. Resolve the working repository from `.claude/project.json`.',
+        '2. Do the thing the command promises.',
+        '3. Report what changed.',
+      ].join('\n'),
+      docs: docsFor(cmd.id),
+      // Approximate is ALWAYS true on this surface — slash-command invocations
+      // are inferred from prompt text, never an authoritative event.
+      usage: { windowDays: 30, invocations: cmd.id * 7, approximate: true },
+    };
   },
 
   async overlays(): Promise<SystemOverlays> {
@@ -1005,6 +1166,7 @@ export const mockSystemApi = {
           : `/Users/user/work/${projectSlug ?? 'project'}/.claude/agents/${req.name}.md`,
       lintMax: null,
       dead: false,
+      documented: false,
       lastUsed: null,
       tasks30d: 0,
     };

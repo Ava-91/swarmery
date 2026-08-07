@@ -32,6 +32,18 @@ func AttachOverlaysDir(dir string) { systemOverlaysDir = dir }
 // usageWindowDays is the tasks_30d metric window.
 const usageWindowDays = 30
 
+// docsRuleLike is the SQL literal matching every usage-guide rule
+// (sysscan.RuleDocs* — docs_missing, docs_incomplete, docs_duplicate_block,
+// docs_stale, docs_unreviewed). It is spliced into `rule NOT LIKE ` + this, so
+// every severity ROLL-UP can exclude the docs axis from ONE place.
+//
+// The `_` is escaped: unescaped it is a LIKE wildcard, which would silently
+// swallow a future rule named `docsomething`. The docs findings themselves are
+// never filtered out of the finding LISTS (insights, hub) — only out of the
+// aggregates that answer "how bad is this row/fleet", which the guide rules
+// would otherwise saturate.
+const docsRuleLike = `'docs\_%' ESCAPE '\'`
+
 // systemKind parameterizes the agents/skills twin endpoints — same shape,
 // different tables. Usage metrics are DIRECT event-column queries only (no
 // heuristics): events.agent_id for agents, its mirror events.skill_id for
@@ -61,6 +73,10 @@ var (
 
 // ---- DTOs (mirrored in web/src/api/types.ts, "phase 4: system") -----------
 
+// systemLintCountsDTO is the active-finding severity headline. Usage-guide
+// findings (docs_*) are excluded — they are counted in systemDocsCoverageDTO
+// instead, and mixing the two would make the badges disagree with the ?lint=
+// list they filter (see systemSummary).
 type systemLintCountsDTO struct {
 	Error int64 `json:"error"`
 	Warn  int64 `json:"warn"`
@@ -74,6 +90,15 @@ type systemInsightCountsDTO struct {
 	StaleOverrides int64 `json:"staleOverrides"`
 }
 
+// systemDocsCoverageDTO is the usage-guide coverage headline
+// (docs/system-docs-format.md), derived entirely from the linter's active docs
+// findings — there is no second parse of any file here.
+type systemDocsCoverageDTO struct {
+	Total      int64 `json:"total"`      // live agents + skills + commands
+	Documented int64 `json:"documented"` // total minus distinct targets with docs_missing or docs_incomplete active
+	Reviewed   int64 `json:"reviewed"`   // documented minus distinct targets with docs_unreviewed active
+}
+
 type systemSummaryDTO struct {
 	Agents   int64                  `json:"agents"`
 	Skills   int64                  `json:"skills"`
@@ -82,6 +107,7 @@ type systemSummaryDTO struct {
 	Overlays int64                  `json:"overlays"`
 	Lint     systemLintCountsDTO    `json:"lint"`
 	Insights systemInsightCountsDTO `json:"insights"`
+	Docs     systemDocsCoverageDTO  `json:"docs"`
 }
 
 // systemItemDTO is one agents/skills list row.
@@ -96,10 +122,15 @@ type systemItemDTO struct {
 	Description *string `json:"description"`
 	Path        string  `json:"path"` // agents.file_path / skills.dir_path
 	// Worst ACTIVE lint finding severity (resolved_at IS NULL): error beats
-	// warn beats info; null = clean.
+	// warn beats info; null = clean. Usage-guide findings (docs_*) are NOT
+	// folded in — they ride Documented instead (see systemItemSelect).
 	LintMax *string `json:"lintMax"`
 	// Active agent_dead finding (agents only; advisory).
 	Dead bool `json:"dead"`
+	// Documented is false while a docs_missing or docs_incomplete finding is
+	// active (sysscan/lint.go). It rides the SAME aggregate lint JOIN as
+	// LintMax/Dead — never a per-row subquery.
+	Documented bool `json:"documented"`
 	// Usage metrics folded by normalised component name (usageByName), since
 	// events carry no populated agent_id/skill_id: lastUsed = newest run,
 	// tasks30d = distinct sessions in the last 30 days. Never-run items serve
@@ -115,6 +146,64 @@ type systemVersionDTO struct {
 	ContentHash string  `json:"contentHash"`
 }
 
+// systemDocsDTO is the item's parsed `# How to use` usage guide
+// (docs/system-docs-format.md), served on the detail endpoints.
+type systemDocsDTO struct {
+	Present   bool     `json:"present"`
+	Duplicate bool     `json:"duplicate"`
+	Markdown  string   `json:"markdown"` // redacted
+	Sections  []string `json:"sections"`
+	Missing   []string `json:"missing"`
+	Status    string   `json:"status"` // generated | reviewed | ""
+	Stale     bool     `json:"stale"`
+}
+
+// emptyDocsDTO is the no-guide shape. Sections/Missing are non-nil so they
+// serialize as [] and never null — the client treats the guide as a list-shaped
+// object unconditionally.
+func emptyDocsDTO() systemDocsDTO {
+	return systemDocsDTO{Sections: []string{}, Missing: []string{}}
+}
+
+// docsDTO parses a component file into the wire guide, redacting it exactly as
+// splitRedacted does for the body.
+//
+// EVERY author-controlled string in the guide goes through redact(), not just
+// the markdown: a `## Bearer sk-ant-…` heading is author content that reaches
+// the wire as a section TITLE, and `docs.status` is stored verbatim by §3
+// precisely so an unknown value survives to the UI. `missing` is a fixed
+// vocabulary (sysscan.RequiredDocSections) rather than author text, but it is
+// filtered too so the rule is "the whole docs object is redacted" with no
+// exception a future field can quietly fall through.
+//
+// The rune floor comes from sysscan.MinDocsSection() rather than the bare
+// default so the `missing` list the UI renders can never disagree with the
+// coverage findings the linter writes under the same SWARMERY_LINT_* override.
+func docsDTO(content string) systemDocsDTO {
+	d := sysscan.ParseDocs([]byte(content), sysscan.MinDocsSection())
+	out := systemDocsDTO{
+		Present:   d.Present,
+		Duplicate: d.Duplicate,
+		Markdown:  redact(d.Markdown),
+		Sections:  redactEach(d.Sections),
+		Missing:   redactEach(d.Missing),
+		Status:    redact(d.Status),
+		Stale:     d.Stale,
+	}
+	return out
+}
+
+// redactEach redacts every element of a string slice, always returning a
+// non-nil slice so the field serializes as [] and never null — the client
+// treats sections/missing as list-shaped unconditionally.
+func redactEach(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		out = append(out, redact(s))
+	}
+	return out
+}
+
 // systemItemDetailDTO is GET /api/system/{agents|skills}/{id}.
 type systemItemDetailDTO struct {
 	systemItemDTO
@@ -122,6 +211,7 @@ type systemItemDetailDTO struct {
 	CurrentVersionID *int64             `json:"currentVersionId"`
 	Frontmatter      string             `json:"frontmatter"` // raw YAML block (redacted)
 	Body             string             `json:"body"`        // markdown body (redacted)
+	Docs             systemDocsDTO      `json:"docs"`        // parsed usage guide
 	Versions         []systemVersionDTO `json:"versions"`    // newest first
 }
 
@@ -195,6 +285,10 @@ type systemOverlaysDTO struct {
 // GET /api/system/summary
 func (h *Handler) systemSummary(w http.ResponseWriter, r *http.Request) {
 	var s systemSummaryDTO
+	// Docs coverage is COUNT(DISTINCT target) over the linter's guide rules —
+	// no disk IO and no second parse: the summary is refetched on every WS
+	// system_item_updated, so it must stay a handful of index-backed counts.
+	var undocumented, unreviewed int64
 	for _, c := range []struct {
 		dst   *int64
 		query string
@@ -203,16 +297,40 @@ func (h *Handler) systemSummary(w http.ResponseWriter, r *http.Request) {
 		{&s.Skills, `SELECT COUNT(*) FROM skills WHERE deleted = 0`},
 		{&s.Hooks, `SELECT COUNT(*) FROM hooks`},
 		{&s.Commands, `SELECT COUNT(*) FROM commands WHERE deleted = 0`},
+		{&undocumented, `SELECT COUNT(DISTINCT target) FROM config_lint_findings
+		                 WHERE resolved_at IS NULL AND rule IN ('docs_missing', 'docs_incomplete')`},
+		// An undocumented item is never counted as unreviewed on top: the linter
+		// stops at docs_missing for an absent guide, and excluding the
+		// undocumented targets here keeps `reviewed` correct even if a stale row
+		// from an older rule set is still open.
+		{&unreviewed, `SELECT COUNT(DISTINCT target) FROM config_lint_findings
+		               WHERE resolved_at IS NULL AND rule = 'docs_unreviewed'
+		                 AND target NOT IN (SELECT target FROM config_lint_findings
+		                                    WHERE resolved_at IS NULL
+		                                      AND rule IN ('docs_missing', 'docs_incomplete'))`},
 	} {
 		if err := h.DB.QueryRow(c.query).Scan(c.dst); err != nil {
 			writeErr(w, err)
 			return
 		}
 	}
+	// Clamped: findings are keyed by target, so a finding left open for an item
+	// deleted between two lint passes could otherwise drive the headline
+	// negative. Coverage is a display figure — it degrades to 0, never below.
+	s.Docs.Total = s.Agents + s.Skills + s.Commands
+	s.Docs.Documented = max(s.Docs.Total-undocumented, 0)
+	s.Docs.Reviewed = max(s.Docs.Documented-unreviewed, 0)
 
+	// The severity headline shares the row-level convention of systemItemSelect:
+	// docs_* rules are excluded. The badges are click-to-filter over `lintMax`
+	// (System.tsx), so a count that included the guide rules would advertise ~one
+	// warn per component and then filter to a list where none of them show —
+	// the badge and the list would disagree. Guide coverage has its own headline
+	// in s.Docs right above.
 	rows, err := h.DB.Query(`
 		SELECT severity, COUNT(*) FROM config_lint_findings
-		WHERE resolved_at IS NULL GROUP BY severity`)
+		WHERE resolved_at IS NULL AND rule NOT LIKE ` + docsRuleLike + `
+		GROUP BY severity`)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -266,6 +384,16 @@ func (h *Handler) listSystemSkills(w http.ResponseWriter, r *http.Request) {
 // subqueries (no N+1; pattern: sessionSelect). Usage metrics (lastUsed /
 // tasks30d) are NOT joined here: events carry no populated agent_id/skill_id, so
 // they are folded by normalised name in Go and overlaid post-query (usageByName).
+//
+// `sev` deliberately EXCLUDES the docs_* rules. They are real findings at their
+// stated severities (docs_missing is a warn — sysscan/lint.go), but a docs rule
+// saturates: before the backfill every item carried docs_missing, and after it
+// every item carries docs_unreviewed until a human reads the guide. Either way,
+// folding them into the row-level severity would paint one uniform LintDot
+// across essentially every row, make ?lint= return the whole list, and drown the
+// pre-existing lint signal. The docs signal has its own dedicated carrier on the same JOIN —
+// `undoc` → the `documented` field — plus the insights `undocumented` list, so
+// nothing is hidden by keeping the two axes separate.
 func systemItemSelect(k systemKind) string {
 	model := `NULL`
 	if k.hasModel {
@@ -273,13 +401,17 @@ func systemItemSelect(k systemKind) string {
 	}
 	return `
 		SELECT t.id, t.name, t.scope, p.slug, t.origin, t.plugin_name, ` + model + `,
-		       t.description, t.` + k.pathCol + `, lf.sev, COALESCE(lf.dead, 0)
+		       t.description, t.` + k.pathCol + `, lf.sev, COALESCE(lf.dead, 0),
+		       COALESCE(lf.undoc, 0)
 		FROM ` + k.table + ` t
 		LEFT JOIN projects p ON p.id = t.project_id
 		LEFT JOIN (
 			SELECT target,
-			       MAX(CASE severity WHEN 'error' THEN 3 WHEN 'warn' THEN 2 ELSE 1 END) AS sev,
-			       MAX(CASE WHEN rule = 'agent_dead' THEN 1 ELSE 0 END) AS dead
+			       MAX(CASE WHEN rule NOT LIKE ` + docsRuleLike + `
+			                THEN CASE severity WHEN 'error' THEN 3 WHEN 'warn' THEN 2 ELSE 1 END
+			           END) AS sev,
+			       MAX(CASE WHEN rule = 'agent_dead' THEN 1 ELSE 0 END) AS dead,
+			       MAX(CASE WHEN rule IN ('docs_missing', 'docs_incomplete') THEN 1 ELSE 0 END) AS undoc
 			FROM config_lint_findings WHERE resolved_at IS NULL GROUP BY target
 		) lf ON lf.target = '` + k.kind + `:' || t.id`
 }
@@ -383,10 +515,10 @@ func (h *Handler) listSystemItems(w http.ResponseWriter, r *http.Request, k syst
 	for rows.Next() {
 		var it systemItemDTO
 		var sev sql.NullInt64
-		var dead int64
+		var dead, undoc int64
 		if err := rows.Scan(&it.ID, &it.Name, &it.Scope, &it.ProjectSlug, &it.Origin,
 			&it.PluginName, &it.Model, &it.Description, &it.Path,
-			&sev, &dead); err != nil {
+			&sev, &dead, &undoc); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -395,6 +527,7 @@ func (h *Handler) listSystemItems(w http.ResponseWriter, r *http.Request, k syst
 			it.LintMax = &name
 		}
 		it.Dead = dead != 0
+		it.Documented = undoc == 0
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -469,10 +602,10 @@ func (h *Handler) getSystemItem(w http.ResponseWriter, r *http.Request, k system
 	sel := systemItemSelectDetail(k)
 
 	var sev sql.NullInt64
-	var dead int64
+	var dead, undoc int64
 	err := h.DB.QueryRow(sel, id).Scan(
 		&d.ID, &d.Name, &d.Scope, &d.ProjectSlug, &d.Origin, &d.PluginName,
-		&d.Model, &d.Description, &d.Path, &sev, &dead,
+		&d.Model, &d.Description, &d.Path, &sev, &dead, &undoc,
 		&deleted, &d.CurrentVersionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, `{"error":"`+k.kind+` not found"}`, http.StatusNotFound)
@@ -487,6 +620,7 @@ func (h *Handler) getSystemItem(w http.ResponseWriter, r *http.Request, k system
 		d.LintMax = &name
 	}
 	d.Dead = dead != 0
+	d.Documented = undoc == 0
 	d.Deleted = deleted != 0
 
 	usage, err := h.usageByName(k, usageCutoff())
@@ -502,7 +636,9 @@ func (h *Handler) getSystemItem(w http.ResponseWriter, r *http.Request, k system
 		d.Tasks30d = u.tasks30d
 	}
 
-	// Current content → redacted frontmatter/body split.
+	// Current content → redacted frontmatter/body split + parsed usage guide.
+	// An item with no current version still serves the empty guide shape.
+	d.Docs = emptyDocsDTO()
 	if d.CurrentVersionID != nil {
 		var content string
 		err := h.DB.QueryRow(`SELECT content FROM `+k.verTable+` WHERE id = ?`,
@@ -512,6 +648,7 @@ func (h *Handler) getSystemItem(w http.ResponseWriter, r *http.Request, k system
 			return
 		}
 		d.Frontmatter, d.Body = splitRedacted(content)
+		d.Docs = docsDTO(content)
 	}
 
 	// Version history, newest first.

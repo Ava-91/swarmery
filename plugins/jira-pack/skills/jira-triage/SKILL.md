@@ -3,6 +3,10 @@ name: jira-triage
 description: "Parse a Jira ticket past access preflight, classify it as a defect or a change, run the mandatory evidence step that class demands (reproduction / baseline + absence proof), and assign exactly one of five verdicts (already-fixed / cannot-reproduce / needs-fix / needs-info / too-large). NOT for posting the verdict back to Jira (that's jira-writeback) and NOT for resolving jira config or the working repo (that's jira-config)."
 version: "0.2.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 0d923e9ce784
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -305,3 +309,69 @@ and `<jira-base-url>`-style hosts — no real ticket key, hostname, or team name
   verdict + evidence bundle and owns every Jira write.
 - `plugins/core/agents/debugger.md` — source of the `jira.budget.maxAttempts`
   default this skill's retry ceiling matches.
+
+# How to use
+
+## What it does
+
+This skill turns a tracker ticket into one decision you can act on. It reads the ticket in full, decides whether the ticket describes a defect (behavior that exists and is wrong) or a change (behavior that does not exist yet), runs the evidence step that class demands, and assigns exactly one verdict out of five: `already-fixed`, `cannot-reproduce`, `needs-fix`, `needs-info`, or `too-large`. The class comes first on purpose — running a defect's reproduction against a feature ticket returns green, and reading that green as "did not reproduce" would send unimplemented work to QA.
+
+## When to use it
+
+- You are inside a ticket run and access preflight has already passed, so the ticket has been read and the tools are pinned.
+- You have a ticket and need to know whether there is real work to do before spending an implementation budget on it.
+- A feature ticket keeps coming back green from the test suite and you need the verdict to reflect "not built yet", not "not reproducible".
+- You need an evidence bundle — commands, exit codes, output fragments — to attach to whatever decision gets posted.
+
+## When not to use it
+
+- To post the comment or move the ticket to QA — that is `jira-writeback`, which owns every write.
+- To resolve the working repo, the reproduction commands, or the budget — that is `jira-config`, and it runs first.
+- To verify tool access or read the ticket for the first time — that is `jira-access-preflight`.
+- To actually implement the fix once the verdict is `needs-fix` — that is `jira-delivery`.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:jira-triage")
+```
+
+Call it after config, access preflight, and the board card are done. You pass it nothing at the call site — every input below is read from the ticket and the config the run already resolved, not typed as an argument.
+
+## Inputs
+
+- Ticket key or reference — the ticket already smoke-read by preflight — required.
+- Working repo path — resolved by `jira-config` — required.
+- `jira.repro.setup` / `jira.repro.test` — the commands the evidence step runs — setup optional, test required.
+- `jira.budget.maxAttempts` — retry ceiling for environment failures only — optional, defaults to 3.
+
+## What you get back
+
+A report, not a Jira write. It contains the class and the signals behind it (including a note when the ticket's type pointed the other way), exactly one verdict, and the evidence bundle: the commands run, their exit codes, and a trimmed output fragment. For a change ticket headed to `needs-fix` you also get the absence proof and a numbered list of testable acceptance criteria, handed downstream verbatim. For `needs-info` you get concrete questions instead of a vague complaint.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:jira-triage")
+
+Ticket <PROJECT-KEY>-412, typed "Bug": "disable the <control> until every
+<unit> reports <terminal-state>."
+
+Step 1b   → class: change (imperative phrasing, acceptance criteria, no
+            current-behavior complaint; issuetype disagreed — noted)
+Step 2b.1 → baseline: `npm test` exit 0, suite green
+Step 2b.2 → absence proof: grep for the <control>'s disabled state in
+            apps/<mainApp> — control renders, no <terminal-state> guard
+Step 2b.3 → criteria: 1) disabled while any <unit> is not in <terminal-state>
+                      2) enabled once every <unit> reports <terminal-state>
+Step 3    → needs-fix
+```
+
+You end up with a `needs-fix` verdict, the baseline run, the absence proof, and two testable criteria — not a `cannot-reproduce` on work nobody has built.
+
+## Related
+
+- `jira-config` — run it first; it resolves the repo and commands this skill consumes.
+- `jira-access-preflight` — must pass fully before this skill's first read.
+- `jira-writeback` — takes this skill's verdict and evidence and posts them.
+- `jira-delivery` — picks up a `needs-fix` verdict and closes it.

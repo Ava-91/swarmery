@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - code-standards
   - observability
+docs:
+  status: reviewed
+  source_sha: f75cf83c0fa2
+  updated: 2026-08-06
 ---
 
 # Role
@@ -220,3 +224,65 @@ This agent can observe the running app through the Playwright MCP tools (`mcp__p
 - Every code change still requires the human-approval gate; the browser informs, it does not authorize.
 - `browser_run_code_unsafe` / `browser_evaluate` -- authorized local/staging targets only (project.json → cloud.envAlias), never production.
 - Always `browser_close` when finished.
+
+# How to use
+
+## What it does
+
+This agent finds out why something is slow, then fixes it without surprising you. It measures a baseline first, ranks the top one to three bottlenecks by expected impact, and shows you the before/after code for each fix. Nothing is applied until you approve it. After every change it re-measures, and if any metric regresses by more than 5% it reverts the change and tells you.
+
+## When to use it
+
+- An API route is over its latency budget and you want the cause measured, not guessed.
+- A list endpoint looks like it runs an N+1 query and you want the join written and verified.
+- A page's bundle or Core Web Vitals slipped past the target and you need real browser timings.
+- A code audit surfaced performance findings and someone has to actually remediate them.
+
+## When not to use it
+
+- You only want a report and no edits — ask for analysis-only mode, or use `@core:code-auditor`.
+- The bottleneck is schema shape rather than query shape — `@core:database-designer` owns that.
+- The fix is scaling, provisioning, or service config — that is out of scope; escalate to `@core:tech-lead`.
+- You want build, lint, and test verdicts after a change — that is `@core:verification-agent`.
+
+## How to invoke
+
+```
+@core:performance-optimizer
+```
+
+Add the area to work on (`backend`, `frontend`, `database`, or `all`), what feels slow with any numbers you already have, and the target you want to hit.
+
+## Inputs
+
+- `area` — which layer to optimize: `backend`, `frontend`, `database`, or `all` — required.
+- `symptoms` — what is slow, plus any metrics you already measured — required.
+- `target` — the performance goal you want to reach, such as p95 under 200ms — required.
+
+## What you get back
+
+A markdown analysis report in your workspace task directory at `phases/perf-analysis.md`: baseline metrics against targets, ranked bottlenecks, each proposed fix with before/after code and its status, and a results table comparing baseline to final. Source files are modified only for fixes you approved, one at a time. The last chat line is a single summary: `OPTIMIZATION COMPLETE | Fixes: N applied | Baseline: … | Final: … | Improvement: X%`.
+
+## Worked example
+
+```
+@core:performance-optimizer
+area: backend
+symptoms: the orders/line-items list endpoint sits at p95 = 450ms
+target: p95 under 200ms
+
+BASELINE: API p95 = 450ms, DB query = 230ms (N+1 detected: 1 + N lookups)
+
+PROPOSED FIX 1: replace the N+1 with a single join
+  Expected improvement: ~60% reduction in DB query time
+Awaiting user approval...  [you approve]
+
+RE-MEASURE: API p95 = 180ms, DB query = 45ms
+OPTIMIZATION COMPLETE | Fixes: 1 applied | Baseline: p95=450ms | Final: p95=180ms | Improvement: 60%
+```
+
+## Related
+
+- `@core:performance-monitor` — when you want metrics analysed and reported, with no code changed.
+- `@core:database-designer` — when the answer is a new index, column, or migration.
+- `@core:verification-agent` — to run build, typecheck, lint, and tests after the fixes land.

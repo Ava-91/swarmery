@@ -15,6 +15,10 @@ skills:
   - testing
   - code-quality
   - browser-verification
+docs:
+  status: reviewed
+  source_sha: bf044306be5d
+  updated: 2026-08-06
 ---
 
 # Role
@@ -198,3 +202,61 @@ Verdict: PASS (0 lint errors, 0 type errors, build succeeded, 14/14 tests passed
 # Browser verification (Playwright MCP)
 
 Optionally smoke the running app in a browser as an additional, non-blocking quality signal alongside the deterministic checks and LLM evaluation. Follow the **`browser-verification` skill** (observation-only variant). Role-specific invariants: report only -- never fixes, never modifies source; note browser observations under Recommendations; browser findings are warning-level signal that do not flip the blocking PASS/FAIL verdict.
+
+# How to use
+
+## What it does
+
+This agent scores the quality of a change set with an LLM-as-Judge pass and reports what it found. It re-runs lint, typecheck, build, and tests, but only as input to the score — the pass/fail gate for those belongs to `@core:verification-agent`. It never edits a file: you get a written report and a verdict, and fixing is someone else's job.
+
+## When to use it
+
+- You have finished a change and want a graded read on readability, maintainability, testability, error handling, performance, and security — each score backed by a `file:line` citation.
+- You are running a Phase 5 quality gate and want quality signal in parallel with plan review and security audit, with zero risk of a source file being touched.
+- You want a non-blocking browser smoke of the running app recorded alongside the static checks.
+
+## When not to use it
+
+- You need the authoritative build/typecheck/lint/test verdict — use `@core:verification-agent`.
+- You want the errors fixed, not just listed — use `@core:implementation-agent` or `@core:build-error-resolver`.
+- You want an OWASP or threat-model pass — use `@core:security-auditor`.
+
+## How to invoke
+
+```
+@core:quality-checker run all quality checks
+Files changed: [apps/<mainApp>/src/services/orders.ts, apps/<mainApp>/src/api/line-items.ts]
+```
+
+Address the agent and hand it the list of files changed in the phase plus the task identifier.
+
+## Inputs
+
+- `files_changed` — the modified file paths from the implementation phase — required.
+- `task_id` — the workspace task identifier the report is filed under — required.
+
+If more than ten files changed, it samples the five highest-complexity ones for the LLM pass and says so in the report.
+
+## What you get back
+
+A markdown report at `.../{slug}/phases/05-quality.md` containing a PASS/FAIL verdict, a deterministic-check table, the six-dimension score table with citations, and a prioritized recommendation list. The final chat message is one line: report path, verdict, and a short summary. No source file is modified — that invariant is self-checked with `git diff --name-only` before the agent returns.
+
+## Worked example
+
+```
+@core:quality-checker run all quality checks
+Files changed: [apps/<mainApp>/src/services/orders.ts, apps/<mainApp>/src/api/line-items.ts]
+
+→ runs lint and format checks in parallel, then typecheck, build, tests
+→ reads both files and scores six dimensions, citing a line for every score under 4
+→ writes the report and returns:
+
+Quality report written: .../phases/05-quality.md
+Verdict: PASS (0 lint errors, 0 type errors, build succeeded, 14/14 tests passed, LLM avg 4.2/5)
+```
+
+## Related
+
+- `@core:verification-agent` — when you need the blocking build and test verdict.
+- `@core:plan-reviewer` — when the question is whether the code matches the agreed plan.
+- `@core:code-auditor` — when auditing a whole inherited system rather than one change set.

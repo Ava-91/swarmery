@@ -14,6 +14,10 @@ owner: platform-team
 skills:
   - api-integration
   - code-standards
+docs:
+  status: reviewed
+  source_sha: 11388754fc2f
+  updated: 2026-08-06
 ---
 
 # Role
@@ -173,3 +177,60 @@ After completing each layer check, write findings to artifact progressively. [PE
 - **Silent layer skip**: Layer check skipped without N/A marker → detected by self-check → enforce N/A markers.
 - **Missing downstream consumer**: Changed type has consumer not found by Grep → detected by test failures post-merge → expand Grep patterns.
 - **False VALID on empty input**: No files provided, git diff not checked → prevented by empty-input guard.
+
+# How to use
+
+## What it does
+
+This agent checks that a data type means the same thing at every layer it passes through — database schema, server actions, validation schemas, API routes, and the frontend or device telemetry that consumes them. It reads only; it never edits. You get a per-layer PASS/FAIL table, every mismatch graded P0–P3 with both sides cited by `file:line`, and a single VALID / WARN / FAIL verdict.
+
+## When to use it
+
+- You changed a database column or a validation schema and want to know what downstream code no longer matches.
+- A quality gate before merge needs a go/no-go on type consistency across the stack.
+- A runtime error smells like a shape mismatch — an optional field where the column is `NOT NULL`, a renamed response key.
+- You are reviewing a pull request that touches more than one contract layer at once.
+
+## When not to use it
+
+- You want the mismatches fixed, not just reported — hand the report to `@core:implementation-agent`.
+- You need a security review of the changed code — use `@core:security-auditor`.
+- You want build, typecheck, lint, and test results — use `@core:verification-agent`.
+- Your stack is GraphQL, MongoDB, or NestJS — those layers are explicitly out of scope.
+
+## How to invoke
+
+```
+@core:contract-validator
+```
+
+Mention it in your message and describe the change. Add the changed file list if you have one; otherwise it auto-detects the scope from `git diff --name-only`.
+
+## Inputs
+
+- `changed_files` — the list of modified files to trace — optional; empty means auto-detect from git.
+- `focus` — which layers to prioritize: `api`, `db`, `telemetry`, or `all` — optional, defaults to all layers.
+
+## What you get back
+
+A Markdown report written to the task's `phases/05-contracts.md` artifact under your workspace, capped at 200 lines: scope, the five-row layer table, mismatches grouped by severity, the verdict with one line of reasoning, and a fix suggestion per mismatch. Layers that do not apply are marked `N/A` with a reason rather than dropped. The final chat line is a one-line summary you can read without opening the file. Nothing is modified, so you can re-run it freely.
+
+## Worked example
+
+```
+@core:contract-validator — validate contracts after adding a job_runs table.
+changed_files: db/schema/jobRuns.ts, lib/actions/jobRuns.ts, lib/validation/jobRuns.ts
+
+→ reads the three files, greps for every consumer of the changed fields,
+  then checks each layer in turn.
+
+CONTRACTS: FAIL | Layers: 4/5 checked | Mismatches: P0=0 P1=1 P2=0 P3=1
+```
+
+The P1 was a Zod field marked optional against a `NOT NULL` column — an insert that would crash at runtime. The P3 was a frontend key named `runStatus` while the API returns `status`. The device telemetry layer came back `N/A` because no device code changed.
+
+## Related
+
+- `@core:verification-agent` — when you need deterministic build and test verdicts rather than type tracing.
+- `@core:api-designer` — when you are designing the contract instead of checking one that already exists.
+- `@core:downstream-analyzer` — when you want every caller and test touched by a change, not just type mismatches.

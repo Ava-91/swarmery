@@ -5,6 +5,10 @@ owner: "swarmery-core"
 description: "Use this skill when a task involves summarizing completed work, writing a feature summary, documenting what changed, or creating a completion report for a task, feature, bug fix, or refactoring. Don't use it for writing documentation, changelogs, or postmortems."
 disable-model-invocation: true
 color: teal
+docs:
+  status: reviewed
+  source_sha: 0e2c64e63f23
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -240,3 +244,58 @@ Checkpoint: Output within length budget.
 - **troubleshooting** -- contains the incident postmortem template (different from a work summary)
 - **testing** -- for writing tests referenced in summary testing sections
 - **code-standards** -- for code review findings that may feed into summary recommendations
+
+# How to use
+
+## What it does
+
+Turns finished work into a structured summary someone else can act on. It picks one of four templates — task, feature, bug fix, or refactoring — based on what the work actually was, then fills it with your real numbers, role-specific "how to use" notes, and next steps that name an owner. It never invents a metric: missing data is marked `N/A` rather than guessed.
+
+## When to use it
+
+- Someone asks you to summarize a task, write a feature summary, or document what changed.
+- A task, feature, bug fix, or refactoring needs a completion report.
+- An agent has finished implementation work and needs a structured write-up of it.
+- You are unsure which summary shape fits the work you just did.
+
+## When not to use it
+
+- Documenting an API or module — that is technical documentation, not a work summary.
+- Writing a changelog entry or release notes — different format, different audience.
+- Writing an outage postmortem — the troubleshooting skill carries that template.
+- Measuring anything — this skill formats metrics you supply, it does not collect them.
+
+## How to invoke
+
+```
+Skill(skill: "core:summary-templates")
+```
+
+Invoke it once the work is done, and hand it the work type, what changed, and any numbers you have.
+
+## Inputs
+
+- **Work type** — one of `task`, `feature`, `bug-fix`, `refactoring` — required. If the work spans two categories, the skill reasons about primary intent first and asks you only if it stays ambiguous.
+- **Work details** — what was done, which files were created, modified, or deleted, and any metrics you measured — required.
+- **Output format** — `markdown` (default) or `html` — optional. Reach for HTML when the summary has more than three sections or will be read outside a terminal.
+
+## What you get back
+
+A single summary document, not a file write: markdown capped at 200 lines, HTML capped at 300. Every section is filled or explicitly marked `N/A`, so gaps are visible instead of silent. Alongside it you are told which template was chosen and why, the output format, and which sections need data only you can supply.
+
+## Worked example
+
+```
+Skill(skill: "core:summary-templates")
+
+"Summarize the auth middleware work — I pulled the session check out of
+14 route handlers into one withAuth() wrapper. No behavior change."
+```
+
+The skill reads that as restructuring without behavior change and selects the Refactoring Summary. You get back a document with Problems Solved (the duplicated check in 14 handlers), a before/after architecture section, metrics grounded in your count of 14 → 1, and a migration guide showing the old call replaced by `export const GET = withAuth(handler)`. Coverage numbers you never measured are left as `N/A -- measure post-deploy`.
+
+## Related
+
+- **troubleshooting** — reach for it instead when the write-up is an incident postmortem.
+- **testing** — use it to write the tests a summary's testing section refers to.
+- **code-standards** — its review findings often become a summary's recommendations.

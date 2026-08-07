@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - code-standards
   - code-quality
+docs:
+  status: reviewed
+  source_sha: cc72915b3a1a
+  updated: 2026-08-06
 ---
 
 # Role
@@ -155,3 +159,59 @@ The user asks me to fix build errors in the main app. I should first collect all
 - **Cascading type errors**: fixing one type reveals 20 more. Prioritize the root cause (usually a schema or interface change) over downstream symptoms.
 - **Circular fix**: fix A breaks B, fix B breaks A. This indicates a type design problem; escalate to @tech-lead.
 - **`ts-ignore` temptation**: only use `// @ts-ignore` as a last resort; document the reason in a code comment and the completion report.
+
+# How to use
+
+## What it does
+
+This agent gets a broken build green again with the smallest possible change. It collects every compiler, type-check, and lint error in one pass, groups them by root cause, then applies the narrowest fix for each — a type annotation, a null guard, a corrected import path. It does not refactor, rename, or improve anything it was not asked to fix.
+
+## When to use it
+
+- Your type-check or build command exits non-zero and you want the errors cleared without a redesign.
+- A dependency upgrade left a wave of `Cannot find module` or "not assignable to" errors.
+- You changed a shared interface or schema and now downstream files no longer compile.
+- A lint gate is blocking CI and the failures are mechanical.
+
+## When not to use it
+
+- The build compiles but the behaviour is wrong — that is a logic bug, use `@core:debugger`.
+- Tests fail for reasons other than compilation — use `@core:test-runner` or `@core:test-writer`.
+- The fix needs a new architecture or a redesigned type model — use `@core:architecture-designer` or `@core:full-stack-feature`.
+
+## How to invoke
+
+```
+@core:build-error-resolver fix build errors in apps/<mainApp>
+```
+
+Name the scope — a repository path, a package, or a single file — so the agent knows which check commands to run.
+
+## Inputs
+
+- `scope` — the repository or file path holding the errors — required.
+- `error_output` — error text you already collected from the compiler or type checker — optional; saves the agent one collection pass.
+- `Reference:` step file path — where the completion report should be written — optional.
+
+## What you get back
+
+Edited source files plus a Completion Report under 30 lines: the number of errors fixed, one line per changed file, and the pass/fail result of each verification command it ran. Any escape hatch it had to use — a suppression comment or a loose cast — is listed with the reason. Uncertain fixes are tagged `[LOW-CONFIDENCE]`.
+
+## Worked example
+
+```
+@core:build-error-resolver fix build errors in apps/<mainApp>
+
+→ runs the type-check and build commands, collects 14 errors
+→ finds 9 of them trace to one changed interface; fixes that first
+→ re-runs the full check after each fix, not just the touched file
+→ reports: 14 errors fixed across 5 files, typecheck pass | build pass
+```
+
+You end up with a compiling tree and a short report naming every file it touched.
+
+## Related
+
+- `@core:debugger` — when the code compiles but does the wrong thing.
+- `@core:verification-agent` — when you want a pass/fail verdict on the build rather than a fix.
+- `@core:quality-checker` — when the build is already green and you want a quality judgement.

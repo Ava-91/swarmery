@@ -29,6 +29,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/term"
 )
 
@@ -61,7 +62,7 @@ func (h *Handler) term(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reqCwd := r.URL.Query().Get("cwd")
-	cwd, ok := h.resolveTermCwd(reqCwd)
+	cwd, projectPath, ok := h.resolveTermCwd(reqCwd)
 	if !ok {
 		writeJSONStatus(w, http.StatusForbidden,
 			map[string]string{"error": "cwd is not a registered project or live worktree path"})
@@ -80,7 +81,14 @@ func (h *Handler) term(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(termReadLimit)
 	defer c.Close(websocket.StatusInternalError, "server error")
 
-	sess, err := termMgr.Start(cwd, 0, 0)
+	// Run the dock shell under the project's Claude account. The account is
+	// resolved from projectPath, NEVER from cwd: a task worktree_path carries no
+	// .claude/settings.local.json of its own (that file lives at the PROJECT
+	// root), so resolving from cwd would silently fall back to the default
+	// account for every worktree terminal — the same A3 trap dispatch/verify
+	// guard against by resolving from the project instead of the spawn cwd. cwd
+	// still chdirs the PTY into the worktree; only the account lookup moves.
+	sess, err := termMgr.Start(cwd, termAccountEnv(projectPath), 0, 0)
 	if err != nil {
 		if errors.Is(err, term.ErrTooManySessions) {
 			// 1013 Try Again Later — the browser surfaces a "too many terminals".
@@ -166,37 +174,101 @@ func applyTermControl(sess termSession, data []byte) {
 
 // resolveTermCwd validates a requested cwd against the allow-list: it must
 // EvalSymlinks to a registered project path or a live task worktree_path.
-// Returns the RESOLVED absolute path (what the PTY should chdir into) and ok.
-func (h *Handler) resolveTermCwd(reqCwd string) (string, bool) {
+// Returns the RESOLVED absolute path (what the PTY should chdir into), the
+// PROJECT path whose Claude account should govern the session, and ok.
+//
+// projectPath is the same as cwd when the match was a project root; when the
+// match was a task's worktree_path, projectPath is that task's PROJECT (via
+// tasks.project_id), never the worktree itself — see termAccountEnv for why.
+// It is "" when the matched worktree task's project_id does not resolve (an
+// orphaned row), which callers must treat as "no project", not an error.
+func (h *Handler) resolveTermCwd(reqCwd string) (cwd string, projectPath string, ok bool) {
 	if reqCwd == "" || !filepath.IsAbs(reqCwd) {
-		return "", false
+		return "", "", false
 	}
 	// Resolve symlinks so /etc/../<project> or a symlink INTO an allowed dir
 	// can't smuggle a path past the string compare — and so a symlink escape OUT
 	// of an allowed dir fails too.
 	real, err := filepath.EvalSymlinks(reqCwd)
 	if err != nil {
-		return "", false
+		return "", "", false
 	}
 	for _, allowed := range h.termAllowedRoots() {
-		resolvedAllowed, err := filepath.EvalSymlinks(allowed)
+		resolvedAllowed, err := filepath.EvalSymlinks(allowed.path)
 		if err != nil {
 			continue // path vanished (stale worktree row) — skip, don't match
 		}
 		if real == resolvedAllowed {
-			return real, true
+			return real, allowed.projectPath, true
 		}
 	}
-	return "", false
+	return "", "", false
+}
+
+// termAllowedRoot is one path a terminal may open in, paired with the project
+// whose Claude account should govern that session.
+type termAllowedRoot struct {
+	path        string // the allow-listed path itself (EvalSymlinks'd against cwd)
+	projectPath string // "" when no project is associated with this root
 }
 
 // termAllowedRoots is every path a terminal may open in: all registered project
-// roots plus every live task worktree_path (a task currently holding a worktree).
-func (h *Handler) termAllowedRoots() []string {
-	var roots []string
-	roots = append(roots, h.scanColumn(`SELECT path FROM projects WHERE path IS NOT NULL AND path <> ''`)...)
-	roots = append(roots, h.scanColumn(`SELECT worktree_path FROM tasks WHERE worktree_path IS NOT NULL AND worktree_path <> ''`)...)
+// roots (paired with themselves) plus every live task worktree_path (paired
+// with that task's project — see termWorktreeRoots).
+func (h *Handler) termAllowedRoots() []termAllowedRoot {
+	var roots []termAllowedRoot
+	for _, p := range h.scanColumn(`SELECT path FROM projects WHERE path IS NOT NULL AND path <> ''`) {
+		roots = append(roots, termAllowedRoot{path: p, projectPath: p})
+	}
+	roots = append(roots, h.termWorktreeRoots()...)
 	return roots
+}
+
+// termWorktreeRoots is every live task worktree_path, LEFT JOINed to its
+// project. The join is what lets resolveTermCwd hand back a PROJECT path for a
+// worktree cwd instead of the worktree itself: worktree_path is a fresh git
+// worktree with no .claude/settings.local.json of its own, so an account bound
+// to the project would otherwise be invisible from there (plan A3). A task
+// whose project_id no longer resolves to a row (an orphaned task) yields a
+// zero-value (empty) projectPath via the LEFT JOIN, exactly like "no project".
+func (h *Handler) termWorktreeRoots() []termAllowedRoot {
+	rows, err := h.DB.Query(`
+		SELECT tasks.worktree_path, projects.path
+		FROM tasks
+		LEFT JOIN projects ON tasks.project_id = projects.id
+		WHERE tasks.worktree_path IS NOT NULL AND tasks.worktree_path <> ''`)
+	if err != nil {
+		log.Printf("warn: term: worktree allow-list query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []termAllowedRoot
+	for rows.Next() {
+		var worktreePath string
+		var projectPath sql.NullString
+		if err := rows.Scan(&worktreePath, &projectPath); err != nil {
+			continue
+		}
+		out = append(out, termAllowedRoot{path: worktreePath, projectPath: projectPath.String})
+	}
+	return out
+}
+
+// termAccountEnv resolves the CLAUDE_CONFIG_DIR env delta for a terminal
+// session from a PROJECT path — never call claudeacct.EnvFor with a raw cwd
+// (see resolveTermCwd/termWorktreeRoots for why a worktree cwd can't carry a
+// binding of its own). The empty-projectPath guard is mandatory, not
+// defensive style: claudeacct.Binding joins its argument with
+// ".claude/settings.local.json" unconditionally, so EnvFor("") would resolve
+// that RELATIVE path against the daemon's own process working directory and
+// read whatever unrelated settings file happens to sit there — silently
+// binding the session to a stranger's account instead of correctly reporting
+// "no project". "" must short-circuit to nil before EnvFor is ever called.
+func termAccountEnv(projectPath string) []string {
+	if projectPath == "" {
+		return nil
+	}
+	return claudeacct.EnvFor(projectPath)
 }
 
 // scanColumn runs a single-column string query and returns the non-null rows.

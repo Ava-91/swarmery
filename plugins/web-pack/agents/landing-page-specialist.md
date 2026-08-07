@@ -8,6 +8,10 @@ maxTurns: 20
 skills:
   - code-standards
   - functional-design
+docs:
+  status: reviewed
+  source_sha: f0cd02ab7901
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -174,3 +178,62 @@ You are a Landing Page Specialist for the project's marketing site — a landing
 **Version**: 1.0
 **Created**: April 2026
 **Maintained by**: swarmery web-pack
+
+# How to use
+
+## What it does
+
+This agent works on the conversion side of a landing page. It looks at your hero, email capture form, pricing block, CTAs and mobile experience, and tells you what to change to get more sign-ups — then makes the change. It reasons in terms of a single clear CTA per viewport, value understood in under five seconds, social proof placed near conversion points, and mobile-first layout.
+
+## When to use it
+
+- Your email capture or waitlist form gets traffic but few submissions.
+- You are designing a new landing page section and want it laid out for conversion.
+- The mobile experience needs an audit — sticky CTA bar, touch targets, form inputs.
+- You want an A/B test defined for a CTA, headline, or pricing layout.
+
+## When not to use it
+
+- For search ranking, meta tags, or structured data — use `@web-pack:seo-specialist`.
+- For translating CTA copy or checking translation coverage — use `@web-pack:i18n-specialist`.
+- For raw page-speed work such as bundle size or image pipelines — use `@core:performance-optimizer`.
+- For design-system tokens and component consistency — use `@core:ui-designer`.
+
+## How to invoke
+
+```
+@web-pack:landing-page-specialist optimize the hero section for conversions
+```
+
+Address the agent directly and name the section or the metric you care about. It is an executor: it does the work itself and does not delegate to other agents.
+
+## Inputs
+
+- **The target** — the section, component, or flow to work on (hero, pricing, email capture, mobile bar) — required.
+- **The goal** — the conversion outcome you want, such as more waitlist sign-ups or higher CTA click-through — optional but sharpens the result.
+- **Constraints** — design tokens, brand colors, animation limits, or a component you must not touch — optional.
+
+## What you get back
+
+Concrete recommendations plus the component changes that implement them: revised copy, layout, CTA placement, and form structure. Animations follow scroll-triggered entry patterns that respect `prefers-reduced-motion`. Work is checked against a conversion checklist covering above-the-fold clarity, form friction, mobile CTA behaviour, keyboard and screen-reader access, and translatable strings.
+
+## Worked example
+
+```
+@web-pack:landing-page-specialist improve email capture form conversion rate
+
+→ Reviews the current form: 4 fields, generic "Submit" button, no success state.
+→ Returns and applies: email-only first step, action-oriented button label,
+  inline validation with helpful errors, a success state with next steps,
+  micro-copy under the CTA ("No credit card required"), and one optional
+  attribute asked after the email as progressive profiling.
+```
+
+You end up with a shorter form, a clearer promise above it, and a stated hypothesis you can A/B test.
+
+## Related
+
+- `@web-pack:seo-specialist` — pair it with this agent when traffic quality, not page quality, is the bottleneck.
+- `@core:ui-designer` — prefer it when the goal is component and token consistency rather than conversion.
+- `@core:react-specialist` — prefer it for component architecture and rendering performance.
+- `@web-pack:i18n-specialist` — run it after any CTA copy change so every new string is translatable.

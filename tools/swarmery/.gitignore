@@ -9,5 +9,10 @@ internal/docsfs/content/*
 !internal/docsfs/content/.gitkeep
 .DS_Store
 
+# `go test -coverprofile` leftovers — the raw profile and the gated one the CI
+# coverage floor is computed from (.github/workflows/swarmery-ci.yml).
+coverage.out
+coverage.gated.out
+
 # sysscan fixture: re-include the settings.local.json that user-global gitignore excludes
 !testdata/sysconfig/**/settings.local.json

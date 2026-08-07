@@ -3,6 +3,10 @@ name: design-implement
 description: "Use when a finished visual design has to be re-expressed in this project's stack pixel-accurately — the user says \"implement this design\", \"here's a design handoff\", \"make this screen match the mockup\", \"design-implement\", pastes a design-tool handoff prompt, or attaches an exported design HTML/zip. Runs a measured workflow: token inventory from a real headless render, reuse-vs-create recon against the project's own components, an approval gate before any code, and a pixel diff against the design as the completion criterion. NOT for ordinary styling requests (tweak a padding, change a colour, fix a hover state), NOT for building UI from a written description with no design artefact, and NOT for visual QA of an already-implemented screen."
 version: "0.1.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 8192d35c7790
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -212,3 +216,66 @@ Not "it matches", not "looks the same" — `side-by-side.png` and `diffPercent`.
 - `references/anti-patterns.md` — five named failure modes and what to do instead.
 - `design-acquire` — the four input shapes and what each one can honestly promise.
 - `design-verify` — the Phase 6 measurement procedure.
+
+# How to use
+
+## What it does
+
+This skill carries a finished visual design through to working code in your project's stack, and proves the result with a number instead of an opinion. It runs six phases: acquire the design, extract a token inventory from a real headless render, check what you can reuse against your own components, present a plan and stop for your approval, implement inside the approved file list, then pixel-diff the built screen against the design.
+
+## When to use it
+
+- You have a design export (HTML/zip), a design-tool handoff prompt, or a design-system URL and need the screen built pixel-accurately.
+- A screen already exists but must be made to match a mockup, and you want a measured diff rather than a visual guess.
+- You want to know before any code is written which components get reused, which get a new variant, and which screens the change touches.
+
+## When not to use it
+
+- Ordinary styling work — a padding tweak, a colour change, a hover-state fix. Just make the edit; six phases buy nothing.
+- Building UI from a written description with no design artefact. There is no ground truth to extract and nothing to diff.
+- Visual QA of a screen with no reference design — use `browser-verification` in `core`.
+- Only resolving the design input, or only measuring an existing screen — use `design-acquire` or `design-verify` directly.
+
+## How to invoke
+
+```
+Skill(skill: "design-pack:design-implement")
+```
+
+Invoke it once you have the design artefact in hand. The skill reads the rest of what it needs from configuration and asks you for anything it cannot resolve.
+
+## Inputs
+
+- Design artefact — an export path, a handoff prompt, a design-system URL, or a screenshot set — required.
+- Target route — which screen this becomes — required; the skill asks if you did not say.
+- Viewport as `WxH` — optional; without it the skill reads the design's own authoring breakpoint and pins to that.
+- The `design` block in `${CLAUDE_PROJECT_DIR}/.claude/project.json` — required. Missing or empty fields stop the run with the exact field names listed.
+
+## What you get back
+
+A token inventory (`tokens.json` + `tokens.md`) under `.design-verify/tokens/<slug>`, a plan you approve before any file is written, code changes confined to the file list you approved, and a final verdict made of `side-by-side.png` plus a `diffPercent` number, with lint and type-check results alongside. Any degraded mode — screenshots only, missing fonts — is reported, never quietly absorbed.
+
+## Worked example
+
+```
+Skill(skill: "design-pack:design-implement")
+
+You: implement this design at orders/line-items — export is at ./handoff/line-items.zip
+
+Phase 2 renders the export headless: 1440x900, 214 elements, 9 colours,
+6 type styles, 14 spacing values (11 on the 4px grid), fonts required:
+Inter 400/500/600.
+Phase 3: 7 of 9 colours already exist as tokens; the list row maps to an
+existing component with a new "compact" variant; Inter is already loaded.
+Phase 4 stops and shows you the target file, the reuse table, the two new
+tokens (one global), and the 4 other screens that use the list row.
+You approve 5 files. Phase 5 implements only those.
+Phase 6: diffPercent 0.31 (threshold 0.5) — side-by-side.png attached,
+lint and typecheck clean.
+```
+
+## Related
+
+- `design-acquire` — use it alone when you only need to resolve a handoff into a measurable local artefact.
+- `design-verify` — use it alone when the screen is already built and you just want the diff.
+- `browser-verification` in `core` — use it for behavioural UI checks when there is no reference design.

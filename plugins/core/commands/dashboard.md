@@ -5,6 +5,10 @@ allowed-tools:
   - Read
   - Glob
   - Grep
+docs:
+  status: reviewed
+  source_sha: 393094f45f6b
+  updated: 2026-08-06
 ---
 
 # /dashboard — Session & System Dashboard
@@ -189,3 +193,68 @@ Rendering rules — these prevent the broken/garbled output seen previously:
    safe). Never pad the *end* of a line to a target width.
 5. Keep rows narrow — wrap long lists onto an indented continuation line rather
    than producing very wide rows.
+
+# How to use
+
+## What it does
+
+It builds a single readable snapshot of what has happened in your Claude Code session and how the project's agent system is set up. It pulls today's tool-call log, the active and recently completed workspace tasks, counts of agents/commands/skills/hooks, and today's cumulative metrics, then prints them all inside one aligned box.
+
+## When to use it
+
+- You come back to a session and want to see what was touched today before deciding what to do next.
+- You want a quick count of files edited, tools used, and how long the session has been running.
+- You need to know which workspace tasks are still in progress and which ones closed recently.
+- You want to confirm the project's agents, commands, skills, and hooks are actually being discovered.
+
+## When not to use it
+
+- You want token spend and cost — use `/cost` instead.
+- You want to create, pause, or complete a task — use the workspace CLI directly.
+- You want a health verdict on code quality — reach for a code-quality or audit command.
+
+## How to invoke
+
+```
+/dashboard
+```
+
+Type it with no arguments. It gathers every data source it can reach and skips the sections whose files do not exist yet, so it is safe to run at any point in a session.
+
+## Inputs
+
+- No arguments — the command takes none.
+- `AGENT_WORKSPACE_ROOT` and `AGENT_PROJECT` — environment variables that locate the workspace holding today's metrics — optional; a legacy project-local workspace directory is used as a fallback.
+- `CLAUDE_PROJECT_DIR` — used to shorten file paths in the report — optional.
+
+## What you get back
+
+One plain fenced code block containing a closed box with five sections: session stats, tasks, agent system counts, today's cumulative metrics, and a short tips list. Nothing is written to disk and nothing is modified — the command only reads logs, lists tasks, and counts files. Sections with no data say so rather than being dropped.
+
+## Worked example
+
+```
+/dashboard
+
+→ reads today's session log, lists in-progress and recently completed
+  tasks, counts agents/commands/skills/hooks, and sums today's metrics
+
+┌────────────────────────────────────────────────┐
+│  Project Dashboard                      14:20  │
+├────────────────────────────────────────────────┤
+│   SESSION                                      │
+│   Tool calls   184  ·  Edit 41  Read 77        │
+│   Files        23 unique files touched         │
+│   TASKS                                        │
+│   Active       orders/line-items refactor      │
+│   AGENT SYSTEM                                 │
+│   Agents 12  ·  Commands 9  ·  Skills 7        │
+└────────────────────────────────────────────────┘
+```
+
+You end up with a single box you can read at a glance or paste into a handoff note.
+
+## Related
+
+- `/cost` — prefer it when the question is token usage and spend rather than activity.
+- `/statusline-help` — prefer it when you want the always-visible status line explained instead of a one-off report.

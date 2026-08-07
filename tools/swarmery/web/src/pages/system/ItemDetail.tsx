@@ -9,7 +9,8 @@
 // force mode exists) — plus per-version rollback with an on-disk diff
 // preview, soft delete/restore (agents), and plugin/readonly guards.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import type {
   AgentHistory,
@@ -35,7 +36,14 @@ import { fmtAgo, fmtDateTime, fmtDurationMs } from '../../lib/format';
 import { ProjectName } from '../../components/ProjectName';
 import { Markdown } from '../../lib/markdown';
 import { ConfirmDialog, ErrorBox, Loading, SectionTitle } from '../../components/ui';
-import { LINT_TONES, LintDot, OriginBadge, ScopeBadge } from './shared';
+import { FrontmatterTable, LINT_TONES, LintDot, OriginBadge, ScopeBadge } from './shared';
+import { DocsPanel } from './DocsPanel';
+import { SectionPanel, SectionTabs } from './SectionTabs';
+import { defaultSection, guidePath, type DocsSection } from './docsSection';
+
+/** The panel's section tablist: the usage guide, or the item's source. */
+const SECTION_TABS = ['docs', 'definition'] as const;
+const SECTION_LABELS: Record<string, string> = { docs: 'Docs', definition: 'Definition' };
 
 /** Raw file content of the open detail — what the editor edits. */
 function composeContent(detail: SystemItemDetail): string {
@@ -61,32 +69,6 @@ function LintList({ lint }: { lint: SystemLintFinding[] }): JSX.Element | null {
       ))}
     </div>
   );
-}
-
-/* ----- frontmatter → table rows -----
- * The contract serves the RAW YAML block (redacted). Top-level `key: value`
- * lines become rows; indented/list continuation lines append to the previous
- * row's value. Anything unparseable falls back to a mono <pre>. */
-
-interface FmRow {
-  key: string;
-  value: string;
-}
-
-function parseFrontmatter(frontmatter: string): FmRow[] | null {
-  const rows: FmRow[] = [];
-  for (const line of frontmatter.split('\n')) {
-    if (line.trim() === '') continue;
-    const top = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
-    if (top !== null && !line.startsWith(' ') && !line.startsWith('\t')) {
-      rows.push({ key: top[1] ?? '', value: top[2] ?? '' });
-      continue;
-    }
-    const last = rows[rows.length - 1];
-    if (last === undefined) return null; // continuation before any key
-    last.value = last.value === '' ? line.trim() : `${last.value}\n${line.trim()}`;
-  }
-  return rows.length > 0 ? rows : null;
 }
 
 /* ----- unified diff block (tones match pages/detail/Diffs.tsx) ----- */
@@ -552,6 +534,26 @@ function AgentHistoryPanel({ agentId }: { agentId: number }): JSX.Element {
 
 /* ----- the panel ----- */
 
+/** Wrapper of the Definition section: a real tabpanel in the tabbed ('full')
+ * variant, a bare fragment in 'editor', where there is no tablist to label it
+ * and a stray role="tabpanel" would be a lie to a screen reader. */
+function DefinitionWrap({
+  tabbed,
+  idPrefix,
+  children,
+}: {
+  tabbed: boolean;
+  idPrefix: string;
+  children: ReactNode;
+}): JSX.Element {
+  if (!tabbed) return <>{children}</>;
+  return (
+    <SectionPanel idPrefix={idPrefix} tab="definition">
+      {children}
+    </SectionPanel>
+  );
+}
+
 export function SystemItemPanel({
   kind,
   id,
@@ -562,6 +564,8 @@ export function SystemItemPanel({
   onDeleted,
   onReadonly,
   variant = 'full',
+  section,
+  onSection,
 }: {
   kind: SystemItemsKind;
   id: number;
@@ -578,11 +582,20 @@ export function SystemItemPanel({
   onReadonly: () => void;
   /** Section set. 'full' (default, System page) renders everything with a close
    * button; 'editor' = frontmatter / body / edit only (no ×, History or Versions);
-   * 'meta' = History + Versions only (mounted in the agent Overview tab). */
-  variant?: 'full' | 'editor' | 'meta';
+   * 'meta' = History + Versions only (mounted in the agent Overview tab);
+   * 'docs' = the usage guide only (mounted in the Agent Hub Docs tab). */
+  variant?: 'full' | 'editor' | 'meta' | 'docs';
+  /** Active section of the 'full' variant, when the PAGE owns it (?sec=).
+   * null/undefined = uncontrolled: local state seeded from defaultSection(). */
+  section?: DocsSection | null;
+  /** Section changed — the page mirrors it into the URL. */
+  onSection?: (section: DocsSection) => void;
 }): JSX.Element {
   const [detail, setDetail] = useState<SystemItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Uncontrolled section fallback: null means "nobody has picked yet", so the
+  // panel opens on defaultSection() of the guide it actually loaded.
+  const [localSection, setLocalSection] = useState<DocsSection | null>(null);
 
   // Editor state (step-12). baseHash is captured the moment Edit OPENS and is
   // deliberately NOT refreshed by later refetches — that snapshot is what
@@ -631,6 +644,7 @@ export function SystemItemPanel({
     setConfirmReload(false);
     setConfirmDelete(false);
     setActionError(null);
+    setLocalSection(null); // re-seed the section from the NEW item's guide
   }, [kind, id]);
 
   // Conflict "reload from disk": once the refetched detail arrives, re-seed
@@ -645,16 +659,33 @@ export function SystemItemPanel({
     setPendingReload(false);
   }, [detail, pendingReload]);
 
-  const fmRows = useMemo(
-    () => (detail === null ? null : parseFrontmatter(detail.frontmatter)),
-    [detail],
-  );
-
   if (error !== null) return <ErrorBox message={error} />;
   if (detail === null) return <Loading label="detail…" />;
 
   const writable = detail.origin === 'local' && !detail.deleted;
   const diskHash = currentContentHash(detail);
+  // The file that carries the guide — a skill is registered by DIRECTORY, so
+  // the empty state must name its SKILL.md rather than the folder.
+  const docsPath = guidePath(detail.path, kind);
+
+  // The section tablist is OPT-IN, via onSection. 'editor'/'meta'/'docs' have
+  // their own fixed section sets, and the remaining variant='full' mounts are
+  // two different things: the System page, which owns a URL to mirror the
+  // section into (?sec=) and asks for tabs, and the System Hub's skill profile
+  // (pages/system-hub/Profiles.tsx), whose surrounding tab is ALREADY labelled
+  // "Definition" — growing a second tablist inside it, one that would open on
+  // Docs the moment skills get guides, would be a bug, not a feature.
+  const tabbed = variant === 'full' && onSection !== undefined;
+  // Unique per mounted panel — two panels on one page must not share tab ids.
+  const panelPrefix = `sys-${kind}-${String(detail.id)}`;
+  const activeSection: DocsSection = tabbed
+    ? (section ?? localSection ?? defaultSection(detail.docs))
+    : 'definition';
+  const selectSection = (next: string): void => {
+    const s: DocsSection = next === 'docs' ? 'docs' : 'definition';
+    setLocalSection(s);
+    onSection?.(s);
+  };
 
   const openEdit = (): void => {
     if (diskHash === null) return;
@@ -734,6 +765,13 @@ export function SystemItemPanel({
       .finally(() => setActionBusy(false));
   };
 
+  // 'docs' variant: the usage guide alone — the Agent Hub mounts this as its
+  // own Docs tab, so the hub's tab bar is already the section switcher and no
+  // header, metrics strip or tablist is repeated inside it.
+  if (variant === 'docs') {
+    return <DocsPanel docs={detail.docs} path={docsPath} name={detail.name} />;
+  }
+
   // 'meta' variant: only the History + Versions sections, mounted inside the
   // agent Overview tab. The editor/header live in the Definition tab instead.
   if (variant === 'meta') {
@@ -811,6 +849,27 @@ export function SystemItemPanel({
         </span>
       </div>
 
+      {/* Docs | Definition. History and Versions deliberately stay BELOW the
+          tablist and outside it — they describe the item in both sections. */}
+      {tabbed && (
+        <SectionTabs
+          tabs={SECTION_TABS}
+          labels={SECTION_LABELS}
+          active={activeSection}
+          onSelect={selectSection}
+          idPrefix={panelPrefix}
+          ariaLabel={`${detail.name} sections`}
+        />
+      )}
+
+      {tabbed && activeSection === 'docs' && (
+        <SectionPanel idPrefix={panelPrefix} tab="docs">
+          <DocsPanel docs={detail.docs} path={docsPath} name={detail.name} />
+        </SectionPanel>
+      )}
+
+      {activeSection === 'definition' && (
+        <DefinitionWrap tabbed={tabbed} idPrefix={panelPrefix}>
       {/* write-surface actions (step-12) — origin=plugin NEVER shows Edit */}
       {!editing && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -988,34 +1047,15 @@ export function SystemItemPanel({
       ) : (
         <>
           <SectionTitle>Frontmatter</SectionTitle>
-          {fmRows !== null ? (
-            <div className="overflow-hidden rounded-lg border border-line">
-              <table className="w-full border-collapse">
-                <tbody>
-                  {fmRows.map((row) => (
-                    <tr key={row.key}>
-                      <td className="w-[120px] border-b border-line-soft px-2.5 py-1.5 align-top font-mono text-[10px] tracking-[0.06em] text-ink-faint uppercase">
-                        {row.key}
-                      </td>
-                      <td className="border-b border-line-soft px-2.5 py-1.5 align-top font-mono text-[11.5px] whitespace-pre-wrap text-ink-2">
-                        {row.value === '' ? '—' : row.value}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <pre className="overflow-x-auto rounded-lg border border-line bg-bg px-3 py-2.5 font-mono text-[11px] leading-relaxed text-ink-2">
-              {detail.frontmatter}
-            </pre>
-          )}
+          <FrontmatterTable frontmatter={detail.frontmatter} />
 
           <SectionTitle>Body</SectionTitle>
           <div className="text-[13px] leading-[1.6] text-ink-2">
             <Markdown text={detail.body} />
           </div>
         </>
+      )}
+        </DefinitionWrap>
       )}
 
       {kind === 'agents' && variant !== 'editor' && <AgentHistoryPanel agentId={detail.id} />}

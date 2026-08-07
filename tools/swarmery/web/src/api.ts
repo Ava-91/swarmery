@@ -3,6 +3,8 @@
 // declare API types here.
 
 import type {
+  AccountBinding,
+  AccountsResponse,
   AdviseStats,
   AgentEvidence,
   AnalyticsDimension,
@@ -62,9 +64,11 @@ import type {
   ProjectsHealthResponse,
   ProjectsResponse,
   ProposalsResp,
+  ProvisionResponse,
   Recommendation,
   RecommendationsResp,
   RecommendationStatus,
+  RemoveAccountResponse,
   RetroAgentsResp,
   RetroFrictionResp,
   RetroLessonsResp,
@@ -1499,6 +1503,59 @@ export async function removeConnector(name: string, scope?: string): Promise<Con
   }
   const body = (await res.json()) as ConnectorsResponse;
   return body.connectors;
+}
+
+// --- accounts (multi-account, phase 7) ---------------------------------------
+
+export function fetchAccounts(): Promise<AccountsResponse> {
+  if (MOCK) return mockApi.accounts();
+  return get('/api/accounts');
+}
+
+export async function createAccount(key: string): Promise<ProvisionResponse> {
+  if (MOCK) return mockApi.createAccount(key);
+  const res = await fetch('/api/accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `create account failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as ProvisionResponse;
+}
+
+export async function deleteAccount(key: string): Promise<RemoveAccountResponse> {
+  if (MOCK) return mockApi.deleteAccount(key);
+  const res = await fetch(`/api/accounts/${encodeURIComponent(key)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `delete account failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as RemoveAccountResponse;
+}
+
+export function fetchProjectAccount(id: number | string): Promise<AccountBinding> {
+  if (MOCK) return mockApi.projectAccount(id);
+  return get(`/api/projects/${encodeURIComponent(id)}/account`);
+}
+
+export async function putProjectAccount(
+  id: number | string,
+  account: string,
+): Promise<AccountBinding> {
+  if (MOCK) return mockApi.putProjectAccount(id, account);
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/account`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `set account failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as AccountBinding;
 }
 
 // --- global search (Cmd+K palette) ---------------------------------------------

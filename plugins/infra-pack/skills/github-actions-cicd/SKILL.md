@@ -3,6 +3,10 @@ name: github-actions-cicd
 description: "Design, review, or debug GitHub Actions workflows — CI jobs (type-check, lint, test, build, security, summary), AWS ECR/ECS deploys, and a standardized per-repo workflow set. NOT for cloud-auth role/OIDC trust details (use aws-cicd-auth) or Dockerfile/image-build mechanics (use docker-build)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: reviewed
+  source_sha: a9f533021609
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -358,3 +362,57 @@ Verify with `gh run view <id>` that the deploy job is now skipped when CI conclu
 - `aws-cicd-auth` — AWS OIDC trust, the assumed IAM role, ECR/ECS permissions, and the `AWS_ROLE_ARN` federation this workflow consumes.
 - `docker-build` — Dockerfile authoring, build args, layer caching, and image-size mechanics behind the `docker build`/`push` steps.
 - `monitoring` — Prometheus/Grafana for the services these workflows deploy; use it when a deploy needs post-rollout metric verification.
+
+# How to use
+
+## What it does
+
+This skill writes and repairs the GitHub Actions workflows that gate and ship a repository. It gives you a fixed CI job graph (type-check, lint, test, build, security, summary), a container-image build-and-push step, and a rolling cloud deploy that waits for the service to actually stabilize — so every repo's workflows look and behave the same, and a broken run has a known place to look.
+
+## When to use it
+
+- You are adding or changing a job in a repo's `ci.yml` and need it wired into the pass/fail summary.
+- You are writing or fixing the image build/push plus force-new-deployment flow in `deploy-prod.yml`.
+- A run is failing: a red CI job, a deploy that never reaches stability, or a `workflow_run` trigger that didn't fire.
+- You are reviewing a pull request that touches anything under `.github/workflows/`.
+
+## When not to use it
+
+- Cloud OIDC trust, the assumed IAM role, or registry permissions — use `aws-cicd-auth`; this skill only consumes those secrets.
+- Dockerfile authoring, build args, layer caching, image size — use `docker-build`.
+- Metrics dashboards and alerting for the deployed services — use `monitoring`.
+- Provisioning the cluster, service, or task definition — that is infrastructure work, not a workflow change.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:github-actions-cicd")
+```
+
+Invoke it, then say which repo's workflows you are touching and what you want changed — a new job, a deploy fix, or a diagnosis of a specific failing run.
+
+## Inputs
+
+- Target repo — which repository's `.github/workflows/` you are editing — required.
+- Change intent — new job, deploy fix, workflow-set alignment, or run-failure diagnosis — required.
+- Failing run reference — run ID or job name when you are debugging — optional.
+- Secret availability — confirmation that the deploy secrets exist in repo settings — optional, deploy work only.
+
+## What you get back
+
+Workflow YAML — a full file or a precise diff — capped at about 120 lines per file, plus the verification evidence used to check it (`actionlint` clean, or a run that proves green). For a diagnosis you get a root-cause line, the offending step, and the minimal fix in under 30 lines plus the failing log excerpt. Deploy work confirms that every cloud identifier comes from repository secrets rather than a literal.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:github-actions-cicd")
+"A red CI on main still kicked off deploy-prod.yml. Fix it."
+```
+
+The skill traces the trigger: `workflow_run` fires on *completed* runs, failures included, so the deploy job needs a guard on the run's conclusion. You get back the one-line `if:` condition to add to the job, plus the `gh run view <id>` check that proves the deploy job is now skipped when CI concludes `failure`.
+
+## Related
+
+- `aws-cicd-auth` — reach for it when the role won't assume or a registry push is denied.
+- `docker-build` — reach for it when the image build itself fails, not the workflow around it.
+- `monitoring` — reach for it when a deploy needs post-rollout metric verification.

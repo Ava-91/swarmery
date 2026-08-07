@@ -19,6 +19,10 @@ skills:
   - jira-escalation
   - testing
   - troubleshooting
+docs:
+  status: reviewed
+  source_sha: f443accd1014
+  updated: 2026-08-06
 ---
 
 # Role
@@ -349,6 +353,7 @@ repro steps if it names a more specific one → classify. Say the command exits
 QA transition, and the board card moves to `done`.
 </thinking>
 ```
+```
 
 <example>
 ```
@@ -401,3 +406,68 @@ still executes so the dry-run's answer is honest, but zero writes fire —
 | A `class: change` ticket's new test passes on its first run | `jira-delivery` Step 2a's red run comes back green | Do not implement. Either the behavior already exists (`already-fixed`, with that test as evidence) or the test does not assert the criterion (one tightening re-dispatch against `maxAttempts`, then `needs-info`) |
 | Acceptance criteria too vague to test | `jira-triage` Step 2b.3 cannot produce a single assertable statement | `needs-info` with those questions; never hand an executor a specification to invent |
 | Verdict is `too-large` | Fork reaches the `too-large` branch, or `jira-delivery` hands off mid-attempt | Delegate to `jira-escalation` (planner → private-workspace plan → full-text comment, no transition); never attempt to fix the ticket directly from this agent |
+
+# How to use
+
+## What it does
+
+This agent takes one tracker ticket reference and drives it to a written-back answer without you relaying anything by hand. It validates config and access, mirrors the run on the local board, decides whether the ticket is a defect or a change, produces real executed evidence for that class, and lands on exactly one of five verdicts. The verdict goes back onto the ticket as a comment — and, where the rules allow, a status transition — rather than into a report you have to copy.
+
+## When to use it
+
+- A bug ticket arrives and you want it reproduced, classified, and answered on the ticket itself.
+- A feature or task ticket needs a baseline check, an absence proof, and testable acceptance criteria before anyone writes code.
+- A ticket looks fixable inside one session and you want the branch, red test, implementation, verification gate, and PR delegated end-to-end.
+- A ticket is clearly too big and you want it turned into a phased plan posted back to the tracker instead of half-attempted.
+
+## When not to use it
+
+- You just want to read a ticket's status or list your open tickets — use the read-only `jira-tasks` skill.
+- You want the fix flow itself (branch, red test, verification gate, PR) as its own step — that is the `jira-delivery` skill.
+- You want an over-budget ticket turned into a plan without a fix attempt — that is the `jira-escalation` skill.
+- You want to check tracker access or the config block alone — use `jira-access-preflight` or `jira-config`.
+
+## How to invoke
+
+```
+/jira-fix ABC-139             ← the only thing you type
+@jira-pack:jira-task-runner   ← the identity /jira-fix dispatches to
+```
+
+The `/jira-fix` command is the only supported entry point: it checks the argument shape, then hands control here. The composite above is this agent's underlying identity, shown so you can recognise it in a transcript — not an address to call by hand. Never invoke it directly, and never wire it into a plan phase or another orchestrator's routing table.
+
+## Inputs
+
+- Ticket reference — a bare key or a browse URL — required.
+- `--dry-run` — every read still runs, zero writes fire — optional.
+- `--repo <path>` — the working repository to run evidence commands in — optional, defaults to the configured repo.
+
+## What you get back
+
+- A comment on the ticket for every verdict except `too-large`, which gets its full plan text posted by the escalation path.
+- A status transition only for `already-fixed` and `cannot-reproduce`, and for `needs-fix` after a green verification. Never for `needs-info`.
+- A board card mirroring the run, landing in `done` or `in_review`, and never passing through `todo`.
+- One summary line in chat naming the class, the verdict, the comment, the transition, and the board column.
+
+## Worked example
+
+```
+/jira-fix ABC-139        →  @jira-pack:jira-task-runner
+
+The ticket says "disable the <control> until every <unit> reports
+<terminal-state>" — imperative, no reproduction steps. Class: change.
+The baseline suite runs green (nothing is built yet) and a search shows
+the control has no disabled condition at all. Verdict: needs-fix.
+A test for the two criteria is written and observed failing, then driven
+green, verified, committed on feat/ABC-139-disable-<control>, and opened
+as a PR. The comment pairs each criterion with its test, then the QA
+transition fires. Board card lands in in_review.
+```
+
+The green baseline was never read as `cannot-reproduce` — that verdict is impossible on a change ticket, which is what keeps unimplemented work out of QA.
+
+## Related
+
+- `/jira-fix` — the command you actually type; this agent is what it launches.
+- `jira-triage` — prefer it when you only need the class and verdict decided, with no writeback.
+- `jira-writeback` — prefer it when a verdict already exists and only the comment and transition are left.

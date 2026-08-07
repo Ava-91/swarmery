@@ -1,8 +1,11 @@
 // Insights tab (System screen): the promotion & drift detector — read-only
-// advisory cards over GET /api/system/insights. Three sections: promotion
+// advisory cards over GET /api/system/insights. Sections: promotion
 // candidates (graduation rule, docs/EXTENDING.md), stale local overrides
 // (local name colliding with a plugin item), dead components (active
-// agent_dead findings). Each item expands to copies + a redacted unified
+// agent_dead findings), undocumented components (active docs_missing /
+// docs_incomplete findings — the docs axis is kept out of lintMax, so this
+// list is where it surfaces in bulk), plugin drift. Each item expands to
+// copies + a redacted unified
 // diff (DiffBlock, shared with the detail panel) + a copyable next-step
 // hint. Display-only by design — promotion itself stays a manual flow.
 
@@ -14,6 +17,7 @@ import type {
   SystemPluginDrift,
   SystemPromotionCandidate,
   SystemStaleOverride,
+  SystemUndocumentedItem,
 } from '../../api/types';
 import { fetchSystemInsights } from '../../api/system';
 import { Empty, ErrorBox, Loading } from '../../components/ui';
@@ -243,6 +247,42 @@ function DeadRow({ d }: { d: SystemDeadComponent }): JSX.Element {
   );
 }
 
+// Undocumented rows reuse the dead-component shell: a headline that names the
+// item and the gap, expanding into the required subsections still absent. The
+// rule chip distinguishes "no guide at all" from "guide with holes" — the two
+// need different amounts of work and the linter keeps them apart.
+function UndocumentedRow({ u }: { u: SystemUndocumentedItem }): JSX.Element {
+  const noGuide = u.rule === 'docs_missing';
+  return (
+    <ExpandableRow
+      header={
+        <>
+          <KindBadge kind={u.kind} />
+          <span className="min-w-0 truncate text-[13.5px] font-semibold text-ink">{u.name}</span>
+          <span
+            className={`shrink-0 rounded-full border px-2 py-px font-mono text-[10px] whitespace-nowrap ${
+              noGuide ? 'border-red/40 text-red' : 'border-amber/40 text-amber'
+            }`}
+          >
+            {noGuide ? 'no guide' : `${String(u.missing.length)} missing`}
+          </span>
+          <span className="ml-auto">
+            <ScopeBadge scope={u.scope} projectSlug={u.projectSlug} />
+          </span>
+        </>
+      }
+    >
+      <div className="font-mono text-[10.5px] text-ink-faint">{u.path}</div>
+      {u.missing.length > 0 && (
+        <div className="mt-1 font-mono text-[11px] text-ink-dim">
+          missing: {u.missing.join(', ')}
+        </div>
+      )}
+      <HintLine hint={u.hint} />
+    </ExpandableRow>
+  );
+}
+
 // Plugin drift rows are flat — there is nothing to expand into, the message IS
 // the finding. Errors mean the plugin is not loaded at all; warns mean it loads
 // but is stale or came from a reclaimed cache dir.
@@ -362,6 +402,18 @@ export function InsightsTab({
           <Empty>every agent has recent telemetry mentions</Empty>
         ) : (
           insights.dead.map((d) => <DeadRow key={d.id} d={d} />)
+        )}
+      </InsightSection>
+
+      <InsightSection
+        title="Undocumented components"
+        count={insights.undocumented.length}
+        subtitle="no usable `# How to use` guide (system-docs-format.md)"
+      >
+        {insights.undocumented.length === 0 ? (
+          <Empty>every component carries a complete usage guide</Empty>
+        ) : (
+          insights.undocumented.map((u) => <UndocumentedRow key={`${u.kind}:${u.id}`} u={u} />)
         )}
       </InsightSection>
 

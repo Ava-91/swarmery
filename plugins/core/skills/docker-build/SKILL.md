@@ -3,6 +3,10 @@ name: docker-build
 description: "Use this skill when building or pushing Docker images for the project's services (the main app, the device service) to the cloud container registry. Don't use it for deploys (use deployment) or Dockerfile template editing without a build (use code-quality)."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: bcd522a1fbe6
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -243,3 +247,70 @@ Digest: N/A
 - `staging operations` (the project's `<envAlias>-operations` skill) -- **compose**: staging operations consume images from the registry for staging deploys
 - `code-standards` -- **compose**: code-standards defines the 12-factor build-once/deploy-anywhere rule that governs how the main-app image must be built
 - `gcp-cicd-auth` -- **compose**: for CI pipeline auth via Workload Identity Federation (not `gcloud auth login`)
+
+# How to use
+
+## What it does
+
+This skill builds Docker images for your services and, when you ask for it, pushes them to your cloud container registry. It handles the parts that are easy to get wrong: multi-architecture builds through buildx, tag conventions, registry authentication, and the 12-factor rule that keeps client config out of the image. It produces the image; rolling it out is somebody else's job.
+
+## When to use it
+
+- You need an image for the main app or a device/edge service built from the current commit.
+- You want a built image pushed to the container registry and verified by digest.
+- You are setting up buildx so an ARM64 image can be built for edge hardware.
+- A build is failing on build context, layer caching, or a platform mismatch and you need it diagnosed.
+
+## When not to use it
+
+- Rolling an image out to a running environment — use the `deployment` skill.
+- Editing deployment config templates or values files — also `deployment`.
+- Changing a Dockerfile without running a build — use `code-quality` for the review.
+- Pushing to a production registry from a local machine — stop and escalate instead.
+
+## How to invoke
+
+```
+Skill(skill: "core:docker-build")
+```
+
+Say which service you want built and whether it should be pushed; the skill reads the registry and region from your project config.
+
+## Inputs
+
+- `service` — which service to build, the main app or the device service — required.
+- `tag` — the image tag: a git short hash for development, semver for a release — required.
+- `push` — whether to push after a successful build — optional, defaults to `false`.
+- `IMAGE_REGISTRY` — an environment variable holding the registry URL — required. Never hardcode a cloud project ID in its place.
+
+## What you get back
+
+A short build result inlined in the reply: the service, the full image reference, the platform, whether it was pushed, and the digest if it was. A confidence label with a one-line rationale closes it. If the build fails you get the last 20 lines of build output instead. A push is a real side effect — it writes to the shared registry immediately and is not easily undone.
+
+## Worked example
+
+```
+Skill(skill: "core:docker-build")
+Build and push the device service image for the current commit.
+```
+
+The skill authenticates Docker against the registry, brings up a multi-arch buildx
+builder, builds `linux/arm64` from `Dockerfile.optimized`, pushes with the git short
+hash as the tag, then confirms the image exists in the registry. You end up with:
+
+```
+## Build Result
+Build: <device>
+Image: $IMAGE_REGISTRY/<device-image>:a1b2c3d
+Platform: linux/arm64
+Pushed: yes
+Digest: sha256:abc123def456...
+
+### Confidence: HIGH -- push verified via registry describe
+```
+
+## Related
+
+- `deployment` — use it next, once the image exists and needs to reach an environment.
+- `code-standards` — defines the build-once/deploy-anywhere rule this skill enforces.
+- `gcp-cicd-auth` — use it for pipeline authentication instead of local Docker login.

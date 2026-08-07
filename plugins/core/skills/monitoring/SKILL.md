@@ -3,6 +3,10 @@ name: monitoring
 description: "Prometheus metrics, Grafana dashboards, alert rules, ServiceMonitor wiring, and endpoint instrumentation. NOT for logs/traces (belong to observability) and NOT for Helm health probes."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 8d2277869557
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -270,3 +274,58 @@ async def process_telemetry(device_id: str, message: bytes) -> None:
 - `observability` -- structured logging, distributed tracing, log correlation. Use observability for instrumentation that produces logs or traces; use monitoring for metrics, dashboards, and alerts.
 - `monorepo-coordination` -- when monitoring changes span the app repo + deploy repo + infrastructure repo.
 - The project's deployment workflow / infra-pack skills when enabled -- Helm chart patterns (health probes, resource templates) and verifying monitoring coverage before promoting to production.
+
+# How to use
+
+## What it does
+
+This skill covers Prometheus metrics work end to end: picking the right metric type and name, instrumenting service code in TypeScript or Python, wiring the scrape path so Prometheus actually collects the series, writing alert rules that survive transient spikes, and building Grafana panels on top. It also gives you the verification steps that prove the metric exists before you call the work done.
+
+## When to use it
+
+- You are adding a counter, histogram, or gauge to a service and want the naming and label rules to be right the first time.
+- A metric is defined in code but never shows up in Prometheus, and you suspect the scrape wiring.
+- You need alert rules for a new service and want thresholds, `for:` durations, and severity labels to follow a consistent shape.
+- You are building or extending a Grafana dashboard and want golden-signal PromQL you can paste in.
+
+## When not to use it
+
+- Structured logging, OpenTelemetry spans, or log-to-trace correlation — use the `observability` skill.
+- Liveness and readiness probes in Helm charts — those belong to the deployment workflow skills.
+- Log aggregation queries against a log store — use the `observability` skill.
+- Build-time or deploy-frequency measurement — out of scope here.
+
+## How to invoke
+
+```
+Skill(skill: "core:monitoring")
+```
+
+Invoke it before you write the first metric line, then follow its six steps in order; each step ends in a checkpoint you must clear before moving on.
+
+## Inputs
+
+- **Target service** — which service to instrument — required.
+- **Metric intent** — what you want to measure (latency, throughput, error rate, saturation, or something domain-specific) — required.
+- **Alert thresholds** — your SLOs or severity levels, if you are also creating alerts — optional.
+- **Existing dashboards** — path to the Grafana JSON you want extended — optional.
+
+## What you get back
+
+Metric definitions written into the service code, a ServiceMonitor or PodMonitor manifest for the deploy repo, alert rule YAML, and Grafana panel JSON. Code output stays under 150 lines per service, dashboard JSON excluded. You also get verification evidence: a `helm lint` pass for chart changes and curl output from the metrics endpoint showing the new series.
+
+## Worked example
+
+```
+Skill(skill: "core:monitoring")
+
+"Add a histogram for order line-item processing latency in orders/line-items,
+alert when p95 goes above 500 ms."
+```
+
+You get a `Histogram` with explicit buckets and bounded labels, a ServiceMonitor pointing at the metrics path, an alert with `expr: histogram_quantile(0.95, ...) > 0.5` and a `for: 5m` guard, one Grafana latency panel, and curl output showing the new `_bucket` series on the endpoint.
+
+## Related
+
+- `observability` — reach for it when the instrumentation produces logs or traces rather than metrics.
+- `monorepo-coordination` — reach for it when the change spans the app repo, the deploy repo, and the infrastructure repo at once.

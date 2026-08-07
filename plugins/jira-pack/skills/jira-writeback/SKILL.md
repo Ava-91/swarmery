@@ -3,6 +3,10 @@ name: jira-writeback
 description: "Post the run's verdict comment (rendered from the plugins/jira-pack/templates/ template matching verdict + ticket class) and, when the verdict allows it, transition the ticket to jira.qaStatus by exact match. Idempotent via a hidden marker carrying verdict and class; the comment always precedes the transition attempt. NOT for classifying the ticket (that's jira-triage) and NOT for the board card (that's swarmery-board-card)."
 version: "0.2.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: abec8fdeeb3c
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -225,3 +229,65 @@ hosts, `<KEY>`, and `<PROJECT-KEY>` — `scripts/scan-flavor.sh` must stay
   itself.
 - `plugins/jira-pack/templates/` — the five comment templates this skill
   renders from.
+
+# How to use
+
+## What it does
+
+This skill is the only thing in the pack that writes to a ticket. You hand it a verdict and the evidence behind it, and it renders the matching comment template, posts it, and — when the verdict allows — moves the ticket to your configured QA status. It never decides the verdict itself, and it never touches the board card.
+
+## When to use it
+
+- A triage step has produced a verdict and evidence bundle, and the ticket now needs that result written back as a comment.
+- The run finished successfully and the ticket should move to the configured QA status.
+- You want a rerun on the same ticket to stay safe: an identical verdict posts nothing twice.
+- You are checking a run end to end and want the dry-run output of exactly what would be posted.
+
+## When not to use it
+
+- To decide whether a ticket is already fixed, needs a fix, or needs more information — use `jira-triage`.
+- To move the tracking card on the board after the comment lands — use `swarmery-board-card`.
+- To post the over-budget plan comment on a `too-large` ticket — use `jira-escalation`.
+- To find the QA status name or the connection details — use `jira-config` and `jira-access-preflight`.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:jira-writeback")
+```
+
+Call it once per run, after triage has finished. It is normally invoked by the task runner rather than typed by hand.
+
+## Inputs
+
+- `verdict` — one of `already-fixed`, `cannot-reproduce`, `needs-info`, `needs-fix` — required.
+- `class` — `defect` or `change` — required; it picks which `needs-fix` template renders.
+- Evidence bundle — the command, exit code, output fragment, commit or test reference, or the questions to ask — required.
+- `attemptTransition` — `yes` or `no`; `no` only for `needs-info` — required.
+- `cloudId`, ticket key, and the pinned tool prefix — required, all resolved by the preflight skill.
+- Run tag — the identifier written into the hidden idempotency marker — required.
+
+## What you get back
+
+A comment on the ticket, written in the ticket's own language, ending with a hidden marker that records the verdict and class. If no transition matching your QA status exists, the comment names every transition that does exist and the status is left alone. The comment is always written before the transition is attempted, so a failed move never leaves an unexplained status change. In dry-run mode nothing is written — you get the full rendered comment and the transition decision printed instead.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:jira-writeback")
+verdict: cannot-reproduce, class: defect, attemptTransition: yes, key: <KEY>
+
+→ reads available transitions, finds one matching the configured QA status
+→ renders comment-cannot-reproduce.md with the repro command and exit code
+→ no prior marker for this run tag, so it posts the comment
+→ then transitions <KEY> to the QA status
+```
+
+You end up with one comment carrying the evidence and a hidden marker, and the ticket sitting in QA. Rerun it with the same verdict and it reports `comment: skipped (identical verdict already posted)`.
+
+## Related
+
+- `jira-triage` — produces the verdict and evidence this skill renders.
+- `jira-escalation` — handles the `too-large` verdict, which this skill never receives.
+- `swarmery-board-card` — moves the board card once this skill has finished.
+- `jira-config` — supplies the QA status name matched here.

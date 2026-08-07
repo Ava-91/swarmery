@@ -14,6 +14,10 @@ skills:
   - keycloak
   - code-standards
   - helm-chart-expert
+docs:
+  status: reviewed
+  source_sha: 47f7fa8d36ce
+  updated: 2026-08-06
 ---
 
 # Role
@@ -169,3 +173,54 @@ The user wants to configure PKCE flow for the web portal's browser client. I sho
 - **Credential hardcoding**: secrets appearing in Helm values or docs. Use `valueFrom.secretKeyRef` or env var injection.
 - **Token endpoint degradation**: slow token responses under load. Check Keycloak pod CPU/memory limits and database connection pool size.
 - **Auth.js version mismatch**: Auth.js API changes between versions. Pin the version in `package.json` and test after every upgrade.
+
+# How to use
+
+## What it does
+
+This agent handles identity and access management for a Keycloak deployment. It sets up realms and OIDC clients, wires the browser app to Keycloak through Auth.js in a Next.js frontend, adds service-to-service client-credentials flows, and hardens the install for production. It edits Helm values, Auth.js config, and the realm bootstrap script, then validates the result against measurable limits: token endpoint p95 under 500ms, pod ready within 120s, and no hardcoded credentials.
+
+## When to use it
+
+- You need a new OIDC client, realm setting, or PKCE flow configured for a browser app.
+- A backend service needs its own client-credentials grant to call a protected API.
+- Token refresh, session cookies, or login flows are failing and you need the auth path diagnosed.
+- You are about to expose Keycloak publicly and want the hardening checklist applied first.
+
+## When not to use it
+
+- Helm chart mechanics or the database behind Keycloak — use `@infra-pack:helm-deployment`.
+- Wiring auth secrets into CI pipelines — use `@infra-pack:gitlab-ci-specialist`.
+- Security review beyond Keycloak itself — use `@core:security-auditor`.
+
+## How to invoke
+
+```
+@infra-pack:keycloak-specialist <what you need configured>
+```
+
+Address it directly and say which environment you mean. Production changes reach a human approval gate before the ingress-enabled stage is applied.
+
+## Inputs
+
+- **Requirement** — realm config, client setup, integration change, or hardening — required.
+- **Target environment** — the staging alias from your project config, or production — required.
+- **`Reference:` step file path** — a plan step the completion report should attach to — optional.
+
+## What you get back
+
+Edited Keycloak Helm values, Auth.js provider config, and/or the realm setup script, plus a completion report under 30 lines. The report lists each changed file, the validation numbers (token endpoint response time, pod readiness time, auth flow pass/fail), the secret injection method used, and which deployment stage was applied. Untested auth paths are marked `[LOW-CONFIDENCE]` rather than claimed as verified.
+
+## Worked example
+
+```
+@infra-pack:keycloak-specialist configure PKCE flow for the browser client on <envAlias>
+```
+
+The agent reads the current Helm values and `apps/<mainApp>/src/lib/auth.ts` in parallel, enables PKCE on the browser client, redeploys, waits for the pod to report ready, and runs a login round-trip. You end up with the edited files and a report reading something like `token endpoint 180ms | pod ready 45s | auth flow pass`, with secrets confirmed as coming from Kubernetes secret references. If the flow had failed after ingress was enabled, the agent would disable ingress, document the failure, and escalate instead of leaving a half-configured cluster.
+
+## Related
+
+- `@infra-pack:helm-deployment` — when the work is chart deployment or the Keycloak database, not auth config.
+- `@infra-pack:gitlab-ci-specialist` — when auth credentials need to reach a pipeline.
+- `@core:security-auditor` — when you want a broad security audit rather than Keycloak hardening.

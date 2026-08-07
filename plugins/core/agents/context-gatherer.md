@@ -12,6 +12,10 @@ owner: platform-team
 skills:
   - context-optimization
   - code-search
+docs:
+  status: reviewed
+  source_sha: af0a2b147231
+  updated: 2026-08-06
 ---
 
 # Role
@@ -165,3 +169,65 @@ Context gathered: ~18K tokens of 40K budget used. 6 queries run (minimum 5 for M
 | Budget exceeded mid-query | Token estimate > 40K | Stop new queries; summarize what was found; note incomplete sections |
 | maxTurns exhausted | Turn counter at limit | Write partial artifact with filled sections; flag missing sections |
 | Dependency map file missing | File read error | Skip step 2; proceed with broader queries; note in artifact |
+
+# How to use
+
+## What it does
+
+This agent reads your codebase and writes down what a planner needs to know before touching it. It searches with both semantic and exact-match tools, then produces one markdown artifact listing existing patterns, dependencies, the files to modify, the files to create, test patterns, and configuration — every claim carried by a `file:line` citation. It never edits source code and never recommends changes.
+
+## When to use it
+
+- You are about to plan a feature and need the existing patterns, entry points, and call sites collected in one place first.
+- An orchestrator is running Phase 2 and wants context gathering to happen in parallel with research and downstream analysis.
+- You want a written, citable snapshot of how a subsystem works today, without opinions about how it should change.
+- A task spans several repos and you need one artifact instead of scattered search output.
+
+## When not to use it
+
+- You want a recommendation or a design — that is Phase 3 work; reach for a planner agent.
+- You want code changed, refactored, or tested — reach for an implementation or test agent.
+- You only need to find one file or one symbol — a direct Grep or Glob is faster.
+- You need to know what *breaks* if you change something — reach for the downstream analyzer.
+
+## How to invoke
+
+```
+@core:context-gatherer collect context for <feature>
+Feature: <one-line description>
+Scope: backend | frontend | device | full-stack
+Related entities: <domain nouns>
+```
+
+Call it directly, or let an orchestrator dispatch it alongside the other Phase 2 agents.
+
+## Inputs
+
+- `feature` — a brief description of the feature or task — required.
+- `scope` — one of `backend`, `frontend`, `device`, `full-stack` — required; it decides where the searches go.
+- `related_entities` — the domain nouns involved, taken from the project's own vocabulary — required.
+- `task_id` — the workspace task identifier `yyyy-mm-dd-short-slug` — optional; without it the agent derives the path from the task start date.
+
+## What you get back
+
+A markdown artifact at `.../working/{YYYY}/{MM}/{DD}/{slug}/phases/02-context.md`, capped at 400 lines, with a fixed section order: Existing Patterns, Dependencies, Files to Modify, Files to Create, Test Patterns, Configuration, Context Budget. Uncertain findings are prefixed `[LOW-CONFIDENCE]` with a reason. The final chat message names the artifact path, its line count, the tokens spent against a 40K budget, and the query count. If ten queries turn up nothing relevant, you get an `INCONCLUSIVE` verdict listing what was tried.
+
+## Worked example
+
+```
+@core:context-gatherer collect context for order line-item editing
+Feature: Add line-item editing to the order screen
+Scope: full-stack
+Related entities: Order, LineItem
+
+→ Context artifact written: .../working/2026/06/10/line-item-editing/phases/02-context.md (87 lines)
+  Context gathered: ~18K tokens of 40K budget used. 6 queries run (minimum 5 for Medium).
+```
+
+The agent classified the task as Medium, wrote the section skeleton first, checked the dependency map and architecture map for entry points, then ran six parallel searches. You end up with an 87-line artifact a planner can read instead of re-exploring the repo.
+
+## Related
+
+- `@core:downstream-analyzer` — when you need the blast radius of a change rather than its starting context.
+- `@core:tech-researcher` — when the question is which library or pattern to adopt, not what the code already does.
+- `@core:task-planner` — the downstream consumer; run it once the context artifact exists.

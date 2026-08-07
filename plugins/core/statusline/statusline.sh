@@ -139,6 +139,55 @@ TRANSCRIPT="$(jqr '.transcript_path // empty')"
 [ -z "$CWD" ] && CWD="$PWD"
 [ -z "$PROJECT_DIR" ] && PROJECT_DIR="$CWD"
 
+# ----- account chip: під яким Claude-акаунтом іде ЦЯ сесія --------------------
+# Не звертається до демона; не додає нового jq-виклику ($TRANSCRIPT уже прочитано
+# вище). Фолбек, коли транскрипта немає (стара CC або hooks-канал без нього) —
+# $CLAUDE_CONFIG_DIR, той самий env, яким CC сама вибирає акаунт.
+# account_key_from_config_dir <configDir> -> ключ акаунта.
+# Bash-порт ingest.AccountFor (internal/ingest/account.go:33-50), спеціалізований
+# на вже відомому config dir (а не на originRoot="<configDir>/projects" — це той
+# самий basename: AccountFor бере Base(Dir(Clean(root))), що для root=<dir>/projects
+# дає Base(<dir>)). Розрахований на РЕАЛЬНІ входи ($TRANSCRIPT, $CLAUDE_CONFIG_DIR) —
+# без Clean-нормалізації ".."; справжній transcript_path такого не містить.
+# БЕЗ ФОРКІВ: statusline рендериться на кожному ході, тож basename/dirname як
+# зовнішні бінарники тут — регресія на гарячому шляху. Уся арифметика — на
+# розкритті параметрів bash (${var##*/}, ${var%/*}), нуль підпроцесів.
+account_key_from_config_dir() {
+  local dir="${1:-}" name
+  [ -z "$dir" ] && { printf 'default'; return; }
+  dir="${dir%/}"          # зняти хвостовий слеш ("/" → "")
+  name="${dir##*/}"       # basename без форку
+  case "$name" in
+    ''|'.'|'/') printf 'default'; return ;;
+  esac
+  name="${name#.claude}"
+  while :; do
+    case "$name" in
+      -*) name="${name#-}" ;;
+      .*) name="${name#.}" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "${name:-default}"
+}
+# transcript_config_dir <transcript_path> -> <configDir>, або нічого + код 1.
+# Теж без форків: три ${t%/*} замість трьох вкладених dirname. Відмінність від
+# dirname, яку треба знати: ${t%/*} на рядку БЕЗ слеша повертає рядок незмінним
+# (dirname повернув би "."), тому спершу — гард на абсолютний шлях.
+transcript_config_dir() {
+  local t="${1:-}"
+  case "$t" in /*/*/*/*) ;; *) return 1 ;; esac   # потрібні щонайменше 3 хопи
+  t="${t%/*}"   # -> <configDir>/projects/<slug>
+  t="${t%/*}"   # -> <configDir>/projects
+  t="${t%/*}"   # -> <configDir>
+  printf '%s' "$t"
+}
+
+ACCT_CFG_DIR=""
+[ -n "$TRANSCRIPT" ] && ACCT_CFG_DIR="$(transcript_config_dir "$TRANSCRIPT")"
+[ -z "$ACCT_CFG_DIR" ] && ACCT_CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+ACCOUNT_KEY="$(account_key_from_config_dir "$ACCT_CFG_DIR")"
+
 # ----- palette (256-color) -------------------------------------------------
 C_RST=$'\033[0m'; C_B=$'\033[1m'
 BLUE=$'\033[38;5;39m'; CYAN=$'\033[38;5;44m'; TEAL=$'\033[38;5;43m'
@@ -364,6 +413,8 @@ BADGES=""
 [ -n "$EFFORT" ]       && BADGES="${BADGES} ${GREY}·${C_RST} ${ORANGE}▲${EFFORT}${C_RST}"
 [ "$THINKING" = "true" ] && BADGES="${BADGES} ${PURPLE}🧠${C_RST}"
 [ "$FAST" = "true" ]     && BADGES="${BADGES} ${YELLOW}⚡fast${C_RST}"
+[ -n "$ACCOUNT_KEY" ] && [ "$ACCOUNT_KEY" != "default" ] && \
+  BADGES="${BADGES} ${GREY}·${C_RST} ${CYAN}🪪${ACCOUNT_KEY}${C_RST}"
 NAME_PART=""
 # shellcheck disable=SC1111  # intentional typographic quotes around the session name
 [ -n "$SESSION_NAME" ] && NAME_PART="  ${GREY}“${SESSION_NAME}”${C_RST}"

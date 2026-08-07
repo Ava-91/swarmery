@@ -24,6 +24,8 @@ import { fmtAgo } from '../../lib/format';
 import { Empty, ErrorBox, Loading } from '../../components/ui';
 import { Sparkline } from '../../components/Sparkline';
 import { SystemItemPanel } from '../system/ItemDetail';
+import { DocsPanel } from '../system/DocsPanel';
+import { guidePath } from '../system/docsSection';
 
 /* ----- shared atoms ----- */
 
@@ -49,7 +51,7 @@ function ContentBlock({ content }: { content: string }): JSX.Element {
 
 /* ================= Skill ================= */
 
-type SkillTab = 'overview' | 'usage' | 'definition';
+type SkillTab = 'overview' | 'docs' | 'usage' | 'definition';
 
 export function SkillProfile({
   id,
@@ -76,6 +78,25 @@ export function SkillProfile({
       .catch((e: unknown) => setError(String(e)));
   }, [id, projectId]);
   useEffect(load, [load]);
+
+  // Docs tab: the skill's `# How to use` guide. Same panel, same registry id,
+  // 'docs' variant — mirrors AgentHub.tsx's docs branch. The hub's own tab bar
+  // is the section switcher here, so the panel renders the guide alone.
+  if (tab === 'docs') {
+    return (
+      <SystemItemPanel
+        kind="skills"
+        id={id}
+        refreshKey={defRefresh}
+        projectNames={projectNames}
+        onClose={() => undefined}
+        onMutated={onDefinitionMutated}
+        onDeleted={onDefinitionMutated}
+        onReadonly={() => undefined}
+        variant="docs"
+      />
+    );
+  }
 
   // Definition tab: reuse the existing versioned System editor verbatim (skills
   // kind). It fetches its own detail by the same registry id, so it works
@@ -238,7 +259,7 @@ export function HookProfile({ id }: { id: number }): JSX.Element {
 
 /* ================= Command ================= */
 
-type CommandTab = 'overview' | 'content';
+type CommandTab = 'overview' | 'docs' | 'content';
 
 export function CommandProfile({ id, tab, projectId }: { id: number; tab: CommandTab; projectId: string | null }): JSX.Element {
   const [hub, setHub] = useState<CommandHub | null>(null);
@@ -254,6 +275,14 @@ export function CommandProfile({ id, tab, projectId }: { id: number; tab: Comman
 
   if (error !== null) return <ErrorBox message={error} onRetry={load} />;
   if (hub === null) return <Loading label="command…" />;
+
+  // Docs tab: the command's `# How to use` guide — commands have no editor, so
+  // this reads straight from the hub bundle (unlike skills/agents, no
+  // SystemItemPanel indirection is needed). Name matches CommandDetail.tsx's
+  // `/${cmd.name}` display convention.
+  if (tab === 'docs') {
+    return <DocsPanel docs={hub.docs} path={guidePath(hub.path, 'commands')} name={`/${hub.name}`} />;
+  }
 
   if (tab === 'content') return <ContentBlock content={hub.content} />;
 

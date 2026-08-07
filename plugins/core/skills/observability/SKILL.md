@@ -3,6 +3,10 @@ name: observability
 description: "Structured logging and OpenTelemetry distributed tracing, incl. log-trace-metric correlation. NOT for metrics/dashboards/alerts (belong to monitoring) and NOT for Helm health probes."
 version: "1.0.0"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: 3c7676ebd024
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -291,3 +295,57 @@ export async function POST(
 - `code-standards` -- coding standards including type safety for logger parameters.
 - `api-integration` -- API route handler patterns where logging is typically added.
 - The project's deployment workflow / infra-pack skills when enabled -- deploying OTel collectors and log shipping sidecars.
+
+# How to use
+
+## What it does
+
+This skill helps you add structured logging and OpenTelemetry tracing to a service, and shows you how to follow one request across services. It covers the code-level side: what to log, which fields every log line carries, how to name spans, how to pass trace context over a service boundary, and how to jump from a slow trace to the log lines that explain it.
+
+## When to use it
+
+- You are adding logging to a new service and want a JSON format that a log backend can actually parse.
+- You are instrumenting code with OpenTelemetry spans, or a trace breaks in the middle and you need context propagation.
+- You have a slow request and want to go from trace ID to the log lines for that same request.
+- You are reviewing existing log statements for leaked personal data, tokens, or secrets.
+
+## When not to use it
+
+- Counters, histograms, dashboards, or alert rules — use the `monitoring` skill.
+- Liveness and readiness probes in deployment charts — that belongs to your deployment workflow.
+- Log shipping and routing config (collectors, agents, backends) — this skill stops at application code.
+- Build and deploy pipeline metrics — out of scope here.
+
+## How to invoke
+
+```
+Skill(skill: "core:observability")
+```
+
+Invoke it before you write instrumentation code, then tell it which service you are touching and whether you want logging, tracing, or correlation.
+
+## Inputs
+
+- **Target service** — which service you are instrumenting, for example `apps/<mainApp>` or an edge service — required.
+- **Instrumentation goal** — structured logging, distributed tracing, or correlation for debugging — required.
+- **Existing logging setup** — the logger you already have, so the skill extends it instead of replacing it — optional.
+
+## What you get back
+
+You get logger wrapper code (under 60 lines), tracer setup and span instrumentation (under 40 lines), a short correlation guide describing how to find logs for a given trace ID, and your source files edited with the instrumentation in place. Every deliverable is checked against a self-check list covering required log fields, secret leakage, span naming, and log level for high-frequency events.
+
+## Worked example
+
+```
+Skill(skill: "core:observability")
+Add structured logging to the order submit route in apps/<mainApp>.
+```
+
+The skill defines the JSON log shape (`timestamp`, `level`, `service`, `message`, plus `trace_id` and domain fields), writes a typed `logger` wrapper, and adds `logger.info` / `logger.warn` calls to the `orders/line-items` route — request received, not found, submitted. You end up with parseable logs carrying an order ID and no personal data, and a trace ID you can paste into log search.
+
+## Related
+
+- `monitoring` — reach for it when the work starts from a metric, dashboard, or alert rather than a log line.
+- `code-standards` — type safety for logger parameters and general coding conventions.
+- `api-integration` — route handler patterns, where log statements usually land.
+- `troubleshooting` — diagnosing a live failure rather than instrumenting code ahead of time.

@@ -5,6 +5,10 @@ version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Grep, Glob, Bash
 disable-model-invocation: true
+docs:
+  status: reviewed
+  source_sha: 52e55cb2efc6
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -288,3 +292,69 @@ QUALITY-SCORE: 50/100 | ERRORS: 3 | WARNINGS: 0
 - `deployment` -- owns deployment config quality checks (required-values validation, resource limits, health probes, security context); route any config-quality request there
 - `api-contract` -- defer to this skill for field-level alignment checks; compose when a quality audit of a route handler reveals potential contract mismatches
 - `code-search` -- defer to this skill when the audit scope needs to be determined (finding which files to audit)
+
+# How to use
+
+## What it does
+
+This skill audits TypeScript or Python source for **structural** problems: functions that grew too long, blocks nested too deep, duplicated code, and project-specific anti-patterns. It gives you a 0–100 score per category, an overall score, and every finding with a `file:line` citation and a suggested fix — so "this file feels messy" becomes a list you can act on.
+
+## When to use it
+
+- You want a file or module checked for function length, complexity, or nesting depth.
+- A pull request needs a structural quality assessment before review.
+- You are running a periodic quality audit over a repository or a module.
+- You just refactored something and want to confirm the metrics actually improved.
+
+## When not to use it
+
+- Checking naming conventions, `any` types, or import ordering — use `code-standards`.
+- Verifying that schema fields, validators, and route handlers agree — use `api-contract`.
+- Reviewing deployment YAML or manifests — use `deployment`.
+- Just finding or listing files with no audit intent — use `code-search`.
+
+## How to invoke
+
+```
+Skill(skill: "core:code-quality")
+```
+
+Give it a scope path and the repo type; it reads the files itself and returns the report in its reply.
+
+## Inputs
+
+- `scope` — the file, directory, or repo path to audit — required.
+- `repo_type` — `"typescript"` or `"python"`, which picks the threshold set — required.
+
+## What you get back
+
+A Markdown report, no files written. The first line is machine-readable — `QUALITY-SCORE: {overall}/100 | ERRORS: {n} | WARNINGS: {n}` — so a CI gate or a downstream agent can parse it. Below that: a per-category score table, numbered error- and warning-level issues with `file:line`, and an action plan ordered by effort. A single-file audit stays under 200 lines, a directory audit under 500. The skill audits only; it will not edit your code.
+
+## Worked example
+
+```
+Skill(skill: "core:code-quality")
+scope: apps/<mainApp>/src/app/api/orders/route.ts
+repo_type: typescript
+```
+
+It reads the route handler, applies the TypeScript thresholds, and returns:
+
+```
+QUALITY-SCORE: 68/100 | ERRORS: 2 | WARNINGS: 2
+
+### Error-Level Issues (2)
+1. `route.ts:15` -- GET() is 62 lines; extract query logic to service layer
+2. `route.ts:1` -- missing `export const dynamic = 'force-dynamic'`
+
+### Action Plan
+1. [High effort] Extract GET() query logic into a service module
+2. [Low effort] Add the `force-dynamic` export -- one-line fix
+```
+
+## Related
+
+- `code-standards` — reach for it when the question is "does this follow our conventions?" rather than "is this too complex?"
+- `api-contract` — use it when a route handler's fields may not match the schema.
+- `deployment` — owns quality checks on deployment config and manifests.
+- `code-search` — run it first when you still need to work out which files to audit.

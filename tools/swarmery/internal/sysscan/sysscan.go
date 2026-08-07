@@ -67,6 +67,7 @@ type Config struct {
 	// SWARMERY_LINT_* env override > the package default (lint.go).
 	MinSkillDescription int // skill_short_description: min description runes (default 40; env SWARMERY_LINT_MIN_SKILL_DESC)
 	MaxClaudeMDTokens   int // claude_md_oversized: max estimated tokens, len/4 (default 2500; env SWARMERY_LINT_MAX_CLAUDE_MD_TOKENS)
+	MinDocsSection      int // docs_incomplete: min runes of body per REQUIRED guide subsection (default 40; env SWARMERY_LINT_MIN_DOCS_SECTION)
 }
 
 func (c Config) withDefaults() Config {
@@ -81,6 +82,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxClaudeMDTokens <= 0 {
 		c.MaxClaudeMDTokens = envInt(EnvMaxClaudeMDTokens, DefaultMaxClaudeMDTokens)
+	}
+	if c.MinDocsSection <= 0 {
+		// Same resolution the API's docs surface uses (MinDocsSection, docs.go),
+		// so the `missing` list the UI renders can never disagree with the
+		// coverage findings the linter writes under one SWARMERY_LINT_* override.
+		c.MinDocsSection = envInt(EnvMinDocsSection, DefaultMinDocsSection)
 	}
 	return c
 }

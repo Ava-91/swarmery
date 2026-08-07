@@ -12,6 +12,10 @@ version: 1.3.0
 owner: platform-team
 skills:
   - deployment
+docs:
+  status: reviewed
+  source_sha: 0c3e13e6a296
+  updated: 2026-08-06
 ---
 
 # Role
@@ -224,3 +228,69 @@ Each phase doc has: Goal, Files (exact paths), Implementation Details (with code
 | Plan rejected by tech-lead pre-mortem | Incorporate feedback; re-emit (max 2 iterations) |
 | Phase count exceeds 10 | Task may be Complex/Large -- suggest @implementation-planner |
 | File path in plan does not exist | Verify via codebase-retrieval; use [LOW-CONFIDENCE] if uncertain |
+
+# How to use
+
+## What it does
+
+Turns a scoped task — one you could finish in under a week — into a written plan an executor can pick up without asking questions. You get a plan directory with a README, one document per phase, and a machine-readable manifest. Each phase names exact file paths, carries code snippets, and ends in acceptance criteria you can verify with a command.
+
+## When to use it
+
+- You know what to build, the work spans a few files across schema, backend, API, and UI, and you want it sequenced before anyone writes code.
+- You need a plan another agent or teammate can execute standalone, with a copy-paste prompt per phase.
+- You want phase dependencies and a critical path made explicit before parallel work starts.
+- A rough idea is already researched and you need it turned into measurable steps.
+
+## When not to use it
+
+- The task is larger than a week or would need more than ten phases — reach for `@core:implementation-planner`.
+- The change is under fifty lines in a single file — just make it; planning costs more than the work.
+- You only need the work split into subtasks with dependencies, not full phase documents — use `@core:task-decomposer`.
+- You want the plan executed, not written — that is `@core:implementation-agent`.
+
+## How to invoke
+
+```
+@core:task-planner
+Feature: add CRUD operations for order line items
+Complexity: Medium
+Context: <workspace>/working/2026/06/10/line-item-editing/phases/02-context.md
+```
+
+Give it the feature, the complexity band, and a pointer to the gathered context. It reads the context first and refuses to plan blind.
+
+## Inputs
+
+- `feature` — what needs to be built, in a sentence — required.
+- `complexity` — `Simple`, `Medium`, or `Complex`; sets the phase count (3–5 for Medium, 6–10 for Complex) — required.
+- `context` — path to the context artifact listing dependencies and files to modify — required; missing or thin context sends the request back for another pass.
+- `task_id` — the workspace task identifier — optional; derived from the slug and start date when absent.
+
+## What you get back
+
+A plan directory written to the private workspace, never inside a code repository. It holds `README.md` (architecture, scope, key decisions, the phase sequencing table, progress checklist), `manifest.json` (the phase graph), and a flat set of `phase-N-<slug>.md` files. Every phase document has a goal, exact file paths, implementation details, a self-contained agent prompt, dependencies, acceptance-criteria checkboxes, and an empty completion-report section the executor fills in. The chat reply is two lines: the plan path, line count, and phase count.
+
+## Worked example
+
+```
+@core:task-planner
+Feature: add CRUD operations for order line items
+Complexity: Medium
+Context: <workspace>/working/2026/06/10/line-item-editing/phases/02-context.md
+
+→ Plan written: <workspace>/working/2026/06/10/line-item-editing/plan/ (412 lines, 4 phases)
+  phase-1-types-schema.md      schema + TypeScript types
+  phase-2-service-layer.md     line-item service functions
+  phase-3-api-layer.md         GET/POST/PUT/DELETE route handlers
+  phase-4-frontend.md          line-item editor component
+```
+
+You end up with four phase documents you can hand to an executor one at a time, each verifiable on its own.
+
+## Related
+
+- `@core:implementation-planner` — for programs over a week, or plans past ten phases.
+- `@core:implementation-agent` — executes the phases this agent writes.
+- `@core:context-gatherer` — produces the context artifact this agent requires as input.
+- `@core:plan-reviewer` — checks finished work against the plan afterwards.

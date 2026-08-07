@@ -11,6 +11,10 @@ version: 1.0.0
 owner: platform-team
 skills:
   - code-standards
+docs:
+  status: reviewed
+  source_sha: eec1cddd7b4c
+  updated: 2026-08-06
 ---
 
 # Role
@@ -192,3 +196,62 @@ Phase files: 6/8 created (04-implementation.md: N/A, 05-quality.md: N/A)
 - **Script failure**: `agent-work.sh` not found or fails -- mitigated by manual `mkdir -p` fallback with error logged
 - **Sensitive data leak**: API keys or tokens copied into documentation -- prevented by explicit pattern scan before saving
 - **Overwritten upstream artifacts**: existing phase files replaced -- prevented by read-first-then-incorporate rule
+
+# How to use
+
+## What it does
+
+This agent turns a finished task into a durable paper trail. It writes the eight phase files, checks that the task card and final report exist, updates the workspace indexes, and — for orchestrated tasks — a manifest whose line counts come from `git diff --stat` rather than guesswork. Where the history is too thin to support a phase, it writes `N/A -- insufficient history` instead of inventing content.
+
+## When to use it
+
+- A task just finished (or failed) and you want the workspace record written before the session ends.
+- An orchestrating agent has structured context — `task_id`, `file_list`, `phase_artifacts_path` — ready to hand off.
+- Upstream agents already dropped some phase artifacts and you need the rest filled in without those being overwritten.
+- A task was abandoned and you still want it on record with `"outcome": "failed"`.
+
+## When not to use it
+
+- Nothing changed on disk this session — a read-only browse should not be documented at all.
+- You want the polished final report rather than the phase set — reach for `@core:summary-generator`.
+- You want lessons learned and improvement recommendations — reach for `@core:retrospective-agent`.
+- You need someone to detect completion and assemble the context payload first — that is `@core:post-task-completion`.
+
+## How to invoke
+
+```
+@core:task-documenter
+```
+
+Call it once the work is done. Pass structured context if you have it; otherwise the agent falls back to conversation history plus `git diff --stat`.
+
+## Inputs
+
+- `task_id` — the task identifier, `yyyy-mm-dd-short-slug` — optional but preferred.
+- `file_list` — files created, modified, or deleted — optional but preferred.
+- `phase_artifacts_path` — directory of phase files written by upstream agents — optional.
+
+Without these, the agent extracts what it can from the conversation and the diff.
+
+## What you get back
+
+Phase files under the task's `phases/` directory, a verified `README.md` task card (created if missing), a `SUMMARY.md` existence check, updated `index.json` and `metrics.json`, and a manifest for orchestrated tasks. The final message names the task, the location, how many phase files were written, which are `N/A` and why, and the source of every metric.
+
+## Worked example
+
+```
+@core:task-documenter document this task
+  task_id: 2026-05-24-add-order-filter
+  file_list: [apps/<mainApp>/src/app/orders/page.tsx, apps/<mainApp>/src/components/OrderFilter.tsx]
+
+→ Task documented: 2026-05-24-add-order-filter
+  Phase files: 8/8 created (02-context.md: N/A -- insufficient history)
+  Manifest: files_modified=2, lines_added=47, lines_removed=12 (source: git diff)
+  Indexes: index.json and metrics.json updated
+```
+
+## Related
+
+- `@core:post-task-completion` — detects that a task finished and builds the payload this agent consumes.
+- `@core:summary-generator` — writes the canonical `SUMMARY.md` final report with quantified metrics.
+- `@core:retrospective-agent` — produces the retrospective artifact when you want lessons rather than a record.

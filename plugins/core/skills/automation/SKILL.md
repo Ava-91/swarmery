@@ -4,6 +4,10 @@ description: "Convert an operational runbook (pod restarts, cache flushes, scali
 version: "1.0.0"
 owner: "swarmery-core"
 allowed-tools: Read, Write, Bash
+docs:
+  status: reviewed
+  source_sha: d77d5330fbd0
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -278,3 +282,60 @@ Weekly savings: (X - Y) * Z minutes
 - `code-standards` -- defer to for script quality and style conventions
 - `api-integration` -- compose when a runbook step involves calling the main app's API endpoints
 - `code-quality` -- defer to for complexity and maintainability analysis of automation scripts
+
+# How to use
+
+## What it does
+
+This skill turns a manual operations runbook — restart a deployment, flush a cache, scale a service, rotate a key — into a parameterized, idempotent script you can review in a pull request before anyone runs it against a cluster. It can also produce a chaos experiment with hard guards. Every script it writes takes its namespace and target as parameters, supports `--dry-run`, logs with timestamps, and carries a rollback command.
+
+## When to use it
+
+- A manual runbook is executed more than twice a week and the steps are stable enough to write down.
+- The task restarts pods, flushes caches, scales deployments, or rotates secrets.
+- You want a chaos experiment (pod kill, network partition, resource exhaustion) that refuses to run outside a non-production namespace.
+- Someone asks how much toil a given operational area costs and what automating it would save.
+
+## When not to use it
+
+- Writing or changing CI/CD pipelines and deployment manifests — use `deployment`.
+- Debugging a live incident right now — use `troubleshooting`.
+- Adding alert rules or dashboards — use `monitoring`.
+- Writing application code for your services — use the matching application skill.
+
+## How to invoke
+
+```
+Skill(skill: "core:automation")
+```
+
+Invoke it with the runbook description in the same request. If the steps are ambiguous or contradictory, the skill stops and asks you before writing anything.
+
+## Inputs
+
+- `runbook_name` — the runbook to automate, e.g. `restart-api-gateway` — required.
+- `target_namespace` — the namespace to act on, e.g. `<envAlias>` — required.
+- `target_deployment` — the deployment name — required.
+- `automation_level` — `script`, `self-healing`, or `chaos` — required.
+
+## What you get back
+
+A script saved to `devops/scripts/<runbook-name>.sh` (or `.py`) — under 100 lines for a script, under 200 for a self-healing module — plus the dry-run output from actually executing it, the rollback command for each destructive step, and an estimate of time saved per week. Chaos scripts additionally require `ALLOW_CHAOS=true` and exit with an error on any namespace containing `prod`.
+
+## Worked example
+
+```
+Skill(skill: "core:automation")
+
+"Automate our restart runbook: check gateway logs, restart the
+ deployment, verify it comes back. Namespace orders, deployment
+ line-items-api, automation_level: script."
+```
+
+You get `devops/scripts/restart-line-items-api.sh`: `set -euo pipefail`, `--namespace` and `--deployment` as required flags, a `--dry-run` flag that exits before any change, a client-side dry run and a `y/N` prompt ahead of the restart, `kubectl rollout status` with a timeout, and `kubectl rollout undo …` documented as the rollback. The reply includes the dry-run transcript so you can see what it would have done.
+
+## Related
+
+- `code-standards` — prefer it for style and quality review of the script once it exists.
+- `code-quality` — prefer it for complexity and maintainability analysis of automation code.
+- `api-integration` — compose with it when a runbook step calls your application's API.

@@ -3,6 +3,10 @@ name: gitops-promotion
 description: "Use this skill when the project uses a pull-based GitOps controller (Wave B) for cluster reconciliation via a version-pinning repo's desired state. Don't use it during Wave A imperative GitLab deploys (use gitlab-ci-cd) or for CI pipeline structure (use gitlab-ci-cd)."
 version: "1.0.0"
 owner: "swarmery-infra"
+docs:
+  status: reviewed
+  source_sha: eada1ac3d745
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -232,3 +236,58 @@ Rollback steps:
 - `gcp-cicd-auth` -- **compose**: GCP auth required to push images to the registry
 - `helm-chart-expert` -- **defer**: for Helm chart template authoring and values configuration
 - `deployment` -- **defer**: for end-to-end deploy orchestration in Wave A
+
+# How to use
+
+## What it does
+
+This skill governs the promotion flow for a pull-based GitOps setup, where a controller (Flux v2 or ArgoCD) reconciles the cluster from desired state stored in a version-pinning repo. It tells you how to move an image digest from candidate to current, how to roll back through Git, and where the line sits between imperative CI deploys and GitOps reconciliation.
+
+## When to use it
+
+- You need to promote a verified candidate digest to `current` in the version-pinning repo.
+- A deployment failed and you want to roll back by pointing desired state at the previous digest.
+- You are auditing an existing promotion flow for mutable tags, missing verify gates, or direct-apply leaks.
+- You are unsure whether a deployment task belongs to the imperative model or the GitOps model.
+
+## When not to use it
+
+- No GitOps controller is deployed in the target cluster — use `gitlab-ci-cd` for the imperative path.
+- The question is about CI pipeline structure (stages, rules, artifacts) — use `gitlab-ci-cd`, which still owns build, scan, and publish under GitOps.
+- You are authoring Helm chart templates or values — use `helm-chart-expert`.
+- You need cloud authentication for pushing images or reading secrets — use `gcp-cicd-auth`.
+
+## How to invoke
+
+```
+Skill(skill: "infra-pack:gitops-promotion")
+```
+
+Invoke it before touching any desired-state file, then supply the action and environment in your request.
+
+## Inputs
+
+- `action` — `promote`, `rollback`, or `review` — required.
+- `environment` — the target environment, such as `staging` or `<envAlias>` — required.
+- `digest` — a specific image digest for promote or rollback — optional.
+
+## What you get back
+
+A promotion report showing wave status, the controller in use, the current candidate/current/previous digests as a table, an eight-item promotion checklist, and a confidence label. For `promote` and `rollback` you also get a proposed edit to the desired-state file — shown as a diff for your confirmation first, because a merged change triggers real cluster reconciliation.
+
+## Worked example
+
+```
+Skill(skill: "infra-pack:gitops-promotion")
+
+"Promote the candidate digest for orders/line-items to staging."
+```
+
+The skill reads the desired-state file, confirms the candidate was built by CI and that the controller already reconciled it, checks that the verification job passed and that `helm diff` ran clean, then shows you the diff: `candidate` cleared, the old `current` moved to `previous`, and the candidate digest written as the new `current`. After you confirm, the file is edited and committed as `chore(versions): promote orders/line-items sha256:a1b2c3 to staging current`.
+
+## Related
+
+- `gitlab-ci-cd` — composes with this skill; owns build, scan, publish, and verify, and fully owns the imperative deploy path.
+- `helm-chart-expert` — prefer it for chart template and values work.
+- `gcp-cicd-auth` — prefer it for registry and secret authentication.
+- `deployment` — prefer it for end-to-end orchestration of an imperative deploy.

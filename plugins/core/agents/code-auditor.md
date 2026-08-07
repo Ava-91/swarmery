@@ -15,6 +15,10 @@ skills:
   - code-standards
   - code-quality
   - html-reporting
+docs:
+  status: reviewed
+  source_sha: 75a7b3ff0e79
+  updated: 2026-08-06
 ---
 
 # Role
@@ -264,3 +268,59 @@ AUDIT COMPLETE | Score: 4/10 | P0 Stop-bleed: 3 | P1 Safety-net: 5 | P2 Debt: 6 
 | Missing context | Empty findings list | Run codebase-retrieval before detection |
 | Artifact collision | Two Phase 5 agents write to same file | Use distinct file name: 05-audit.html |
 | AI-generated code regression | Behavioral changes masked by passing types | Prioritize: behavioral regressions, security assumptions, silent failures, unnecessary complexity |
+
+# How to use
+
+## What it does
+
+This agent audits a running system in risk order and hands you a fix list you can actually work through. It looks for fires first — leaked secrets, exposed surfaces, broken ownership checks, missing backups — then whether the team can deploy and roll back safely, and only then reads code, and even then by tracing a few critical flows rather than everything. It never edits files; it reports.
+
+## When to use it
+
+- You inherited a system nobody can explain and need to know what state it is in.
+- You want a prioritized remediation backlog before committing to feature work.
+- You are running a quality gate on a feature or repo and want findings tiered by real impact, not style.
+- You need a single health number plus process changes that stop the same debt coming back.
+
+## When not to use it
+
+- You need a deep OWASP or STRIDE pass — reach for `@core:security-auditor`.
+- You need backups, SLOs, or capacity depth — reach for `@core:sre-orchestrator`.
+- You want the fixes applied, not listed — hand the backlog to `@core:implementation-agent`, `@core:performance-optimizer`, or `@core:test-writer`.
+- You want a product-portfolio and business-thesis review — reach for `@core:founder-reality-check`.
+
+## How to invoke
+
+```
+@core:code-auditor
+```
+
+Address the agent and describe what to audit. If the scope is ambiguous it will ask you once, then run.
+
+## Inputs
+
+- `scope` — one of `inherited`, `full`, `repo`, `feature`, `access-inventory`, `security`, `operational`, `code`, `performance`, `accessibility` — optional; `inherited` runs the full four-dimension sweep.
+- `focus` — a repo, area, or file pattern to narrow the audit — optional.
+
+## What you get back
+
+An HTML report saved under your workspace task dir at `phases/05-audit.html`, with an executive summary, a metrics table, dimension coverage, the P0–P3 backlog, positive findings, engineering standards, and sequenced recommendations. Every finding carries what was found (cited), the risk or cost, the fix, and a check that proves it fixed. The chat reply is one line: `AUDIT COMPLETE | Score: X/10 | P0 Stop-bleed: N | P1 Safety-net: N | P2 Debt: N | P3: N | Artifact: <path>`.
+
+## Worked example
+
+```
+@core:code-auditor audit the API routes in apps/<mainApp> for quality
+```
+
+It finds the route handlers, checks each for auth plus per-object ownership, input validation, error shape, and query cost, then consolidates repeats into one finding with a count. A missing ownership check lands in P0, not P2. You end up with:
+
+```
+AUDIT COMPLETE | Score: 6/10 | P0 Stop-bleed: 1 | P1 Safety-net: 1 | P2 Debt: 4 | P3: 3 | Artifact: .../phases/05-audit.html
+```
+
+## Related
+
+- `@core:security-auditor` — when the security dimension needs full depth rather than triage.
+- `@core:sre-orchestrator` — when the question is operational maturity, backups, or SLOs.
+- `@core:founder-reality-check` — when you need a portfolio-wide inventory and business critique.
+- `@core:tech-lead` — when you want the audit run as part of the wider workflow and its findings acted on.

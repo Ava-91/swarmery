@@ -16,6 +16,7 @@
 // Chrome mirrors ProjectSettings (font-display heading, mono SectionTitle
 // eyebrows, hairline cards).
 
+import { AccountsSection } from '../components/AccountsSection';
 import { ConnectorsSection } from '../components/ConnectorsSection';
 import { NotifySettings } from '../components/NotifySettings';
 import { SectionTitle } from '../components/ui';
@@ -74,6 +75,12 @@ export function Settings(): JSX.Element {
           does so without being asked, so this is the account of what it did. */}
       <SectionTitle>worktrees</SectionTitle>
       <WorktreesPanel />
+
+      {/* Accounts — the Claude accounts swarmery knows about on THIS host
+          (multi-account, phase 7). Host-level like daemon/worktrees above:
+          AccountsSection self-fetches /api/accounts. */}
+      <SectionTitle>accounts</SectionTitle>
+      <AccountsSection />
 
       {/* Connectors — the MCP servers Claude Code has configured on THIS host,
           read through the daemon. Host-level like the daemon card above, not

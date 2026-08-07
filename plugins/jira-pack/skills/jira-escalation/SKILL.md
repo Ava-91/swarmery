@@ -3,6 +3,10 @@ name: jira-escalation
 description: "Convert a needs-fix attempt that has outgrown /jira-fix's autonomy budget (or a ticket triage already classified too-large) into a phased plan saved to the private workspace, post the plan's full text to Jira via comment-too-large.md, leave the ticket's status untouched, and remove any branch/worktree jira-delivery created before this fired. NOT for classifying the ticket (that's jira-triage) and NOT for the fix attempt itself (that's jira-delivery, which hands off here on budget exhaustion)."
 version: "0.1.1"
 owner: "swarmery-core"
+docs:
+  status: reviewed
+  source_sha: d78ef1825edc
+  updated: 2026-08-06
 ---
 
 # Purpose
@@ -222,3 +226,58 @@ out of the run") has to hold for this skill too:
   itself beyond handing that skill the reason string.
 - `/Users/andriytretiak/.claude/CLAUDE.md` §11 — the hard rule governing
   where every plan in this project is stored.
+
+# How to use
+
+## What it does
+
+Turns a fix attempt that grew too big into a plan someone can pick up. When a ticket blows past the autonomy budget — too many files touched, too many failed attempts, or triage already called it too large — this skill picks a planner, saves a phased plan to the private workspace, and posts the plan's full text back to the ticket. The abandoned branch and worktree are removed, and the ticket's status is left alone.
+
+## When to use it
+
+- A fix attempt touched more files than the budget allows, or ran out of delegate-verify attempts without a passing verdict.
+- The debugger agent gave up under its own stop conditions (fix spiral, three failed attempts, roughly five files).
+- Triage classified the ticket `too-large` before any reproduction was attempted — no branch exists yet in this path.
+- You need the work done so far to survive as a plan instead of being discarded.
+
+## When not to use it
+
+- The ticket still needs classifying as a defect or a change — use `jira-triage`.
+- The fix attempt itself is still viable and attempts remain — use `jira-delivery`, which re-dispatches on a failed verdict.
+- You only need to post a verdict comment or move the ticket to QA — use `jira-writeback`.
+
+## How to invoke
+
+```
+Skill(skill: "jira-pack:jira-escalation")
+```
+
+Normally you do not call this yourself: `jira-triage` and `jira-delivery` hand off to it when a trigger fires. Invoke it directly only when you already have the ticket context and the escalation reason in hand.
+
+## Inputs
+
+- Ticket key, summary, and description — required.
+- The escalation trigger and its numbers (for example `maxFiles: 8 > budget 5`) — required; exactly one trigger must be cited.
+- The evidence bundle so far, including any partial diagnosis from a debugger or verification run — required; this is what the planner builds on.
+- Branch and worktree names from the delivery hand-off, with the prefix that run actually used — required whenever a branch exists.
+
+## What you get back
+
+A phased plan written under the private workspace path for today's date, with a `README.md` and one doc per phase. A comment on the ticket carrying the plan's full text — objective, one paragraph per phase, dependencies and critical path, total estimate, definition of done. Plans over roughly 15,000 characters post every phase summary plus one full sample phase and a pointer to the workspace task. The branch, its worktree, and any pushed remote ref are deleted. The board card moves to `in_review` with the stop reason in its prompt. The ticket's status is never transitioned.
+
+## Worked example
+
+```
+Skill(skill: "jira-pack:jira-escalation")
+# hand-off: KEY-482, trigger 1, "maxFiles: 11 > budget 5",
+#           branch fix/KEY-482-order-totals + its worktree
+```
+
+The scope reads as a few days of work, so the task planner is chosen over the implementation planner. It writes a four-phase plan to the workspace. The full plan text lands as a comment on KEY-482. The worktree is force-removed, the local branch deleted, and the pushed ref dropped. The card sits at `in_review` reading "maxFiles: 11 > budget 5"; KEY-482 is still in whatever status it was in before.
+
+## Related
+
+- `jira-triage` — classifies the ticket and produces the `too-large` verdict that fires this skill.
+- `jira-delivery` — runs the fix attempt and hands off here when a budget trigger fires.
+- `jira-writeback` — posts every other verdict comment and handles status transitions; this skill posts its own comment instead.
+- `swarmery-board-card` — moves the card to `in_review` with the stop reason.

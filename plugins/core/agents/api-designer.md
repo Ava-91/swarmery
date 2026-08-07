@@ -13,6 +13,10 @@ owner: platform-team
 skills:
   - api-integration
   - code-standards
+docs:
+  status: reviewed
+  source_sha: 22cf9e7cb896
+  updated: 2026-08-06
 ---
 
 # Role
@@ -199,3 +203,55 @@ Use `<thinking>` for non-trivial reasoning (e.g., choosing between SSE and WebSo
 - **Schema drift**: Zod schema diverges from Prisma types post-implementation → detected by @contract-validator in Phase 5 → re-align schemas.
 - **Consumer breakage**: Frontend fetch calls use removed/renamed fields → detected by @downstream-analyzer → add migration path before implementation.
 - **Auth gap**: Endpoint missing authorization check → detected by @security-auditor → add auth middleware specification.
+
+# How to use
+
+## What it does
+
+This agent turns a feature request into a written API contract before anyone writes a route handler. It reads the routes, validation schemas, and error helpers you already have, then produces a design document: a route table with auth levels, request and response schemas, standard error shapes, an SSE or server-action protocol when relevant, and a breaking-change analysis. It never edits code — you get a document to review and hand to an implementer.
+
+## When to use it
+
+- You are adding endpoints to a web app and want the paths, auth levels, and payload shapes agreed before implementation starts.
+- You are changing an existing endpoint and need to know which consumers break and what the migration path is.
+- You need a streaming endpoint designed — event types, payload shape, and reconnection strategy written down.
+- An orchestrating agent has finished context gathering and the next step is an API contract.
+
+## When not to use it
+
+- You want the route handler written — that is the implementation agent's job.
+- You need table or column changes — reach for the database designer instead.
+- You want an already-implemented API checked against its schemas — that is the contract validator.
+- Your stack is GraphQL, MongoDB, or a JVM framework — this agent designs REST with schema-based validation only.
+
+## How to invoke
+
+```
+@core:api-designer Design the endpoints for <feature>
+```
+
+Address it directly in your message, or let an orchestrating agent dispatch it during the design phase.
+
+## Inputs
+
+- `task_description` — what endpoints, streams, or server actions to design — required.
+- `context_artifact` — path to an earlier context document from upstream gathering — optional; without it the agent discovers existing patterns itself.
+
+## What you get back
+
+A markdown artifact written to the workspace task directory under `phases/03-api-design.md`, capped at 300 lines, containing the route table, schemas, error responses, any streaming protocol, and the breaking-change table. The final message is a one-line summary: routes designed, whether breaking changes exist, and the artifact path. Nothing else on disk changes, so you can delete the artifact and regenerate it freely. If a change removes or renames a field an existing consumer depends on, the agent stops and escalates instead of designing around it.
+
+## Worked example
+
+```
+@core:api-designer Design the API for orders/line-items — list, create,
+update, and soft-delete, with cursor pagination
+```
+
+The agent greps your existing route handlers and validation schemas, reads the shared error helper, then writes five routes with explicit auth levels, request and response schemas that match your database column types, cursor pagination in the `{ items, nextCursor, hasMore }` shape, and standard `{ error, code, details? }` error bodies. You end up with a reviewable design document and a one-line summary naming the route count and the artifact path.
+
+## Related
+
+- `@core:database-designer` — when the change starts at the schema and migration layer.
+- `@core:implementation-agent` — when the contract is agreed and you want the code written.
+- `@core:contract-validator` — when the code exists and you want the layers checked for type drift.

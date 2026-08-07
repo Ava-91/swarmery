@@ -8,6 +8,10 @@ maxTurns: 20
 skills:
   - code-standards
   - code-search
+docs:
+  status: reviewed
+  source_sha: ebdae703a0c7
+  updated: 2026-08-06
 ---
 
 ## When to Use
@@ -139,3 +143,53 @@ heroButton: "Get Started"
 **Version**: 1.0
 **Created**: April 2026
 **Maintained by**: swarmery web-pack
+
+# How to use
+
+## What it does
+
+This agent keeps user-facing text in your web app fully translated and consistent. It compares your language files key by key, finds strings hardcoded in JSX instead of going through `t()`, and fixes both sides so every language has the same key structure. You end up with translation files that match, no stray literals in components, and keys that follow one naming convention.
+
+## When to use it
+
+- You added new text to a component and need the keys created in every language file.
+- You want to know whether one language has drifted behind another.
+- You suspect components still render literal strings instead of `t()` calls.
+- Your translation keys have grown flat or inconsistent and need regrouping by feature.
+
+## When not to use it
+
+- You need the UI feature itself built — use `@core:implementation-agent`, then run this agent on the result.
+- The problem is React rendering or component structure, not text — use `@core:react-specialist`.
+- You want a full quality gate across build, lint, and tests — use `@core:quality-checker`.
+
+## How to invoke
+
+```
+@web-pack:i18n-specialist audit translation coverage
+```
+
+Address the agent by name and state the i18n task in plain words. It reads your translation files first, so you do not need to list them.
+
+## Inputs
+
+- Task description — what you want audited, added, or restructured — required.
+- Scope hint — a section, route, or component folder to limit the sweep — optional; it covers the whole app by default.
+
+## What you get back
+
+The agent edits your language files and components directly: missing keys added to every language, hardcoded strings replaced with `t()` calls, unused keys removed, and inconsistent keys regrouped. Its final message reports which keys it added or moved and any gaps it could not close on its own, such as text that needs a human translator.
+
+## Worked example
+
+```
+@web-pack:i18n-specialist add translations for the new pricing section
+```
+
+The agent reads both language files, finds the literal strings in your pricing components, adds a `pricing` namespace with matching keys to each language, and swaps the literals for `t()` calls. It then checks that interpolation variables like `{{count}}` appear identically in both languages and reports the new keys it wrote.
+
+## Related
+
+- `@core:react-specialist` — when the component itself needs rework, not just its text.
+- `@web-pack:seo-specialist` — when translated meta tags and structured data are the concern.
+- `@core:quality-checker` — when you want i18n coverage checked as part of a broader gate.
