@@ -3,7 +3,7 @@ description: Thin entry point for `/account [list|use <key>|clear|setup-shell [-
 allowed-tools:
   - Bash
 docs:
-  status: generated
+  status: reviewed
   source_sha: 8cf56a7fd34d
   updated: 2026-08-07
 ---

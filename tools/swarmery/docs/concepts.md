@@ -125,6 +125,43 @@ A headless planner interviews you one question at a time and writes a phased pla
 3. **Refine or proceed.** «Уточнити» steers the plan and the questions that follow; «Продовжуйте за планом» ends the interview and the planner writes the full plan.
 4. **The plan lands in the workspace.** A `plan/README.md` (objective, real file paths, phase sequencing table, risks, Definition of Done) plus `phase-N` docs with acceptance checkboxes are written to the private workspace — never into the repo — and appear on the Plans page within seconds.
 
+## Claude account
+
+A Claude Code identity installed on this machine: one config directory plus one credential. The
+default account lives in `~/.claude`; every other account lives in `~/.claude-<key>` and is named
+by that suffix — the directory `~/.claude-work` **is** the account `work`. There is no second
+naming scheme anywhere: sessions, quotas and spawned runs all resolve the account from the config
+dir by this one rule.
+
+**Adding one.** Settings → accounts → *+ add account* reserves the key and shows a login command.
+swarmery deliberately never runs it for you: you paste it into your own terminal and complete
+`/login` there (use a private browser window if it is a different subscription — an already-logged-in
+browser will silently reuse the account you are trying to get away from). The credential is written
+by the Claude CLI itself, into a Keychain item suffixed for that config dir; swarmery never touches
+another program's credential store.
+
+**What the dots mean.** Each account row shows a three-state connection dot: green = connected,
+red = not connected, grey = unknown (the daemon was started with `SWARMERY_USAGE_OAUTH=0`, so the
+question could not be asked at all). The default account has no *remove* button — it is what every
+unbound project falls back to, so there is nothing meaningful to remove it to.
+
+## Account binding
+
+The project-level choice of which [Claude account](#claude-account) its sessions run under. Set it
+from the project's settings page (the *account* card) or with `/account use <key>` in a session;
+either way it is written to the project's `.claude/settings.local.json` — machine-local and
+gitignored, so your choice never lands in the repo or on your teammates.
+
+**When it takes effect.** The account is resolved once, at process spawn time. Every surface —
+dispatched runs, verification, planning, the terminal dock, the `claude` shell function — reads
+the binding when it starts a process; a run already in flight keeps the account it started with
+until it finishes. Changing the binding is therefore always safe, and never instant.
+
+**The default is absence.** A project with no binding gets no `CLAUDE_CONFIG_DIR` at all and
+behaves byte-for-byte as it did before multi-account existed. Removing an account that projects
+still point at is allowed; those projects fall back to the default account and the settings page
+shows a dismiss-only warning listing them.
+
 ---
 
 Plugin and marketplace mechanics — how an enabled pack physically reaches a session, why a semver
