@@ -370,7 +370,15 @@ func TestCompleteLoginPersistsTheConnection(t *testing.T) {
 func TestCompleteLoginMakesTheAccountResolvable(t *testing.T) {
 	configDir := scopedFixture(t) // decoys everywhere, nothing in the account's dir
 	useTempStore(t)
-	stubKeychain(t, func(context.Context) *Creds { return &Creds{AccessToken: "from-the-keychain"} })
+	// The plain item resolves (the default account is logged in); the scoped
+	// account's suffixed item is empty — so before Connect there is genuinely
+	// nothing to read for THIS account.
+	stubKeychain(t, func(_ context.Context, service string) *Creds {
+		if service == keychainService {
+			return &Creds{AccessToken: "from-the-keychain"}
+		}
+		return nil
+	})
 	s := newLoginStub(t)
 	c := newLoginClient(s, "nabu-org")
 	src := Source{Account: "nabu-org", ConfigDir: configDir}
@@ -624,7 +632,7 @@ func TestRefreshNeverWritesBackFileCreds(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv(configDirEnv, "")
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	configDir := filepath.Join(home, ".claude-nabu-org")
 	writeCredFileAt(t, configDir, "from-the-config-dir-file", testNow.Add(-time.Hour))

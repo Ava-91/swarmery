@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -839,17 +840,27 @@ func TestUsageFansOutAcrossAccounts(t *testing.T) {
 			nabu.Hint.Command, want)
 	}
 	// This account's OWN sources only: its swarmery-store path (rung 2's Connect
-	// target) and its own config dir — never the default account's chain, and
-	// never the keychain, which holds the default account's login.
-	if len(nabu.Hint.Sources) != 2 ||
+	// target), its own config dir, and (darwin) the keychain item SUFFIXED for
+	// that dir — never the default account's chain, and never the PLAIN
+	// keychain item, which holds the default account's login.
+	wantSources := 2
+	if runtime.GOOS == "darwin" {
+		wantSources = 3
+	}
+	if len(nabu.Hint.Sources) != wantSources ||
 		!strings.HasSuffix(nabu.Hint.Sources[0], "nabu-org.json") ||
 		!strings.HasPrefix(nabu.Hint.Sources[1], dirs["nabu-org"]) {
 		t.Errorf("hint sources = %v, want this account's store path then its own config dir", nabu.Hint.Sources)
 	}
 	defaultCred := filepath.Join(dirs[ingest.DefaultAccount], ".credentials.json")
 	for _, s := range nabu.Hint.Sources {
-		if strings.Contains(s, "Keychain") || s == defaultCred {
-			t.Errorf("hint sources leak the default account's credential location: %q", s)
+		if s == defaultCred {
+			t.Errorf("hint sources leak the default account's credential file: %q", s)
+		}
+		// A keychain mention is legitimate ONLY for the account's own suffixed
+		// item; the plain service (no dash after it) is the default's login.
+		if strings.Contains(s, "Keychain") && !strings.Contains(s, "Claude Code-credentials-") {
+			t.Errorf("hint sources leak the default account's keychain item: %q", s)
 		}
 	}
 	if len(nabu.Windows) != 0 {

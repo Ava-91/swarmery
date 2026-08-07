@@ -266,7 +266,7 @@ func TestLoadCredsForPrefersTheSwarmeryStore(t *testing.T) {
 			dir := scopedFixture(t) // populates ~/.claude and CLAUDE_CONFIG_DIR
 			useTempStore(t)
 			writeCredFileAt(t, dir, scopedTok, time.Now().Add(24*time.Hour))
-			stubKeychain(t, func(context.Context) *Creds { return &Creds{AccessToken: "from-the-keychain"} })
+			stubKeychain(t, func(context.Context, string) *Creds { return &Creds{AccessToken: "from-the-keychain"} })
 
 			stored := storeFixtureCreds()
 			stored.AccessToken = "from-the-swarmery-store"
@@ -302,7 +302,7 @@ func TestLoadCredsForStoreAbsentIsRungOne(t *testing.T) {
 		dir := scopedFixture(t)
 		useTempStore(t)
 		writeCredFileAt(t, dir, scopedTok, time.Now().Add(24*time.Hour))
-		stubKeychain(t, func(context.Context) *Creds { return nil })
+		stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 		got, err := LoadCredsFor(context.Background(), Source{Account: "nabu-org", ConfigDir: dir})
 		if err != nil {
@@ -319,7 +319,15 @@ func TestLoadCredsForStoreAbsentIsRungOne(t *testing.T) {
 	t.Run("scoped account with nothing anywhere is ErrNoCreds", func(t *testing.T) {
 		dir := scopedFixture(t)
 		useTempStore(t)
-		stubKeychain(t, func(context.Context) *Creds { return &Creds{AccessToken: "from-the-keychain"} })
+		// Only the PLAIN item resolves — the default account's login. The
+		// scoped lookup may ask for its own suffixed item (empty here) and must
+		// still come back with ErrNoCreds, not the default's credential.
+		stubKeychain(t, func(_ context.Context, service string) *Creds {
+			if service == keychainService {
+				return &Creds{AccessToken: "from-the-keychain"}
+			}
+			return nil
+		})
 
 		if _, err := LoadCredsFor(context.Background(), Source{Account: "nabu-org", ConfigDir: dir}); !errors.Is(err, ErrNoCreds) {
 			t.Fatalf("LoadCredsFor error = %v, want ErrNoCreds", err)
@@ -329,7 +337,7 @@ func TestLoadCredsForStoreAbsentIsRungOne(t *testing.T) {
 	t.Run("default account still walks the chain", func(t *testing.T) {
 		scopedFixture(t)
 		useTempStore(t)
-		stubKeychain(t, func(context.Context) *Creds { return nil })
+		stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 		got, err := LoadCredsFor(context.Background(), Source{Account: "default"})
 		if err != nil {
@@ -366,7 +374,7 @@ func TestLoadCredsForStoreHonoursOptOut(t *testing.T) {
 func TestLoadCredsIgnoresTheStore(t *testing.T) {
 	dir := useTempStore(t)
 	scopedFixture(t)
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 	// A file that would match an empty account key, if one were ever built.
 	if err := os.MkdirAll(dir, storeDirMode); err != nil {
 		t.Fatalf("mkdir: %v", err)

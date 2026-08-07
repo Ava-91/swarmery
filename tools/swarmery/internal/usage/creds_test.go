@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 	os.Unsetenv(configDirEnv)
 	os.Unsetenv(oauthOptOutEnv)
 	os.Unsetenv(storeDirEnv)
-	keychainCreds = func(context.Context) *Creds { return nil }
+	keychainCreds = func(context.Context, string) *Creds { return nil }
 
 	code := m.Run()
 	os.RemoveAll(home)
@@ -59,13 +59,16 @@ func writeCredFile(t *testing.T, dir string) string {
 }
 
 // stubKeychain installs a keychain seam for one test and restores it after.
-func stubKeychain(t *testing.T, fn func(context.Context) *Creds) *int {
+// The stub receives the requested SERVICE name — scoped-lookup tests assert on
+// it, so a cross-account fallback (asking for the plain item from a scoped
+// resolution) can never pass unnoticed.
+func stubKeychain(t *testing.T, fn func(context.Context, string) *Creds) *int {
 	t.Helper()
 	calls := 0
 	prev := keychainCreds
-	keychainCreds = func(ctx context.Context) *Creds {
+	keychainCreds = func(ctx context.Context, service string) *Creds {
 		calls++
-		return fn(ctx)
+		return fn(ctx, service)
 	}
 	t.Cleanup(func() { keychainCreds = prev })
 	return &calls
@@ -116,7 +119,7 @@ func TestLoadCredsResolutionOrder(t *testing.T) {
 			} else {
 				t.Setenv(configDirEnv, "")
 			}
-			calls := stubKeychain(t, func(context.Context) *Creds { return nil })
+			calls := stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 			got, err := LoadCreds(context.Background())
 			if err != nil {
@@ -154,7 +157,7 @@ func TestLoadCredsPrefersConfigDirOverHome(t *testing.T) {
 	}
 	writeCredFile(t, filepath.Join(home, ".claude"))
 	t.Setenv(configDirEnv, confDir)
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	got, err := LoadCreds(context.Background())
 	if err != nil {
@@ -179,7 +182,7 @@ func TestLoadCredsSkipsUnusableFilesAndFallsThrough(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	writeCredFile(t, filepath.Join(home, ".config", "claude"))
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	got, err := LoadCreds(context.Background())
 	if err != nil {
@@ -226,7 +229,7 @@ func TestLoadCredsStaleFileDoesNotShadowFreshKeychain(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(configDirEnv, "")
 	writeCredFileAt(t, filepath.Join(home, ".claude"), "stale-file", now.Add(-28*24*time.Hour))
-	calls := stubKeychain(t, func(context.Context) *Creds {
+	calls := stubKeychain(t, func(context.Context, string) *Creds {
 		return &Creds{AccessToken: "fresh-keychain", ExpiresAt: now.Add(8 * time.Hour).UnixMilli()}
 	})
 
@@ -253,7 +256,7 @@ func TestLoadCredsFallsBackToLatestExpiry(t *testing.T) {
 	t.Setenv(configDirEnv, "")
 	writeCredFileAt(t, filepath.Join(home, ".claude"), "ancient", now.Add(-30*24*time.Hour))
 	writeCredFileAt(t, filepath.Join(home, ".config", "claude"), "recent", now.Add(-1*time.Hour))
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	got, err := LoadCreds(context.Background())
 	if err != nil {
@@ -275,7 +278,7 @@ func TestLoadCredsPrecedenceStillWinsAmongUsable(t *testing.T) {
 	t.Setenv(configDirEnv, "")
 	writeCredFileAt(t, filepath.Join(home, ".claude"), "first-source", now.Add(1*time.Hour))
 	writeCredFileAt(t, filepath.Join(home, ".config", "claude"), "later-expiry", now.Add(90*24*time.Hour))
-	calls := stubKeychain(t, func(context.Context) *Creds { return nil })
+	calls := stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	got, err := LoadCreds(context.Background())
 	if err != nil {
@@ -317,7 +320,7 @@ func TestCredsExpired(t *testing.T) {
 func TestLoadCredsMissingIsSentinel(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(configDirEnv, "")
-	calls := stubKeychain(t, func(context.Context) *Creds { return nil })
+	calls := stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	got, err := LoadCreds(context.Background())
 	if !errors.Is(err, ErrNoCreds) {
@@ -341,7 +344,7 @@ func TestLoadCredsFromKeychain(t *testing.T) {
 	}
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(configDirEnv, "")
-	stubKeychain(t, func(context.Context) *Creds {
+	stubKeychain(t, func(context.Context, string) *Creds {
 		return &Creds{AccessToken: "from-keychain", Scopes: []string{requiredScope}}
 	})
 
@@ -363,7 +366,7 @@ func TestLoadCredsDisabledTouchesNothing(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(configDirEnv, "")
 	writeCredFile(t, filepath.Join(home, ".claude"))
-	calls := stubKeychain(t, func(context.Context) *Creds {
+	calls := stubKeychain(t, func(context.Context, string) *Creds {
 		t.Error("keychain consulted while SWARMERY_USAGE_OAUTH=0")
 		return nil
 	})
@@ -391,7 +394,7 @@ func TestLoadCredsOptOutOnlyMatchesZero(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(configDirEnv, "")
 	writeCredFile(t, filepath.Join(home, ".claude"))
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	for _, v := range []string{"1", "", "true", "false"} {
 		t.Setenv(oauthOptOutEnv, v)
@@ -484,8 +487,17 @@ func TestLoadCredsForScopedLookupIsExclusive(t *testing.T) {
 					t.Fatalf("write scoped credential: %v", err)
 				}
 			}
-			calls := stubKeychain(t, func(context.Context) *Creds {
-				return &Creds{AccessToken: "from-the-keychain"}
+			// The stub simulates the dangerous machine state: the DEFAULT
+			// account is logged in (its PLAIN item resolves), the scoped one is
+			// not. A scoped lookup that ever reaches the plain item would come
+			// back with this credential — and the want=="" cases would fail.
+			var asked []string
+			stubKeychain(t, func(_ context.Context, service string) *Creds {
+				asked = append(asked, service)
+				if service == keychainService {
+					return &Creds{AccessToken: "from-the-keychain"}
+				}
+				return nil
 			})
 
 			src := Source{}
@@ -509,12 +521,18 @@ func TestLoadCredsForScopedLookupIsExclusive(t *testing.T) {
 					t.Errorf("resolved %q, want %q", got.AccessToken, tc.want)
 				}
 			}
-			// The plain keychain item is the DEFAULT account's login, so a
-			// scoped lookup must not reach for it on any OS (this assertion is
-			// deliberately not GOOS-gated: on linux it is trivially true, on
-			// darwin it is the property under test).
-			if tc.scoped && *calls != 0 {
-				t.Errorf("keychain consulted %d times for a scoped account, want 0", *calls)
+			// The plain keychain item is the DEFAULT account's login. A scoped
+			// lookup may now consult the keychain — but ONLY the item suffixed
+			// for its own config dir; asking for the plain item would resolve
+			// the default account's credential under this account's name (on
+			// linux the loop is empty and the property holds trivially).
+			if tc.scoped {
+				for _, service := range asked {
+					if service != scopedKeychainService(dir) {
+						t.Errorf("scoped lookup asked keychain for %q, may only ask %q",
+							service, scopedKeychainService(dir))
+					}
+				}
 			}
 		})
 	}
@@ -529,7 +547,7 @@ func TestLoadCredsForScopedReturnsExpiredCredential(t *testing.T) {
 	pinCredsClock(t, now)
 	dir := scopedFixture(t)
 	writeCredFileAt(t, dir, scopedTok, now.Add(-48*time.Hour))
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 
 	got, err := LoadCredsFor(context.Background(), Source{Account: "nabu-org", ConfigDir: dir})
 	if err != nil {
@@ -540,6 +558,63 @@ func TestLoadCredsForScopedReturnsExpiredCredential(t *testing.T) {
 	}
 	if !got.expired() {
 		t.Error("fixture is not actually expired — the test proves nothing")
+	}
+}
+
+// TestLoadCredsForScopedReadsSuffixedKeychain is the whole point of the scoped
+// keychain rung: on macOS the CLI writes a /login under a non-default config
+// dir to the SUFFIXED keychain item and creates no .credentials.json at all
+// (measured live 2026-08-07), so before this rung every CLI-logged-in second
+// account read as "not connected".
+func TestLoadCredsForScopedReadsSuffixedKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain source is macOS-only")
+	}
+	dir := scopedFixture(t) // no credential file — the keychain is the only source
+	calls := stubKeychain(t, func(_ context.Context, service string) *Creds {
+		if service == scopedKeychainService(dir) {
+			return &Creds{AccessToken: scopedTok}
+		}
+		return nil
+	})
+
+	got, err := LoadCredsFor(context.Background(), Source{Account: "nabu-org", ConfigDir: dir})
+	if err != nil {
+		t.Fatalf("LoadCredsFor: %v", err)
+	}
+	if got.AccessToken != scopedTok {
+		t.Errorf("resolved %q, want the suffixed keychain credential %q", got.AccessToken, scopedTok)
+	}
+	if *calls != 1 {
+		t.Errorf("keychain consulted %d times, want exactly 1", *calls)
+	}
+}
+
+// TestLoadCredsForScopedStaleFileDoesNotShadowFreshKeychain mirrors the legacy
+// chain's regression guard for the scoped rung: a leftover expired credential
+// file must not shadow the fresh login sitting in the account's own suffixed
+// keychain item.
+func TestLoadCredsForScopedStaleFileDoesNotShadowFreshKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain source is macOS-only")
+	}
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	pinCredsClock(t, now)
+	dir := scopedFixture(t)
+	writeCredFileAt(t, dir, "stale-file-token", now.Add(-48*time.Hour))
+	stubKeychain(t, func(_ context.Context, service string) *Creds {
+		if service == scopedKeychainService(dir) {
+			return &Creds{AccessToken: scopedTok, ExpiresAt: now.Add(24 * time.Hour).UnixMilli()}
+		}
+		return nil
+	})
+
+	got, err := LoadCredsFor(context.Background(), Source{Account: "nabu-org", ConfigDir: dir})
+	if err != nil {
+		t.Fatalf("LoadCredsFor: %v", err)
+	}
+	if got.AccessToken != scopedTok {
+		t.Errorf("resolved %q, want the fresh keychain credential %q", got.AccessToken, scopedTok)
 	}
 }
 
@@ -578,6 +653,9 @@ func TestCredentialSourcesFor(t *testing.T) {
 		filepath.Join(store, "nabu-org.json"),
 		filepath.Join(dir, credentialsFile),
 	}
+	if runtime.GOOS == "darwin" {
+		wantScoped = append(wantScoped, "macOS Keychain: "+scopedKeychainService(dir))
+	}
 	if len(scoped) != len(wantScoped) {
 		t.Fatalf("scoped sources = %v, want %v", scoped, wantScoped)
 	}
@@ -586,9 +664,11 @@ func TestCredentialSourcesFor(t *testing.T) {
 			t.Errorf("scoped sources[%d] = %q, want %q", i, scoped[i], wantScoped[i])
 		}
 	}
+	// The PLAIN keychain service (no suffix) is the default account's login —
+	// a scoped list may name only the item suffixed for its own dir.
 	for _, s := range scoped {
-		if strings.Contains(s, keychainService) {
-			t.Errorf("scoped sources mention the keychain (%q) — that item is the default account's login", s)
+		if strings.Contains(s, keychainService) && !strings.Contains(s, scopedKeychainService(dir)) {
+			t.Errorf("scoped sources mention the plain keychain item (%q) — that is the default account's login", s)
 		}
 	}
 
@@ -611,9 +691,18 @@ func TestCredentialSourcesFor(t *testing.T) {
 	// rather than to a bogus entry.
 	t.Setenv(storeDirEnv, "")
 	t.Setenv("HOME", "")
-	if got := CredentialSourcesFor(Source{Account: "nabu-org", ConfigDir: dir}); len(got) != 1 ||
-		got[0] != filepath.Join(dir, credentialsFile) {
-		t.Errorf("sources without a store = %v, want just the config-dir file", got)
+	wantBare := []string{filepath.Join(dir, credentialsFile)}
+	if runtime.GOOS == "darwin" {
+		wantBare = append(wantBare, "macOS Keychain: "+scopedKeychainService(dir))
+	}
+	got := CredentialSourcesFor(Source{Account: "nabu-org", ConfigDir: dir})
+	if len(got) != len(wantBare) {
+		t.Fatalf("sources without a store = %v, want %v", got, wantBare)
+	}
+	for i := range wantBare {
+		if got[i] != wantBare[i] {
+			t.Errorf("sources without a store[%d] = %q, want %q", i, got[i], wantBare[i])
+		}
 	}
 }
 
@@ -677,7 +766,7 @@ func TestParseCredsCarriesAllFields(t *testing.T) {
 }
 
 func TestKeychainArgs(t *testing.T) {
-	got := keychainArgs()
+	got := keychainArgs(keychainService)
 	want := []string{"find-generic-password", "-s", "Claude Code-credentials", "-w"}
 	if len(got) != len(want) {
 		t.Fatalf("keychainArgs() = %v, want %v", got, want)
@@ -686,6 +775,19 @@ func TestKeychainArgs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("keychainArgs()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// TestScopedKeychainService pins the suffix derivation to the CLI's own rule —
+// sha256 over the RAW config-dir string, first 8 lowercase hex — with a vector
+// checked against `printf '%s' <dir> | shasum -a 256` (the derivation
+// fetch-fable-usage.sh ships). Drift here would silently read the wrong item.
+func TestScopedKeychainService(t *testing.T) {
+	// echo -n "/Users/op/.claude-work" | shasum -a 256 → a749a638…
+	got := scopedKeychainService("/Users/op/.claude-work")
+	want := "Claude Code-credentials-a749a638"
+	if got != want {
+		t.Errorf("scopedKeychainService = %q, want %q", got, want)
 	}
 }
 
@@ -710,7 +812,7 @@ func TestReadKeychainCreds(t *testing.T) {
 	}
 	stubSecurityBin(t, `cat "`+fixture+`"`)
 
-	got := readKeychainCreds(context.Background())
+	got := readKeychainCreds(context.Background(), keychainService)
 	if got == nil {
 		t.Fatal("readKeychainCreds = nil, want the stubbed credential")
 	}
@@ -722,13 +824,13 @@ func TestReadKeychainCreds(t *testing.T) {
 func TestReadKeychainCredsFailures(t *testing.T) {
 	t.Run("non-zero exit", func(t *testing.T) {
 		stubSecurityBin(t, "exit 44")
-		if got := readKeychainCreds(context.Background()); got != nil {
+		if got := readKeychainCreds(context.Background(), keychainService); got != nil {
 			t.Errorf("readKeychainCreds = %v, want nil on a failed lookup", got)
 		}
 	})
 	t.Run("garbage output", func(t *testing.T) {
 		stubSecurityBin(t, `echo "not json"`)
-		if got := readKeychainCreds(context.Background()); got != nil {
+		if got := readKeychainCreds(context.Background(), keychainService); got != nil {
 			t.Errorf("readKeychainCreds = %v, want nil on unparseable output", got)
 		}
 	})
@@ -736,7 +838,7 @@ func TestReadKeychainCredsFailures(t *testing.T) {
 		prev := securityBin
 		securityBin = filepath.Join(t.TempDir(), "does-not-exist")
 		t.Cleanup(func() { securityBin = prev })
-		if got := readKeychainCreds(context.Background()); got != nil {
+		if got := readKeychainCreds(context.Background(), keychainService); got != nil {
 			t.Errorf("readKeychainCreds = %v, want nil when the binary is absent", got)
 		}
 	})

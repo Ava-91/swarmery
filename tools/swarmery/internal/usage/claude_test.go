@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -924,7 +925,7 @@ func TestFetchHonoursOptOutEndToEnd(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(configDirEnv, "")
 	writeCredFile(t, filepath.Join(home, ".claude"))
-	stubKeychain(t, func(context.Context) *Creds {
+	stubKeychain(t, func(context.Context, string) *Creds {
 		t.Error("keychain consulted while SWARMERY_USAGE_OAUTH=0")
 		return nil
 	})
@@ -962,12 +963,18 @@ func TestFetchScopedAccountSpeaksForItsOwnAccount(t *testing.T) {
 	t.Setenv("HOME", home)
 	writeCredFile(t, filepath.Join(home, ".claude"))
 	t.Setenv(configDirEnv, filepath.Join(home, ".claude"))
-	stubKeychain(t, func(context.Context) *Creds {
-		t.Error("keychain consulted for a scoped account — that item is the default account's login")
+	dir := filepath.Join(home, ".claude-nabu-org")
+	// The PLAIN item is the default account's login; the item suffixed for this
+	// account's own dir is the one legitimate keychain source. Empty here — the
+	// scoped account is not logged in anywhere.
+	stubKeychain(t, func(_ context.Context, service string) *Creds {
+		if service != scopedKeychainService(dir) {
+			t.Errorf("keychain consulted for %q — a scoped account may only ask for %q",
+				service, scopedKeychainService(dir))
+		}
 		return nil
 	})
 
-	dir := filepath.Join(home, ".claude-nabu-org")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir account config dir: %v", err)
 	}
@@ -988,12 +995,15 @@ func TestFetchScopedAccountSpeaksForItsOwnAccount(t *testing.T) {
 	if want := configDirEnv + "=" + dir + " claude"; p.Hint.Command != want {
 		t.Errorf("hint command = %q, want %q", p.Hint.Command, want)
 	}
-	// The account's own config-dir file, preceded only by its swarmery-store
-	// path (rung 2's Connect target) — and never the keychain, which holds the
-	// DEFAULT account's login.
+	// The account's own config-dir file, preceded by its swarmery-store path
+	// (rung 2's Connect target) and followed (darwin) by its OWN suffixed
+	// keychain item — never the plain one, which holds the DEFAULT login.
 	wantSources := []string{
 		filepath.Join(home, ".swarmery", "credentials", "nabu-org.json"),
 		filepath.Join(dir, credentialsFile),
+	}
+	if runtime.GOOS == "darwin" {
+		wantSources = append(wantSources, "macOS Keychain: "+scopedKeychainService(dir))
 	}
 	if len(p.Hint.Sources) != len(wantSources) {
 		t.Fatalf("hint sources = %v, want %v", p.Hint.Sources, wantSources)
@@ -1123,7 +1133,7 @@ func TestClientDefaults(t *testing.T) {
 	// an empty dir it must report ErrNoCreds, not panic.
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(configDirEnv, "")
-	stubKeychain(t, func(context.Context) *Creds { return nil })
+	stubKeychain(t, func(context.Context, string) *Creds { return nil })
 	if _, err := c.loadCreds(context.Background()); err == nil {
 		t.Error("loadCreds() = nil error, want ErrNoCreds from the real loader")
 	}

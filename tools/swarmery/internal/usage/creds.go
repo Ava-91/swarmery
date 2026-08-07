@@ -3,6 +3,8 @@ package usage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -101,17 +103,24 @@ type Source struct {
 //     written by the dashboard's Connect flow. Checked first because it is the
 //     credential the operator most recently and most explicitly gave THIS
 //     daemon: once an account is connected here, that connection is the answer.
-//  2. then the behaviour rung 1 shipped:
-//     · non-empty src.ConfigDir → <ConfigDir>/.credentials.json EXCLUSIVELY —
-//     no home-dir sources, no CLAUDE_CONFIG_DIR (that env var names the
-//     default account's dir and would be a lie here), no keychain;
+//  2. then the behaviour rung 1 shipped, widened by one same-account source:
+//     · non-empty src.ConfigDir → <ConfigDir>/.credentials.json, then (darwin)
+//     the SUFFIXED keychain item "Claude Code-credentials-<sha256(dir)[0:8]>"
+//     the CLI itself writes when logging in under that config dir. No home-dir
+//     sources, no CLAUDE_CONFIG_DIR (that env var names the default account's
+//     dir and would be a lie here), and NEVER the plain keychain item;
 //     · empty src.ConfigDir → the legacy chain (see LoadCreds).
 //
 // The exclusivity at step 2 is the whole safety property of multi-account: any
-// fallback would resolve the DEFAULT account's credential and publish its quota
-// under a second account's name — a wrong number the operator cannot spot. On
-// macOS, where a non-default account typically has no credential FILE, that is
-// exactly the case that would silently misreport.
+// cross-account fallback would resolve the DEFAULT account's credential and
+// publish its quota under a second account's name — a wrong number the operator
+// cannot spot. The suffixed item does not weaken this: its name is derived from
+// the account's own config dir, so it can only ever hold that account's
+// credential. It is also the source that matters in practice — on macOS the CLI
+// writes the login to the keychain and no .credentials.json exists at all
+// (measured live, 2026-08-07: /login under a fresh config dir → suffixed item
+// created, NO FILE), so without this rung every CLI-logged-in second account
+// reads as "not connected".
 //
 // Step 1 is a no-op when the store holds nothing for this account (including an
 // empty src.Account, which has no store file by construction), so a machine that
@@ -130,22 +139,49 @@ func LoadCredsFor(ctx context.Context, src Source) (*Creds, error) {
 		return c, nil
 	}
 	if src.ConfigDir != "" {
-		return scopedCreds(src.ConfigDir)
+		return scopedCreds(ctx, src.ConfigDir)
 	}
 	return chainCreds(ctx)
 }
 
-// scopedCreds reads one account's credential file, exclusively.
-func scopedCreds(dir string) (*Creds, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, credentialsFile))
-	if err != nil {
-		return nil, ErrNoCreds
+// scopedCreds resolves one non-default account's credential from that account's
+// OWN two sources, and nothing else: its credential file, then (darwin) its
+// suffixed keychain item. Expiry breaks ties exactly as in chainCreds — an
+// unexpired hit wins immediately, otherwise the later-expiring stale candidate
+// is the fallback (its refresh token is the likeliest to still be live).
+func scopedCreds(ctx context.Context, dir string) (*Creds, error) {
+	var stale *Creds
+	if raw, err := os.ReadFile(filepath.Join(dir, credentialsFile)); err == nil {
+		if c := parseCreds(raw); c != nil {
+			if !c.expired() {
+				return c, nil
+			}
+			stale = laterExpiry(stale, c)
+		}
 	}
-	c := parseCreds(raw)
-	if c == nil {
-		return nil, ErrNoCreds
+	if runtime.GOOS == "darwin" {
+		if c := keychainCreds(ctx, scopedKeychainService(dir)); c != nil {
+			if !c.expired() {
+				return c, nil
+			}
+			stale = laterExpiry(stale, c)
+		}
 	}
-	return c, nil
+	if stale != nil {
+		return stale, nil
+	}
+	return nil, ErrNoCreds
+}
+
+// scopedKeychainService names the keychain item the `claude` CLI writes when it
+// logs in under a non-default config dir: the plain service name suffixed with
+// the first 8 hex of sha256 over the RAW config-dir string. The same derivation
+// ships in plugins/core/statusline/fetch-fable-usage.sh and was confirmed
+// against the CLI binary (2.1.220: `${service}-${sha256(dir).substring(0,8)}`);
+// the three implementations must not drift.
+func scopedKeychainService(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return keychainService + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
 // LoadCreds resolves the DEFAULT account's Claude OAuth credential — the legacy
@@ -190,7 +226,7 @@ func chainCreds(ctx context.Context) (*Creds, error) {
 		stale = laterExpiry(stale, c)
 	}
 	if runtime.GOOS == "darwin" {
-		if c := keychainCreds(ctx); c != nil {
+		if c := keychainCreds(ctx, keychainService); c != nil {
 			if !c.expired() {
 				return c, nil
 			}
@@ -274,28 +310,33 @@ func CredentialSourcesFor(src Source) []string {
 		srcs = append(srcs, p)
 	}
 	if src.ConfigDir != "" {
-		return append(srcs, filepath.Join(src.ConfigDir, credentialsFile))
+		srcs = append(srcs, filepath.Join(src.ConfigDir, credentialsFile))
+		if runtime.GOOS == "darwin" {
+			srcs = append(srcs, "macOS Keychain: "+scopedKeychainService(src.ConfigDir))
+		}
+		return srcs
 	}
 	return append(srcs, CredentialSources()...)
 }
 
-// readKeychainCreds reads the CLI's credential item out of the macOS login
-// keychain. The 5s timeout keeps a keychain prompt from wedging a poll. Callers
-// are responsible for the runtime.GOOS guard (LoadCreds does it) so this stays
-// directly testable against a stub binary.
-func readKeychainCreds(ctx context.Context) *Creds {
+// readKeychainCreds reads ONE credential item out of the macOS login keychain —
+// the plain service for the default account, a suffixed one for a scoped
+// account. The 5s timeout keeps a keychain prompt from wedging a poll. Callers
+// are responsible for the runtime.GOOS guard (chainCreds and scopedCreds do it)
+// so this stays directly testable against a stub binary.
+func readKeychainCreds(ctx context.Context, service string) *Creds {
 	ctx, cancel := context.WithTimeout(ctx, keychainTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, securityBin, keychainArgs()...).Output()
+	out, err := exec.CommandContext(ctx, securityBin, keychainArgs(service)...).Output()
 	if err != nil {
 		return nil
 	}
 	return parseCreds(bytes.TrimSpace(out))
 }
 
-// keychainArgs is the `security` invocation used to read the credential item.
-func keychainArgs() []string {
-	return []string{"find-generic-password", "-s", keychainService, "-w"}
+// keychainArgs is the `security` invocation used to read a credential item.
+func keychainArgs(service string) []string {
+	return []string{"find-generic-password", "-s", service, "-w"}
 }
 
 // rawCreds is the credential JSON as the `claude` CLI writes it (camelCase).
