@@ -16,6 +16,44 @@ behaves exactly as it did before this pack existed.
 swarmery never writes credential material. It creates directories and points
 processes at them; the `claude` CLI performs each account's own login.
 
+## From zero to a bound project
+
+The whole flow, in order. Steps 1–2 happen in the swarmery dashboard; step 3 is
+this pack; step 4 is nothing at all.
+
+**1. Register the second account** — dashboard → Settings → *accounts* →
+*+ add account*. Pick a key (say `work`); the modal reserves the config dir and
+shows a login command. It deliberately does **not** run it — copy it into your
+own terminal:
+
+```bash
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude
+# inside the session: /login → authorize the SECOND account → /exit
+```
+
+Use a private browser window if your browser is already logged into the first
+account — otherwise you will re-login the same account under a new name. When
+the login completes, the account's row shows a green *connected* dot.
+
+**2. Bind it to a project** — project → Settings → *account* card → pick
+`work` → save. The binding is written to the project's
+`.claude/settings.local.json` (machine-local, gitignored — your choice never
+reaches the repo or your teammates). From here on, every process the daemon
+spawns for this project — dispatched tasks, verification, planning, the
+terminal dock — runs under `work`. The account is resolved at spawn time: a
+run already in flight keeps its old account until it finishes.
+
+**3. Cover your own terminal** — enable this pack for the project and either
+run `/account setup-shell` once (plain `claude` then follows the binding) or
+use the explicit `claude-account.sh` wrapper. The SessionStart hook warns you
+whenever a session starts under a different account than the bound one, and
+the statusline shows an account chip whenever you are not on the default.
+
+**4. Projects without a binding need nothing.** No binding → no
+`CLAUDE_CONFIG_DIR` → byte-for-byte the pre-multi-account behaviour. The card
+on the project settings page does not even render until the machine has a
+second account.
+
 ## Enable per project
 
 ```jsonc

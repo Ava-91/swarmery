@@ -6,6 +6,7 @@
 
 import { useId, useState } from 'react';
 import { createAccount } from '../api';
+import { ExplainPair } from './Explain';
 import { ErrorBox } from './ui';
 
 type Stage =
@@ -87,7 +88,7 @@ export function CreateAccountModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div id={titleId} className="font-display text-[14px] font-bold text-ink">
-          Add Claude account
+          <ExplainPair id="claude-account">Add Claude account</ExplainPair>
         </div>
 
         {stage.kind !== 'done' ? (

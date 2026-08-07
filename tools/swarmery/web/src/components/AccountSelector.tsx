@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Account, AccountBinding } from '../api/types';
 import { fetchAccounts, fetchProjectAccount, putProjectAccount } from '../api';
+import { ExplainPair } from './Explain';
 import { Card, ErrorBox, SectionTitle } from './ui';
 
 interface AccountOption {
@@ -113,7 +114,9 @@ export function AccountSelector({ projectId }: { projectId: number }): JSX.Eleme
   if (error !== null && accounts === null) {
     return (
       <>
-        <SectionTitle>account</SectionTitle>
+        <SectionTitle>
+        <ExplainPair id="account-binding">account</ExplainPair>
+      </SectionTitle>
         <ErrorBox message={error} onRetry={load} />
       </>
     );
@@ -131,7 +134,9 @@ export function AccountSelector({ projectId }: { projectId: number }): JSX.Eleme
 
   return (
     <>
-      <SectionTitle>account</SectionTitle>
+      <SectionTitle>
+        <ExplainPair id="account-binding">account</ExplainPair>
+      </SectionTitle>
       {error !== null && (
         <div className="mb-2">
           <ErrorBox message={error} onRetry={reset} />

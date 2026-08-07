@@ -18,6 +18,7 @@
 
 import { AccountsSection } from '../components/AccountsSection';
 import { ConnectorsSection } from '../components/ConnectorsSection';
+import { ExplainPair } from '../components/Explain';
 import { NotifySettings } from '../components/NotifySettings';
 import { SectionTitle } from '../components/ui';
 import { useHealth, versionLabel, versionTitle } from '../lib/health';
@@ -79,7 +80,9 @@ export function Settings(): JSX.Element {
       {/* Accounts — the Claude accounts swarmery knows about on THIS host
           (multi-account, phase 7). Host-level like daemon/worktrees above:
           AccountsSection self-fetches /api/accounts. */}
-      <SectionTitle>accounts</SectionTitle>
+      <SectionTitle>
+        <ExplainPair id="claude-account">accounts</ExplainPair>
+      </SectionTitle>
       <AccountsSection />
 
       {/* Connectors — the MCP servers Claude Code has configured on THIS host,

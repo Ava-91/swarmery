@@ -219,6 +219,42 @@ const RAW = {
     ],
     doc: { slug: 'concepts', anchor: 'planning-mode' },
   },
+
+  'claude-account': {
+    term: 'Claude account',
+    short:
+      'A Claude Code identity on this machine: one config directory plus one credential. The directory names the account — ~/.claude-work is the account "work"; ~/.claude is the default.',
+    tone: 'explain',
+    actions: [
+      '"+ add account" reserves the key and shows a login command — run it in your own terminal; swarmery never logs in for you.',
+      'Use a private browser window for /login if it is a different subscription.',
+      'A grey "unknown" dot means the daemon runs with SWARMERY_USAGE_OAUTH=0, not that the account is broken.',
+    ],
+    facts: [
+      { label: 'config dir', value: '~/.claude-<key>' },
+      { label: 'default', value: '~/.claude · not removable' },
+      { label: 'credential', value: 'written by the Claude CLI, per-dir Keychain item' },
+    ],
+    doc: { slug: 'concepts', anchor: 'claude-account' },
+  },
+
+  'account-binding': {
+    term: 'Account binding',
+    short:
+      'The project-level choice of which Claude account its sessions run under. Resolved once, at process spawn — a run already in flight keeps its account until it finishes.',
+    tone: 'explain',
+    actions: [
+      'Bind here or with /account use <key> in a session; both write the same file.',
+      'Changing it never touches a running process — it applies from the next spawn.',
+      'Clear the binding to fall back to the machine default account.',
+    ],
+    facts: [
+      { label: 'stored in', value: '.claude/settings.local.json · gitignored' },
+      { label: 'unbound project', value: 'no CLAUDE_CONFIG_DIR set — behaves exactly as before' },
+      { label: 'covers', value: 'dispatch · verify · planning · terminal dock · shell function' },
+    ],
+    doc: { slug: 'concepts', anchor: 'account-binding' },
+  },
 } satisfies Record<string, Concept>;
 
 export type ConceptId = keyof typeof RAW;
