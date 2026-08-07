@@ -161,12 +161,16 @@ else
 fi
 
 # ── 9. The command stays a thin proxy (line budget) ─────────────────────────
+# The budget covers the command body only: the `# How to use` guide that the
+# docs contract (scripts/docgen/check-coverage.sh) REQUIRES on every command is
+# reader documentation, not proxy logic, so counting it would make the two
+# gates mutually exclusive. Everything before that mandated H1 must stay thin.
 CMD="$PACK/commands/design-implement.md"
-cmd_lines="$(wc -l < "$CMD" | tr -d ' ')"
+cmd_lines="$(awk '/^# How to use$/{exit} {n++} END{print n+0}' "$CMD")"
 if [ "$cmd_lines" -le 110 ]; then
-  ok "check9: commands/design-implement.md is $cmd_lines lines (thin-proxy budget 110)"
+  ok "check9: commands/design-implement.md body is $cmd_lines lines (thin-proxy budget 110, usage guide excluded)"
 else
-  bad "check9: commands/design-implement.md is $cmd_lines lines, over the 110-line thin-proxy budget"
+  bad "check9: commands/design-implement.md body is $cmd_lines lines, over the 110-line thin-proxy budget (usage guide excluded)"
 fi
 
 # ── 10. No machine-absolute paths; no config field the schema does not declare
