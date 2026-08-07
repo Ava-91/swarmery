@@ -2,6 +2,10 @@
 description: Thin entry point for `/account [list|use <key>|clear|setup-shell [--uninstall]]` — shows which Claude Code account this project runs under and switches it. Every decision lives in the `swarmery account` CLI; no run logic lives here.
 allowed-tools:
   - Bash
+docs:
+  status: generated
+  source_sha: 8cf56a7fd34d
+  updated: 2026-08-07
 ---
 
 # /account — which account does this project run under?
@@ -97,3 +101,55 @@ After installing, tell the operator the function applies to **new** shells
 - `plugins/accounts-pack/README.md` — the two shell surfaces and what each costs.
 - `plugins/accounts-pack/bin/claude-account.sh` — the explicit wrapper, for
   operators who would rather not have a `claude` shell function.
+
+# How to use
+
+## What it does
+
+You have more than one Claude Code account installed on this machine and want to know — or decide — which one this project's sessions run under. This command shows the installed accounts, marks the one the current project resolves to, binds the project to a different one, or clears that binding. It is a thin proxy over the `swarmery account` CLI: every answer comes from the CLI, so this command and the dashboard can never disagree.
+
+## When to use it
+
+- You are not sure which account the next session in this project will start under and want it stated, with its source (an explicit binding vs the machine default).
+- You want this project to run under a specific account from now on — `use <key>` writes the machine-local binding.
+- A binding exists that should no longer apply, and the project should fall back to the default account — `clear`.
+- You want the `claude` shell function installed into your login profile so plain `claude` picks up the binding — `setup-shell`.
+
+## When not to use it
+
+- You want to switch the account of the session you are already in — a binding only affects the *next* session; restart instead.
+- You need to install or connect a new account — that is provisioning, done from the swarmery dashboard, not from here.
+- You want per-project billing or usage numbers — read them in the dashboard; this command only reports identity and binding.
+
+## How to invoke
+
+```
+/account
+/account use <key>
+/account clear
+/account setup-shell [--uninstall]
+```
+
+Run it with no arguments to see the accounts and the project's effective one; the subcommands change the binding or the shell profile.
+
+## Inputs
+
+- `<key>` — required for `use` only. The key of an account already installed on this machine; the CLI refuses unknown keys rather than guessing.
+- `--uninstall` — optional for `setup-shell`. Removes the `claude` shell function instead of installing it.
+
+## What you get back
+
+The no-argument form prints the account table (key, config dir, default?, connected?, plan) plus the account this project effectively runs under and why. `use` and `clear` edit `.claude/settings.local.json` — machine-local and gitignored, so nothing lands in the repo. `setup-shell` edits your login profile (`~/.zshrc` / `~/.bashrc`), backing it up to `<profile>.bak` first; the function applies to new shells only.
+
+## Worked example
+
+```
+/account use work
+```
+
+The CLI checks that `work` is installed, then writes the binding into this project's `.claude/settings.local.json`. The command reports the new binding and reminds you that the session you are in keeps its current account — the next session started in this project runs under `work`.
+
+## Related
+
+- `accounts-pack` README — explains the two shell surfaces (`claude` function vs explicit wrapper) and what each costs.
+- `swarmery` dashboard Accounts page — prefer it for provisioning accounts and reading per-project usage; this command only reads and writes the binding.
