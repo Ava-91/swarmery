@@ -106,7 +106,7 @@ function RefineModalInner({
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
       role="dialog"
       aria-modal="true"
-      aria-label="Уточнити план і наступні питання"
+      aria-label="Refine the plan and next questions"
       onClick={busy ? undefined : onClose}
     >
       <div
@@ -115,10 +115,10 @@ function RefineModalInner({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="font-display text-[14px] font-bold text-ink">
-          Уточнити план і наступні питання
+          Refine the plan and next questions
         </div>
         <p className="mt-1 text-[12.5px] leading-relaxed text-ink-dim">
-          Опишіть, що має змінитися. План оновиться, і наступні питання підуть за вашим напрямом.
+          Describe what should change. The plan will update, and the next questions will follow your direction.
         </p>
 
         <label
@@ -134,7 +134,7 @@ function RefineModalInner({
           onChange={(e) => setText(e.target.value)}
           rows={4}
           disabled={busy}
-          placeholder="Наприклад: додай поетапний rollout, покрий відновлення після збоїв і спитай про ризики міграції."
+          placeholder="For example: add a phased rollout, cover disaster recovery, and ask about migration risks."
           className="w-full resize-y rounded-lg border border-line bg-field px-2.5 py-2 text-[12.5px] leading-relaxed text-ink transition-colors outline-none placeholder:text-ink-faint focus:border-brand/50 disabled:opacity-50"
         />
 
