@@ -61,7 +61,7 @@ func TestOnboardHappyPath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(proj, ".claude", "settings.json")); err != nil {
 		t.Errorf("settings.json not written: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(ws, "my-project", "workspace", "plans")); err != nil {
+	if _, err := os.Stat(filepath.Join(ws, "my-project", "workspace", "working")); err != nil {
 		t.Errorf("workspace namespace not carved: %v", err)
 	}
 }
@@ -106,7 +106,7 @@ func TestOnboardWorkspaceRootOverride(t *testing.T) {
 		t.Errorf("workspaceRoot echo = %v, want %v", out["workspaceRoot"], overrideWS)
 	}
 	// Namespace carved under the OVERRIDE, not the server default.
-	if _, err := os.Stat(filepath.Join(overrideWS, "ovr-project", "workspace", "plans")); err != nil {
+	if _, err := os.Stat(filepath.Join(overrideWS, "ovr-project", "workspace", "working")); err != nil {
 		t.Errorf("namespace not carved under override: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(serverWS, "ovr-project")); !os.IsNotExist(err) {

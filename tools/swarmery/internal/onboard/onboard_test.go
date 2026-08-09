@@ -80,11 +80,16 @@ func TestRunCreatesSettingsProjectAndWorkspace(t *testing.T) {
 	}
 
 	// Workspace namespace tree.
-	for _, sub := range []string{"wiki", "workspace/plans", "workspace/sessions", "workspace/metrics"} {
+	for _, sub := range []string{"wiki", "workspace/working", "workspace/archive", "workspace/sessions", "workspace/metrics"} {
 		p := filepath.Join(cfg.WorkspaceRoot, cfg.Slug, sub)
 		if info, err := os.Stat(p); err != nil || !info.IsDir() {
 			t.Errorf("expected workspace dir %s", p)
 		}
+	}
+	// The frozen workspace/plans/ tree must NOT be scaffolded — its presence
+	// invited planners to save where the epic scanner never looks (issue #188).
+	if _, err := os.Stat(filepath.Join(cfg.WorkspaceRoot, cfg.Slug, "workspace", "plans")); !os.IsNotExist(err) {
+		t.Error("workspace/plans must not be scaffolded (frozen tree, issue #188)")
 	}
 }
 

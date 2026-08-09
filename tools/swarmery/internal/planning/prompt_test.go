@@ -24,10 +24,12 @@ func TestBuildPrompt(t *testing.T) {
 		"PROCEED",                             // terminal instruction
 		"PRIVATE WORKSPACE",                   // plan lands in the workspace
 		"PLAN SAVED:",                         // unambiguous completion signal
-		"@task-planner",                       // small-scope agent
-		"@implementation-planner",             // large-scope agent
-		"fenced json block",                   // structured-output contract
-		"runningPlan",                         // running plan required every turn
+		"workspace/working/<YYYY>/<MM>/<DD>/<slug>/plan/README.md", // literal scanner-visible path template (#188)
+		"workspace/plans/",        // the frozen tree is explicitly forbidden (#188)
+		"@task-planner",           // small-scope agent
+		"@implementation-planner", // large-scope agent
+		"fenced json block",       // structured-output contract
+		"runningPlan",             // running plan required every turn
 	} {
 		if !strings.Contains(p, must) {
 			t.Errorf("prompt missing required instruction %q", must)

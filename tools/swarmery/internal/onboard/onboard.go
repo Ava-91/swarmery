@@ -265,7 +265,9 @@ func carveWorkspace(wsRoot, slug string, res *Result) error {
 	cleanRoot := filepath.Clean(wsRoot)
 	base := filepath.Join(cleanRoot, slug)
 	dirs := []string{filepath.Join(base, "wiki")}
-	for _, sub := range []string{"working", "archive", "plans", "specs", "sessions", "logs", "metrics"} {
+	// No "plans" entry: that tree is frozen history, and scaffolding it invited
+	// planners to save where the epic scanner never looks (issue #188).
+	for _, sub := range []string{"working", "archive", "specs", "sessions", "logs", "metrics"} {
 		dirs = append(dirs, filepath.Join(base, "workspace", sub))
 	}
 	for _, d := range dirs {
