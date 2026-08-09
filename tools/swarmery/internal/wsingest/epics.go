@@ -38,6 +38,14 @@ var (
 	// The Doc column cell wraps the filename in backticks: `phase-1-x.md`.
 	backtickDocRe = regexp.MustCompile("`([^`]+\\.md)`")
 	// Leading integers in the "Depends on" cell: "1, 2", "1 (API), 3 (live)".
+	// Deliberately liberal: real plans also write "01", "1-5", "5–6", "ph.1",
+	// "0 (spike)", "step-01", or free prose like "rebase after 4/14" — none of
+	// which carry a "Phase" prefix a stricter pattern could anchor on, so this
+	// stays a bare-integer scan. The cost is that it also picks up unrelated
+	// numbers quoted in the same cell (a decision id, an issue number, a
+	// footnote); pruneDanglingDeps is the second-layer gate that catches those
+	// after parsing, by checking every collected seq against the phases that
+	// actually exist in the plan (see issue #190).
 	leadingIntRe = regexp.MustCompile(`\b(\d+)\b`)
 	// First markdown H1 (`# Title`) — the phase's display name fallback.
 	h1Re = regexp.MustCompile(`(?m)^#\s+(.+?)\s*$`)
@@ -394,13 +402,50 @@ func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 			phases[i].docUpdatedAt = fi.ModTime().UTC().Format(time.RFC3339)
 		}
 	}
+	pruneDanglingDeps(phases, planDir, warn)
 	return phases
+}
+
+// pruneDanglingDeps drops depends_on entries whose seq is not among this
+// plan's own phases. leadingIntRe's bare-integer scan of the "Depends on"
+// cell is deliberately liberal (see its comment) because real plans express
+// dependencies in prose, not just clean lists — but that same liberalism
+// picks up a decision id, an issue number, or a footnote quoted in the same
+// cell as if it named another phase. "Phase 2 (see decision D-11)" parses to
+// [2, 11]; without this gate a phase 11 that will never exist becomes a
+// dependency, and the referencing phase is blocked forever with no
+// explanation (issue #190). This is the structural check that regex tuning
+// alone cannot make safe: whatever the cell said, only seqs that actually
+// appear in the plan survive. Pure; unit-tested.
+func pruneDanglingDeps(phases []epicPhase, planDir string, warn func(string, ...any)) {
+	seqs := make(map[int]bool, len(phases))
+	for _, p := range phases {
+		seqs[p.seq] = true
+	}
+	for i := range phases {
+		if len(phases[i].dependsOn) == 0 {
+			continue
+		}
+		kept := phases[i].dependsOn[:0:0] // fresh backing array — never alias the original
+		for _, dep := range phases[i].dependsOn {
+			if seqs[dep] {
+				kept = append(kept, dep)
+				continue
+			}
+			warn("epics plan %s: phase %d depends_on references phase %d, which does not exist in this plan — dropped (a stray number in the \"Depends on\" cell, e.g. a decision id or issue number?)",
+				planDir, phases[i].seq, dep)
+		}
+		phases[i].dependsOn = kept
+	}
 }
 
 // parserVersion identifies WHAT parsePlan extracts. It is mixed into planHash so
 // a parser that learns a new field re-parses plans whose bytes are unchanged.
 // v2: epic_phases.repo (declared `Repo` column / phase doc header), migration 0046.
-const parserVersion = "v2"
+// v3: pruneDanglingDeps — depends_on no longer keeps a seq that names no phase
+// in the plan (issue #190); already-indexed rows carrying a phantom dependency
+// need a re-parse to shed it even though their plan bytes never changed.
+const parserVersion = "v3"
 
 // planHash combines every plan file's bytes into one content hash, so the gate
 // re-parses when the README OR any phase doc changes (a checkbox flip lives in a
