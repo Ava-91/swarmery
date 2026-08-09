@@ -95,6 +95,7 @@ function StatusBadge({ p }: { p: UsageProvider }): JSX.Element | null {
 export function UsageProviderCard({
   p,
   showAccount,
+  active = false,
   mode,
   hidden,
   onToggleWindow,
@@ -109,6 +110,12 @@ export function UsageProviderCard({
    * added meaning.
    */
   showAccount: boolean;
+  /**
+   * This card's account is the one the scoped project runs under (its binding,
+   * or the default). Set only alongside showAccount — with one account there is
+   * nothing to mark it against.
+   */
+  active?: boolean;
   mode: 'used' | 'remaining';
   /** Window keys the operator collapsed, across all providers. */
   hidden: string[];
@@ -142,6 +149,14 @@ export function UsageProviderCard({
               data-tip="subscription account"
             >
               {p.account}
+            </span>
+          )}
+          {active && (
+            <span
+              className="shrink-0 rounded-full bg-brand/10 px-1.5 py-0.5 font-mono text-[9px] tracking-[0.12em] whitespace-nowrap text-brand uppercase"
+              data-tip="the account this project's sessions run under"
+            >
+              active
             </span>
           )}
           {p.plan !== undefined && (
