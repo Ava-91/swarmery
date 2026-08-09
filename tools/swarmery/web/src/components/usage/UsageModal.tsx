@@ -74,18 +74,22 @@ export function UsageModal({
   /** The account label only appears when there is more than one account, so a
    *  single-subscription machine sees exactly the card it saw before. */
   const multiAccount = accounts.length > 1;
-  /** The scoped project's account, marked only when there is a second account
-   *  to tell it apart from — on a single-subscription machine "active" would
-   *  label the only card there is. */
-  const activeKey = multiAccount ? (active?.account ?? null) : null;
+  /** The scoped project's account. The banner names it whenever a project
+   *  scope exists — ESPECIALLY when the usage payload has no row for it, which
+   *  is exactly when the metrics on screen belong to a different subscription.
+   *  Lifting and the ACTIVE badge additionally require a second account to
+   *  mark it against — with one card, "active" would label the only card
+   *  there is. */
+  const activeKey = active?.account ?? null;
+  const markActive = multiAccount && activeKey !== null;
   /** Payload order with the active account's row lifted to the front; identity-
    *  stable when there is nothing to lift, so single-account renders untouched. */
   const ordered = useMemo(() => {
-    if (activeKey === null) return accounts;
+    if (!markActive || activeKey === null) return accounts;
     const hit = accounts.find((a) => a.account === activeKey);
     if (hit === undefined || accounts[0] === hit) return accounts;
     return [hit, ...accounts.filter((a) => a !== hit)];
-  }, [accounts, activeKey]);
+  }, [accounts, activeKey, markActive]);
 
   /** One writer for both prefs fields, so storage never drifts from state. */
   const commitPrefs = useCallback((next: UsagePrefs): void => {
@@ -240,8 +244,11 @@ export function UsageModal({
       </div>
 
       {/* Which account the scoped project runs under — the answer to "whose
-          quota am I burning right now?". Rendered only with a project scope AND
-          a second account to tell apart; the fleet-wide modal is unchanged. */}
+          quota am I burning right now?". Rendered with any project scope; the
+          unscoped (fleet-wide) modal is unchanged. NOT gated on multiAccount:
+          a bound account the daemon does not poll yields a single-row payload,
+          and that is precisely when the operator must be told the metrics on
+          screen are another subscription's. */}
       {activeKey !== null && active !== null && (
         <div
           data-active-account={activeKey}
@@ -309,7 +316,7 @@ export function UsageModal({
                       key={id}
                       p={p}
                       showAccount={multiAccount}
-                      active={a.account === activeKey}
+                      active={markActive && a.account === activeKey}
                       mode={mode}
                       hidden={prefs.hidden[id] ?? []}
                       onToggleWindow={(key) => toggleWindow(id, key)}
