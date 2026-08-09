@@ -5,8 +5,9 @@
 // carries.
 //
 // Accounts are the daemon's ingest roots: one per `claude` config dir. With a
-// single account (the stock config) this renders exactly what it always did —
-// account labels appear only when there is more than one to tell apart.
+// single account (the stock config) this renders exactly what it always did;
+// with more, each account gets a TAB, and the modal opens on the account the
+// scoped project runs under (the ● tab, resolved by lib/activeAccount.ts).
 //
 // Trigger-less by design: UsageChip owns the trigger and the `open` state, so
 // both shells (fleet App + project WorkspaceShell) reuse this component and it
@@ -77,19 +78,32 @@ export function UsageModal({
   /** The scoped project's account. The banner names it whenever a project
    *  scope exists — ESPECIALLY when the usage payload has no row for it, which
    *  is exactly when the metrics on screen belong to a different subscription.
-   *  Lifting and the ACTIVE badge additionally require a second account to
-   *  mark it against — with one card, "active" would label the only card
-   *  there is. */
+   *  The ACTIVE marker additionally requires a second account to mark it
+   *  against — with one row, "active" would label the only account there is. */
   const activeKey = active?.account ?? null;
   const markActive = multiAccount && activeKey !== null;
-  /** Payload order with the active account's row lifted to the front; identity-
-   *  stable when there is nothing to lift, so single-account renders untouched. */
-  const ordered = useMemo(() => {
-    if (!markActive || activeKey === null) return accounts;
-    const hit = accounts.find((a) => a.account === activeKey);
-    if (hit === undefined || accounts[0] === hit) return accounts;
-    return [hit, ...accounts.filter((a) => a !== hit)];
-  }, [accounts, activeKey, markActive]);
+  /** Selected account tab. Reset on close so every open lands on the ACTIVE
+   *  account (else the first row) rather than a stale pick, and snapped back
+   *  whenever the selected key drops out of the payload. With a single account
+   *  there are no tabs and this stays null. */
+  const [tab, setTab] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      setTab(null);
+      return;
+    }
+    setTab((cur) => {
+      if (cur !== null && accounts.some((a) => a.account === cur)) return cur;
+      if (activeKey !== null && accounts.some((a) => a.account === activeKey)) return activeKey;
+      return accounts[0]?.account ?? null;
+    });
+  }, [open, accounts, activeKey]);
+  /** The rows the body renders: the selected tab's row, or every row while the
+   *  payload has a single account (no tabs to pick from). */
+  const rows = useMemo(() => {
+    if (!multiAccount || tab === null) return accounts;
+    return accounts.filter((a) => a.account === tab);
+  }, [accounts, multiAccount, tab]);
 
   /** One writer for both prefs fields, so storage never drifts from state. */
   const commitPrefs = useCallback((next: UsagePrefs): void => {
@@ -270,6 +284,39 @@ export function UsageModal({
         </div>
       )}
 
+      {/* One tab per account, pinned above the scroller so the account context
+          never scrolls away. Rendered only with a second account to switch to;
+          the open-time selection is the ACTIVE account (see the tab effect), so
+          the modal opens on the subscription the scoped project actually burns. */}
+      {multiAccount && (
+        <div
+          role="group"
+          aria-label="usage accounts"
+          className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-line px-3 py-1.5"
+        >
+          {accounts.map((a) => {
+            const isActive = markActive && a.account === activeKey;
+            return (
+              <button
+                key={a.account}
+                type="button"
+                aria-pressed={tab === a.account}
+                onClick={() => setTab(a.account)}
+                data-tip={isActive ? "the account this project's sessions run under" : undefined}
+                className={segClass(tab === a.account)}
+              >
+                {a.account}
+                {isActive && (
+                  <span aria-hidden="true" className="ml-1 text-brand">
+                    ●
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* The body is the only scroller — the header and footer stay pinned. */}
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
         {/* `lastUpdated === null` IS "nothing has ever loaded" — the shared
@@ -295,7 +342,7 @@ export function UsageModal({
 
         {hasContent && (
           <div className="flex flex-col gap-2">
-            {ordered.map((a) => (
+            {rows.map((a) => (
               <Fragment key={a.account}>
                 {/* An account whose lookup produced no cards at all. Rare, and
                     deliberately not a card: there is nothing to render inside
@@ -305,7 +352,6 @@ export function UsageModal({
                     data-account={a.account}
                     className="rounded-xl border border-red/40 bg-red/8 px-2.5 py-2 font-mono text-[10.5px] leading-snug break-words text-red"
                   >
-                    {multiAccount && <span className="text-ink-dim">{a.account} · </span>}
                     {a.error}
                   </div>
                 )}
@@ -315,7 +361,9 @@ export function UsageModal({
                     <UsageProviderCard
                       key={id}
                       p={p}
-                      showAccount={multiAccount}
+                      // The pinned tab already names the account; a chip per
+                      // card would repeat it under every title.
+                      showAccount={false}
                       active={markActive && a.account === activeKey}
                       mode={mode}
                       hidden={prefs.hidden[id] ?? []}
