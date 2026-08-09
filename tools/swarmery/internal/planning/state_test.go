@@ -370,14 +370,15 @@ func TestProceed_ThenPlanSaved(t *testing.T) {
 	}
 
 	// The PHASE B reply lands → done + plan_dir.
-	insertAssistantTurn(t, db, 42, 2, "Plan written.\nPLAN SAVED: /ws/p/plan\n")
+	savedDir := "/ws/acme/workspace/working/2026/08/09/dark-mode/plan"
+	insertAssistantTurn(t, db, 42, 2, "Plan written.\nPLAN SAVED: "+savedDir+"\n")
 	s.OnSessionTurns(uuid)
 	status, _, _, planDir := wizardState(t, db, uuid)
 	if status != StatusDone {
 		t.Fatalf("status = %q, want done", status)
 	}
-	if planDir.String != "/ws/p/plan" {
-		t.Errorf("plan_dir = %q, want /ws/p/plan", planDir.String)
+	if planDir.String != savedDir {
+		t.Errorf("plan_dir = %q, want %q", planDir.String, savedDir)
 	}
 
 	// Proceed again on a terminal wizard → ErrNotAwaiting.
@@ -693,6 +694,74 @@ func TestWizardSnapshot_StaleProceedingReconcile(t *testing.T) {
 	status, _, _, _ := wizardState(t, db, "uuid-stale-proceed")
 	if status != StatusAwaiting {
 		t.Errorf("persisted status = %q, want awaiting_answer", status)
+	}
+}
+
+// ── PLAN SAVED path-shape gate (issue #188) ──
+
+func TestValidPlanDir(t *testing.T) {
+	for _, dir := range []string{
+		"/ws/acme/workspace/working/2026/08/09/dark-mode/plan",
+		"/ws/acme/workspace/working/2026/08/09/dark-mode/plan/",
+		"/ws/acme/workspace/working/2026/08/09/dark-mode",
+		"/ws/acme/workspace/archive/2026/01/31/old-task/plan",
+	} {
+		if !validPlanDir(dir) {
+			t.Errorf("validPlanDir(%q) = false, want true", dir)
+		}
+	}
+	for _, dir := range []string{
+		"",
+		"/ws/p/plan",
+		"/ws/acme/workspace/plans/2026-08-06-milestone/plan",   // frozen flat tree — the #188 repro
+		"/ws/acme/workspace/working/2026-08-09/dark-mode/plan", // date not split into dirs
+		"/ws/acme/workspace/working/2026/08/dark-mode/plan",    // day segment missing
+	} {
+		if validPlanDir(dir) {
+			t.Errorf("validPlanDir(%q) = true, want false", dir)
+		}
+	}
+}
+
+// A PHASE B reply whose PLAN SAVED path is a shape the workspace scanner never
+// walks (e.g. the frozen workspace/plans/ tree) must NOT mark the wizard done —
+// the plan would silently never reach the Plans page. With no process alive the
+// raw fallback surfaces the reply, so the operator can resume with a correction.
+func TestOnSessionTurns_PlanSavedOffShapePathNotDone(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusProceeding,
+		"Plan written.\nPLAN SAVED: /ws/acme/workspace/plans/2026-08-06-milestone/plan\n")
+
+	s.OnSessionTurns(uuid)
+
+	status, cq, raw, planDir := wizardState(t, db, uuid)
+	if status != StatusAwaiting {
+		t.Fatalf("status = %q, want awaiting_answer (off-shape PLAN SAVED must not mark done)", status)
+	}
+	if cq.Valid {
+		t.Errorf("current_question = %q, want NULL", cq.String)
+	}
+	if planDir.Valid {
+		t.Errorf("plan_dir = %q, want NULL", planDir.String)
+	}
+	if !raw.Valid || !strings.Contains(raw.String, "PLAN SAVED:") {
+		t.Errorf("raw_reply = %+v, want the reply surfaced to the operator", raw)
+	}
+}
+
+// While the resume is still alive an off-shape reply must not flip the wizard —
+// same gating as any raw turn.
+func TestOnSessionTurns_PlanSavedOffShapeGatedWhileAlive(t *testing.T) {
+	db := testDB(t)
+	s, uuid := wizardFixture(t, db, StatusProceeding,
+		"PLAN SAVED: /ws/acme/workspace/plans/milestone/plan\n")
+	s.ResumeInFlight = func(u string) bool { return u == uuid }
+
+	s.OnSessionTurns(uuid)
+
+	status, _, raw, planDir := wizardState(t, db, uuid)
+	if status != StatusProceeding || raw.Valid || planDir.Valid {
+		t.Errorf("status=%q raw=%v planDir=%v — live off-shape reply must stay proceeding", status, raw, planDir)
 	}
 }
 

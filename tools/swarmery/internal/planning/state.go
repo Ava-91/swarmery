@@ -14,10 +14,12 @@ package planning
 //	OnSessionTurns   →  awaiting_answer      (question parsed, or raw fallback
 //	                                          once no process is alive — incl. a
 //	                                          proceeding run whose reply lacked
-//	                                          the "PLAN SAVED:" sentinel)
+//	                                          the "PLAN SAVED:" sentinel or
+//	                                          carried an off-convention path)
 //	Answer / Refine  →  generating           (resume spawned by the api layer)
 //	Proceed          →  proceeding
-//	OnSessionTurns   →  done + plan_dir      ("PLAN SAVED:" sentinel)
+//	OnSessionTurns   →  done + plan_dir      ("PLAN SAVED:" sentinel with a
+//	                                          scanner-visible path)
 //	runner failure   →  failed               (only while generating)
 //	Cancel / Start   →  cancelled            (explicit, or superseded)
 //	stale reconcile  →  awaiting_answer      (generating/proceeding >16min,
@@ -32,6 +34,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -208,6 +212,19 @@ func extractPlanDir(text string) string {
 	return strings.TrimSpace(rest)
 }
 
+// planDirShapeRe is the only task-dir shape the workspace scanner
+// (internal/wsingest) ever walks — workspace/{working,archive}/YYYY/MM/DD/<slug>/
+// — with the plan/ leaf the sentinel usually points at accepted too. A PLAN
+// SAVED path outside this shape would be invisible on the Plans page forever
+// (issue #188), so OnSessionTurns refuses to treat it as completion.
+var planDirShapeRe = regexp.MustCompile(`/workspace/(?:working|archive)/\d{4}/\d{2}/\d{2}/[^/]+(?:/plan)?/?$`)
+
+// validPlanDir reports whether an extracted PLAN SAVED path matches the
+// scanner-visible task-dir shape.
+func validPlanDir(dir string) bool {
+	return dir != "" && planDirShapeRe.MatchString(filepath.ToSlash(dir))
+}
+
 // OnSessionTurns advances the wizard when new transcript turns land for a
 // session. Called by the api layer's ingest-bus consumer for EVERY
 // session_updated — the wizardByUUID miss (one indexed SELECT) is the cheap
@@ -237,21 +254,30 @@ func (s *Service) OnSessionTurns(sessionUUID string) {
 	// may write the plan without a PROCEED if the idea needed no interview.
 	if (row.status == StatusProceeding || row.status == StatusGenerating) &&
 		strings.Contains(text, planSavedMarker) {
-		// CAS: a Cancel landing between the row read and this write must win —
-		// 'done' may only replace the still-open statuses the read observed.
-		res, err := s.DB.Exec(
-			`UPDATE planning_sessions SET status=?, plan_dir=?, updated_at=? WHERE id=? AND status IN (?, ?)`,
-			StatusDone, extractPlanDir(text), s.ts(), row.id, StatusProceeding, StatusGenerating)
-		if err != nil {
-			log.Printf("error: planning: mark done uuid=%s: %v", sessionUUID, err)
+		if dir := extractPlanDir(text); validPlanDir(dir) {
+			// CAS: a Cancel landing between the row read and this write must win —
+			// 'done' may only replace the still-open statuses the read observed.
+			res, err := s.DB.Exec(
+				`UPDATE planning_sessions SET status=?, plan_dir=?, updated_at=? WHERE id=? AND status IN (?, ?)`,
+				StatusDone, dir, s.ts(), row.id, StatusProceeding, StatusGenerating)
+			if err != nil {
+				log.Printf("error: planning: mark done uuid=%s: %v", sessionUUID, err)
+				return
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return // lost to a concurrent terminal write — never overwrite it
+			}
+			log.Printf("planning: wizard uuid=%s done — plan at %q", sessionUUID, dir)
+			s.notify(row.projectID)
 			return
+		} else {
+			// Sentinel present but the path is a shape the scanner never walks
+			// (e.g. the frozen workspace/plans/ tree) — stamping done would hide
+			// the plan from the Plans page forever (#188). Fall through to the
+			// raw fallback instead, so the reply surfaces to the operator, who
+			// can resume with a corrective instruction.
+			log.Printf("warn: planning: wizard uuid=%s PLAN SAVED path %q is off-convention — not marking done", sessionUUID, dir)
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return // lost to a concurrent terminal write — never overwrite it
-		}
-		log.Printf("planning: wizard uuid=%s done — plan at %q", sessionUUID, extractPlanDir(text))
-		s.notify(row.projectID)
-		return
 	}
 
 	pt := ParseTurn(text)
