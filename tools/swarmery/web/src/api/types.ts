@@ -990,7 +990,7 @@ export interface RetroLessonsResp {
   lessons: RetroLesson[];
 }
 
-/** Ledger verdict split of one task (redispatch = re-dispatch/redo/fail/reject + Ukrainian повтор/відхил/провал/фейл). */
+/** Ledger verdict split of one task (redispatch = re-dispatch/redo/fail/reject, matched in English or the legacy Ukrainian ledger vocabulary: повтор/відхил/провал/фейл). */
 export interface RetroTaskVerdicts {
   ok: number;
   redispatch: number;

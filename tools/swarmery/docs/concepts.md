@@ -122,7 +122,7 @@ A headless planner interviews you one question at a time and writes a phased pla
 
 1. **Describe the idea.** A headless planner session starts in this project's repo — it sees the code, `CLAUDE.md`, and the core-pack planning agents.
 2. **Answer structured questions.** One question at a time; pick an option or write your own, while the running plan rebuilds beside it after every answer. If a reply fails the structured-protocol parse, the page falls back to showing the raw prose with a free-text box that answers through the same endpoint, so the interview never dead-ends.
-3. **Refine or proceed.** «Уточнити» steers the plan and the questions that follow; «Продовжуйте за планом» ends the interview and the planner writes the full plan.
+3. **Refine or proceed.** "Refine" steers the plan and the questions that follow; "Continue with the plan" ends the interview and the planner writes the full plan.
 4. **The plan lands in the workspace.** A `plan/README.md` (objective, real file paths, phase sequencing table, risks, Definition of Done) plus `phase-N` docs with acceptance checkboxes are written to the private workspace — never into the repo — and appear on the Plans page within seconds.
 
 ## Claude account

@@ -202,7 +202,7 @@ const RAW = {
       },
       {
         title: 'Refine or proceed',
-        body: '«Уточнити» steers the plan and the next questions; «Продовжуйте за планом» ends the interview and the planner writes the full plan.',
+        body: '"Refine" steers the plan and the next questions; "Continue with the plan" ends the interview and the planner writes the full plan.',
       },
       {
         title: 'The plan lands in the workspace',

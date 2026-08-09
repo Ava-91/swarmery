@@ -1,6 +1,6 @@
 // Running-plan side panel (interactive planning v2 — phase 3): the plan the
 // wizard rebuilds after every answer, plus the two interview controls —
-// «Уточнити» (course-correct via RefineModal) and «Продовжуйте за планом»
+// "Refine" (course-correct via RefineModal) and "Continue with the plan"
 // (inline confirm → end the interview, write the plan). Both are disabled
 // unless the wizard is awaiting an answer — everything else is mid-generation
 // or terminal.
@@ -91,7 +91,7 @@ export function RunningPlanPanel({
         {confirming ? (
           <div>
             <div className="text-[12px] leading-relaxed text-ink-2">
-              Завершити інтерв’ю? Планер запише повний план у workspace.
+              End the interview? The planner will write the full plan to the workspace.
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <button
@@ -103,14 +103,14 @@ export function RunningPlanPanel({
                 }}
                 className="rounded-lg border border-green/45 bg-green/12 px-3.5 py-1.5 text-[12.5px] font-semibold text-green transition-colors hover:bg-green/20 disabled:opacity-50"
               >
-                Так, пишемо план
+                Yes, write the plan
               </button>
               <button
                 type="button"
                 onClick={() => setConfirming(false)}
                 className="rounded-lg border border-line bg-surface px-3.5 py-1.5 text-[12.5px] text-ink-2 transition-colors hover:bg-surface2"
               >
-                Назад
+                Back
               </button>
             </div>
           </div>
@@ -122,7 +122,7 @@ export function RunningPlanPanel({
               onClick={onRefine}
               className="rounded-lg border border-line bg-surface px-3.5 py-1.5 text-[12.5px] font-semibold text-ink-2 transition-colors hover:bg-surface2 disabled:opacity-50"
             >
-              Уточнити
+              Refine
             </button>
             <button
               type="button"
@@ -130,7 +130,7 @@ export function RunningPlanPanel({
               onClick={() => setConfirming(true)}
               className="rounded-lg border border-green/45 bg-green/12 px-3.5 py-1.5 text-[12.5px] font-semibold text-green transition-colors hover:bg-green/20 disabled:opacity-50"
             >
-              Продовжуйте за планом
+              Continue with the plan
             </button>
           </div>
         )}
