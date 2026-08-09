@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from 'react';
 import type { UsageAccount, UsageProvider, UsageWindow } from '../../api/types';
+import { useActiveUsageAccount } from '../../lib/activeAccount';
 import { useUsage } from '../../lib/usageData';
 import { fmtResetsIn } from './format';
 import { UsageModal } from './UsageModal';
@@ -148,6 +149,10 @@ function buildView(
 export function UsageChip(): JSX.Element {
   const { accounts, providers, error, lastUpdated, setModalOpen } = useUsage();
   const [open, setOpen] = useState(false);
+  // The scoped project's effective account, threaded into the modal so it can
+  // name and lift the active account. Fetched here, not in the modal — the
+  // modal stays pure presentation (see its header note).
+  const active = useActiveUsageAccount(open);
 
   // Registering the open modal is what bumps the SHARED cadence 120s → 30s; it
   // never starts a second poller. Reference-counted in the provider, so
@@ -188,7 +193,7 @@ export function UsageChip(): JSX.Element {
           </span>
         ))}
       </button>
-      <UsageModal open={open} onClose={() => setOpen(false)} />
+      <UsageModal open={open} onClose={() => setOpen(false)} active={active} />
     </span>
   );
 }

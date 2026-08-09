@@ -22,6 +22,7 @@
 // following AttachModal's overlay pattern.
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ActiveAccount } from '../../lib/activeAccount';
 import { useUsage } from '../../lib/usageData';
 import {
   providerIdentity,
@@ -48,9 +49,16 @@ const SEGMENTS = [
 export function UsageModal({
   open,
   onClose,
+  active = null,
 }: {
   open: boolean;
   onClose: () => void;
+  /**
+   * The account the current project scope runs under (lib/activeAccount.ts),
+   * or null when unscoped. Passed in by UsageChip — this component stays
+   * fetch-free. Its row sorts first and its cards carry an `active` badge.
+   */
+  active?: ActiveAccount | null;
 }): JSX.Element | null {
   const { accounts, error, loading, lastUpdated, refresh } = useUsage();
   const [prefs, setPrefs] = useState<UsagePrefs>(readUsagePrefs);
@@ -66,6 +74,18 @@ export function UsageModal({
   /** The account label only appears when there is more than one account, so a
    *  single-subscription machine sees exactly the card it saw before. */
   const multiAccount = accounts.length > 1;
+  /** The scoped project's account, marked only when there is a second account
+   *  to tell it apart from — on a single-subscription machine "active" would
+   *  label the only card there is. */
+  const activeKey = multiAccount ? (active?.account ?? null) : null;
+  /** Payload order with the active account's row lifted to the front; identity-
+   *  stable when there is nothing to lift, so single-account renders untouched. */
+  const ordered = useMemo(() => {
+    if (activeKey === null) return accounts;
+    const hit = accounts.find((a) => a.account === activeKey);
+    if (hit === undefined || accounts[0] === hit) return accounts;
+    return [hit, ...accounts.filter((a) => a !== hit)];
+  }, [accounts, activeKey]);
 
   /** One writer for both prefs fields, so storage never drifts from state. */
   const commitPrefs = useCallback((next: UsagePrefs): void => {
@@ -219,6 +239,30 @@ export function UsageModal({
         </span>
       </div>
 
+      {/* Which account the scoped project runs under — the answer to "whose
+          quota am I burning right now?". Rendered only with a project scope AND
+          a second account to tell apart; the fleet-wide modal is unchanged. */}
+      {activeKey !== null && active !== null && (
+        <div
+          data-active-account={activeKey}
+          className="flex shrink-0 items-center gap-1.5 border-b border-line bg-surface2/40 px-3 py-1.5 font-mono text-[10px] text-ink-dim"
+        >
+          <span aria-hidden="true" className="text-brand">
+            ▸
+          </span>
+          <span className="min-w-0 truncate">
+            {active.project} runs as <span className="font-semibold text-ink">{activeKey}</span>
+            {active.source === 'default' && <span className="text-ink-faint"> (no binding)</span>}
+            {/* An active account the daemon has no usage row for — bound but not
+                ingested. Said out loud, or the banner would name an account the
+                cards below never show. */}
+            {!accounts.some((a) => a.account === activeKey) && (
+              <span className="text-ink-faint"> · no usage data for this account</span>
+            )}
+          </span>
+        </div>
+      )}
+
       {/* The body is the only scroller — the header and footer stay pinned. */}
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
         {/* `lastUpdated === null` IS "nothing has ever loaded" — the shared
@@ -244,7 +288,7 @@ export function UsageModal({
 
         {hasContent && (
           <div className="flex flex-col gap-2">
-            {accounts.map((a) => (
+            {ordered.map((a) => (
               <Fragment key={a.account}>
                 {/* An account whose lookup produced no cards at all. Rare, and
                     deliberately not a card: there is nothing to render inside
@@ -265,6 +309,7 @@ export function UsageModal({
                       key={id}
                       p={p}
                       showAccount={multiAccount}
+                      active={a.account === activeKey}
                       mode={mode}
                       hidden={prefs.hidden[id] ?? []}
                       onToggleWindow={(key) => toggleWindow(id, key)}
