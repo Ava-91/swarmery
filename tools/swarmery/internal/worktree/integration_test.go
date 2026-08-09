@@ -383,6 +383,80 @@ func TestBranchProbeDistinguishesMissingFromBrokenIntegration(t *testing.T) {
 	}
 }
 
+// TestAcquireCopiesUntrackedClaudeSettingsIntegration reproduces issue #192
+// against a real git repo: a project onboarded into swarmery gets
+// .claude/settings.json written but never committed (`git status` shows
+// `??`), so a plain `git worktree add` — proven against real git here, not a
+// stub — never materializes it in the fresh worktree, and a headless run
+// spawned there loses enabledPlugins with no warning. Acquire must lend the
+// untracked file from the source checkout.
+func TestAcquireCopiesUntrackedClaudeSettingsIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test needs a real git binary; skipped in -short")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repo := t.TempDir()
+	git := ExecGit{}
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := git.Run(repo, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	mustWrite(t, filepath.Join(repo, "README.md"), "hello\n")
+	run("add", "README.md")
+	run("commit", "-q", "-m", "init")
+
+	// The exact repro: onboarding wrote .claude/settings.json (and
+	// project.json) but they were never committed. `git status --porcelain`
+	// shows them as untracked ("??"), same as the reporter's repro steps.
+	mustMkdir(t, filepath.Join(repo, ".claude"))
+	mustWrite(t, filepath.Join(repo, ".claude", "settings.json"),
+		`{"enabledPlugins":{"core":"swarmery"}}`)
+	mustWrite(t, filepath.Join(repo, ".claude", "settings.local.json"),
+		`{"permissions":{"allow":["Bash(git *)"]}}`)
+	if status := strings.TrimSpace(run("status", "--porcelain")); !strings.Contains(status, "??") {
+		t.Fatalf("setup: expected untracked .claude files, git status was:\n%s", status)
+	}
+
+	m := &Manager{Git: git, Root: filepath.Join(t.TempDir(), "wts")}
+	a, err := m.Acquire(repo, "proj", "phase-192")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(a.Path, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf(".claude/settings.json missing from the fresh worktree — issue #192 regressed: %v", err)
+	}
+	if string(got) != `{"enabledPlugins":{"core":"swarmery"}}` {
+		t.Fatalf("worktree settings.json = %q, want the source repo's untracked content", got)
+	}
+	got, err = os.ReadFile(filepath.Join(a.Path, ".claude", "settings.local.json"))
+	if err != nil {
+		t.Fatalf(".claude/settings.local.json missing from the fresh worktree: %v", err)
+	}
+	if string(got) != `{"permissions":{"allow":["Bash(git *)"]}}` {
+		t.Fatalf("worktree settings.local.json = %q, want the source repo's content", got)
+	}
+
+	// The worktree itself must still show clean per git — the copied files are
+	// plain filesystem writes outside git's own view of a linked worktree's
+	// tracked content, not a git operation, so this also pins that the copy
+	// does not confuse git about what the worktree checked out.
+	if out, err := git.Run(a.Path, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || strings.TrimSpace(out) != "swarm/phase-192" {
+		t.Fatalf("worktree HEAD = %q (err %v), want swarm/phase-192", strings.TrimSpace(out), err)
+	}
+}
+
 // TestExecGitRealError confirms ExecGit surfaces a real git failure with output.
 func TestExecGitRealError(t *testing.T) {
 	if testing.Short() {

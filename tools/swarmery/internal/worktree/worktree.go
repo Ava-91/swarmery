@@ -197,7 +197,10 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 	// Invariant 4: our path already registered?
 	if reg, ok := entries.byPath(path); ok {
 		if reg.branch == branch {
-			// Branch-matched → warm reuse as-is.
+			// Branch-matched → warm reuse as-is. Still worth a sync pass: the
+			// project's untracked .claude/ files may have changed (or been added)
+			// since this worktree was first acquired.
+			syncUntrackedConfig(repoRoot, path)
 			return Acquired{Path: path, Branch: branch, StartPoint: startSHA}, nil
 		}
 		// Foreign branch / detached at our path → reclaim in place: remove then
@@ -257,6 +260,9 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 		}
 		return Acquired{}, fmt.Errorf("worktree: add %s: %w", path, err)
 	}
+	// The worktree now has whatever repoRoot had COMMITTED — lend it whatever
+	// repoRoot has UNCOMMITTED too (issue #192), before handing it to a caller.
+	syncUntrackedConfig(repoRoot, path)
 	return Acquired{Path: path, Branch: branch, StartPoint: startSHA}, nil
 }
 
