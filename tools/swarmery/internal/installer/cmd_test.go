@@ -33,6 +33,27 @@ func TestMergeInstallEnv_PreservesWhenNotResupplied(t *testing.T) {
 	}
 }
 
+func TestMergeInstallEnv_ProjectsRootsBakedAndPreserved(t *testing.T) {
+	// The multi-account enabler: --projects-roots (or the shell env) must land
+	// in the plist, and a bare reinstall must carry it over like the others.
+	env, _ := mergeInstallEnv(nil,
+		map[string]bool{"projects-roots": true},
+		map[string]string{"projects-roots": "auto"},
+		noEnv)
+	if len(env) != 1 || env[0].Key != "SWARMERY_PROJECTS_ROOTS" || env[0].Value != "auto" {
+		t.Errorf("flag not baked: %+v", env)
+	}
+
+	prev := map[string]string{"SWARMERY_PROJECTS_ROOTS": "auto"}
+	env, preserved := mergeInstallEnv(prev, map[string]bool{}, map[string]string{}, noEnv)
+	if len(env) != 1 || env[0].Value != "auto" {
+		t.Errorf("bare reinstall wiped SWARMERY_PROJECTS_ROOTS: %+v", env)
+	}
+	if len(preserved) != 1 || preserved[0] != "SWARMERY_PROJECTS_ROOTS" {
+		t.Errorf("preserved = %v, want [SWARMERY_PROJECTS_ROOTS]", preserved)
+	}
+}
+
 func TestMergeInstallEnv_ExplicitFlagWins(t *testing.T) {
 	prev := map[string]string{"SWARMERY_ONBOARD_ROOTS": "/old"}
 	env, _ := mergeInstallEnv(prev,
