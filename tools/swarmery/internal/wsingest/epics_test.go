@@ -322,6 +322,73 @@ func TestParsePlanWithTable(t *testing.T) {
 	}
 }
 
+// TestParsePlanDropsDanglingDeps is the regression for issue #190:
+// leadingIntRe's bare-integer scan of the "Depends on" cell is deliberately
+// liberal (real plans write "1", "01", "1, 2", "Phase 2", "Phase 2, Phase 4",
+// ranges, and free prose with no "Phase" prefix at all) — but that same
+// liberalism picks up a decision id, issue number, or footnote quoted in the
+// same cell as if it named another phase. "Phase 2 (see decision D-11)" was
+// parsing to depends_on [2, 11], and phase 11 never existing left the
+// referencing phase blocked forever with no explanation. parsePlan must drop
+// any depends_on entry whose seq isn't among this plan's own phases, and warn
+// once per drop; every legitimate bare/list/"Phase N" form must survive
+// untouched.
+func TestParsePlanDropsDanglingDeps(t *testing.T) {
+	dir := writePlan(t, map[string]string{
+		"README.md": "# Epic\n\n| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
+			"| 1 | Schema | `phase-1.md` | — |\n" +
+			"| 2 | Parser | `phase-2.md` | 1 |\n" +
+			"| 3 | Foo | `phase-3.md` | Phase 2 (see decision D-11) |\n" +
+			"| 4 | Bar | `phase-4.md` | 2, 3 |\n" +
+			"| 5 | Baz | `phase-5.md` | Phase 2, Phase 4 |\n" +
+			"| 6 | Ghost | `phase-6.md` | 9 |\n",
+		"phase-1.md": "# Phase 1\n",
+		"phase-2.md": "# Phase 2\n",
+		"phase-3.md": "# Phase 3\n",
+		"phase-4.md": "# Phase 4\n",
+		"phase-5.md": "# Phase 5\n",
+		"phase-6.md": "# Phase 6\n",
+	})
+	warn, msgs := collectWarn(t)
+	phases := parsePlan(dir, warn)
+	if len(phases) != 6 {
+		t.Fatalf("phases = %d, want 6", len(phases))
+	}
+	byDeps := func(seq int) []int {
+		t.Helper()
+		for _, p := range phases {
+			if p.seq == seq {
+				return p.dependsOn
+			}
+		}
+		t.Fatalf("no phase seq=%d", seq)
+		return nil
+	}
+	// Legitimate bare/list/"Phase N" forms survive untouched.
+	if !reflect.DeepEqual(byDeps(2), []int{1}) {
+		t.Errorf("phase 2 deps = %v, want [1]", byDeps(2))
+	}
+	if !reflect.DeepEqual(byDeps(4), []int{2, 3}) {
+		t.Errorf("phase 4 deps = %v, want [2 3]", byDeps(4))
+	}
+	if !reflect.DeepEqual(byDeps(5), []int{2, 4}) {
+		t.Errorf("phase 5 deps = %v, want [2 4]", byDeps(5))
+	}
+	// The footnote's "11" (from "D-11") must NOT survive as a phantom
+	// dependency on a phase 11 that doesn't exist — only "Phase 2" does.
+	if !reflect.DeepEqual(byDeps(3), []int{2}) {
+		t.Errorf("phase 3 deps = %v, want [2] (D-11's 11 dropped)", byDeps(3))
+	}
+	// A dep naming a phase that plain doesn't exist anywhere drops to empty,
+	// not to a permanently-blocking reference.
+	if len(byDeps(6)) != 0 {
+		t.Errorf("phase 6 deps = %v, want none (phase 9 doesn't exist)", byDeps(6))
+	}
+	if len(*msgs) != 2 {
+		t.Fatalf("warnings = %v, want 2 (phase 3's dangling 11, phase 6's dangling 9)", *msgs)
+	}
+}
+
 func TestParsePlanFallbackNoTable(t *testing.T) {
 	// No table in README → one phase per phase-*/step-* doc, seq by filename sort.
 	dir := writePlan(t, map[string]string{
