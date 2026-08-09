@@ -177,8 +177,10 @@ func usage() {
   swarmery sysscan  [--db <path>] [--claude-dir <dir>] [--overlays-dir <dir>]
                                    one-shot system-config scan (agents/skills/hooks/commands)
   swarmery install  [--port <n>] [--onboard-roots <dirs>] [--workspace-root <dir>] [--statusline-src <dir>]
+                    [--projects-roots <dirs|auto>]
                                    launchd auto-start; bakes SWARMERY_* into the plist's EnvironmentVariables
-                                   (--onboard-roots enables POST /api/projects/onboard + the dashboard button)
+                                   (--onboard-roots enables POST /api/projects/onboard + the dashboard button;
+                                   --projects-roots auto makes every ~/.claude*/projects account visible)
   swarmery uninstall               remove launchd service (keeps logs+db)
   swarmery status   [--port <n>] [--url <base>]
                                    live daemon snapshot (version/uptime/db/migrations/

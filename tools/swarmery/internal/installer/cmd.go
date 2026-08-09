@@ -24,12 +24,14 @@ var installEnvKeys = []struct{ flag, env string }{
 	{"onboard-roots", "SWARMERY_ONBOARD_ROOTS"},
 	{"workspace-root", "SWARMERY_WORKSPACE_ROOT"},
 	{"statusline-src", "SWARMERY_STATUSLINE_SRC"},
+	{"projects-roots", "SWARMERY_PROJECTS_ROOTS"},
 }
 
 // CmdInstall implements
 //
 //	swarmery install [--port <n>] [--onboard-roots <dirs>]
 //	                 [--workspace-root <dir>] [--statusline-src <dir>]
+//	                 [--projects-roots <dirs|auto>]
 //
 // Anything the daemon needs at runtime is baked into the plist's
 // EnvironmentVariables. Because Install rewrites the whole plist, a bare
@@ -50,6 +52,9 @@ func CmdInstall(args []string) error {
 		"shared workspace repo root baked into the plist (env: SWARMERY_WORKSPACE_ROOT)")
 	statuslineSrc := fs.String("statusline-src", "",
 		"plugins/core/statusline dir onboarding copies from (env: SWARMERY_STATUSLINE_SRC)")
+	projectsRoots := fs.String("projects-roots", "",
+		"comma-separated transcript roots, or 'auto' = every ~/.claude*/projects — what makes "+
+			"a second account's sessions and usage visible (env: SWARMERY_PROJECTS_ROOTS)")
 	fs.Parse(args)
 	if *port != -1 && (*port < 0 || *port > 65535) {
 		return fmt.Errorf("invalid port %d", *port)
@@ -68,6 +73,7 @@ func CmdInstall(args []string) error {
 		"onboard-roots":  *onboardRoots,
 		"workspace-root": *workspaceRoot,
 		"statusline-src": *statuslineSrc,
+		"projects-roots": *projectsRoots,
 	}, os.LookupEnv)
 	for _, k := range preserved {
 		fmt.Fprintf(os.Stdout, "  preserving %s from existing plist\n", k)
