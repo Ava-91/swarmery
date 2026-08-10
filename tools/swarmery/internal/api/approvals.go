@@ -279,22 +279,44 @@ func (h *Handler) resolveApproval(w http.ResponseWriter, r *http.Request) {
 
 // listApprovals lists permission requests newest-first. status defaults to
 // 'pending'; 'resolved' selects every terminal status; 'all' everything; a
-// concrete status name filters exactly. limit is optional.
+// concrete status name filters exactly. limit is optional. ?project=<slug|id|name>
+// narrows to one project via the same predicate every other scoped endpoint uses
+// (internal/api/scope.go). Built as a LOCAL query — do NOT fold this into
+// permissionRequestSelect/scanPermissionRequest: those also back
+// permissionRequestByID (the POST /api/approvals/{id} response) and both WS
+// broadcast frames (ws.go:160-170), which must stay unjoined and unscoped.
 func (h *Handler) listApprovals(w http.ResponseWriter, r *http.Request) {
-	query := permissionRequestSelect
+	query := `
+		SELECT pr.id, pr.session_id, pr.tool_name, pr.request_json, pr.status,
+		       pr.requested_at, pr.resolved_at, pr.resolved_via, pr.reason,
+		       COALESCE(pr.expires_at, '')
+		FROM permission_requests pr
+		JOIN sessions s ON s.id = pr.session_id
+		JOIN projects p ON p.id = s.project_id
+		WHERE 1=1`
 	args := []any{}
 	switch status := r.URL.Query().Get("status"); status {
 	case "", "pending":
-		query += ` WHERE status = 'pending'`
+		query += ` AND pr.status = 'pending'`
 	case "resolved":
-		query += ` WHERE status != 'pending'`
+		query += ` AND pr.status != 'pending'`
 	case "all":
-		// no filter
+		// WHERE 1=1 anchor already present — no extra filter.
 	default:
-		query += ` WHERE status = ?`
+		query += ` AND pr.status = ?`
 		args = append(args, status)
 	}
-	query += ` ORDER BY requested_at DESC, id DESC`
+
+	// Deliberately NOT filtering p.archived = 0 (unlike stats.go:96-97): a
+	// pending approval blocks a live agent even in an archived project; hiding
+	// it here would strand it. Mirrors the invariant at
+	// web/src/pages/Overview.tsx:1008 ("a pending approval must never be
+	// invisible").
+	projFilter, projArgs := scopeFilter(r)
+	query += projFilter
+	args = append(args, projArgs...)
+
+	query += ` ORDER BY pr.requested_at DESC, pr.id DESC`
 	if l := r.URL.Query().Get("limit"); l != "" {
 		n, err := strconv.Atoi(l)
 		if err != nil || n < 1 {

@@ -23,7 +23,6 @@ import {
   fetchApprovalRules,
   fetchApprovals,
   fetchProjects,
-  fetchSessions,
   resolveApproval,
   toggleApprovalRule,
   type ApprovalAction,
@@ -32,6 +31,7 @@ import {
   buildAnswers,
   EMPTY_DRAFT,
   fmtClock,
+  OPTIMISTIC_STATUS,
   questionsOf,
   requestJsonPretty,
   requestSummary,
@@ -43,6 +43,7 @@ import {
 import { fmtAgo } from '../lib/format';
 import { usePageSearch } from '../lib/pageSearch';
 import { useScope } from '../lib/scope';
+import { useSessionProjectIndex } from '../lib/sessionProjects';
 import { applyPermissionMessage, useLiveUpdates } from '../lib/ws';
 import { PageSearchInput } from '../components/PageSearchInput';
 import { ScopeChip } from '../components/ScopeChip';
@@ -69,15 +70,6 @@ const APPROVAL_LABEL: Record<PermissionRequestStatus, string> = {
   denied: 'denied',
   expired: 'expired',
   resolved_elsewhere: 'elsewhere',
-};
-
-/* ----- optimistic status per action (the WS/200 row is authoritative) ----- */
-
-const OPTIMISTIC_STATUS: Record<ApprovalAction, PermissionRequestStatus> = {
-  approve: 'approved',
-  deny: 'denied',
-  answer: 'approved', // the daemon approves the row with the answer summary as reason
-  terminal: 'resolved_elsewhere', // no-decision handoff — the shim fails open (E12d/E12e)
 };
 
 /* ----- session attribution (project + title when resolvable) ----- */
@@ -502,7 +494,7 @@ function HistoryRow({
 
 export function Approvals(): JSX.Element {
   const [requests, setRequests] = useState<PermissionRequest[] | null>(null);
-  const [sessions, setSessions] = useState<Session[] | null>(null);
+  const { bySessionId } = useSessionProjectIndex(requests !== null && requests.length > 0);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -515,10 +507,10 @@ export function Approvals(): JSX.Element {
   const inScope = useCallback(
     (r: PermissionRequest): boolean => {
       if (scope === null) return true;
-      const s = sessions?.find((x) => x.id === r.sessionId);
+      const s = bySessionId.get(r.sessionId);
       return s === undefined || s.projectSlug === (scopeProject?.slug ?? scope);
     },
-    [scope, scopeProject, sessions],
+    [scope, scopeProject, bySessionId],
   );
 
   // Auto-approve rules (control-plane v2).
@@ -595,15 +587,6 @@ export function Approvals(): JSX.Element {
 
   useEffect(load, [load]);
 
-  // Session attribution — fetched lazily, once, only when there is something
-  // to attribute (plain "session #N" fallback until/unless it resolves).
-  useEffect(() => {
-    if (requests === null || requests.length === 0 || sessions !== null) return;
-    fetchSessions()
-      .then((page) => setSessions(page.sessions))
-      .catch(() => setSessions([]));
-  }, [requests, sessions]);
-
   const onMessage = useCallback((msg: WSMessage): void => {
     if (msg.type !== 'permission_requested' && msg.type !== 'permission_resolved') return;
     setRequests((prev) => (prev === null ? prev : applyPermissionMessage(prev, msg)));
@@ -613,7 +596,7 @@ export function Approvals(): JSX.Element {
   // Contextual header search: match tool name or the joined session's title.
   const matchesQuery = (r: PermissionRequest): boolean => {
     if (query === '') return true;
-    const s = sessions?.find((x) => x.id === r.sessionId);
+    const s = bySessionId.get(r.sessionId);
     return [r.toolName, s?.title, s?.projectName, s?.projectSlug].some(
       (v) => v != null && v.toLowerCase().includes(query),
     );
@@ -640,8 +623,7 @@ export function Approvals(): JSX.Element {
     return () => clearInterval(t);
   }, [hasPending]);
 
-  const sessionOf = (id: number): Session | null =>
-    sessions?.find((s) => s.id === id) ?? null;
+  const sessionOf = (id: number): Session | null => bySessionId.get(id) ?? null;
 
   const alwaysAllow = (request: PermissionRequest): void => {
     setRuleDraft({

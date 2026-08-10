@@ -254,6 +254,7 @@ const router = createBrowserRouter([
           { path: 'playbooks', element: ws(<Playbooks />) },
           { path: 'sessions', element: <Sessions /> },
           { path: 'sessions/:id', element: <SessionDetailPage /> },
+          { path: 'approvals', element: ws(<Approvals />) },
           {
             path: 'analytics',
             element: (

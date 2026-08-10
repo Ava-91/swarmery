@@ -2530,9 +2530,14 @@ export const mockApi = {
 
   // --- phase 2 — approvals (mutable store in ./approvals.ts) ---
 
-  async approvals(status?: string): Promise<PermissionRequest[]> {
+  async approvals(status?: string, project?: string | null): Promise<PermissionRequest[]> {
     await delay(110);
-    return mockApprovalsList(status);
+    const list = mockApprovalsList(status);
+    if (project === undefined || project === null || project === '') return list;
+    return list.filter((r) => {
+      const s = mockSessions.find((x) => x.id === r.sessionId);
+      return s !== undefined && (s.projectSlug === project || String(s.projectId) === project);
+    });
   },
 
   async resolveApproval(

@@ -3,7 +3,8 @@
 // string, but shape is upstream-undocumented — every read is best-effort
 // and a malformed payload must render as raw text, never crash a card).
 
-import type { PermissionRequest } from '../api/types';
+import type { ApprovalAction } from '../api';
+import type { PermissionRequest, PermissionRequestStatus } from '../api/types';
 import { pickString } from './payload';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -193,3 +194,13 @@ export function suggestRulePattern(request: PermissionRequest): string {
     return 'Bash';
   }
 }
+
+/** Optimistic status per action, applied before the server confirms (the WS/200
+ * row is authoritative either way). Shared by pages/Approvals.tsx and the fleet
+ * sidebar's inline actions (Phase 4) so both stay in sync with one source. */
+export const OPTIMISTIC_STATUS: Record<ApprovalAction, PermissionRequestStatus> = {
+  approve: 'approved',
+  deny: 'denied',
+  answer: 'approved',
+  terminal: 'resolved_elsewhere',
+};

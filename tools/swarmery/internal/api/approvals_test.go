@@ -434,6 +434,67 @@ func TestHookBadPayload(t *testing.T) {
 	}
 }
 
+// TestListApprovalsProjectScope: ?project= narrows to one project (by slug and
+// by numeric id); unscoped still returns every project's pending rows (the
+// Overview.tsx:1008 "never invisible" regression guard); an archived project's
+// pending row is still visible when scoped to it (D4 — archived ≠ hidden).
+func TestListApprovalsProjectScope(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "approvals-scope.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ex := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec: %v\n%s", err, q)
+		}
+	}
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+
+	ex(`INSERT INTO projects (id, path, slug, name, first_seen, archived) VALUES
+		(1, '/work/alpha', 'alpha', 'Alpha', ?, 0),
+		(2, '/work/beta', 'beta', 'Beta', ?, 0),
+		(3, '/work/gone', 'gone', 'Gone', ?, 1)`, now, now, now)
+	ex(`INSERT INTO sessions (id, project_id, session_uuid, model, status, started_at) VALUES
+		(1, 1, 'sess-alpha', 'claude-opus-5', 'active', ?),
+		(2, 2, 'sess-beta',  'claude-opus-5', 'active', ?),
+		(3, 3, 'sess-gone',  'claude-opus-5', 'active', ?)`, now, now, now)
+	ex(`INSERT INTO permission_requests (id, session_id, tool_name, request_json, status, requested_at) VALUES
+		(1, 1, 'Bash', '{}', 'pending', ?),
+		(2, 2, 'Bash', '{}', 'pending', ?),
+		(3, 3, 'Bash', '{}', 'pending', ?)`, now, now, now)
+
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var list []map[string]any
+	getJSON(t, srv.URL+"/api/approvals?project=alpha", &list)
+	if len(list) != 1 || int64(list[0]["id"].(float64)) != 1 {
+		t.Fatalf("scoped by slug = %v, want only request 1", list)
+	}
+
+	getJSON(t, srv.URL+"/api/approvals?project=2", &list)
+	if len(list) != 1 || int64(list[0]["id"].(float64)) != 2 {
+		t.Fatalf("scoped by numeric id = %v, want only request 2", list)
+	}
+
+	getJSON(t, srv.URL+"/api/approvals?project=gone", &list)
+	if len(list) != 1 || int64(list[0]["id"].(float64)) != 3 {
+		t.Fatalf("scoped to archived project = %v, want request 3 still visible (D4)", list)
+	}
+
+	getJSON(t, srv.URL+"/api/approvals", &list)
+	if len(list) != 3 {
+		t.Fatalf("unscoped = %d rows, want 3 (must never hide another project's pending row)", len(list))
+	}
+}
+
 // TestHookExcludedCwd204: a hook from an excluded cwd is answered 204
 // immediately (no decision -> the shim fails open to the native dialog) and
 // persists nothing.

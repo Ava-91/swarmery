@@ -24,6 +24,7 @@ import { fetchSystemSummary } from './api/system';
 import { CommandPalette } from './components/CommandPalette';
 import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
+import { ProjectApprovalsSection } from './components/ProjectApprovalsSection';
 import { ThemeToggle } from './components/ThemeToggle';
 import { UsageChip } from './components/usage/UsageChip';
 import { isoDay } from './lib/format';
@@ -31,6 +32,7 @@ import { useHealth, versionLabel, versionTitle } from './lib/health';
 import { PluginDriftBadge } from './components/PluginDriftBadge';
 import { loadPrefs, useBrowserNotifications, type NotifyPrefs } from './lib/notifications';
 import { NotifyPrefsContext } from './lib/notifyPrefsContext';
+import { useScope } from './lib/scope';
 import { useLiveUpdates } from './lib/ws';
 
 interface NavItem {
@@ -79,6 +81,7 @@ function AppShell(): JSX.Element {
   const [notifyPrefs, setNotifyPrefs] = useState<NotifyPrefs>(loadPrefs);
   useBrowserNotifications(notifyPrefs);
   const { health, unreachable } = useHealth();
+  const { scope, scopeProject } = useScope();
 
   // Tool dashboards (Serena / Graphify / Architecture) are project-scoped and
   // live in the project-mode sidebar — the session sidebar no longer carries a
@@ -321,6 +324,13 @@ function AppShell(): JSX.Element {
                 ))}
               </div>
             ))}
+          {scope !== null && (
+            <ProjectApprovalsSection
+              scope={scope}
+              scopeSlug={scopeProject?.slug ?? scope}
+              totalPending={pendingCount}
+            />
+          )}
           {/* System / Docs / Settings, pinned to the bottom of the rail. */}
           <div className="mt-auto flex flex-col gap-0.5 pt-3">
             {bottomItems.map((item) => (

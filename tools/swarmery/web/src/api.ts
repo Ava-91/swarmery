@@ -1162,10 +1162,16 @@ export type ApprovalAction = 'approve' | 'deny' | 'answer' | 'terminal';
 /** {action:"answer"} answers: string, or an array of labels for multiSelect. */
 export type ApprovalAnswers = Record<string, string | string[]>;
 
-export function fetchApprovals(status?: ApprovalStatusFilter): Promise<PermissionRequest[]> {
-  if (MOCK) return mockApi.approvals(status);
-  const qs = status !== undefined ? `?status=${encodeURIComponent(status)}` : '';
-  return get(`/api/approvals${qs}`);
+export function fetchApprovals(
+  status?: ApprovalStatusFilter,
+  project?: string | null,
+): Promise<PermissionRequest[]> {
+  if (MOCK) return mockApi.approvals(status, project);
+  const qs = new URLSearchParams();
+  if (status !== undefined) qs.set('status', status);
+  if (project !== undefined && project !== null && project !== '') qs.set('project', project);
+  const query = qs.toString();
+  return get(`/api/approvals${query === '' ? '' : `?${query}`}`);
 }
 
 /**
