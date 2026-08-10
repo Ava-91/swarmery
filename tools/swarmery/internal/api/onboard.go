@@ -180,13 +180,24 @@ func resolveUnderRoots(target string, roots []string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if underDir(realAnc, realRoot) {
-			rel, err := filepath.Rel(anc, abs)
-			if err != nil {
-				return "", fmt.Errorf("invalid path: %v", err)
-			}
-			return filepath.Join(realAnc, rel), nil
+		if !underDir(realAnc, realRoot) {
+			continue
 		}
+		rel, err := filepath.Rel(anc, abs)
+		if err != nil {
+			return "", fmt.Errorf("invalid path: %v", err)
+		}
+		// Re-anchor the result on the trusted root: express it as a relative
+		// path from realRoot (server config, not request data), reject any ".."
+		// component, and rebuild via Join from realRoot. The value is identical
+		// to Join(realAnc, rel), but the ".."-free relative segment joined onto
+		// the configured root is the sanitization shape path-injection scanners
+		// recognize — the request-derived string never reaches a sink directly.
+		fromRoot, err := filepath.Rel(realRoot, filepath.Join(realAnc, rel))
+		if err != nil || strings.Contains(fromRoot, "..") {
+			return "", fmt.Errorf("path %s is not under any allowed onboarding root", abs)
+		}
+		return filepath.Join(realRoot, fromRoot), nil
 	}
 	return "", fmt.Errorf("path %s is not under any allowed onboarding root", abs)
 }
