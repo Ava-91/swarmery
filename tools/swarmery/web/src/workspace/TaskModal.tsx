@@ -375,7 +375,17 @@ export function TaskModal({
                 Open terminal in worktree
               </button>
             )}
-            {task.retryCount > 0 && <ReadOnlyRow label="retries" value={String(task.retryCount)} />}
+            {task.startPoint !== null && <ReadOnlyRow label="start point" value={task.startPoint} />}
+            {/* Two budgets, two labels. A bare "retries: 3" could not say whether
+             * the dispatcher healed a dead process three times or verification
+             * spawned three fix cards — opposite situations needing opposite
+             * responses. They are separate columns since 0051; name them. */}
+            {task.retryCount > 0 && (
+              <ReadOnlyRow label="dispatch retries" value={String(task.retryCount)} />
+            )}
+            {task.verifyRetryCount > 0 && (
+              <ReadOnlyRow label="verify retries" value={String(task.verifyRetryCount)} />
+            )}
             {task.dispatchError !== null && (
               <div className="mt-1 rounded-md border border-red/30 bg-red/5 px-2 py-1.5 font-mono text-[10.5px] text-red">
                 {task.dispatchError}

@@ -33,11 +33,18 @@ function VerdictBadge({ verdict }: { verdict: string }): JSX.Element {
 }
 
 /** Provenance badge for a card the user did not write by hand: capture mints
- * 'session' cards from a session's todos, 'llm' cards from a suggestion. Manual
- * cards (the overwhelming majority) carry no badge. */
+ * 'session' cards from a session's todos, 'llm' cards from a suggestion, and the
+ * verifier mints 'verify-fix' cards when a graded card fails. Manual cards (the
+ * overwhelming majority) carry no badge.
+ *
+ * This Record MUST stay total over the union: OriginBadge destructures the
+ * looked-up entry, so a missing key is not a missing badge — it is a TypeError
+ * that takes down the whole board render. 'verify-fix' was minted by the daemon
+ * long before it was listed here, which is exactly how that happened. */
 const ORIGIN_BADGE: Record<Exclude<TaskOrigin, 'manual'>, { label: string; tip: string }> = {
   session: { label: 'from session', tip: 'captured from a session todo' },
   llm: { label: 'suggested', tip: 'suggested by a model, not hand-written' },
+  'verify-fix': { label: 'fix', tip: 'Spawned by verification to repair a failed card' },
 };
 
 function OriginBadge({ origin }: { origin: Exclude<TaskOrigin, 'manual'> }): JSX.Element {

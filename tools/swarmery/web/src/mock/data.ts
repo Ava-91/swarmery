@@ -1283,8 +1283,10 @@ function boardTask(p: Partial<BoardTask> & Pick<BoardTask, 'id' | 'externalId' |
     labels: [],
     branch: null,
     worktreePath: null,
+    startPoint: null,
     dispatchError: null,
     retryCount: 0,
+    verifyRetryCount: 0,
     verifyVerdict: null,
     verifyDetail: null,
     agent: null,
@@ -1326,7 +1328,15 @@ let mockBoard: BoardTask[] = [
     id: 9107, externalId: 'T-s1t2u3', title: 'Lazy-load the /p/:slug subtree', boardColumn: 'in_review',
     status: 'in_review', verifyVerdict: 'fail',
     verifyDetail: 'bundle grew 40KB — Board pulled into the initial chunk; re-split needed',
-    branch: 'swarm/T-s1t2u3', retryCount: 1,
+    // A FAILED verdict charges the verify budget, not the dispatch one — the
+    // distinction the modal now labels.
+    branch: 'swarm/T-s1t2u3', startPoint: '9f2c1ab', verifyRetryCount: 1,
+  }),
+  // The fix card that failure spawned. It is here so the demo board renders the
+  // 'verify-fix' origin badge — the case that used to throw.
+  boardTask({
+    id: 9110, externalId: 'T-b1c2d3', title: 'fix: Lazy-load the /p/:slug subtree',
+    boardColumn: 'todo', priority: 'high', origin: 'verify-fix',
   }),
   boardTask({
     id: 9108, externalId: 'T-v4w5x6', title: 'Add DispatchStatus to the frozen contract', boardColumn: 'done',
