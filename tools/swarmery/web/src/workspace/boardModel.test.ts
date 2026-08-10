@@ -9,7 +9,16 @@
 
 import { describe, expect, it } from 'vitest';
 import type { BoardTask } from '../api/types';
-import { labelColor, labelFilterOptions, matchesLabelFilter, uniqueLabels, visibleLabels } from './boardModel';
+import {
+  amnestyCandidates,
+  amnestyCutoff,
+  idleSince,
+  labelColor,
+  labelFilterOptions,
+  matchesLabelFilter,
+  uniqueLabels,
+  visibleLabels,
+} from './boardModel';
 
 let nextId = 1;
 
@@ -154,5 +163,69 @@ describe('labelFilterOptions', () => {
     const tasks = [makeTask({ labels: ['ui'] })];
     expect(labelFilterOptions(tasks, null)).toEqual([{ label: 'ui', count: 1 }]);
     expect(labelFilterOptions(tasks, '')).toEqual([{ label: 'ui', count: 1 }]);
+  });
+});
+
+// --- inbox amnesty ------------------------------------------------------------
+
+describe('amnestyCutoff', () => {
+  it('renders the millisecond-Z shape the server stores, so string compares line up', () => {
+    const now = Date.UTC(2026, 7, 11, 12, 0, 0);
+    expect(amnestyCutoff(7, now)).toBe('2026-08-04T12:00:00.000Z');
+  });
+});
+
+describe('idleSince', () => {
+  it('falls back to createdAt — capture never writes columnMovedAt', () => {
+    expect(idleSince(makeTask({ columnMovedAt: null, createdAt: '2026-01-01T00:00:00.000Z' }))).toBe(
+      '2026-01-01T00:00:00.000Z',
+    );
+  });
+
+  it('prefers columnMovedAt when the card was actually moved', () => {
+    expect(
+      idleSince(
+        makeTask({ columnMovedAt: '2026-08-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' }),
+      ),
+    ).toBe('2026-08-01T00:00:00.000Z');
+  });
+});
+
+describe('amnestyCandidates', () => {
+  const before = '2026-06-01T00:00:00.000Z';
+  const old = '2026-01-01T00:00:00.000Z';
+
+  it('counts captured triage cards idle since before the cutoff', () => {
+    const tasks = [
+      makeTask({ origin: 'session', boardColumn: 'triage', createdAt: old }),
+      makeTask({ origin: 'llm', boardColumn: 'triage', createdAt: old }),
+    ];
+    expect(amnestyCandidates(tasks, before)).toBe(2);
+  });
+
+  it('mirrors every server-side exclusion, conjunct for conjunct', () => {
+    const excluded = [
+      makeTask({ origin: 'manual', boardColumn: 'triage', createdAt: old }),
+      makeTask({ origin: 'session', boardColumn: 'todo', createdAt: old }),
+      makeTask({ origin: 'session', boardColumn: 'triage', createdAt: old, worktreePath: '/tmp/wt' }),
+      makeTask({ origin: 'session', boardColumn: 'triage', createdAt: '2026-07-15T00:00:00.000Z' }),
+    ];
+    expect(amnestyCandidates(excluded, before)).toBe(0);
+    const withOneEligible = [...excluded, makeTask({ origin: 'session', createdAt: old })];
+    expect(amnestyCandidates(withOneEligible, before)).toBe(1);
+  });
+
+  it('dates a moved card by columnMovedAt, not by when it was created', () => {
+    const movedRecently = makeTask({
+      origin: 'session',
+      boardColumn: 'triage',
+      createdAt: old,
+      columnMovedAt: '2026-07-20T00:00:00.000Z',
+    });
+    expect(amnestyCandidates([movedRecently], before)).toBe(0);
+  });
+
+  it('is empty on an empty board', () => {
+    expect(amnestyCandidates([], before)).toBe(0);
   });
 });

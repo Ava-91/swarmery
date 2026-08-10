@@ -13,12 +13,21 @@
 // mode (VITE_MOCK) renders a full board from fixtures.
 
 import { useCallback, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { BoardColumn, BoardTask } from '../api/types';
-import { fetchBoardTasks } from '../api';
+import { bulkArchiveBoardTasks, fetchBoardTasks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useWorkspaceBoard } from '../workspace/ProjectWorkspaceLayout';
-import { BOARD_COLUMNS, COLUMN_LABELS, labelFilterOptions, matchesLabelFilter } from '../workspace/boardModel';
+import {
+  AMNESTY_AGE_DAYS,
+  AMNESTY_THRESHOLD,
+  amnestyCandidates,
+  amnestyCutoff,
+  BOARD_COLUMNS,
+  COLUMN_LABELS,
+  labelFilterOptions,
+  matchesLabelFilter,
+} from '../workspace/boardModel';
 import { NewTaskModal } from '../workspace/NewTaskModal';
 import { TaskCard } from '../workspace/TaskCard';
 import { TaskModal } from '../workspace/TaskModal';
@@ -28,12 +37,24 @@ import { Empty, ErrorBox, Loading } from '../components/ui';
 /** Board header view mode: the kanban columns or the dependency graph. */
 type BoardView = 'board' | 'graph';
 
+/**
+ * The amnesty is a two-step action, so it needs a state rather than a boolean:
+ * the count the user approves must be the one the server produced under
+ * `dryRun`, not one the client guessed. 'confirm' carries that number.
+ */
+type AmnestyState =
+  | { phase: 'idle' }
+  | { phase: 'counting' }
+  | { phase: 'confirm'; matched: number }
+  | { phase: 'running' };
+
 /** Live columns render immediately; Archived is fetched only when expanded. */
 const EAGER_COLUMNS: BoardColumn[] = ['triage', 'todo', 'in_progress', 'in_review', 'done'];
 
 export function Board(): JSX.Element {
-  const { project, projectId, loading: projLoading } = useProjectWorkspace();
+  const { project, projectId, slug, loading: projLoading } = useProjectWorkspace();
   const board = useWorkspaceBoard();
+  const navigate = useNavigate();
   // Agent Hub "Run now" deep-links here with ?compose=@<agent>: — the modal
   // opens prefilled from it (the agent picker resolves the "@name:" prefix) so a
   // task can be dispatched to that agent in one hop.
@@ -84,6 +105,72 @@ export function Board(): JSX.Element {
     map.get('done')?.sort((a, b) => (b.columnMovedAt ?? '').localeCompare(a.columnMovedAt ?? ''));
     return map;
   }, [labelFilteredTasks]);
+
+  // --- inbox amnesty ----------------------------------------------------------
+  // Counted off the UNFILTERED list on purpose: the banner reports the state of
+  // the inbox, and the server's sweep ignores the client's label filter. Showing
+  // "3 cards" because a filter is applied, then archiving 231, is the one
+  // outcome a confirm step exists to prevent.
+  const triageTotal = useMemo(
+    () => board.tasks.filter((t) => t.boardColumn === 'triage').length,
+    [board.tasks],
+  );
+  // Frozen for the mount rather than recomputed per render: the cutoff shown in
+  // the banner, counted against, and finally sent to the server must be ONE
+  // instant, or the confirmed number and the written number drift apart.
+  const [amnestyBefore] = useState(() => amnestyCutoff(AMNESTY_AGE_DAYS, Date.now()));
+  const amnestyEligible = useMemo(
+    () => amnestyCandidates(board.tasks, amnestyBefore),
+    [board.tasks, amnestyBefore],
+  );
+  const [amnesty, setAmnesty] = useState<AmnestyState>({ phase: 'idle' });
+  const [amnestyError, setAmnestyError] = useState<string | null>(null);
+  const showAmnesty = triageTotal > AMNESTY_THRESHOLD && amnestyEligible > 0;
+
+  const amnestyBody = useMemo(
+    () =>
+      projectId === null
+        ? null
+        : ({ projectId, column: 'triage', before: amnestyBefore } as const),
+    [projectId, amnestyBefore],
+  );
+
+  const countAmnesty = (): void => {
+    if (amnestyBody === null) return;
+    setAmnestyError(null);
+    setAmnesty({ phase: 'counting' });
+    bulkArchiveBoardTasks({ ...amnestyBody, dryRun: true })
+      .then((r) => setAmnesty({ phase: 'confirm', matched: r.matched }))
+      .catch((e: unknown) => {
+        setAmnestyError(e instanceof Error ? e.message : String(e));
+        setAmnesty({ phase: 'idle' });
+      });
+  };
+
+  const runAmnesty = (): void => {
+    if (amnestyBody === null) return;
+    setAmnesty({ phase: 'running' });
+    bulkArchiveBoardTasks(amnestyBody)
+      .then(() => {
+        setAmnesty({ phase: 'idle' });
+        // The endpoint emits no WS frames (one per row would flood the bus), so
+        // this reload IS how the initiating tab learns what happened. Archived
+        // is dropped so its lazy fetch re-runs and shows the new arrivals.
+        setArchived(null);
+        board.reload();
+      })
+      .catch((e: unknown) => {
+        setAmnestyError(e instanceof Error ? e.message : String(e));
+        setAmnesty({ phase: 'idle' });
+      });
+  };
+
+  /** Carry a card into Planning Mode: the title and prompt become the idea, so
+   * a suggestion too big to just Run becomes the seed of a plan in one hop. */
+  const planTask = (task: BoardTask): void => {
+    const idea = `${task.title}\n\n${task.prompt}`;
+    navigate(`/p/${encodeURIComponent(slug)}/planning?idea=${encodeURIComponent(idea)}`);
+  };
 
   const openArchive = (): void => {
     setArchiveOpen((v) => !v);
@@ -136,6 +223,74 @@ export function Board(): JSX.Element {
           >
             ×
           </button>
+        </div>
+      )}
+
+      {amnestyError !== null && (
+        <div
+          role="alert"
+          className="mb-2 flex items-center gap-2 rounded-lg border border-red/40 bg-red/10 px-3 py-1.5 font-mono text-[11px] text-red"
+        >
+          <span className="min-w-0 flex-1">{amnestyError}</span>
+          <button
+            type="button"
+            onClick={() => setAmnestyError(null)}
+            aria-label="dismiss"
+            className="text-red/70 transition-colors hover:text-red"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Inbox amnesty: only above the threshold, because under it Triage is
+          still a list a human can read and clearing it wholesale is the wrong
+          offer. Two steps by construction — the number in the confirm comes
+          from the server's dry run, never from the count in the pitch. */}
+      {showAmnesty && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-1.5 text-[11.5px] text-amber">
+          {amnesty.phase === 'confirm' ? (
+            <>
+              <span className="min-w-0 flex-1">
+                Archive <span className="font-mono font-semibold">{amnesty.matched}</span> captured
+                card{amnesty.matched === 1 ? '' : 's'}? They stay findable in Archived.
+              </span>
+              <button
+                type="button"
+                onClick={runAmnesty}
+                className="rounded-lg border border-amber/60 bg-amber/20 px-2.5 py-1 font-mono text-[11px] font-semibold transition-colors hover:bg-amber/30"
+              >
+                Yes, archive {amnesty.matched}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAmnesty({ phase: 'idle' })}
+                className="rounded-lg border border-transparent px-2 py-1 font-mono text-[11px] text-amber/80 transition-colors hover:border-amber/40"
+              >
+                cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="min-w-0 flex-1">
+                <span className="font-mono font-semibold">{amnestyEligible}</span> captured card
+                {amnestyEligible === 1 ? '' : 's'} older than {AMNESTY_AGE_DAYS} days are sitting in
+                Triage.
+              </span>
+              <button
+                type="button"
+                disabled={amnesty.phase !== 'idle'}
+                onClick={countAmnesty}
+                className="rounded-lg border border-amber/50 px-2.5 py-1 font-mono text-[11px] transition-colors hover:bg-amber/20 disabled:opacity-50"
+              >
+                {amnesty.phase === 'counting'
+                  ? 'counting…'
+                  : amnesty.phase === 'running'
+                    ? 'archiving…'
+                    : 'Archive them'}
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -255,6 +410,10 @@ export function Board(): JSX.Element {
                         setDraggingId(null);
                         setDropCol(null);
                       }}
+                      // The card renders its Run/Plan/Dismiss row only when it
+                      // can hand off to Planning Mode, so this prop is what
+                      // turns the triage verbs on — Archived below omits it.
+                      onPlan={() => planTask(t)}
                     />
                   ))}
                   {tasks.length === 0 && col !== 'triage' && (
