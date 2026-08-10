@@ -1,0 +1,354 @@
+package api
+
+// Board review loop — the diff endpoint (board redesign phase 3, §3.1).
+//
+// A card sitting in in_review is a claim: "the agent did the work". This
+// endpoint is the evidence — the commits its run branch carries, the files they
+// touched, and the unified patch — so a human can accept or reject the claim
+// without leaving the board.
+//
+// Git runs in the PROJECT REPO ROOT, never in the task's worktree. The worktree
+// is reclaimed the moment a card reaches a terminal column (RemoveWorktreeFor),
+// while the swarm/<T-id> branch deliberately outlives it (every Remove passes
+// keepBranch=true). Reading the branch from the repo root is therefore the only
+// way the diff still resolves for a card that has already been reviewed once.
+//
+// The exec boundary (reviewExec) lives here rather than reusing worktree.Git
+// because that interface returns stdout and stderr COMBINED: spliced into a
+// unified patch, git's own progress chatter would land inside the diff text the
+// UI renders, and — on the land path in tasks_review.go — inside the PR URL this
+// package has to parse back out of `gh`. A diff endpoint cannot use a combined
+// stream. Everything else about the runner (PATH resolution, a bounded timeout,
+// an error carrying the output tail) mirrors worktree.ExecGit.
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/http"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// reviewMaxPatchBytes caps the unified patch a diff response carries. Past this
+// the browser is the wrong tool anyway — the response says so with
+// patchTruncated and the UI points at the worktree terminal instead.
+const reviewMaxPatchBytes = 200 << 10 // 200 KB
+
+// Timeouts, split by what the command actually waits on. A local git read that
+// takes longer than gitReviewTimeout is a wedged lock, not slow work; a push or
+// a `gh pr create` waits on a network round-trip and a remote-side hook, so it
+// gets a budget an HTTP client will still sit through.
+const (
+	gitReviewTimeout  = 10 * time.Second
+	reviewNetTimeout  = 90 * time.Second
+	reviewOutputTail  = 2048
+	reviewGitBinary   = "git"
+	reviewGhBinary    = "gh"
+	reviewPRBodyChars = 500
+)
+
+// reviewExec is the process boundary of the whole review loop: `git` for the
+// diff endpoint, `git` + `gh` for land. The timeout is a parameter rather than
+// runner state because one caller reads a local ref and the next one pushes over
+// the network, and a single value cannot be right for both.
+type reviewExec interface {
+	// Run executes name+args with dir as the working directory, returning stdout
+	// and stderr SEPARATELY (see the file header for why that matters).
+	Run(dir string, timeout time.Duration, name string, args ...string) (stdout, stderr string, err error)
+	// Look reports whether the binary resolves on PATH — the check that turns a
+	// missing `gh` into an actionable 422 instead of an opaque exec error.
+	Look(name string) error
+}
+
+// execReview is the production reviewExec: it shells out to the real binaries.
+type execReview struct{}
+
+func (execReview) Run(dir string, timeout time.Duration, name string, args ...string) (string, string, error) {
+	if timeout <= 0 {
+		timeout = gitReviewTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		err = fmt.Errorf("%s %s timed out after %s", name, strings.Join(args, " "), timeout)
+	}
+	return stdout.String(), stderr.String(), err
+}
+
+func (execReview) Look(name string) error {
+	_, err := lookPathFn(name)
+	return err
+}
+
+// reviewRun is the exec boundary the review handlers use. A package var for the
+// same reason dispatchSvc is one: the handlers are methods on Handler, which the
+// daemon builds without any injection point, and tests substitute a scripted
+// fake with a restore in t.Cleanup.
+var reviewRun reviewExec = execReview{}
+
+// gitReview runs a git subcommand in the project repo root with the local-read
+// budget.
+func gitReview(dir string, args ...string) (stdout, stderr string, err error) {
+	return reviewRun.Run(dir, gitReviewTimeout, reviewGitBinary, args...)
+}
+
+// gitRevExists reports whether rev resolves to a commit in dir. It is what
+// separates "the branch was deleted out of band" (404) from "the base SHA is
+// unreachable" (409) after a range command fails — the two conditions produce
+// the same git error text and need opposite answers.
+func gitRevExists(dir, rev string) bool {
+	_, _, err := gitReview(dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	return err == nil
+}
+
+// reviewCommitDTO is one commit on the run branch.
+type reviewCommitDTO struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+}
+
+// reviewFileDTO is one changed path with its line deltas. A binary file reports
+// 0/0 (git prints "-" for both) — the path is still the useful part.
+type reviewFileDTO struct {
+	Path      string `json:"path"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+}
+
+// taskDiffDTO is the GET /api/board/tasks/{id}/diff body. Mirrored in
+// web/src/api/types.ts as TaskDiff.
+type taskDiffDTO struct {
+	Base           string            `json:"base"`
+	Branch         string            `json:"branch"`
+	Commits        []reviewCommitDTO `json:"commits"`
+	Files          []reviewFileDTO   `json:"files"`
+	Patch          string            `json:"patch"`
+	PatchTruncated bool              `json:"patchTruncated"`
+}
+
+// reviewTarget is the row state a review action reads: the card's identity,
+// where its work lives, and whether anything still holds it.
+type reviewTarget struct {
+	ID            int64
+	ExternalID    string
+	Title         string
+	Prompt        string
+	Branch        string
+	StartPoint    string
+	WorktreePath  string
+	BoardColumn   string
+	Status        string
+	ProjectPath   string
+	VerifyVerdict string
+	VerifyDetail  string
+}
+
+// loadReviewTarget reads the board row a review action addresses. ok=false means
+// it already wrote the response: 404 when the row is unknown OR is not a board
+// card (source='queue') — from this surface the two are the same thing, exactly
+// as deleteBoardTask treats them.
+func (h *Handler) loadReviewTarget(w http.ResponseWriter, id int64) (reviewTarget, bool) {
+	var (
+		t                                        reviewTarget
+		source                                   string
+		extID, branch, startPoint, wtPath        sql.NullString
+		projectPath, verifyVerdict, verifyDetail sql.NullString
+	)
+	err := h.DB.QueryRow(`
+		SELECT t.external_id, t.title, t.prompt, t.source, t.board_column, t.status,
+		       t.branch, t.start_point, t.worktree_path,
+		       t.verify_verdict, t.verify_detail, p.path
+		  FROM tasks t JOIN projects p ON p.id = t.project_id
+		 WHERE t.id = ?`, id).Scan(
+		&extID, &t.Title, &t.Prompt, &source, &t.BoardColumn, &t.Status,
+		&branch, &startPoint, &wtPath,
+		&verifyVerdict, &verifyDetail, &projectPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeClientErr(w, http.StatusNotFound, "task not found")
+		return reviewTarget{}, false
+	}
+	if err != nil {
+		writeErr(w, err)
+		return reviewTarget{}, false
+	}
+	if source != "queue" {
+		writeClientErr(w, http.StatusNotFound, "task not found")
+		return reviewTarget{}, false
+	}
+	t.ID = id
+	t.ExternalID = extID.String
+	t.Branch = strings.TrimSpace(branch.String)
+	t.StartPoint = strings.TrimSpace(startPoint.String)
+	t.WorktreePath = strings.TrimSpace(wtPath.String)
+	t.ProjectPath = strings.TrimSpace(projectPath.String)
+	t.VerifyVerdict = verifyVerdict.String
+	t.VerifyDetail = verifyDetail.String
+	return t, true
+}
+
+// GET /api/board/tasks/{id}/diff — what the agent committed on this card's run
+// branch, measured from the start point admission pinned it to.
+//
+// No requireLocalOrigin: it mutates nothing, matching every other board GET (and
+// GET /api/retro/agents/{agent}/evidence, which spells the same reasoning out).
+func (h *Handler) boardTaskDiff(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeClientErr(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+	tgt, ok := h.loadReviewTarget(w, id)
+	if !ok {
+		return
+	}
+	// Branch is checked before start point on purpose: a card that was never
+	// dispatched has neither, and "never dispatched" is the more useful sentence
+	// than "no recorded base".
+	if tgt.Branch == "" {
+		writeConflict(w, codeNoRunBranch,
+			"this card has no run branch — it was never dispatched, so there is nothing to diff")
+		return
+	}
+	if tgt.StartPoint == "" {
+		writeConflict(w, codeNoStartPoint,
+			"this card has no recorded start point (it was dispatched before the base was pinned), "+
+				"so there is no commit to measure its branch against")
+		return
+	}
+	if tgt.ProjectPath == "" {
+		writeConflict(w, codeNoProjectPath, "project has no known path")
+		return
+	}
+
+	// `..` for the commit list, `...` for the diffs: the log wants the commits
+	// unique to the branch, the diff wants the change against the merge base. The
+	// trailing `--` pins both ranges into the revision slot so a name can never be
+	// re-read as a flag.
+	logRange := tgt.StartPoint + ".." + tgt.Branch
+	diffRange := tgt.StartPoint + "..." + tgt.Branch
+
+	out, stderr, err := gitReview(tgt.ProjectPath, "log", "--format=%H%x00%s", logRange, "--")
+	if err != nil {
+		// Both a deleted branch and an unreachable base fail here with the same
+		// "unknown revision" shape, and they need opposite answers — probe which
+		// one is actually gone rather than guessing from the message.
+		switch {
+		case !gitRevExists(tgt.ProjectPath, tgt.Branch):
+			writeClientErr(w, http.StatusNotFound,
+				"run branch "+tgt.Branch+" no longer exists: "+gitReason(stderr, err))
+		case !gitRevExists(tgt.ProjectPath, tgt.StartPoint):
+			writeConflict(w, codeBaseUnreachable,
+				"the start point "+tgt.StartPoint+" is no longer reachable in this repo, "+
+					"so the branch cannot be measured against it: "+gitReason(stderr, err))
+		default:
+			writeErr(w, fmt.Errorf("git log %s: %w: %s", logRange, err, gitReason(stderr, err)))
+		}
+		return
+	}
+	commits := parseReviewCommits(out)
+
+	numstat, nsErr, err := gitReview(tgt.ProjectPath, "diff", "--numstat", diffRange, "--")
+	if err != nil {
+		writeErr(w, fmt.Errorf("git diff --numstat %s: %w: %s", diffRange, err, gitReason(nsErr, err)))
+		return
+	}
+	files := parseNumstat(numstat)
+
+	// The whole patch is buffered before it is capped. Acceptable for a
+	// single-user local daemon reviewing one card's branch; the cap is about what
+	// a browser can usefully render, not about bounding this process's memory.
+	raw, pErr, err := gitReview(tgt.ProjectPath, "diff", diffRange, "--")
+	if err != nil {
+		writeErr(w, fmt.Errorf("git diff %s: %w: %s", diffRange, err, gitReason(pErr, err)))
+		return
+	}
+	patch, truncated := truncatePatch(raw, reviewMaxPatchBytes)
+
+	writeJSON(w, taskDiffDTO{
+		Base:           tgt.StartPoint,
+		Branch:         tgt.Branch,
+		Commits:        commits,
+		Files:          files,
+		Patch:          patch,
+		PatchTruncated: truncated,
+	}, nil)
+}
+
+// gitReason picks the most informative text available for a failed git call:
+// git's own stderr when it said something, the process error otherwise. Bounded,
+// because it goes into an HTTP body a human reads.
+func gitReason(stderr string, err error) string {
+	s := strings.TrimSpace(stderr)
+	if s == "" && err != nil {
+		s = err.Error()
+	}
+	if len(s) > reviewOutputTail {
+		s = s[len(s)-reviewOutputTail:]
+	}
+	return s
+}
+
+// parseReviewCommits parses `git log --format=%H%x00%s` output. NUL separates
+// the SHA from the subject so a subject containing anything at all — tabs,
+// pipes, the format string itself — still round-trips. Pure; unit-tested.
+func parseReviewCommits(out string) []reviewCommitDTO {
+	commits := []reviewCommitDTO{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		sha, subject, found := strings.Cut(line, "\x00")
+		if !found {
+			continue
+		}
+		commits = append(commits, reviewCommitDTO{SHA: sha, Subject: subject})
+	}
+	return commits
+}
+
+// parseNumstat parses `git diff --numstat` output ("adds\tdels\tpath"). A binary
+// file prints "-" for both counts and lands as 0/0 — the path is what the file
+// table is for. Pure; unit-tested.
+func parseNumstat(out string) []reviewFileDTO {
+	files := []reviewFileDTO{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		add, _ := strconv.Atoi(parts[0]) // "-" (binary) → 0, which is the honest count
+		del, _ := strconv.Atoi(parts[1])
+		files = append(files, reviewFileDTO{Path: parts[2], Additions: add, Deletions: del})
+	}
+	return files
+}
+
+// truncatePatch caps s at max bytes, backing off to the last newline inside the
+// cap so the client's `diff --git` split never has to reason about a half line.
+// Reports whether anything was dropped. Pure; unit-tested.
+func truncatePatch(s string, max int) (string, bool) {
+	if len(s) <= max {
+		return s, false
+	}
+	cut := s[:max]
+	if nl := strings.LastIndexByte(cut, '\n'); nl > 0 {
+		cut = cut[:nl+1]
+	}
+	return cut, true
+}

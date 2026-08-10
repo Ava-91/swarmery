@@ -59,6 +59,23 @@ const (
 	codeBranchExists     = "branch-exists"
 	codePathOccupied     = "path-occupied"
 
+	// Board review loop (§3.1/§3.2) — conditions the phase surfaces never had.
+	//
+	// codeNoStartPoint: the card carries a run branch but no pinned base (0051
+	// added start_point; rows dispatched before it have NULL). Distinct from
+	// codeNoRunBranch — that card was never dispatched at all, this one was, and
+	// the remedy is different: re-run it so admission pins a base, rather than
+	// dispatch it for the first time.
+	codeNoStartPoint = "no-start-point"
+	// codeBaseUnreachable: the start point IS recorded but git can no longer
+	// resolve it in this repo (a force-push or a gc dropped it). Nothing about the
+	// card is wrong; the repo moved out from under the recorded base.
+	codeBaseUnreachable = "base-unreachable"
+	// codeBadColumn: the card is not in a column this action accepts (rerun wants
+	// in_review or done). A guard on the request, not on the repo — which is why it
+	// is not one of the branch codes above.
+	codeBadColumn = "bad-column"
+
 	// codeBranchLivePhase: the orphan-cleanup route was handed a branch that IS a
 	// live phase row's run branch. That route exists to delete work stranded under
 	// an id generation that no longer has a row; pointing it at a live phase would

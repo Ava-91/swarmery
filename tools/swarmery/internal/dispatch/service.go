@@ -170,6 +170,13 @@ func (s *Service) isActive(id int64) bool {
 	return ok
 }
 
+// IsActive is isActive for callers outside this package — the board's review
+// exits (api/tasks_review.go), which must refuse to re-queue or archive a card
+// the dispatcher still owns. The durable columns are the truth everywhere else,
+// but they lag this set by the width of one exit path, and that window is
+// precisely when a user staring at a card that "looks finished" clicks Re-run.
+func (s *Service) IsActive(id int64) bool { return s.isActive(id) }
+
 func (s *Service) activeCount() int {
 	s.mu.Lock()
 	n := len(s.active)
