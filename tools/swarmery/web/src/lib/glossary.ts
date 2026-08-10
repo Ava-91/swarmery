@@ -186,6 +186,25 @@ const RAW = {
     doc: { slug: 'concepts', anchor: 'task-worktree' },
   },
 
+  'permission-mode': {
+    term: 'Headless permission mode',
+    short:
+      'A headless run has no one to answer a permission prompt, so an unanswered ask is auto-denied — and the run still exits 0. Every spawn site therefore passes --permission-mode, defaulting to bypassPermissions.',
+    tone: 'explain',
+    actions: [
+      'Leave the default unless you must sandbox tighter — acceptEdits cannot commit, so a phase can never finish under it.',
+      'bypassPermissions skips the ask, not the deny list — permissions.deny rules still apply.',
+      'Pin a different mode per spawn site with the SWARMERY_*_PERMISSION_MODE env vars; "off" omits the flag entirely.',
+    ],
+    facts: [
+      { label: 'default', value: 'bypassPermissions · all spawn sites' },
+      { label: 'per-site', value: 'SWARMERY_{DISPATCH,PLANRUN,PHASERUN}_PERMISSION_MODE' },
+      { label: 'all sites', value: 'SWARMERY_PERMISSION_MODE · off omits the flag' },
+      { label: 'still enforced', value: 'permissions.deny · swarm/ worktree isolation' },
+    ],
+    doc: { slug: 'concepts', anchor: 'headless-permission-mode' },
+  },
+
   'planning-mode': {
     term: 'Planning Mode',
     short:
