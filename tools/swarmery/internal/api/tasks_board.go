@@ -919,6 +919,119 @@ func (h *Handler) deleteBoardTask(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// bulkArchiveResult is the amnesty response: how many rows the predicate
+// selected, and how many were actually written. A dry run reports
+// matched=N/archived=0; an execute reports them equal.
+type bulkArchiveResult struct {
+	Matched  int64 `json:"matched"`
+	Archived int64 `json:"archived"`
+}
+
+// POST /api/board/tasks/bulk-archive {projectId?, column, before, dryRun?} →
+// 200 {matched, archived}. requireLocalOrigin.
+//
+// The one-shot counterpart to the TTL sweeper: the sweeper stops the inbox from
+// becoming a graveyard from here on, this clears the graveyard that already
+// accumulated before the sweeper existed. Both stand on the SAME predicate —
+// taskcap.StaleInboxWhere — so an amnesty can never reach a row the automatic
+// sweep is forbidden to touch (a hand-written card, an accepted card, a card
+// the dispatcher owns). The only thing this adds is narrowing: an explicit
+// cutoff and an optional project fence.
+//
+// Two guards make the bulk write safe to expose:
+//
+//   - `column` is required and only "triage" is accepted. It carries no
+//     information the handler could not have assumed — that is the point: a
+//     caller must name the column it means, so a future column can never be
+//     swept by a client that predates it.
+//   - `before` is required with no default. A bulk archive has no undo, so the
+//     blast radius is always the caller's explicit decision, never an implied
+//     one; dryRun then lets the UI show that radius before committing to it.
+//
+// Deliberately publishes NO task_updated frames. A 231-row amnesty would put
+// 231 frames on the bus to say one thing, and useBoard already reconciles by
+// refetching the whole list (60s tick + reconnect) — the initiating client
+// reloads off this response, other tabs converge on the next tick. The trade is
+// up-to-60s staleness in a second tab against a bus flood, and the flood is the
+// worse outcome.
+func (h *Handler) bulkArchiveBoardTasks(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProjectID int64  `json:"projectId"` // 0/omitted = every project
+		Column    string `json:"column"`
+		Before    string `json:"before"`
+		DryRun    bool   `json:"dryRun"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		writeClientErr(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.Column) != "triage" {
+		writeClientErr(w, http.StatusBadRequest,
+			`column is required and must be "triage" — amnesty applies to the inbox only`)
+		return
+	}
+	before := strings.TrimSpace(body.Before)
+	if before == "" {
+		writeClientErr(w, http.StatusBadRequest,
+			"before is required — a bulk archive must name its own cutoff")
+		return
+	}
+	cutoffAt, err := time.Parse(time.RFC3339, before)
+	if err != nil {
+		writeClientErr(w, http.StatusBadRequest,
+			"before must be an RFC3339 instant, e.g. 2026-08-04T00:00:00Z")
+		return
+	}
+	// Re-render the cutoff in the stored millisecond-Z format rather than
+	// comparing the caller's string directly: the comparison is lexical, and
+	// "…:00Z" sorts AFTER "…:00.000Z" ('Z' > '.'), so an un-normalized cutoff
+	// would quietly include a second's worth of rows the caller excluded.
+	cutoff := cutoffAt.UTC().Format(boardTSFormat)
+
+	where := taskcap.StaleInboxWhere + ` AND ` + taskcap.InboxIdleSince + ` < ?`
+	args := []any{cutoff}
+	if body.ProjectID != 0 {
+		where += ` AND project_id = ?`
+		args = append(args, body.ProjectID)
+	}
+
+	if body.DryRun {
+		var matched int64
+		if err := h.DB.QueryRow(`SELECT COUNT(*) FROM tasks WHERE `+where, args...).Scan(&matched); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, bulkArchiveResult{Matched: matched}, nil)
+		return
+	}
+
+	// One UPDATE rather than count-then-update: a separate count could only
+	// disagree with the write it precedes, and RowsAffected already reports the
+	// truth. matched == archived on an execute is not a shortcut — it IS the
+	// number of rows the predicate selected at write time.
+	now := time.Now().UTC().Format(boardTSFormat)
+	res, err := h.DB.Exec(`
+		UPDATE tasks
+		   SET board_column = 'archived',
+		       status = 'cancelled',
+		       column_moved_at = ?,
+		       archived_at = ?
+		 WHERE `+where, append([]any{now, now}, args...)...)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("api: inbox amnesty archived %d captured card(s) older than %s", n, cutoff)
+	}
+	writeJSON(w, bulkArchiveResult{Matched: n, Archived: n}, nil)
+}
+
 // badRequest writes a 400 with the error's message as JSON.
 func badRequest(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "application/json")
