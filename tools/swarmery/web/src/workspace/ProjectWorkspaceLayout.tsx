@@ -78,6 +78,7 @@ const BASE_NAV: WorkspaceNavItem[] = [
   { path: 'plans', glyph: '❐', label: 'Plans' },
   { path: 'playbooks', glyph: '▤', label: 'Playbooks' },
   { path: 'sessions', glyph: '❯', label: 'Sessions' },
+  { path: 'approvals', glyph: '⧗', label: 'Approvals' },
   { path: 'architecture', glyph: '▦', label: 'Architecture' },
   { path: 'memory', glyph: '❖', label: 'Memory' },
 ];
