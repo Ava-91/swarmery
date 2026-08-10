@@ -1,11 +1,12 @@
 // Package playbooks is the selectable-workflow registry (fusion phase 13). A
 // playbook is a markdown file (frontmatter + one or more `## Stage:` sections)
 // that names an execution recipe a board task can select: how many sequential
-// stages the dispatcher runs in the task's single worktree, and how strict the
-// Phase 6 verifier grades the result. Four built-ins ship embedded in the
-// daemon (quick-fix / standard / review-heavy / plan-first); a consumer project
-// can override or add its own under `<project>/.claude/playbooks/*.md` (name
-// collision → project wins, the graduation rule).
+// stages the dispatcher runs in the task's single worktree, how strict the
+// Phase 6 verifier grades the result, and which model / permission mode the
+// spawn runs under. Three built-ins ship embedded in the daemon (standard /
+// review-heavy / plan-first); a consumer project can override or add its own
+// under `<project>/.claude/playbooks/*.md` (name collision → project wins, the
+// graduation rule).
 //
 // The registry is a pure in-memory parser over an embedded FS + the project
 // directory — no process spawn, no DB, no heavy deps (frontmatter parsing is
@@ -41,6 +42,29 @@ const (
 // verification run entirely (no verdict stamped).
 var verifyValues = map[string]bool{"strict": true, "normal": true, "off": true}
 
+// permissionModeValues is the closed set of the permission_mode knob. The
+// spellings are claudeflags' canonical ones (internal/claudeflags/permission.go)
+// so a parsed value can reach `claude --permission-mode` verbatim — an unknown
+// value would kill the spawn before the run starts, which is why Parse rejects
+// it with the same severity as an unknown template var.
+//
+// "default" is NOT the same as an omitted knob: it means "pass no
+// --permission-mode flag at all" (claude's own default), while an omitted knob
+// inherits the global SWARMERY_DISPATCH_PERMISSION_MODE.
+var permissionModeValues = map[string]bool{
+	"bypassPermissions": true, "acceptEdits": true, "default": true,
+}
+
+// aliases maps a retired playbook name onto its surviving equivalent. An alias
+// RESOLVES (so every stored card and API caller keeps working) but is never
+// LISTED (it is not a distinct choice) and is never the stored form (writes
+// canonicalize through the resolved playbook's own Name).
+//
+// quick-fix shipped byte-identical to standard and was selected once across 253
+// cards; keeping it as a second name for the same recipe cost the picker a row
+// and the operator a decision, and bought nothing.
+var aliases = map[string]string{"quick-fix": DefaultName}
+
 // Stage is one step of a playbook: a name (from the `## Stage: <name>` header)
 // and its prompt template body (verbatim markdown, template vars unresolved).
 type Stage struct {
@@ -50,12 +74,16 @@ type Stage struct {
 
 // Playbook is a parsed, validated recipe.
 type Playbook struct {
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Model       string  `json:"model"`  // optional --model override; "" = task/default
-	Verify      string  `json:"verify"` // strict | normal | off
-	Source      string  `json:"source"` // builtin | project
-	Stages      []Stage `json:"stages"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Model       string `json:"model"`  // optional --model override; "" = task/default
+	Verify      string `json:"verify"` // strict | normal | off
+	// PermissionMode is the spawn's --permission-mode for tasks running this
+	// recipe: bypassPermissions | acceptEdits | default, or "" to inherit the
+	// global SWARMERY_DISPATCH_PERMISSION_MODE knob.
+	PermissionMode string  `json:"permissionMode"`
+	Source         string  `json:"source"` // builtin | project
+	Stages         []Stage `json:"stages"`
 	// Path is the on-disk path for a project playbook ("" for a built-in). The
 	// duplicate flow and the UI hint use it.
 	Path string `json:"path,omitempty"`
@@ -134,17 +162,30 @@ func (r *Registry) List(projectPath string) []Playbook {
 	return out
 }
 
-// Get resolves one playbook by name for a project. ok=false when no built-in or
-// project file carries that name. An empty/whitespace name resolves to the
-// default recipe (the dispatcher passes NULL through as "").
+// Get resolves one playbook by name for a project. ok=false when no built-in,
+// project file, or alias carries that name. An empty/whitespace name resolves to
+// the default recipe (the dispatcher passes NULL through as "").
+//
+// Lookup order is: real name (project overlay first, then built-in) → alias.
+// The alias is consulted LAST on purpose: a project that wrote its own
+// .claude/playbooks/quick-fix.md must keep it, exactly as it would keep an
+// override of any other name. Callers that store the result should store the
+// returned playbook's Name, not the requested one — that is what canonicalizes
+// an alias on write.
 func (r *Registry) Get(projectPath, name string) (Playbook, bool) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = DefaultName
 	}
 	merged := r.resolve(projectPath)
-	p, ok := merged[name]
-	return p, ok
+	if p, ok := merged[name]; ok {
+		return p, true
+	}
+	if target, aliased := aliases[name]; aliased {
+		p, ok := merged[target]
+		return p, ok
+	}
+	return Playbook{}, false
 }
 
 // resolve builds the effective name→playbook map for a project: built-ins first,
