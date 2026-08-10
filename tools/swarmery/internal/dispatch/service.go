@@ -615,14 +615,21 @@ func (s *Service) admit(c candidate) bool {
 
 	// Guarded CAS: only move a row that is STILL todo (a concurrent PATCH could
 	// have moved/paused it since candidates() read). On 0 rows affected, back off.
+	//
+	// start_point is written HERE because this is the only place that knows it:
+	// Acquired.StartPoint is the SHA the worktree was pinned to, and it is what
+	// verification must diff against (0051). Acquire is idempotent warm-reuse, so
+	// a re-dispatch REFRESHES start_point to whatever SHA the (possibly reused)
+	// worktree is now pinned to — that is the correct base for the next run's
+	// diff, not the first run's.
 	res, err := s.DB.Exec(`
 		UPDATE tasks
 		   SET board_column='in_progress', status='running',
-		       branch=?, worktree_path=?,
+		       branch=?, worktree_path=?, start_point=?,
 		       dispatch_error=NULL, column_moved_at=?, started_at=COALESCE(started_at, ?)
 		 WHERE id=? AND source='queue' AND board_column='todo'
 		   AND paused=0 AND user_paused=0`,
-		acq.Branch, acq.Path, s.ts(), s.ts(), c.ID)
+		acq.Branch, acq.Path, acq.StartPoint, s.ts(), s.ts(), c.ID)
 	if err != nil {
 		s.clearActive(c.ID)
 		s.failAdmission(c.ID, "admit update: "+err.Error())

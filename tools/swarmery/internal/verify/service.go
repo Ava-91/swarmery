@@ -210,8 +210,24 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 	// A git failure SKIPS the gate rather than blocking: an unreadable diff is not
 	// evidence of a huge one, and refusing on it would deny verification for a repo
 	// state we simply could not measure.
-	if s.Cfg.MaxDiffFiles > 0 {
-		if n, derr := s.Trees.DiffFileCount(tk.worktreePath, tk.branch); derr != nil {
+	//
+	// The base is start_point: the SHA admit() pinned this task's worktree to
+	// (0051). This used to be tk.branch — the branch diffed against ITSELF, which
+	// is always zero files, so the gate could never fire and the prompt's "diff vs"
+	// instruction named a no-op range. Both consumers now measure the same real
+	// interval, base...HEAD.
+	base := tk.startPoint
+	if base == "" {
+		// Row dispatched before 0051 — no honest base exists. Skip the scope gate
+		// (an unmeasurable diff is not evidence of a huge one; and re-introducing
+		// the branch here would gate on a guaranteed-zero diff, which is worse than
+		// not gating: it looks like a check and can never fail) and let the prompt
+		// fall back to the branch name as before.
+		base = tk.branch
+		log.Printf("verify: task %d: no start_point recorded, diff base falls back to branch", taskID)
+	}
+	if s.Cfg.MaxDiffFiles > 0 && tk.startPoint != "" {
+		if n, derr := s.Trees.DiffFileCount(tk.worktreePath, base); derr != nil {
 			log.Printf("verify: task %d: diff size unreadable, scope gate skipped: %v", taskID, derr)
 		} else if n > s.Cfg.MaxDiffFiles {
 			return s.stampInconclusive(taskID, runID, treeHash, fmt.Sprintf(
@@ -228,7 +244,9 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 		model = defaultModel
 	}
 	spec := RunSpec{
-		Prompt:      BuildPrompt(tk.title, tk.prompt, tk.branch, strictness),
+		// base, not tk.branch: BuildPrompt's third parameter has always been named
+		// startPoint (prompt.go) — we are finally passing what it asked for.
+		Prompt:      BuildPrompt(tk.title, tk.prompt, base, strictness),
 		SessionUUID: uuid,
 		Cwd:         tk.worktreePath,
 		Model:       model,
@@ -300,10 +318,18 @@ type task struct {
 	origin       string // 'manual' | 'session' | 'llm' | 'verify-fix' (fix-chain marker)
 	branch       string
 	worktreePath string
-	fileScope    string // raw JSON, copied verbatim to a fix task
-	retryCount   int
-	playbook     string // selected recipe name ("" ⇒ default); drives the verify knob
-	projectPath  string // repo root, for the playbook registry lookup
+	// startPoint is the SHA admit() pinned the worktree to (0051). "" on a row
+	// dispatched before that migration — there is no honest base for those, and
+	// the consumers below must fall back rather than invent one.
+	startPoint string
+	fileScope  string // raw JSON, copied verbatim to a fix task
+	// verifyRetryCount is the fix-chain budget. Deliberately NOT tasks.retry_count:
+	// that one is the dispatcher's no-progress heal budget, and verification has no
+	// business reading or spending it. The struct carries only the counter this
+	// package owns so the split cannot be undone by accident.
+	verifyRetryCount int
+	playbook         string // selected recipe name ("" ⇒ default); drives the verify knob
+	projectPath      string // repo root, for the playbook registry lookup
 }
 
 func (s *Service) loadTask(id int64) (task, error) {
@@ -311,10 +337,12 @@ func (s *Service) loadTask(id int64) (task, error) {
 	var extID, model, branch, wtpath, playbook sql.NullString
 	err := s.DB.QueryRow(`
 		SELECT t.id, COALESCE(t.external_id,''), t.project_id, t.title, t.prompt, t.model,
-		       t.origin, t.branch, t.worktree_path, t.file_scope, t.retry_count, t.playbook, p.path
+		       t.origin, t.branch, t.worktree_path, COALESCE(t.start_point,''), t.file_scope,
+		       t.verify_retry_count, t.playbook, p.path
 		  FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.id=?`, id).
 		Scan(&t.id, &extID, &t.projectID, &t.title, &t.prompt, &model,
-			&t.origin, &branch, &wtpath, &t.fileScope, &t.retryCount, &playbook, &t.projectPath)
+			&t.origin, &branch, &wtpath, &t.startPoint, &t.fileScope,
+			&t.verifyRetryCount, &playbook, &t.projectPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return task{}, fmt.Errorf("verify: task %d not found", id)
 	}
@@ -463,9 +491,14 @@ func (s *Service) handleFail(current task, reasons string) error {
 		return err
 	}
 
-	// Budget check against the ROOT's retry_count (root-inherited budget). At or
-	// over budget → pause root + current, no new fix task.
-	if root.retryCount >= s.Cfg.RetryBudget {
+	// Budget check against the ROOT's verify_retry_count (root-inherited budget).
+	// At or over budget → pause root + current, no new fix task.
+	//
+	// This is the VERIFY budget, not tasks.retry_count (0051). They were one
+	// column until the split, so a task the dispatcher's no-progress heal had
+	// requeued a few times arrived here with its fix budget already spent — the
+	// two budgets bound unrelated things and now count separately.
+	if root.verifyRetryCount >= s.Cfg.RetryBudget {
 		return s.pauseExhausted(root.id, current.id)
 	}
 
@@ -545,9 +578,13 @@ func (s *Service) hasOpenFix(rootExternalID string, excludeID int64) (bool, erro
 	return true, nil
 }
 
-// incrementRetry bumps the ROOT task's retry_count (guarded to the row).
+// incrementRetry bumps the ROOT task's verify_retry_count (guarded to the row).
+// tasks.retry_count is deliberately untouched: it is the dispatcher's
+// no-progress heal budget (dispatch.HealDeadProcess) and charging it here would
+// let a run of failed verifications park a task the dispatcher was willing to
+// retry — the confusion 0051 split apart.
 func (s *Service) incrementRetry(rootID int64) error {
-	_, err := s.DB.Exec(`UPDATE tasks SET retry_count=retry_count+1 WHERE id=?`, rootID)
+	_, err := s.DB.Exec(`UPDATE tasks SET verify_retry_count=verify_retry_count+1 WHERE id=?`, rootID)
 	return err
 }
 
@@ -589,7 +626,8 @@ func (s *Service) createFixTask(root task, reasons string) error {
 		return err
 	}
 	id, _ := res.LastInsertId()
-	log.Printf("verify: created fix task %d for root %s (retry %d/%d)", id, root.externalID, root.retryCount+1, s.Cfg.RetryBudget)
+	log.Printf("verify: created fix task %d for root %s (verify retry %d/%d)",
+		id, root.externalID, root.verifyRetryCount+1, s.Cfg.RetryBudget)
 	s.notify(id)
 	return nil
 }

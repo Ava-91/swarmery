@@ -235,9 +235,18 @@ type boardTaskDTO struct {
 	Branch        *string  `json:"branch"`
 	WorktreePath  *string  `json:"worktreePath"`
 	DispatchError *string  `json:"dispatchError"`
-	RetryCount    int      `json:"retryCount"`
-	VerifyVerdict *string  `json:"verifyVerdict"`
-	VerifyDetail  *string  `json:"verifyDetail"`
+	// StartPoint is the SHA admit() pinned the worktree to (0051); null on a row
+	// dispatched before it, and on any row that was never admitted. It is what
+	// verification diffs against, so exposing it is what makes a verdict auditable
+	// — "graded against what?" has an answer on the card.
+	StartPoint *string `json:"startPoint"`
+	// The two retry budgets are separate and must be labelled as such: RetryCount
+	// is the dispatcher's no-progress heal budget, VerifyRetryCount the
+	// verification fix-chain budget. One number for both was unreadable.
+	RetryCount       int     `json:"retryCount"`
+	VerifyRetryCount int     `json:"verifyRetryCount"`
+	VerifyVerdict    *string `json:"verifyVerdict"`
+	VerifyDetail     *string `json:"verifyDetail"`
 	// Agent is the registry agent name this card dispatches as (0048); null = a
 	// plain run. Origin/OriginSessionID are capture provenance: 'manual' for a
 	// hand-written card, 'session'/'llm' for one minted from a session. The
@@ -260,7 +269,8 @@ const boardTaskSelect = `
 	SELECT t.id, t.external_id, t.project_id, p.slug, t.title, t.prompt,
 	       t.priority, t.status, t.board_column, t.paused, t.user_paused,
 	       t.dependencies, t.model, t.playbook, t.file_scope, t.labels, t.branch, t.worktree_path,
-	       t.dispatch_error, t.retry_count, t.verify_verdict, t.verify_detail,
+	       t.dispatch_error, t.start_point, t.retry_count, t.verify_retry_count,
+	       t.verify_verdict, t.verify_detail,
 	       t.agent, t.origin, t.origin_session_id,
 	       t.column_moved_at, t.created_at
 	FROM tasks t JOIN projects p ON p.id = t.project_id`
@@ -275,7 +285,8 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 	if err := scan(&d.ID, &externalID, &d.ProjectID, &d.ProjectSlug, &d.Title, &d.Prompt,
 		&priority, &d.Status, &d.BoardColumn, &paused, &userPaused,
 		&deps, &d.Model, &d.Playbook, &scope, &labs, &d.Branch, &d.WorktreePath,
-		&d.DispatchError, &d.RetryCount, &d.VerifyVerdict, &d.VerifyDetail,
+		&d.DispatchError, &d.StartPoint, &d.RetryCount, &d.VerifyRetryCount,
+		&d.VerifyVerdict, &d.VerifyDetail,
 		&d.Agent, &d.Origin, &d.OriginSessionID,
 		&d.ColumnMovedAt, &d.CreatedAt); err != nil {
 		return err
