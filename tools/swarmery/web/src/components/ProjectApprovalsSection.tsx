@@ -9,9 +9,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PermissionRequest, WSMessage } from '../api/types';
-import { fetchApprovals } from '../api';
+import { fetchApprovals, resolveApproval, type ApprovalAction } from '../api';
+import { OPTIMISTIC_STATUS } from '../lib/approvals';
 import { useSessionProjectIndex } from '../lib/sessionProjects';
 import { applyPermissionMessage, useLiveUpdates } from '../lib/ws';
+import { ApprovalContext } from './ApprovalContext';
 
 /** Minimum gap between unknown-session re-resolution attempts. Approvals are
  * human-gated and rare, so 10s is generous for the legitimate "session started
@@ -35,6 +37,7 @@ export function ProjectApprovalsSection({
 }): JSX.Element {
   const [requests, setRequests] = useState<PermissionRequest[] | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
   const { bySessionId, refresh: refreshSessions } = useSessionProjectIndex(true);
   /** Guards the unknown-session miss path against a refetch storm (pre-mortem R3). */
   const lastMissRef = useRef(0);
@@ -45,6 +48,24 @@ export function ProjectApprovalsSection({
       .catch(() => setRequests(null)); // endpoint unavailable → hide, not crash
   }, [scope]);
   useEffect(load, [load]);
+
+  const resolve = (request: PermissionRequest, action: ApprovalAction, reason?: string): void => {
+    setBusyId(request.id);
+    // Optimistic: a resolved row leaves the PENDING-only sidebar list immediately
+    // (unlike Approvals.tsx, there is no local history to transfer it into).
+    const nowResolved = OPTIMISTIC_STATUS[action] !== 'pending';
+    if (nowResolved) {
+      setRequests((prev) => (prev === null ? prev : prev.filter((r) => r.id !== request.id)));
+    }
+    resolveApproval(request.id, action, reason)
+      .catch(() => {
+        // 409 (resolved elsewhere / expired first) or transport failure — the
+        // authoritative refetch reconciles either way (same posture as
+        // Approvals.tsx:688-692).
+        load();
+      })
+      .finally(() => setBusyId(null));
+  };
 
   const onMessage = useCallback(
     (msg: WSMessage): void => {
@@ -109,13 +130,12 @@ export function ProjectApprovalsSection({
       {expanded && count > 0 && (
         <div className="flex flex-col gap-1.5 px-2 py-1.5">
           {requests.map((r) => (
-            <Link
+            <SidebarApprovalRow
               key={r.id}
-              to={`/sessions/${String(r.sessionId)}`}
-              className="rounded-md border border-amber/30 bg-surface px-2.5 py-1.5 font-mono text-[11px] font-bold text-ink transition-colors hover:bg-surface2"
-            >
-              {r.toolName}
-            </Link>
+              request={r}
+              busy={busyId === r.id}
+              onResolve={(action, reason) => resolve(r, action, reason)}
+            />
           ))}
         </div>
       )}
@@ -126,6 +146,87 @@ export function ProjectApprovalsSection({
         >
           {others} more in other projects →
         </Link>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One sidebar pending row: structured context via ApprovalContext plus inline
+ * approve/deny (trimmed from Approvals.tsx's PendingCard — no raw-JSON toggle,
+ * AskUserQuestion form, or "always allow" shortcut; those stay on the full
+ * /approvals page).
+ */
+function SidebarApprovalRow({
+  request,
+  busy,
+  onResolve,
+}: {
+  request: PermissionRequest;
+  busy: boolean;
+  onResolve: (action: ApprovalAction, reason?: string) => void;
+}): JSX.Element {
+  const [denying, setDenying] = useState(false);
+  const [reason, setReason] = useState('');
+
+  return (
+    <div className="rounded-md border border-amber/30 bg-surface px-2.5 py-2">
+      <ApprovalContext
+        request={request}
+        sessionSlot={
+          <Link
+            to={`/sessions/${String(request.sessionId)}`}
+            className="font-mono text-[10px] text-ink-dim transition-colors hover:text-brand"
+          >
+            open session →
+          </Link>
+        }
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onResolve('approve')}
+          className="rounded-md border border-green/45 bg-green/12 px-2.5 py-1 font-mono text-[10.5px] font-bold text-green transition-colors hover:bg-green/20 disabled:opacity-50"
+        >
+          approve
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          aria-expanded={denying}
+          onClick={() => setDenying((v) => !v)}
+          className="rounded-md border border-red/40 px-2.5 py-1 font-mono text-[10.5px] text-red transition-colors hover:bg-red/10 disabled:opacity-50"
+        >
+          deny{denying ? ' ▴' : ''}
+        </button>
+      </div>
+      {denying && (
+        <form
+          className="mt-1.5 flex gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const trimmed = reason.trim();
+            onResolve('deny', trimmed === '' ? undefined : trimmed);
+          }}
+        >
+          <input
+            type="text"
+            autoFocus
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="reason (optional)"
+            aria-label="deny reason"
+            className="min-w-0 flex-1 rounded-md border border-line bg-field px-2 py-1 font-mono text-[10.5px] text-ink outline-none placeholder:text-ink-faint focus:border-red/40"
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-md border border-red/40 bg-red/10 px-2 py-1 font-mono text-[10.5px] font-semibold text-red transition-colors hover:bg-red/20 disabled:opacity-50"
+          >
+            confirm
+          </button>
+        </form>
       )}
     </div>
   );
