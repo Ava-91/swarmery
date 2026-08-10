@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
@@ -53,6 +54,13 @@ const stderrTailBytes = 4096
 
 // drainGrace bounds the post-exit wait for the run's process group to empty out.
 const drainGrace = 5 * time.Second
+
+// permEnv is this spawn site's --permission-mode knob (internal/claudeflags owns
+// the default and the precedence). A dispatched executor with no permission mode
+// has every Write/Edit and every un-allowlisted Bash command auto-denied — there
+// is no approver in a headless run — and still exits 0, so the task is stamped
+// done over an untouched worktree.
+const permEnv = "SWARMERY_DISPATCH_PERMISSION_MODE"
 
 // defaultModel pins dispatched implementation runs whose task carries no model
 // override: an unset --model inherits the account default (Fable-5 here — 5×
@@ -110,6 +118,10 @@ func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	// unaffected.
 	args := []string{"-p", agentPrompt(spec), "--session-id", spec.SessionUUID,
 		"--setting-sources", "project,local"}
+	// Without this the executor cannot write, run or commit — and it still exits
+	// 0, so the task is stamped done over an empty diff. See
+	// internal/claudeflags (knob: SWARMERY_DISPATCH_PERMISSION_MODE).
+	args = append(args, claudeflags.PermissionModeArgs(permEnv)...)
 	if m := strings.TrimSpace(spec.Model); m != "" {
 		args = append(args, "--model", m)
 	}

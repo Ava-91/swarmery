@@ -16,6 +16,10 @@ package planrun
 //     A whole plan is many phases of real work, so it gets far more room than a
 //     single phase (SWARMERY_PHASERUN_TIMEOUT, default 4h) — but it must not
 //     wedge a worktree forever.
+//   - SWARMERY_PLANRUN_PERMISSION_MODE  --permission-mode for this site; see
+//     internal/claudeflags for the default and the measurements behind it. A
+//     headless run with no permission mode set denies every Write/Edit and every
+//     un-allowlisted Bash command, then exits 0 having landed nothing.
 //
 // Binary resolution reuses planning.ClaudeBin (SWARMERY_CLAUDE_BIN override →
 // PATH → common install locations), so the spawn works under launchd's minimal
@@ -31,6 +35,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
@@ -78,6 +83,7 @@ const (
 	agentEnv   = "SWARMERY_PLANRUN_AGENT"
 	modelEnv   = "SWARMERY_PLANRUN_MODEL"
 	timeoutEnv = "SWARMERY_PLANRUN_TIMEOUT"
+	permEnv    = "SWARMERY_PLANRUN_PERMISSION_MODE"
 )
 
 // fallbackAgent is the orchestrating agent a plan run is handed to when neither
@@ -143,6 +149,9 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 
 	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID}
+	// Without this the orchestrator cannot write, run or commit — and it still
+	// exits 0. See internal/claudeflags.
+	args = append(args, claudeflags.PermissionModeArgs(permEnv)...)
 	if a := strings.TrimSpace(spec.Agent); a != "" {
 		args = append(args, "--agent", a)
 	}

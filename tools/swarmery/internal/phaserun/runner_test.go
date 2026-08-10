@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 )
 
 // fakeClaude writes a shell script that dumps its argv (one per line) to
@@ -32,6 +34,8 @@ func TestClaudeRunner_Start_DefaultNoModelFlag(t *testing.T) {
 	argFile := filepath.Join(t.TempDir(), "args")
 	fakeClaude(t, argFile, "", 0)
 	t.Setenv(modelEnv, "") // account default — no --model
+	t.Setenv(permEnv, "")
+	t.Setenv(claudeflags.ModeEnv, "")
 
 	r := ClaudeRunner{Timeout: 30 * time.Second}
 	run, err := r.Start(context.Background(), RunSpec{
@@ -51,7 +55,11 @@ func TestClaudeRunner_Start_DefaultNoModelFlag(t *testing.T) {
 		t.Fatalf("read args: %v", err)
 	}
 	args := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	want := []string{"-p", "execute phase", "--session-id", "u1"}
+	// The permission mode is NOT optional decoration: without it every Write,
+	// Edit and un-allowlisted Bash call in the run is auto-denied (no approver
+	// exists in a headless run) and the process still exits 0 — a phase recorded
+	// as a clean success that landed nothing (internal/claudeflags).
+	want := []string{"-p", "execute phase", "--session-id", "u1", "--permission-mode", "bypassPermissions"}
 	if len(args) != len(want) {
 		t.Fatalf("args = %q, want %q", args, want)
 	}
@@ -215,3 +223,35 @@ func TestTail(t *testing.T) {
 		t.Errorf("tail = %q, want short", got)
 	}
 }
+
+// The site knob must reach the CLI, and its escape hatch must drop the flag
+// entirely — an operator debugging a permission question needs both.
+func TestClaudeRunner_Start_PermissionModeKnob(t *testing.T) {
+	t.Setenv(claudeflags.ModeEnv, "")
+
+	argFile := filepath.Join(t.TempDir(), "args")
+	fakeClaude(t, argFile, "", 0)
+	t.Setenv(permEnv, "acceptEdits")
+	if _, err := r0().Start(context.Background(), RunSpec{Prompt: "p", SessionUUID: "u-pm1", Cwd: t.TempDir()}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	raw, _ := os.ReadFile(argFile)
+	if got := strings.TrimSpace(string(raw)); !strings.Contains(got, "--permission-mode\nacceptEdits") {
+		t.Errorf("args missing --permission-mode acceptEdits:\n%s", got)
+	}
+
+	offFile := filepath.Join(t.TempDir(), "args-off")
+	fakeClaude(t, offFile, "", 0)
+	t.Setenv(permEnv, "off")
+	if _, err := r0().Start(context.Background(), RunSpec{Prompt: "p", SessionUUID: "u-pm2", Cwd: t.TempDir()}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	raw, _ = os.ReadFile(offFile)
+	if got := strings.TrimSpace(string(raw)); strings.Contains(got, "--permission-mode") {
+		t.Errorf("args carry --permission-mode although the knob is off:\n%s", got)
+	}
+}
+
+// r0 is the runner shape every test here uses (a short timeout so a hung fake
+// cannot wedge the suite).
+func r0() ClaudeRunner { return ClaudeRunner{Timeout: 30 * time.Second} }

@@ -201,6 +201,10 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 			// project's untracked .claude/ files may have changed (or been added)
 			// since this worktree was first acquired.
 			syncUntrackedConfig(repoRoot, path)
+			// Same reasoning for the dependency tree: a warm worktree may predate
+			// the source checkout's first install, or have had its link removed by
+			// a run that reinstalled.
+			lendDependencies(repoRoot, path)
 			return Acquired{Path: path, Branch: branch, StartPoint: startSHA}, nil
 		}
 		// Foreign branch / detached at our path → reclaim in place: remove then
@@ -261,8 +265,11 @@ func (m *Manager) Acquire(repoRoot, projectSlug, taskID string) (Acquired, error
 		return Acquired{}, fmt.Errorf("worktree: add %s: %w", path, err)
 	}
 	// The worktree now has whatever repoRoot had COMMITTED — lend it whatever
-	// repoRoot has UNCOMMITTED too (issue #192), before handing it to a caller.
+	// repoRoot has UNCOMMITTED too (issue #192), before handing it to a caller:
+	// the untracked .claude/ config, and the gitignored dependency tree without
+	// which the run's own verification command cannot execute.
 	syncUntrackedConfig(repoRoot, path)
+	lendDependencies(repoRoot, path)
 	return Acquired{Path: path, Branch: branch, StartPoint: startSHA}, nil
 }
 

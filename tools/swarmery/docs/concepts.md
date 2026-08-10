@@ -116,6 +116,23 @@ Two refusals are deliberate:
 
 Reuse is conservative in the same spirit: an existing worktree is reused only when its branch matches, recreated on a *proven* mismatch, and never destroyed because a probe happened to fail. Before acquiring, a stale `index.lock` older than 10 minutes is swept, so one crashed run does not block every future one.
 
+`git worktree add` materializes only *committed* files, so a fresh worktree is lent two things the checkout has but git does not track:
+
+| Lent | What | Knob |
+|---|---|---|
+| Project config | `.claude/settings.json`, `settings.local.json`, `project.json` — copied when the worktree has none, so the run keeps the project's plugins and permissions | — |
+| Installed dependencies | `node_modules`, `.venv`, `vendor` — **symlinked** to the source checkout's copies, so the run's build/test commands have a toolchain instead of failing on a missing module | `SWARMERY_WORKTREE_LEND` (comma-separated relative paths; `off` to lend nothing) |
+
+Dependencies are symlinked rather than copied because such a tree is routinely gigabytes. The consequence is explicit and stated in every run contract: the tree is **shared with your working copy**, so runs are told never to reinstall packages.
+
+## Headless permission mode
+
+A headless run has no one to answer a permission prompt, so any tool call that would ask is auto-**denied** — and the process still exits 0. Left unset, that produces the worst possible outcome: a run recorded as a clean success that wrote nothing, committed nothing and ticked no checkbox.
+
+Every spawn site (board dispatch, plan run, phase run) therefore passes `--permission-mode`, defaulting to `bypassPermissions`. Measured, not assumed: `acceptEdits` lets a run edit files but still refuses `git commit` and any un-allowlisted command, so it cannot finish a phase; only `bypassPermissions` can.
+
+That default is scoped by the surrounding design rather than by the flag: runs happen in a throwaway worktree on a `swarm/` branch, their contracts forbid push/PR/merge, and a project's `permissions.deny` rules **still apply** — `bypassPermissions` skips the ask, not the deny list, so a denied `.env` stays denied. Pin a different mode per site with `SWARMERY_DISPATCH_PERMISSION_MODE`, `SWARMERY_PLANRUN_PERMISSION_MODE`, `SWARMERY_PHASERUN_PERMISSION_MODE`, or all three at once with `SWARMERY_PERMISSION_MODE`; the value `off` omits the flag entirely.
+
 ## Planning Mode
 
 A headless planner interviews you one question at a time and writes a phased plan into the private workspace.
