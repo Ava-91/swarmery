@@ -179,6 +179,10 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
   const [data, setData] = useState<ProjectPluginsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // A toggle can succeed on settings.json and still change nothing in sessions:
+  // .claude/settings.local.json outranks it on a key conflict. The PUT response
+  // says so; hiding it would render the toggle as silently broken.
+  const [warning, setWarning] = useState<string | null>(null);
   // The row whose config modal is open — manual 'configure'/'edit' click, or
   // an automatic open right after enabling a pack that needs it (see toggle).
   const [configFor, setConfigFor] = useState<ProjectPluginRow | null>(null);
@@ -217,10 +221,12 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
   const toggle = (row: ProjectPluginRow): void => {
     const wasEnabled = row.enabled;
     setBusy(row.name);
+    setWarning(null);
     toggleProjectPlugin(projectId, row.name, !row.enabled)
-      .then(() => {
+      .then((res) => {
         if (!aliveRef.current) return null;
         setError(null);
+        setWarning(res.warning ?? null);
         return load();
       })
       .then((fresh) => {
@@ -252,6 +258,11 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
       {error !== null && (
         <div className="mb-2">
           <ErrorBox message={error} onRetry={load} />
+        </div>
+      )}
+      {warning !== null && (
+        <div className="mb-2 rounded-xl border border-amber/40 bg-amber/10 px-3.5 py-2 font-mono text-[10.5px] text-amber">
+          {warning}
         </div>
       )}
       {data === null && error === null ? (
@@ -307,6 +318,9 @@ export function ProjectPlugins({ projectId }: { projectId: number }): JSX.Elemen
           <div className="mt-2 font-mono text-[10px] text-ink-faint">
             marketplace v{data.marketplaceVersion} · repairs and toggles take effect in the next
             Claude Code session
+            {data.overlaySources !== undefined && data.overlaySources.length > 0
+              ? ` · enabled state also reads: ${data.overlaySources.join(', ')}`
+              : null}
           </div>
         </Card>
       ) : null}

@@ -19,8 +19,12 @@ LAUNCHD_LABEL := com.swarmery.daemon
 # build: docs snapshot + vite bundle → go:embed → single binary ./swarmery
 build: copy-docs build-web build-go
 
+# dist is pruned first: vite keeps emptyOutDir=false (web/dist/.gitkeep must
+# survive for go:embed on fresh clones), so without this every build's hashed
+# bundles accumulate and go:embed packs ALL of them — a long-lived checkout
+# reached 211MB of stale assets and produced a 243MB daemon binary.
 build-web:
-	cd web && npm install && npm run build
+	cd web && rm -rf dist/assets dist/index.html && npm install && npm run build
 
 build-go:
 	go build -ldflags "-X $(VERSION_PKG).Build=$(BUILD_ID)" -o swarmery ./cmd/swarmery
