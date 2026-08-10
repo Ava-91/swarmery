@@ -70,6 +70,60 @@ export function boardCounts(tasks: BoardTask[]): BoardCounts {
   return { waiting, running, blocked };
 }
 
+// --- inbox amnesty (board inbox lifecycle) ------------------------------------
+
+/**
+ * Above this many Triage cards the inbox has stopped being an inbox: nobody
+ * reads a 50-card list top to bottom, so the board offers to clear the old
+ * captured ones instead of pretending they are still triageable.
+ */
+export const AMNESTY_THRESHOLD = 50;
+
+/** How old a captured card must be before the banner offers to archive it. */
+export const AMNESTY_AGE_DAYS = 7;
+
+/** Milliseconds in a day — the banner's cutoff arithmetic. */
+const DAY_MS = 86_400_000;
+
+/**
+ * The cutoff instant the amnesty runs against: `days` ago, as an RFC3339
+ * string. `toISOString()` renders exactly the millisecond-Z shape the server
+ * stores, so the count below and the server's own predicate compare the same
+ * way on the same strings.
+ */
+export function amnestyCutoff(days: number, nowMs: number): string {
+  return new Date(nowMs - days * DAY_MS).toISOString();
+}
+
+/**
+ * When a card's idle clock started. Mirrors taskcap.InboxIdleSince: capture
+ * never writes columnMovedAt, so a card that has only ever sat in Triage is
+ * dated by createdAt — keying on columnMovedAt alone would count zero of the
+ * cards this feature exists for.
+ */
+export function idleSince(task: BoardTask): string {
+  return task.columnMovedAt ?? task.createdAt;
+}
+
+/**
+ * How many cards the amnesty would archive — the client-side twin of
+ * taskcap.StaleInboxWhere, conjunct for conjunct (captured origin, still in
+ * Triage, no worktree, idle since before the cutoff). It only ever labels the
+ * button; the server recounts under `dryRun` before anything is written, so a
+ * drift here misleads nobody into a wrong write.
+ */
+export function amnestyCandidates(tasks: readonly BoardTask[], before: string): number {
+  let n = 0;
+  for (const t of tasks) {
+    if (t.boardColumn !== 'triage') continue;
+    if (t.origin === 'manual') continue;
+    if (t.worktreePath !== null) continue;
+    if (idleSince(t) >= before) continue;
+    n += 1;
+  }
+  return n;
+}
+
 // --- card labels (0049 UI) ----------------------------------------------------
 
 /** A card renders at most this many label chips before rolling the rest into

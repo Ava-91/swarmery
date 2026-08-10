@@ -1069,6 +1069,53 @@ export async function landBoardTask(id: number, draft = false): Promise<LandTask
   });
   if (!res.ok) throw await reviewActionError(res, 'land failed');
   return (await res.json()) as LandTaskResponse;
+/**
+ * Body of POST /api/board/tasks/bulk-archive — the inbox amnesty. The server
+ * applies the same eligibility predicate as the TTL sweeper (captured origin,
+ * still in Triage, no worktree), so this body only ever NARROWS it.
+ */
+export interface BulkArchiveInput {
+  /** Omit to sweep every project. */
+  projectId?: number;
+  /**
+   * Only 'triage' is accepted. It tells the server nothing it could not assume —
+   * that is the point: naming the column means a column added later can never be
+   * swept by a client written before it existed.
+   */
+  column: 'triage';
+  /** RFC3339 cutoff — cards idle since before this instant are eligible. */
+  before: string;
+  /** Count the matches without writing anything (drives the confirm step). */
+  dryRun?: boolean;
+}
+
+/** Response of the amnesty: `archived` is 0 on a dry run, `matched` otherwise. */
+export interface BulkArchiveResult {
+  matched: number;
+  archived: number;
+}
+
+/**
+ * POST /api/board/tasks/bulk-archive → {matched, archived}. Call it once with
+ * `dryRun: true` to show the blast radius, then again with the SAME body minus
+ * the flag to commit — a bulk archive has no undo, so the count the user
+ * approved and the write that follows must come from one predicate.
+ *
+ * Emits no WS frames by design: the caller reloads its own board off this
+ * response, other tabs converge on the next reconcile tick.
+ */
+export async function bulkArchiveBoardTasks(input: BulkArchiveInput): Promise<BulkArchiveResult> {
+  if (MOCK) return { matched: 0, archived: 0 }; // no-op in mock mode
+  const res = await fetch('/api/board/tasks/bulk-archive', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `bulk archive failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as BulkArchiveResult;
 }
 
 /** GET /api/dispatch — dispatcher status snapshot (503 when not attached). */

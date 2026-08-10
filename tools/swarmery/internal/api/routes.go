@@ -134,6 +134,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// Permanent removal of a queue row (a task that stopped being relevant).
 	// Archive keeps it on the board; this drops it. Same D4 origin hardening.
 	mux.HandleFunc("DELETE /api/board/tasks/{id}", requireLocalOrigin(h.deleteBoardTask))
+	// Inbox amnesty: archive every captured Triage card older than a caller-
+	// supplied cutoff in one call (?dryRun counts without writing). The literal
+	// segment cannot collide with the {id} routes above — those are PATCH/DELETE
+	// and this is POST. Same D4 origin hardening as every other board write.
+	mux.HandleFunc("POST /api/board/tasks/bulk-archive", requireLocalOrigin(h.bulkArchiveBoardTasks))
 
 	// board redesign phase 3: the review loop — the evidence and the three exits
 	// out of in_review (tasks_diff.go, tasks_review.go). The diff is a read and
