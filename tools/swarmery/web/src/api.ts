@@ -1069,6 +1069,8 @@ export async function landBoardTask(id: number, draft = false): Promise<LandTask
   });
   if (!res.ok) throw await reviewActionError(res, 'land failed');
   return (await res.json()) as LandTaskResponse;
+}
+
 /**
  * Body of POST /api/board/tasks/bulk-archive — the inbox amnesty. The server
  * applies the same eligibility predicate as the TTL sweeper (captured origin,
