@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 )
 
 // fakeClaude writes a shell script named `claude` into a temp dir and prepends
@@ -183,4 +185,25 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// A dispatched executor with no --permission-mode cannot write, run or commit:
+// there is no approver in a headless run, so every prompting tool call is
+// auto-denied and the process still exits 0 — the board task is stamped done
+// over an untouched worktree. Assert the flag reaches argv, and that the escape
+// hatch drops it.
+func TestClaudeRunnerPassesPermissionMode(t *testing.T) {
+	t.Setenv(claudeflags.ModeEnv, "")
+	t.Setenv(permEnv, "")
+	got := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u-pm1"})
+	for _, want := range []string{"--permission-mode", claudeflags.DefaultMode} {
+		if !contains(got, want) {
+			t.Errorf("args %q missing %q", got, want)
+		}
+	}
+
+	t.Setenv(permEnv, "off")
+	if off := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u-pm2"}); contains(off, "--permission-mode") {
+		t.Errorf("args %q carry --permission-mode although %s=off", off, permEnv)
+	}
 }

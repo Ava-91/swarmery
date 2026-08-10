@@ -1,0 +1,147 @@
+package worktree
+
+// `git worktree add` materializes only what is COMMITTED. An installed
+// dependency tree is by construction NOT committed — node_modules, .venv and
+// friends sit in .gitignore — so every fresh worktree starts with no toolchain
+// at all, and the verification command a run's contract names fails on the
+// environment instead of on the work.
+//
+// Observed 2026-08-10 (project handwrytten, phase-1 of an approved plan): the
+// phase's own verification command, `npx jest tests/unit/<file>`, died in the
+// fresh worktree with "Cannot find module '@babel/preset-env'". The phase could
+// not have gone green no matter what the executor wrote.
+//
+// Installing per run is not the fix: it costs minutes of the run's wall clock
+// every time, and a headless run's sandbox may refuse the network it needs.
+// Lending the source checkout's ALREADY installed tree costs one symlink.
+//
+// Symlink, not copy, and the trade-off is deliberate:
+//
+//   - A dependency tree is routinely gigabytes; copying it per worktree would
+//     dwarf the checkout it serves. Node and Python both resolve through
+//     symlinked dependency roots natively (npm and pnpm build such links
+//     themselves), so this is the boring path, not a trick.
+//   - The tree is SHARED with the source checkout, so a run that reinstalls
+//     (`npm ci`, `pip install`) mutates the developer's working copy. The run
+//     prompts say so and tell executors not to reinstall — this file is the
+//     reason that sentence exists.
+//   - The link is only ever created when the worktree has nothing at that path,
+//     so a project that genuinely commits its vendor directory keeps git's copy.
+//
+// A gitignored symlink does not show up in `git status --porcelain`, so a
+// contract asserting a clean tree still holds.
+
+import (
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// LendEnv overrides which gitignored dependency directories get lent, as a
+// comma-separated list of paths relative to the checkout root (e.g.
+// "node_modules,web/node_modules"). Set it to "off" (or "none") to lend nothing.
+const LendEnv = "SWARMERY_WORKTREE_LEND"
+
+// defaultLendPaths covers the ecosystems whose dependency root is a single
+// gitignored directory at the checkout root. Deliberately short: each entry is
+// a no-op for a project that does not have it, and an operator with a nested or
+// unusual layout sets LendEnv instead of waiting for a default to grow.
+var defaultLendPaths = []string{"node_modules", ".venv", "vendor"}
+
+// lendDependencies links each configured dependency directory from repoRoot into
+// worktreePath. Best-effort by design, exactly like syncUntrackedConfig: this
+// runs at the tail of Acquire, and a failure to lend a convenience tree must not
+// fail an acquisition that is otherwise sound — the run then fails its own
+// verification command with a message about the toolchain, which is a far better
+// outcome than a worktree nobody gets.
+func lendDependencies(repoRoot, worktreePath string) {
+	for _, rel := range lendPaths() {
+		linked, err := linkMissingDir(repoRoot, worktreePath, rel)
+		if err != nil {
+			log.Printf("warning: worktree: lend %s into %s: %v", rel, worktreePath, err)
+			continue
+		}
+		if linked {
+			log.Printf("worktree: %s is not tracked by git — symlinked %s's copy into %s so the run's build/test commands have a toolchain",
+				rel, repoRoot, worktreePath)
+		}
+	}
+}
+
+// lendPaths resolves the configured list. An unset knob means the defaults; an
+// explicit "off"/"none" means lend nothing (an operator who wants every run to
+// install its own tree).
+func lendPaths() []string {
+	raw := strings.TrimSpace(os.Getenv(LendEnv))
+	if raw == "" {
+		return defaultLendPaths
+	}
+	switch strings.ToLower(raw) {
+	case "off", "none", "-":
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// linkMissingDir symlinks repoRoot/rel to worktreePath/rel when the source is a
+// real directory and the destination is free. linked=false with err=nil covers
+// every "nothing to do" case: a rejected path, no such directory in the source
+// (the project does not use that ecosystem), or a destination that already
+// exists (git materialized it because it IS tracked — that copy is the more
+// specific answer and is left untouched).
+func linkMissingDir(repoRoot, worktreePath, rel string) (linked bool, err error) {
+	if !safeRelPath(rel) {
+		log.Printf("warning: worktree: refusing to lend %q: %s takes paths relative to the checkout root, with no .. segments", rel, LendEnv)
+		return false, nil
+	}
+	src := filepath.Join(repoRoot, rel)
+	// Stat, not Lstat: a source that is itself a symlink to a real tree (a
+	// developer pointing node_modules elsewhere) is still a usable dependency
+	// root, and linking to the link works.
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !srcInfo.IsDir() {
+		return false, nil
+	}
+	dst := filepath.Join(worktreePath, rel)
+	// Lstat here: a dangling symlink at the destination (a previous lend whose
+	// target moved) is an existing name os.Symlink would fail on, and it is not
+	// ours to reinterpret.
+	if _, err := os.Lstat(dst); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.Symlink(src, dst); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// safeRelPath keeps the knob from being read as "link anything anywhere": only a
+// relative path that stays inside the checkout is a dependency directory.
+func safeRelPath(rel string) bool {
+	if rel == "" || filepath.IsAbs(rel) {
+		return false
+	}
+	clean := filepath.Clean(rel)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}

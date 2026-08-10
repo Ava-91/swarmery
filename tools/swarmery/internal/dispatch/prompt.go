@@ -20,6 +20,7 @@ You are running unattended inside a dedicated git worktree on branch {{.Branch}}
 - If you discover the requested work is already done on HEAD, do NOT redo it. End your reply with: PREMISE STALE: <evidence>.
 - If no changes are needed, end with: NO-OP: <reason>. If this duplicates other tracked work, end with: DUPLICATE: <task-id>.
 - If you are genuinely blocked, end with: BLOCKED: <reason>. Never fake completion by skipping the remaining work.
+- Installed dependencies (node_modules, .venv, …) are LENT from the project's main checkout as symlinks, because git only materializes committed files in a worktree: build and test commands work as-is. Do NOT run a package-install command (npm ci / npm install / pip install) — it would mutate the main checkout's shared tree.
 - Do not push, do not create PRs, do not switch branches.
 --- END CONTRACT ---`))
 

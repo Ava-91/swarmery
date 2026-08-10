@@ -8,10 +8,14 @@ package phaserun
 // handling and single-flight release in one place and makes the flow
 // stub-testable.
 //
-// Knobs (both optional):
+// Knobs (all optional):
 //   - SWARMERY_PHASERUN_MODEL   passed as --model verbatim; unset ⇒ the account
 //     default. Pin full model IDs, not aliases — aliases re-resolve over time.
 //   - SWARMERY_PHASERUN_TIMEOUT Go duration bounding one phase run (default 4h).
+//   - SWARMERY_PHASERUN_PERMISSION_MODE  --permission-mode for this site; see
+//     internal/claudeflags for the default and the measurements behind it. A
+//     headless phase run with no permission mode set denies every Write/Edit and
+//     every un-allowlisted Bash command, then exits 0 having landed nothing.
 //
 // Binary resolution reuses planning.ClaudeBin (SWARMERY_CLAUDE_BIN override →
 // PATH → common install locations), so the spawn works under launchd's minimal
@@ -32,6 +36,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
@@ -87,6 +92,7 @@ const stderrTailBytes = 4096
 const (
 	modelEnv   = "SWARMERY_PHASERUN_MODEL"
 	timeoutEnv = "SWARMERY_PHASERUN_TIMEOUT"
+	permEnv    = "SWARMERY_PHASERUN_PERMISSION_MODE"
 )
 
 // drainGrace bounds the post-exit wait for the run's process group to empty out
@@ -130,6 +136,9 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	}
 
 	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID}
+	// Without this the run cannot write, cannot run its verification command and
+	// cannot commit — and it still exits 0. See internal/claudeflags.
+	args = append(args, claudeflags.PermissionModeArgs(permEnv)...)
 	if m := strings.TrimSpace(os.Getenv(modelEnv)); m != "" {
 		args = append(args, "--model", m)
 	}
