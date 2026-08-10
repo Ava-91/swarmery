@@ -2217,6 +2217,12 @@ export interface ProjectPluginsResponse {
   /** Mirrors the PUT fence: SWARMERY_ONBOARD_ROOTS set + path inside the allow-list. */
   canWrite: boolean;
   plugins: ProjectPluginRow[];
+  /**
+   * Settings sources beyond the repo's settings.json that contributed to the
+   * enabled state: "settings.local.json" for the repo's own local file, plus
+   * any declared launcher overlays. Absent when settings.json is the whole story.
+   */
+  overlaySources?: string[];
 }
 
 /** POST /api/projects/{id}/plugins/{name}/repair */
@@ -2247,6 +2253,12 @@ export interface ProjectPluginToggleResponse {
   enabled: boolean;
   changed: boolean;
   backup?: string;
+  /**
+   * Set when settings.json was written but .claude/settings.local.json pins the
+   * same key to the opposite value — sessions keep the local value until that
+   * key is removed, so the toggle did not change the effective state.
+   */
+  warning?: string;
 }
 
 /** PUT /api/projects/{id}/config/{key} result — one top-level project.json key. */

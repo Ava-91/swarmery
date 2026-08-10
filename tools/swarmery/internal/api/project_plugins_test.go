@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -457,5 +458,78 @@ func TestProjectPluginsRegistryWithoutEntryFallsBackToClone(t *testing.T) {
 		if resp.Plugins[i].Name != name {
 			t.Errorf("plugins[%d].Name = %q, want %q (the legacy clone's manifest order)", i, resp.Plugins[i].Name, name)
 		}
+	}
+}
+
+// ── .claude/settings.local.json as an implicit overlay ───────────────────────
+
+// writeLocalSettings drops a settings.local.json beside the project's
+// settings.json — the file Claude Code merges over project scope in every
+// session, which the plugins surface must therefore fold in too.
+func writeLocalSettings(t *testing.T, projectDir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(projectDir, ".claude", "settings.local.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectPluginsFoldsLocalSettings(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	writeProjectSettings(t, path, `{"enabledPlugins": {"core@swarmery": true}}`)
+	writeLocalSettings(t, path, `{"enabledPlugins": {"lsp-pack@swarmery": true}}`)
+
+	resp := getPluginsResponse(t, srv.URL, "1")
+	// lsp-pack is live in sessions but invisible to the repo-scoped drift
+	// detector, so it must render enabled with "unknown" and the local detail —
+	// mirroring the declared-overlay rule, with its own wording.
+	want := []projectPluginDTO{
+		{Name: "core", Description: "the core plugin", Enabled: true, Locked: true, Status: "ok"},
+		{Name: "uav-pack", Description: "UAV domain pack", Enabled: false, Locked: false, Status: "unknown"},
+		{Name: "lsp-pack", Description: "LSP pack", Enabled: true, Locked: false, Status: "unknown", Detail: localStatusDetail},
+	}
+	assertPluginRows(t, resp.Plugins, want)
+	if !slices.Contains(resp.OverlaySources, localSettingsName) {
+		t.Errorf("overlaySources = %v, want to contain %q", resp.OverlaySources, localSettingsName)
+	}
+}
+
+func TestProjectPluginsLocalPinsOff(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	writeProjectSettings(t, path, `{"enabledPlugins": {"core@swarmery": true, "lsp-pack@swarmery": true}}`)
+	writeLocalSettings(t, path, `{"enabledPlugins": {"lsp-pack@swarmery": false}}`)
+
+	resp := getPluginsResponse(t, srv.URL, "1")
+	for _, p := range resp.Plugins {
+		if p.Name == "lsp-pack" && p.Enabled {
+			t.Errorf("lsp-pack enabled = true, want false — settings.local.json pins it off, and local outranks settings.json in sessions")
+		}
+	}
+}
+
+func TestPutPluginWarnsOnLocalOverride(t *testing.T) {
+	srv, _ := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	writeLocalSettings(t, path, `{"enabledPlugins": {"lsp-pack@swarmery": false}}`)
+
+	// The write itself succeeds — settings.json is this surface's state — but
+	// the response must say the local override keeps sessions unchanged.
+	out := doJSON(t, "PUT", srv.URL+"/api/projects/1/plugins/lsp-pack",
+		map[string]any{"enabled": true}, 200)
+	warning, _ := out["warning"].(string)
+	if !strings.Contains(warning, "settings.local.json") {
+		t.Errorf("warning = %q, want a settings.local.json override note", warning)
+	}
+
+	// No conflict (local agrees or has no such key) ⇒ no warning.
+	writeLocalSettings(t, path, `{"enabledPlugins": {"lsp-pack@swarmery": true}}`)
+	out = doJSON(t, "PUT", srv.URL+"/api/projects/1/plugins/lsp-pack",
+		map[string]any{"enabled": true}, 200)
+	if w, ok := out["warning"]; ok && w != "" {
+		t.Errorf("warning = %v on an agreeing local value, want none", w)
 	}
 }

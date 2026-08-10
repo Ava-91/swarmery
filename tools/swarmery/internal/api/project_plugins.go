@@ -40,6 +40,11 @@ const pluginMarketplace = "swarmery"
 // repo-scoped), so its status is "unknown" rather than a green "ok".
 const overlayStatusDetail = "enabled by a settings overlay — drift is only scanned from this repo's settings.json"
 
+// localStatusDetail is the same story for the repo's own settings.local.json:
+// live in real sessions (Claude Code merges it over settings.json), invisible
+// to the repo-scoped drift detector.
+const localStatusDetail = "enabled by .claude/settings.local.json — drift is only scanned from this repo's settings.json"
+
 // pluginCatalogDir is attached once at startup (or per-test); empty ⇒ resolve
 // ~/.claude at request time. Mirrors AttachOnboard (onboard.go:41).
 var pluginCatalogDir string
@@ -343,6 +348,13 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Local-enabled rows get their own detail wording: "a settings overlay" would
+	// send the operator hunting for a declared overlay descriptor when the source
+	// is a file sitting right next to settings.json.
+	localPacks := map[string]bool{}
+	if lo, ok := localSettingsOverlay(path); ok {
+		localPacks = overlayPacks([]projectscan.SettingsOverlay{lo})
+	}
 
 	// canWrite mirrors the attach/detach fence (attach.go:42-87): roots must be
 	// configured AND the project path must resolve under one of them.
@@ -379,6 +391,8 @@ func (h *Handler) projectPlugins(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !enabled:
 			status = "unknown"
+		case localPacks[p.Name] && !repoEnabled[p.Name]:
+			status, detail = "unknown", localStatusDetail
 		case fromOverlay[p.Name] && !repoEnabled[p.Name]:
 			status, detail = "unknown", overlayStatusDetail
 		default:
@@ -613,6 +627,13 @@ type putPluginResponse struct {
 	Enabled bool   `json:"enabled"`
 	Changed bool   `json:"changed"`
 	Backup  string `json:"backup,omitempty"`
+	// Warning is set when the write landed in settings.json but the repo's
+	// .claude/settings.local.json pins the same key to the OPPOSITE value —
+	// Claude Code merges local over project scope, so the effective state in
+	// sessions did not change. The toggle is not refused (settings.json is the
+	// state this surface manages, and the operator may be about to delete the
+	// local override), but a silent no-op would be worse than the conflict.
+	Warning string `json:"warning,omitempty"`
 }
 
 // putProjectPlugin handles PUT /api/projects/{id}/plugins/{name}. Fenced like
@@ -703,5 +724,16 @@ func (h *Handler) putProjectPlugin(w http.ResponseWriter, r *http.Request) {
 	if res.Changed && req.Enabled {
 		h.enqueueProvision(id, target, name)
 	}
-	writeJSON(w, putPluginResponse{Name: name, Enabled: req.Enabled, Changed: res.Changed, Backup: res.Backup}, nil)
+	resp := putPluginResponse{Name: name, Enabled: req.Enabled, Changed: res.Changed, Backup: res.Backup}
+	if lo, ok := localSettingsOverlay(target); ok {
+		if v, exists := lo.Settings.EnabledPlugins[name+"@"+pluginMarketplace]; exists && v != req.Enabled {
+			state := "off"
+			if v {
+				state = "on"
+			}
+			resp.Warning = ".claude/settings.local.json pins " + name + " " + state +
+				" and overrides settings.json in sessions — remove that key from settings.local.json for this toggle to take effect"
+		}
+	}
+	writeJSON(w, resp, nil)
 }
