@@ -207,3 +207,29 @@ func TestClaudeRunnerPassesPermissionMode(t *testing.T) {
 		t.Errorf("args %q carry --permission-mode although %s=off", off, permEnv)
 	}
 }
+
+// A playbook's permission_mode is a PER-RUN override of the site knob (phase 5).
+// Set → that mode reaches argv even when the env says otherwise; the literal
+// "default" → no flag at all; unset → the global knob still decides.
+func TestClaudeRunnerPlaybookPermissionModeOverridesKnob(t *testing.T) {
+	t.Setenv(claudeflags.ModeEnv, "")
+	t.Setenv(permEnv, claudeflags.DefaultMode) // global says bypassPermissions
+
+	got := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u-pm3", PermissionMode: "acceptEdits"})
+	if !contains(got, "--permission-mode acceptEdits") {
+		t.Errorf("args %q missing the playbook's acceptEdits mode", got)
+	}
+	if contains(got, claudeflags.DefaultMode) {
+		t.Errorf("args %q still carry the global knob's mode; the playbook must win", got)
+	}
+
+	// "default" is the recipe saying "pass no flag" — distinct from an unset knob.
+	if d := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u-pm4", PermissionMode: "default"}); contains(d, "--permission-mode") {
+		t.Errorf("args %q carry --permission-mode although the playbook asked for 'default'", d)
+	}
+
+	// Unset → the site knob decides, exactly as before playbooks had the field.
+	if u := spawnArgs(t, RunSpec{Prompt: "hello", SessionUUID: "u-pm5"}); !contains(u, "--permission-mode "+claudeflags.DefaultMode) {
+		t.Errorf("args %q dropped the global knob for a recipe with no permission_mode", u)
+	}
+}
