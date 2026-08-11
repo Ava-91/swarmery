@@ -268,7 +268,7 @@ type registryAgentRow struct {
 // GET /api/agents/hub?projectId=<slug|id> — the roster. Registry agents joined
 // with 30-day rollups by normalised name. A projectId scope narrows BOTH:
 //   - the ROSTER to the agents EFFECTIVE in that project (its own + global-local
-//     + the built-ins of the packs it enables — effectiveScope), so another
+//   - the built-ins of the packs it enables — effectiveScope), so another
 //     project's local agents never appear on a project page; and
 //   - the ROLLUP window to that project's sessions (an effective agent with no
 //     runs there simply shows zeros).

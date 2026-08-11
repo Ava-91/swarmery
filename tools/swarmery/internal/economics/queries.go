@@ -12,7 +12,7 @@ import (
 // bind order — since, since, until, until, project, project — so every query
 // in this file takes Options.args() unchanged.
 //
-// A "?" compared against '' or 0 is how an unset bound disables its own
+// A "?" compared against ” or 0 is how an unset bound disables its own
 // predicate: with the zero Options the whole history of every project matches.
 const turnScope = `(? = '' OR substr(tu.started_at, 1, 10) >= ?)
       AND (? = '' OR substr(tu.started_at, 1, 10) <= ?)
@@ -105,8 +105,8 @@ FROM turns tu
 JOIN sessions s ON s.id = tu.session_id
 WHERE tu.role = 'assistant' AND ` + turnScope + `
 -- Grouped/ordered by the SOURCE columns, not the output aliases: sessions also
--- has a `+"`model`"+` column (0001_init), and the join puts both in scope, so a bare
--- `+"`model`"+` here resolves to neither — SQLite rejects the whole query as an
+-- has a ` + "`model`" + ` column (0001_init), and the join puts both in scope, so a bare
+-- ` + "`model`" + ` here resolves to neither — SQLite rejects the whole query as an
 -- ambiguous column name rather than picking one.
 GROUP BY tu.agent_name, tu.model
 ORDER BY SUM(tu.cost_usd) DESC, tu.agent_name, tu.model`
@@ -204,7 +204,7 @@ SELECT COALESCE(tu.model, '(unknown)') AS model,
 FROM turns tu
 JOIN sessions s ON s.id = tu.session_id
 WHERE tu.role = 'assistant' AND ` + turnScope + `
--- tu.model, not the `+"`model`"+` alias — sessions carries a model column too, so the
+-- tu.model, not the ` + "`model`" + ` alias — sessions carries a model column too, so the
 -- bare name is ambiguous across this join (see qCacheEfficiency).
 GROUP BY tu.model
 ORDER BY SUM(tu.cost_usd) DESC, tu.model`

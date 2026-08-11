@@ -46,10 +46,10 @@ func TestStatusRecompute_LivenessOverride(t *testing.T) {
 		return id
 	}
 
-	running := insert("s-running", "idle", procwatch.StateRunning)   // alive → stays idle
+	running := insert("s-running", "idle", procwatch.StateRunning)      // alive → stays idle
 	orphaned := insert("s-orphaned", "active", procwatch.StateOrphaned) // alive → capped at idle
-	dead := insert("s-dead", "idle", procwatch.StateDead)            // not alive → completed
-	untracked := insert("s-untracked", "idle", "")                  // no liveness info → completed
+	dead := insert("s-dead", "idle", procwatch.StateDead)               // not alive → completed
+	untracked := insert("s-untracked", "idle", "")                      // no liveness info → completed
 
 	if _, err := RecomputeStatuses(db, Thresholds{}, now); err != nil {
 		t.Fatal(err)

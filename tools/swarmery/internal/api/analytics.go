@@ -421,7 +421,8 @@ type cacheSummaryDTO struct {
 // them. Savings are NET: each cache-read token would have cost the input rate
 // uncached, minus the premium paid to write the cache in the first place →
 // saved = Σ_model [cache_read × (input − cache_read)
-//                  − cache_write × (cache_write_rate − input)] / 1e6.
+//
+//	− cache_write × (cache_write_rate − input)] / 1e6.
 //
 // Retention: daily_rollups carry NO cache-token columns, so pruned days
 // cannot contribute — when the range overlaps rolled-up days the response is
@@ -573,8 +574,8 @@ type breakdownRow struct {
 	TokensCacheRead *int64   `json:"tokens_cache_read"`
 	CacheHitRate    *float64 `json:"cache_hit_rate"`
 	Runs            *int64   `json:"runs"`
-	Sessions  int64    `json:"sessions"`
-	LastUsed  *string  `json:"last_used"`
+	Sessions        int64    `json:"sessions"`
+	LastUsed        *string  `json:"last_used"`
 	// success/(success+fail) over outcome-carrying sessions that contain this
 	// agent's turns in range (agent pivot only; 'abandoned' excluded). Null
 	// for the other pivots and for agents with no judged sessions.

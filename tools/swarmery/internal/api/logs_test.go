@@ -117,11 +117,11 @@ func TestHealthPhase9Fields(t *testing.T) {
 	}
 
 	var dto struct {
-		DBSizeBytes      int64 `json:"db_size_bytes"`
-		DBSizeBytesCamel int64 `json:"dbSizeBytes"`
-		UptimeSec        int64 `json:"uptimeSec"`
-		MigrationVersion int   `json:"migrationVersion"`
-		WSClients        int   `json:"wsClients"`
+		DBSizeBytes      int64  `json:"db_size_bytes"`
+		DBSizeBytesCamel int64  `json:"dbSizeBytes"`
+		UptimeSec        int64  `json:"uptimeSec"`
+		MigrationVersion int    `json:"migrationVersion"`
+		WSClients        int    `json:"wsClients"`
 		IngestLagSec     *int64 `json:"ingestLagSec"`
 		Dispatch         struct {
 			Active int  `json:"active"`

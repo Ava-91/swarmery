@@ -16,7 +16,7 @@ import (
 )
 
 // accountServer plants four sessions across three accounts, including both
-// spellings of the default one ('' — as written before 0047 and by the hooks
+// spellings of the default one (” — as written before 0047 and by the hooks
 // channel — and an explicitly stamped 'default'), each with one priced turn so
 // the breakdown has something to rank.
 func accountServer(t *testing.T) (*httptest.Server, *sql.DB) {
@@ -72,7 +72,7 @@ type accountSessionsPage struct {
 }
 
 // TestSessionDTOCarriesAccount: the list and the detail response both expose
-// the stamped subscription, including the '' that means "stock account".
+// the stamped subscription, including the ” that means "stock account".
 func TestSessionDTOCarriesAccount(t *testing.T) {
 	srv, _ := accountServer(t)
 
@@ -85,7 +85,7 @@ func TestSessionDTOCarriesAccount(t *testing.T) {
 	for uuid, want := range map[string]string{
 		"u-stamped-default": "default",
 		"u-legacy-blank":    "",
-		"u-nabu-org":          "nabu-org",
+		"u-nabu-org":        "nabu-org",
 		"u-science":         "science",
 	} {
 		if got[uuid] != want {
@@ -103,8 +103,8 @@ func TestSessionDTOCarriesAccount(t *testing.T) {
 }
 
 // TestSessionsAccountFilter: exact match per account, and the ONE synonym —
-// 'default' also selects the '' rows, because both spellings mean the stock
-// subscription (pre-0047 rows and hook-minted sessions carry '').
+// 'default' also selects the ” rows, because both spellings mean the stock
+// subscription (pre-0047 rows and hook-minted sessions carry ”).
 func TestSessionsAccountFilter(t *testing.T) {
 	srv, _ := accountServer(t)
 
@@ -145,7 +145,7 @@ func TestSessionsAccountFilter(t *testing.T) {
 }
 
 // TestBreakdownByAccount: the per-subscription rollup ranks accounts by cost,
-// folds '' into the 'default' row, and keys/labels every row with the account.
+// folds ” into the 'default' row, and keys/labels every row with the account.
 func TestBreakdownByAccount(t *testing.T) {
 	srv, _ := accountServer(t)
 

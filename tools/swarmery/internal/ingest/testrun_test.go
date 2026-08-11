@@ -35,10 +35,10 @@ func TestIsTestCommand(t *testing.T) {
 
 func TestParseTestCounts(t *testing.T) {
 	cases := []struct {
-		name                          string
-		text                          string
-		passed, failed, skipped       int
-		parsed                        bool
+		name                    string
+		text                    string
+		passed, failed, skipped int
+		parsed                  bool
 	}{
 		{"pytest", "===== 212 passed, 3 skipped in 4.51s =====", 212, 0, 3, true},
 		{"pytest fail", "== 1 failed, 211 passed in 5s ==", 211, 1, 0, true},
@@ -61,15 +61,15 @@ func TestParseTestCounts(t *testing.T) {
 
 func TestTestFramework(t *testing.T) {
 	cases := map[string]string{
-		"pytest -q":            "pytest",
-		"npx vitest run":       "vitest",
-		"npx jest":             "jest",
-		"go test ./...":        "go",
-		"cargo test":           "cargo",
-		"bundle exec rspec":    "rspec",
-		"vendor/bin/phpunit":   "phpunit",
-		"dotnet test":          "dotnet",
-		"cd x && npm test":     "unknown",
+		"pytest -q":          "pytest",
+		"npx vitest run":     "vitest",
+		"npx jest":           "jest",
+		"go test ./...":      "go",
+		"cargo test":         "cargo",
+		"bundle exec rspec":  "rspec",
+		"vendor/bin/phpunit": "phpunit",
+		"dotnet test":        "dotnet",
+		"cd x && npm test":   "unknown",
 	}
 	for cmd, want := range cases {
 		if got := testFramework(cmd); got != want {

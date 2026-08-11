@@ -192,8 +192,8 @@ func TestDigestTruncation(t *testing.T) {
 	seedSession(t, db, 1, "dig", "/work/alpha", time.Hour)
 
 	long := strings.Repeat("x", 5000)
-	seedAssistantTurn(t, db, 1, 1, 1000, time.Hour, long) // must truncate to assistantTextCap
-	seedAssistantTurn(t, db, 1, 2, 1000, 55*time.Minute, "")  // empty → skipped
+	seedAssistantTurn(t, db, 1, 1, 1000, time.Hour, long)    // must truncate to assistantTextCap
+	seedAssistantTurn(t, db, 1, 2, 1000, 55*time.Minute, "") // empty → skipped
 	seedAssistantTurn(t, db, 1, 3, 1000, 50*time.Minute, "short assistant note")
 	seedUserTurn(t, db, 1, 4, 45*time.Minute, strings.Repeat("u", 3000)) // truncate to userTextCap
 	seedUserTurn(t, db, 1, 5, 40*time.Minute, "")                        // empty → skipped

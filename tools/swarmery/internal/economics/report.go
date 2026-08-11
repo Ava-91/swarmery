@@ -485,10 +485,10 @@ func head[T any](rows []T, n int) []T {
 	return rows[:n]
 }
 
-func usd(v float64) string   { return fmt.Sprintf("%.4f", v) }
-func pct(v float64) string   { return fmt.Sprintf("%.1f%%", v*100) }
-func itoa(v int) string      { return fmt.Sprintf("%d", v) }
-func i64toa(v int64) string  { return fmt.Sprintf("%d", v) }
+func usd(v float64) string  { return fmt.Sprintf("%.4f", v) }
+func pct(v float64) string  { return fmt.Sprintf("%.1f%%", v*100) }
+func itoa(v int) string     { return fmt.Sprintf("%d", v) }
+func i64toa(v int64) string { return fmt.Sprintf("%d", v) }
 func orDash(s string) string {
 	if s == "" {
 		return "—"

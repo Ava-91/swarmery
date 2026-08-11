@@ -83,13 +83,13 @@ func TestParseListEmptyAndGarbage(t *testing.T) {
 
 func TestParseStatus(t *testing.T) {
 	cases := map[string]Status{
-		"✔ Connected":           StatusConnected,
-		"✘ Failed to connect":   StatusFailed,
+		"✔ Connected":            StatusConnected,
+		"✘ Failed to connect":    StatusFailed,
 		"! Needs authentication": StatusNeedsAuth,
-		"⏸ Pending approval":    StatusPending,
-		"disabled":              StatusDisabled,
-		"something novel":       StatusUnknown,
-		"":                      StatusUnknown,
+		"⏸ Pending approval":     StatusPending,
+		"disabled":               StatusDisabled,
+		"something novel":        StatusUnknown,
+		"":                       StatusUnknown,
 	}
 	for in, want := range cases {
 		if got := parseStatus(in); got != want {
@@ -134,14 +134,14 @@ func TestAddArgsHTTPAndSSE(t *testing.T) {
 
 func TestAddArgsValidation(t *testing.T) {
 	bad := []AddSpec{
-		{Name: "", Transport: TransportStdio, Command: "x", Scope: ScopeLocal},                     // empty name
-		{Name: "n", Transport: TransportStdio, Command: "", Scope: ScopeLocal},                     // stdio no command
-		{Name: "n", Transport: TransportHTTP, URL: "", Scope: ScopeLocal},                          // http no url
-		{Name: "n", Transport: TransportHTTP, URL: "ftp://x", Scope: ScopeLocal},                   // bad scheme
-		{Name: "n", Transport: TransportHTTP, URL: "https://", Scope: ScopeLocal},                  // no host
-		{Name: "n", Transport: Transport("carrier-pigeon"), Command: "x", Scope: ScopeLocal},       // bad transport
-		{Name: "n", Transport: TransportStdio, Command: "x", Scope: Scope("root")},                 // bad scope
-		{Name: "bad\nname", Transport: TransportStdio, Command: "x", Scope: ScopeLocal},            // control char
+		{Name: "", Transport: TransportStdio, Command: "x", Scope: ScopeLocal},                       // empty name
+		{Name: "n", Transport: TransportStdio, Command: "", Scope: ScopeLocal},                       // stdio no command
+		{Name: "n", Transport: TransportHTTP, URL: "", Scope: ScopeLocal},                            // http no url
+		{Name: "n", Transport: TransportHTTP, URL: "ftp://x", Scope: ScopeLocal},                     // bad scheme
+		{Name: "n", Transport: TransportHTTP, URL: "https://", Scope: ScopeLocal},                    // no host
+		{Name: "n", Transport: Transport("carrier-pigeon"), Command: "x", Scope: ScopeLocal},         // bad transport
+		{Name: "n", Transport: TransportStdio, Command: "x", Scope: Scope("root")},                   // bad scope
+		{Name: "bad\nname", Transport: TransportStdio, Command: "x", Scope: ScopeLocal},              // control char
 		{Name: strings.Repeat("x", 201), Transport: TransportStdio, Command: "x", Scope: ScopeLocal}, // too long
 	}
 	for i, spec := range bad {
@@ -175,10 +175,10 @@ func TestAddArgsInjectionIsLiteral(t *testing.T) {
 
 // fakeRunner records the argv it was called with and returns a canned reply.
 type fakeRunner struct {
-	reply   []byte
-	err     error
+	reply    []byte
+	err      error
 	lastArgs []string
-	calls   int
+	calls    int
 }
 
 func (f *fakeRunner) run(_ context.Context, args ...string) ([]byte, error) {
