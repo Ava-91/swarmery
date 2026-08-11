@@ -3,6 +3,13 @@
 // Board page, StatusBar, and TaskModal all read the same instance passed down
 // as props so there is one source of truth per workspace mount.
 //
+// `moveTask` survived the phase-4 three-lane redesign unchanged even though the
+// gesture that used to call it did not — it was never drag-specific: the drop
+// handler and the card's "move to →" menu always shared it. Lanes are derived at
+// render time from `boardColumn` (see boardModel.splitLanes), so nothing in here
+// knows or needs to know that the board draws three columns instead of six —
+// which is what makes the collapse revertable in one file.
+//
 // Liveness: subscribes to the shared WS via useLiveUpdates → task_updated
 // patches the list in place (applyBoardTaskMessage), never a refetch; the 60s
 // reconcile + reconnect refetches the whole list as the convergence net.
@@ -24,6 +31,13 @@ export interface BoardState {
   /** Transient action error (a failed move/edit) — shown as a dismissable toast. */
   actionError: string | null;
   clearActionError: () => void;
+  /**
+   * Route a failed card action into the same toast `moveTask` uses. Exposed for
+   * the phase-4 card verbs (Pause/Resume) that go through `patchTask` rather than
+   * `moveTask`: without it the board would need a second error strip saying the
+   * same kind of thing in the same place, and one of the two would rot.
+   */
+  setActionError: (message: string) => void;
   reload: () => void;
   /** Optimistic column move; reverts + sets actionError on a 4xx/5xx. */
   moveTask: (id: number, to: BoardColumn) => void;
@@ -145,6 +159,7 @@ export function useBoard(projectId: number | null): BoardState {
     error,
     actionError,
     clearActionError,
+    setActionError,
     reload,
     moveTask,
     patchTask,

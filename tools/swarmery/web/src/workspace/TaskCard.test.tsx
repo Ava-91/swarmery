@@ -51,6 +51,7 @@ function makeTask(over: Partial<BoardTask> = {}): BoardTask {
     agent: null,
     origin: 'manual',
     originSessionId: null,
+    resultNote: null,
     columnMovedAt: null,
     createdAt: '2026-08-01T00:00:00Z',
     ...over,
@@ -58,16 +59,7 @@ function makeTask(over: Partial<BoardTask> = {}): BoardTask {
 }
 
 function renderCard(over: Partial<BoardTask> = {}): void {
-  render(
-    <TaskCard
-      task={makeTask(over)}
-      onOpen={vi.fn()}
-      onMove={vi.fn()}
-      onDragStart={vi.fn()}
-      onDragEnd={vi.fn()}
-      dragging={false}
-    />,
-  );
+  render(<TaskCard task={makeTask(over)} onOpen={vi.fn()} onMove={vi.fn()} />);
 }
 
 afterEach(cleanup);

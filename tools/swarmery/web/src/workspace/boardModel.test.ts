@@ -8,14 +8,19 @@
 // The file still type-checks under `tsc --noEmit` in the normal build.
 
 import { describe, expect, it } from 'vitest';
-import type { BoardTask } from '../api/types';
+import type { BoardColumn, BoardTask } from '../api/types';
 import {
   amnestyCandidates,
   amnestyCutoff,
+  BOARD_LANES,
+  compareDispatchOrder,
   idleSince,
   labelColor,
   labelFilterOptions,
+  LANE_TITLES,
+  laneOf,
   matchesLabelFilter,
+  splitLanes,
   uniqueLabels,
   visibleLabels,
 } from './boardModel';
@@ -51,6 +56,7 @@ function makeTask(over: Partial<BoardTask> = {}): BoardTask {
     agent: null,
     origin: 'manual',
     originSessionId: null,
+    resultNote: null,
     columnMovedAt: null,
     createdAt: '2026-08-01T00:00:00Z',
     ...over,
@@ -229,5 +235,149 @@ describe('amnestyCandidates', () => {
 
   it('is empty on an empty board', () => {
     expect(amnestyCandidates([], before)).toBe(0);
+  });
+});
+
+// --- lanes (board redesign phase 4) -------------------------------------------
+
+describe('laneOf', () => {
+  it('collapses every live column into one of the three lanes', () => {
+    expect(laneOf('triage')).toBe('inbox');
+    expect(laneOf('todo')).toBe('working');
+    expect(laneOf('in_progress')).toBe('working');
+    expect(laneOf('in_review')).toBe('review');
+  });
+
+  it('gives the two history columns no lane at all', () => {
+    // Not "some lane you should ignore" — null, so a caller that forgets to
+    // handle history cannot silently render them into Inbox.
+    expect(laneOf('done')).toBeNull();
+    expect(laneOf('archived')).toBeNull();
+  });
+
+  it('covers the whole BoardColumn enum — a new column cannot be forgotten', () => {
+    const all: BoardColumn[] = ['triage', 'todo', 'in_progress', 'in_review', 'done', 'archived'];
+    for (const c of all) {
+      const lane = laneOf(c);
+      expect(lane === null || BOARD_LANES.includes(lane)).toBe(true);
+    }
+  });
+});
+
+describe('BOARD_LANES / LANE_TITLES', () => {
+  it('renders exactly three lanes, left to right', () => {
+    expect(BOARD_LANES).toEqual(['inbox', 'working', 'review']);
+  });
+
+  it('titles every lane it renders', () => {
+    for (const lane of BOARD_LANES) expect(LANE_TITLES[lane]).toBeTruthy();
+  });
+});
+
+describe('compareDispatchOrder', () => {
+  // The contract under test is dispatch/service.go candidates(): priority asc →
+  // created_at asc → id asc. If these ever disagree, the Queued group is lying
+  // about which card runs next, which is the only reason the group exists.
+  const early = '2026-01-01T00:00:00.000Z';
+  const late = '2026-08-01T00:00:00.000Z';
+
+  it('ranks by priority first, even against an older card', () => {
+    const urgentNew = makeTask({ priority: 'urgent', createdAt: late });
+    const lowOld = makeTask({ priority: 'low', createdAt: early });
+    expect(compareDispatchOrder(urgentNew, lowOld)).toBeLessThan(0);
+    expect(compareDispatchOrder(lowOld, urgentNew)).toBeGreaterThan(0);
+  });
+
+  it('breaks a priority tie with the older createdAt', () => {
+    const older = makeTask({ priority: 'normal', createdAt: early });
+    const newer = makeTask({ priority: 'normal', createdAt: late });
+    expect(compareDispatchOrder(older, newer)).toBeLessThan(0);
+  });
+
+  it('breaks a full tie with the lower id, so the order is total and stable', () => {
+    const first = makeTask({ id: 7, priority: 'high', createdAt: early });
+    const second = makeTask({ id: 9, priority: 'high', createdAt: early });
+    expect(compareDispatchOrder(first, second)).toBeLessThan(0);
+    expect(compareDispatchOrder(second, first)).toBeGreaterThan(0);
+    expect(compareDispatchOrder(first, first)).toBe(0);
+  });
+
+  it('sorts a mixed queue into the exact order the dispatcher would pick from', () => {
+    const queue = [
+      makeTask({ id: 1, priority: 'normal', createdAt: late }),
+      makeTask({ id: 2, priority: 'urgent', createdAt: late }),
+      makeTask({ id: 3, priority: 'normal', createdAt: early }),
+      makeTask({ id: 4, priority: 'low', createdAt: early }),
+      makeTask({ id: 5, priority: 'high', createdAt: late }),
+    ];
+    expect([...queue].sort(compareDispatchOrder).map((t) => t.id)).toEqual([2, 5, 3, 1, 4]);
+  });
+});
+
+describe('splitLanes', () => {
+  it('routes each column to the group that renders it', () => {
+    const lanes = splitLanes([
+      makeTask({ id: 1, boardColumn: 'triage' }),
+      makeTask({ id: 2, boardColumn: 'todo' }),
+      makeTask({ id: 3, boardColumn: 'in_progress' }),
+      makeTask({ id: 4, boardColumn: 'in_review' }),
+      makeTask({ id: 5, boardColumn: 'done' }),
+    ]);
+    expect(lanes.inbox.map((t) => t.id)).toEqual([1]);
+    expect(lanes.queued.map((t) => t.id)).toEqual([2]);
+    expect(lanes.running.map((t) => t.id)).toEqual([3]);
+    expect(lanes.review.map((t) => t.id)).toEqual([4]);
+    expect(lanes.done.map((t) => t.id)).toEqual([5]);
+  });
+
+  it('drops archived cards on the floor — they arrive by their own lazy fetch', () => {
+    const lanes = splitLanes([makeTask({ boardColumn: 'archived' })]);
+    expect([...lanes.inbox, ...lanes.queued, ...lanes.running, ...lanes.review, ...lanes.done]).toEqual(
+      [],
+    );
+  });
+
+  it('orders the Queued group the way the dispatcher orders candidates', () => {
+    const lanes = splitLanes([
+      makeTask({ id: 10, boardColumn: 'todo', priority: 'low', createdAt: '2026-01-01T00:00:00.000Z' }),
+      makeTask({ id: 11, boardColumn: 'todo', priority: 'urgent', createdAt: '2026-08-01T00:00:00.000Z' }),
+      makeTask({ id: 12, boardColumn: 'todo', priority: 'normal', createdAt: '2026-02-01T00:00:00.000Z' }),
+    ]);
+    expect(lanes.queued.map((t) => t.id)).toEqual([11, 12, 10]);
+  });
+
+  it('keeps a paused card in Queued rather than hiding it', () => {
+    // The dispatcher's candidates() filters paused cards out; the board must
+    // not, or a card someone parked would look deleted. It just sorts with the
+    // rest and wears its `paused` badge.
+    const lanes = splitLanes([
+      makeTask({ id: 20, boardColumn: 'todo', priority: 'normal' }),
+      makeTask({ id: 21, boardColumn: 'todo', priority: 'urgent', userPaused: true }),
+    ]);
+    expect(lanes.queued.map((t) => t.id)).toEqual([21, 20]);
+  });
+
+  it('orders Done most-recently-moved first', () => {
+    const lanes = splitLanes([
+      makeTask({ id: 30, boardColumn: 'done', columnMovedAt: '2026-03-01T00:00:00.000Z' }),
+      makeTask({ id: 31, boardColumn: 'done', columnMovedAt: '2026-08-01T00:00:00.000Z' }),
+      makeTask({ id: 32, boardColumn: 'done', columnMovedAt: null }),
+    ]);
+    expect(lanes.done.map((t) => t.id)).toEqual([31, 30, 32]);
+  });
+
+  it('returns five empty groups for an empty board', () => {
+    const lanes = splitLanes([]);
+    expect(lanes).toEqual({ inbox: [], queued: [], running: [], review: [], done: [] });
+  });
+
+  it('does not mutate the list it was handed', () => {
+    const tasks = [
+      makeTask({ id: 40, boardColumn: 'todo', priority: 'low' }),
+      makeTask({ id: 41, boardColumn: 'todo', priority: 'urgent' }),
+    ];
+    const before = tasks.map((t) => t.id);
+    splitLanes(tasks);
+    expect(tasks.map((t) => t.id)).toEqual(before);
   });
 });
