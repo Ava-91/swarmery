@@ -6,6 +6,7 @@ Documentation) by delegating to specialized executor agents and gating risky ste
 you. This is what the control plane's session **Timeline** is showing you: phase transitions,
 parallel groups, and the tool calls each delegate makes.
 
+> [!NOTE]
 > Methodology background: the [Agentsway paper](https://arxiv.org/html/2510.23664v1).
 
 ## Activation modes (chosen before Phase 1)

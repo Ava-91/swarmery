@@ -15,6 +15,16 @@ and is read at **runtime** by core agents, skills, and hooks.
   example domains (`orders/line-items`, `pipelines/job_runs`).
 - Frontmatter identity is `swarmery-core`.
 
+De-flavoring is what a component goes through on its way up, and it is mechanical:
+
+```mermaid
+flowchart LR
+  A["hard-coded value<br/>in a project-local file"] --> B["replace with a<br/>project.json read"]
+  B --> C["prose → neutral<br/>placeholders"]
+  C --> D["scan-flavor.sh<br/>reports 0"]
+  D --> E["move into pack / core<br/>+ bump semver"]
+```
+
 ## Checking
 
 `scripts/scan-flavor.sh` greps `plugins/**` for your token patterns:
@@ -27,4 +37,7 @@ bash scripts/scan-flavor.sh                                    # target: 0 occur
 ```
 
 Without those files the script falls back to a small example pattern — replace it with your own.
-Consumers should run this as a CI ratchet: the count must never increase.
+
+> [!IMPORTANT]
+> Run this as a CI ratchet: the count must never increase. A neutrality regression is
+> cheap to fix the day it lands and expensive once a second consumer has adopted it.

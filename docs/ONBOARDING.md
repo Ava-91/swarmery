@@ -85,6 +85,7 @@ Merge the snippet into the project's `.claude/settings.json`:
 Deploy the flavor config to `<project>/.claude/project.json`.
 Project agents in `.claude/agents/` override plugin agents by name (native base + overlay).
 
+> [!WARNING]
 > **Cutover caution:** if the project previously ran a file-based copy of this agent system with
 > hooks registered in its `settings.json`, remove that legacy hook wiring in the same change that
 > enables the plugins — otherwise every hook fires twice. Do the switch in a fresh session.

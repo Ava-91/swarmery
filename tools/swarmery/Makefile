@@ -47,8 +47,21 @@ install: build
 # copy-docs: snapshot the repo docs into internal/docsfs/content for go:embed.
 # The copies are gitignored (.gitkeep keeps the embed pattern valid without
 # them, e.g. in CI — /api/docs then serves an empty list).
+#
+# Guides are FLATTENED into the same embed root rather than kept in a subdir:
+# readDocs (internal/api/docs.go) walks one level and skips directories, so a
+# nested copy would simply never be served. The `guide-` filename prefix is
+# what survives flattening, and it is also the dashboard's grouping key — the
+# rail splits Guides from Reference on it.
+#
+# The guides are copied by `find`, not by a `guide-*.md` glob appended to the
+# cp above: make's shell has no nullglob, so an empty guides dir would hand cp
+# the literal pattern, cp would fail, and `make build` / `make dev` would break
+# with it. find matching nothing is simply a no-op — and adding a guide still
+# needs no Makefile edit.
 copy-docs:
 	cp $(DOCS_SRC)/ONBOARDING.md $(DOCS_SRC)/WORKFLOW.md $(DOCS_SRC)/EXTENDING.md $(DOCS_SRC)/NEUTRALITY.md $(DOCS_SRC)/PLUGINS.md docs/concepts.md docs/retro.md docs/usage.md $(DOCS_DST)/
+	find docs/guides -maxdepth 1 -name 'guide-*.md' -exec cp {} $(DOCS_DST)/ \;
 
 # dev: run the API daemon and the vite dev server (proxying /api to :7777)
 dev: copy-docs

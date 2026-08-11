@@ -1,6 +1,11 @@
 # Plugins
 
-The swarmery marketplace ships one mandatory **core** plugin and eight opt-in packs. Everything here is vendor-neutral: project-specific flavor comes from each consumer's `.claude/project.json` overlay at runtime, never from the plugins themselves.
+The swarmery marketplace ships one mandatory **core** plugin and eleven opt-in packs. Everything here is vendor-neutral: project-specific flavor comes from each consumer's `.claude/project.json` overlay at runtime, never from the plugins themselves.
+
+> [!NOTE]
+> `.claude-plugin/marketplace.json` is the source of truth for what ships. The
+> per-pack sections below cover the long-standing packs; a pack listed in the
+> manifest but not described here is still installable.
 
 ## Enabling and disabling
 
