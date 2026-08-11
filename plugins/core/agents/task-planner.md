@@ -103,6 +103,7 @@ Vocabulary: the top-level plan unit is a **Phase** (`phase-N-<slug>.md`); inside
   ## Notes
   ## Completion Report
   ```
+- Spec traceability (optional but recommended): before the phase docs, write `plan/spec.md` — the WHAT/WHY: a short problem statement, user stories, and an `## Acceptance criteria` section whose items are checkboxes shaped exactly `- [ ] **SC-1** — <criterion>` (stable SC-n ids, one behavior each). When `spec.md` exists, every phase doc's header block MUST carry a `**Covers:** SC-…` line naming the spec criteria that phase delivers; every SC id must be covered by at least one phase, and no phase may cover an id the spec does not declare (the platform lints coverage).
 - Final chat message: plan path + total line count + phase count (2 lines)
 
 # Platform

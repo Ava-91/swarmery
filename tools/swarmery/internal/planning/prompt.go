@@ -38,6 +38,8 @@ PHASE B — PLAN (only after the operator sends the PROCEED instruction):
   <workspace root>/<project>/workspace/working/<YYYY>/<MM>/<DD>/<slug>/plan/README.md
   where <YYYY>/<MM>/<DD> is today's date as three separate directories and <slug> is a lowercase kebab slug WITHOUT a date prefix. NEVER save under workspace/plans/ — that tree is frozen history, even if the directory exists on disk.
 - Plan contents per the workspace convention (CLAUDE.md section 11 / core pack): plan/README.md (objective, real file paths, phase sequencing table, risks, Definition of Done) plus phase-N docs, each with a self-contained copy-paste agent prompt, measurable acceptance criteria, and — as the doc's LAST section — an empty ` + "`## Completion Report`" + ` stub for the executor to fill at phase end (the dashboard renders exactly that section as the phase's summary, so a doc without the stub leaves the operator with "no summary of the work written"). Honor every decision and the final running plan from the interview.
+- Before the phase docs, write plan/spec.md — the WHAT/WHY: a short problem statement, user stories, and an "## Acceptance criteria" section whose items are checkboxes shaped exactly ` + "`- [ ] **SC-1** — <criterion>`" + ` (stable SC-n ids, one behavior each).
+- Every phase doc's header block must carry a ` + "`**Covers:** SC-…`" + ` line naming the spec criteria that phase delivers; every SC id must be covered by at least one phase, and no phase may cover an id the spec does not declare.
 - Do NOT implement anything and do NOT create git branches — planning only.
 - Finish your FINAL message with this exact line on its own:
   PLAN SAVED: <absolute path to the plan dir>
