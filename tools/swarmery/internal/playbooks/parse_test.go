@@ -88,6 +88,59 @@ verify: strict
 	}
 }
 
+// permission_mode (phase 5) parses across its closed set. The values are the
+// canonical claudeflags spellings, so a parsed value can reach the CLI as-is.
+func TestParse_PermissionModeClosedSet(t *testing.T) {
+	for _, mode := range []string{"bypassPermissions", "acceptEdits", "default"} {
+		src := `---
+name: permmode
+permission_mode: ` + mode + `
+---
+## Stage: implement
+{task_prompt}
+`
+		pb, err := Parse(src, SourceBuiltin)
+		if err != nil {
+			t.Fatalf("Parse(permission_mode: %s): %v", mode, err)
+		}
+		if pb.PermissionMode != mode {
+			t.Fatalf("permission_mode = %q, want %q", pb.PermissionMode, mode)
+		}
+	}
+}
+
+// Omitted permission_mode stays EMPTY — empty means "inherit the global
+// SWARMERY_DISPATCH_PERMISSION_MODE knob", which is not the same as the literal
+// value "default" (that one omits the flag entirely).
+func TestParse_PermissionModeEmptyInherits(t *testing.T) {
+	src := `---
+name: noperm
+---
+## Stage: implement
+{task_prompt}
+`
+	pb, err := Parse(src, SourceBuiltin)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if pb.PermissionMode != "" {
+		t.Fatalf("permission_mode = %q, want \"\" (inherit the global knob)", pb.PermissionMode)
+	}
+}
+
+// No built-in declares a permission mode: the knob ships NEUTRAL in this phase.
+// Changing a shipped recipe's default is an operator decision after observing
+// runs, so a built-in gaining one must fail here first.
+func TestBuiltins_ShipNoPermissionMode(t *testing.T) {
+	r := newRegistry(t)
+	for _, pb := range r.List("") {
+		if pb.PermissionMode != "" {
+			t.Errorf("built-in %s declares permission_mode %q; the knob ships neutral in phase 5",
+				pb.Name, pb.PermissionMode)
+		}
+	}
+}
+
 // The validation matrix: each case is a distinct rejection reason.
 func TestParse_ValidationMatrix(t *testing.T) {
 	cases := []struct {
@@ -119,6 +172,13 @@ func TestParse_ValidationMatrix(t *testing.T) {
 			name:    "bad verify value",
 			src:     "---\nname: x\nverify: paranoid\n---\n## Stage: s\n{task_prompt}\n",
 			wantErr: "invalid verify",
+		},
+		{
+			// Same severity as an unknown template var: an unknown mode would either
+			// be silently dropped or reach `claude` and kill the spawn.
+			name:    "bad permission_mode value",
+			src:     "---\nname: x\npermission_mode: yolo\n---\n## Stage: s\n{task_prompt}\n",
+			wantErr: "invalid permission_mode",
 		},
 		{
 			name:    "unknown template var",

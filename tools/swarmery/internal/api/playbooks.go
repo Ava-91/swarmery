@@ -45,12 +45,15 @@ type playbookStageDTO struct {
 // playbookDTO is the full playbook shape for GET /api/playbooks. Mirrors
 // playbooks.Playbook minus the on-disk Path (surfaced only as a hint string).
 type playbookDTO struct {
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Model       string             `json:"model"`
-	Verify      string             `json:"verify"` // strict | normal | off
-	Source      string             `json:"source"` // builtin | project
-	Stages      []playbookStageDTO `json:"stages"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Model       string `json:"model"`
+	Verify      string `json:"verify"` // strict | normal | off
+	// PermissionMode is the spawn's --permission-mode for this recipe
+	// (bypassPermissions | acceptEdits | default), "" = inherit the global knob.
+	PermissionMode string             `json:"permissionMode"`
+	Source         string             `json:"source"` // builtin | project
+	Stages         []playbookStageDTO `json:"stages"`
 	// Path is the on-disk path of a project playbook ("" for a built-in) — the UI
 	// shows it in the "edit <path>" hint after a duplicate.
 	Path string `json:"path"`
@@ -63,7 +66,8 @@ func toPlaybookDTO(p playbooks.Playbook) playbookDTO {
 	}
 	return playbookDTO{
 		Name: p.Name, Description: p.Description, Model: p.Model,
-		Verify: p.Verify, Source: p.Source, Stages: stages, Path: p.Path,
+		Verify: p.Verify, PermissionMode: p.PermissionMode,
+		Source: p.Source, Stages: stages, Path: p.Path,
 	}
 }
 
@@ -177,10 +181,17 @@ func (h *Handler) duplicatePlaybook(w http.ResponseWriter, r *http.Request) {
 // store NULL) and ok=true; on an unresolvable name it writes a 400 and returns
 // ok=false. A nil pointer (field absent from the patch) is a no-op that returns
 // (nil, true) — but the CALLER only invokes this when the field is present, so
-// in practice: a blank string clears the selection (nil → default 'standard'),
-// a non-blank name must resolve in the registry (built-in or project-local).
-// When the registry is not attached (unit tests), the name is accepted as-is so
-// board tests stay hermetic.
+// in practice: a blank string clears the selection (a dispatch-time auto-profile
+// then picks one and stamps it back), a non-blank name must resolve in the
+// registry (built-in, project-local, or an alias). When the registry is not
+// attached (unit tests), the name is accepted as-is so board tests stay
+// hermetic.
+//
+// The stored value is the RESOLVED playbook's own Name, not the requested one.
+// That is what canonicalizes an alias on write: a PATCH of "quick-fix" stores
+// "standard", so the card's chip names the recipe that will actually run — while
+// a project that ships its own quick-fix.md stores "quick-fix", because the
+// registry resolves the project file before the alias.
 func (h *Handler) resolvePlaybookName(w http.ResponseWriter, projectID int64, name *string) (any, bool) {
 	if name == nil {
 		return nil, true
@@ -202,11 +213,12 @@ func (h *Handler) resolvePlaybookName(w http.ResponseWriter, projectID int64, na
 		writeClientErr(w, http.StatusBadRequest, "unknown project id")
 		return nil, false
 	}
-	if _, found := playbookReg.Get(projectPath, trimmed); !found {
+	pb, found := playbookReg.Get(projectPath, trimmed)
+	if !found {
 		writeClientErr(w, http.StatusBadRequest, "unknown playbook: "+trimmed)
 		return nil, false
 	}
-	return trimmed, true
+	return pb.Name, true
 }
 
 // projectPath resolves a project's on-disk path by id. ok=false on ErrNoRows.

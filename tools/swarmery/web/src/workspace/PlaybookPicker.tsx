@@ -2,8 +2,10 @@
 // shared by the board's task editors — the create modal (intake) and the task
 // detail modal (edit), both pairing it with the description line below. The
 // list is fetched once per project (built-ins overlaid by project overrides);
-// the empty value maps to the default recipe ('standard'). Fully keyboard-native
-// (a plain <select>), labelled for WCAG.
+// the empty value means "no explicit choice" — the dispatcher auto-profiles one
+// at admission and stamps it back onto the card, so the chip always names the
+// recipe that actually ran. Fully keyboard-native (a plain <select>), labelled
+// for WCAG.
 
 import { useEffect, useState } from 'react';
 import type { Playbook } from '../api/types';
@@ -63,8 +65,8 @@ export function PlaybookSelect({
   disabled?: boolean;
   id?: string;
 }): JSX.Element {
-  // The default recipe is offered as the empty option; every other playbook is a
-  // named option. If the current value is a name not in the list (e.g. a stored
+  // "No choice" is offered as the empty option; every other playbook is a named
+  // option. If the current value is a name not in the list (e.g. a stored
   // project playbook the fetch has not returned yet) it still renders selected.
   const known = playbooks.some((p) => p.name === value);
   const base =
@@ -79,16 +81,14 @@ export function PlaybookSelect({
       onChange={(e) => onChange(e.target.value)}
       className={`${base} outline-none transition-colors hover:border-line-strong focus:border-ink-dim disabled:opacity-50`}
     >
-      <option value="">standard (default)</option>
+      <option value="">Auto (chosen at dispatch)</option>
       {value !== '' && !known && <option value={value}>{value}</option>}
-      {playbooks
-        .filter((p) => p.name !== DEFAULT_PLAYBOOK)
-        .map((p) => (
-          <option key={p.name} value={p.name}>
-            {p.name}
-            {p.source === 'project' ? ' •' : ''}
-          </option>
-        ))}
+      {playbooks.map((p) => (
+        <option key={p.name} value={p.name}>
+          {p.name}
+          {p.source === 'project' ? ' •' : ''}
+        </option>
+      ))}
     </select>
   );
 }
