@@ -1424,6 +1424,8 @@ const mockEpics: Epic[] = [
     startedAt: iso(3 * 24 * 60 * MIN),
     planDir: '/ws/plan',
     hasSummary: true,
+    hasSpec: false,
+    spec: null,
     planRun: null,
     phases: [
       mockEpicPhase(1, 1, 'Task queue: schema + write API', [], 5, 5, {
@@ -1472,6 +1474,20 @@ const mockEpics: Epic[] = [
     startedAt: iso(9 * 24 * 60 * MIN),
     planDir: '/ws/plan-done',
     hasSummary: true,
+    // Spec coverage demo: two criteria covered (each by one phase), one
+    // uncovered (amber chip), plus a phase Covers reference to an id the spec
+    // never declares (SC-9 → the amber unknown-ref note on the Spec tab).
+    hasSpec: true,
+    spec: {
+      criteria: [
+        { cid: 'SC-1', text: 'plan dirs are scanned into epics', done: false, coveredBy: [1] },
+        { cid: 'SC-2', text: 'lifecycle controls act on plan files', done: false, coveredBy: [2] },
+        { cid: 'SC-3', text: 'plan status derives from checkbox rollups', done: false, coveredBy: [] },
+      ],
+      covered: 2,
+      total: 3,
+      unknownRefs: [{ seq: 2, cid: 'SC-9' }],
+    },
     planRun: {
       agent: 'tech-lead',
       mode: 'subagents',
@@ -2263,6 +2279,15 @@ export const mockApi = {
           path,
           content:
             '## What shipped\n\n- plan-dir scanner indexes every workspace plan into `epic_phases`\n- Plans page lifecycle controls (Pause / Resume / Archive / Restore)\n- checkbox rollups drive plan status end to end\n',
+        };
+      }
+      // The business-level spec the Spec tab renders — same 3 criteria the
+      // epic's `spec` coverage object scores.
+      if (path === 'spec.md') {
+        return {
+          path,
+          content:
+            '# Spec — plan-doc lifecycle\n\n**Problem.** Workspace plan dirs are invisible infrastructure; nothing tracks or edits them from the dashboard.\n\n## User stories\n\n- As an operator, I want plan dirs scanned into first-class epics so I can track them without opening the workspace.\n\n## Acceptance criteria\n\n- [ ] **SC-1** — plan dirs are scanned into epics\n- [ ] **SC-2** — lifecycle controls act on plan files\n- [ ] **SC-3** — plan status derives from checkbox rollups\n',
         };
       }
       const boxes = path === 'phase-2.md' ? 6 : 4;

@@ -19,6 +19,8 @@
 //         | Summary (what was done: Completion Report + `## Execution record`)
 //         | Edit (raw markdown + Save) — retired once the phase is done
 //   plan  → Plan (README markdown)
+//         | Spec (rendered spec.md + per-criterion coverage; only when the
+//           plan has a spec.md)
 //         | Summary (per-phase executed work; only when every phase is done)
 //         | Edit (raw README + Save)
 // Editing is inline on the Edit tab — there is no doc modal anymore; the
@@ -363,8 +365,9 @@ function epicFilterOf(status: Epic['status']): EpicFilter {
   return status === 'active' || status === 'paused' ? 'active' : status;
 }
 
-/** Plan-details tab ids. Summary exists only on complete plans. */
-type PlanDetailTab = 'plan' | 'summary' | 'edit';
+/** Plan-details tab ids. Spec exists only on plans with a spec.md; Summary
+ * only on complete plans. */
+type PlanDetailTab = 'plan' | 'spec' | 'summary' | 'edit';
 
 /** Phase-details tab ids. All three always exist — a phase with nothing shipped
  * yet still shows Summary (with an empty note) rather than hiding the tab, which
@@ -894,6 +897,18 @@ function EpicDetail({
           >
             ✓ summary
           </button>
+        )}
+        {epic.hasSpec && epic.spec !== null && (
+          <span
+            data-tip="spec coverage — criteria covered by at least one phase"
+            className={`rounded-md border px-2 py-1 font-mono text-[10.5px] ${
+              epic.spec.covered < epic.spec.total
+                ? 'border-amber/40 text-amber'
+                : 'border-green/40 text-green'
+            }`}
+          >
+            spec {epic.spec.covered}/{epic.spec.total}
+          </span>
         )}
         <PlanRunControls
           epic={epic}
@@ -2143,9 +2158,11 @@ function PhaseSummary({ phase, doc }: { phase: EpicPhase; doc: string | null }):
   );
 }
 
-/** Plan details panel: a Plan tab (the plan README markdown), an Edit tab (raw
- * README) and — only when every phase is done — a Summary tab with the
- * per-phase executed work. Rendered inline in place of the phase list. */
+/** Plan details panel: a Plan tab (the plan README markdown), a Spec tab
+ * (rendered spec.md + per-criterion coverage; only when the plan has one), an
+ * Edit tab (raw README) and — only when every phase is done — a Summary tab
+ * with the per-phase executed work. Rendered inline in place of the phase
+ * list. */
 function PlanDetailPanel({
   epic,
   tab,
@@ -2159,11 +2176,14 @@ function PlanDetailPanel({
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
   const complete = planComplete(epic, resolvedSeqs);
-  // The Summary tab exists only on complete plans — a stale selection (e.g. a
-  // rescan un-ticked a box) degrades to the Plan tab instead of a dead panel.
-  const activeTab: PlanDetailTab = tab === 'summary' && !complete ? 'plan' : tab;
+  // The Summary tab exists only on complete plans, the Spec tab only on plans
+  // with a spec.md — a stale selection (e.g. a rescan un-ticked a box, or
+  // removed the spec) degrades to the Plan tab instead of a dead panel.
+  const activeTab: PlanDetailTab =
+    (tab === 'summary' && !complete) || (tab === 'spec' && !epic.hasSpec) ? 'plan' : tab;
   const tabs: { id: PlanDetailTab; label: string }[] = [
     { id: 'plan', label: 'Plan' },
+    ...(epic.hasSpec ? [{ id: 'spec' as const, label: 'Spec' }] : []),
     ...(complete ? [{ id: 'summary' as const, label: 'Summary' }] : []),
     { id: 'edit', label: 'Edit' },
   ];
@@ -2194,6 +2214,8 @@ function PlanDetailPanel({
         <DocEditor taskId={epic.taskId} path="README.md" version={null} onSaved={onDocChanged} />
       ) : activeTab === 'plan' ? (
         <PlanReadme epic={epic} />
+      ) : activeTab === 'spec' ? (
+        <PlanSpec epic={epic} />
       ) : (
         <PlanSummary epic={epic} resolvedSeqs={resolvedSeqs} />
       )}
@@ -2206,6 +2228,99 @@ function PlanReadme({ epic }: { epic: Epic }): JSX.Element {
   const [readme] = usePlanDoc(epic.taskId, 'README.md', null);
   if (readme === null) return <Loading label="readme…" />;
   return <Markdown text={readme} />;
+}
+
+/** Spec tab body — the rendered plan/spec.md under a coverage rail: progress
+ * bar plus one row per criterion (tick glyph, cid chip, text, then the phase
+ * chips whose `**Covers:**` line claims it — or an amber `uncovered`). Phase
+ * `Covers` references to ids the spec never declared surface as amber notes
+ * (speculation signal). The rail exists only when the scanner parsed criteria
+ * rows (`epic.spec`); a spec.md without SC lines still renders as markdown. */
+function PlanSpec({ epic }: { epic: Epic }): JSX.Element {
+  const [doc] = usePlanDoc(epic.taskId, 'spec.md', null);
+  const spec = epic.spec;
+  // Tone the P{seq} chips like the phase rows do — the covering phase's own
+  // derived status through `phaseChip`, so a done phase covers in green.
+  const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
+  const phaseBySeq = useMemo(
+    () => new Map(epic.phases.map((p) => [p.seq, p])),
+    [epic.phases],
+  );
+  return (
+    <>
+      {spec !== null && (
+        <RailSection label="coverage">
+          <ProgressBar done={spec.covered} total={spec.total} className="mb-2.5 max-w-[220px]" />
+          <ul className="space-y-1.5">
+            {spec.criteria.map((c) => (
+              <li key={c.cid} className="flex flex-wrap items-start gap-2">
+                <span
+                  aria-hidden="true"
+                  className={`mt-px shrink-0 font-mono text-[12px] ${
+                    c.done ? 'text-green' : 'text-ink-faint'
+                  }`}
+                >
+                  {c.done ? '✓' : '○'}
+                </span>
+                <span className="shrink-0 rounded border border-line bg-surface2 px-1.5 py-px font-mono text-[9.5px] text-ink-dim">
+                  {c.cid}
+                </span>
+                <span className={`min-w-0 flex-1 ${c.done ? 'text-ink-dim' : 'text-ink'}`}>
+                  {c.text}
+                </span>
+                {c.coveredBy.length > 0 ? (
+                  c.coveredBy.map((seq) => {
+                    const p = phaseBySeq.get(seq);
+                    const cls =
+                      p !== undefined
+                        ? phaseChip(phaseStatus(p, resolvedSeqs), false).cls
+                        : PHASE_CHIP.pending.cls;
+                    return (
+                      <span
+                        key={seq}
+                        data-tip={p !== undefined ? `covered by phase ${String(seq)} — ${p.name}` : undefined}
+                        className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9.5px] ${cls}`}
+                      >
+                        P{seq}
+                      </span>
+                    );
+                  })
+                ) : (
+                  <span
+                    data-tip="no phase declares it covers this criterion"
+                    className="shrink-0 rounded border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[9.5px] text-amber"
+                  >
+                    uncovered
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {spec.unknownRefs.length > 0 && (
+            <div className="mt-2 space-y-0.5">
+              {spec.unknownRefs.map((r) => (
+                <div
+                  key={`${String(r.seq)}-${r.cid}`}
+                  className="font-mono text-[10.5px] text-amber"
+                >
+                  phase {r.seq} covers {r.cid}, which the spec never declares
+                </div>
+              ))}
+            </div>
+          )}
+        </RailSection>
+      )}
+      {doc === null ? (
+        <Loading label="spec…" />
+      ) : spec !== null ? (
+        <RailSection label="doc">
+          <Markdown text={doc} />
+        </RailSection>
+      ) : (
+        <Markdown text={doc} />
+      )}
+    </>
+  );
 }
 
 /** Summary tab body (complete plans only): per-phase executed work — phase
