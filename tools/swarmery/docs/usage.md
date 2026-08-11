@@ -6,10 +6,11 @@ are the *real* reading — the daemon asks Anthropic for the operator's own quot
 using the operator's own `claude` login, the same call `claude /usage` makes. It is not
 derived from indexed transcripts.
 
-Two rules hold everywhere in this surface: **no number is ever fabricated**, and **no
-failure is ever silent**. Every failure mode — opted out, not logged in, token rejected,
-rate limited, endpoint changed — degrades to a visible per-provider error card. A missing
-card would be a lie; a wrong number would be worse.
+> [!IMPORTANT]
+> Two rules hold everywhere in this surface: **no number is ever fabricated**, and **no
+> failure is ever silent**. Every failure mode — opted out, not logged in, token rejected,
+> rate limited, endpoint changed — degrades to a visible per-provider error card. A missing
+> card would be a lie; a wrong number would be worse.
 
 ---
 

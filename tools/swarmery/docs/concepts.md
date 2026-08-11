@@ -53,7 +53,8 @@ Two different promises. The difference is **which row status you end up with**, 
 
 **Kill** requires a known PID and a `running` or `orphaned` process state, and it refuses outright if the PID no longer belongs to a `claude` process or its start time does not match (PID reuse). A plain Kill also sends `SIGTERM` with the same escalation — the "immediate" path is the explicit **Force kill**, which the button offers after 10 seconds and which sends `SIGKILL` straight away with no escalation timer. Kill records the row as **killed**, and unlike `completed`, `killed` is terminal: neither procwatch nor ingest ever reverts it.
 
-Prefer Stop. The grace period is what lets an agent finish the file it is halfway through writing, and `completed` leaves the row honest if the session turns out to still have life in it.
+> [!TIP]
+> Prefer Stop. The grace period is what lets an agent finish the file it is halfway through writing, and `completed` leaves the row honest if the session turns out to still have life in it.
 
 | | Stop | Kill |
 |---|---|---|

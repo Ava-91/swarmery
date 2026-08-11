@@ -32,6 +32,14 @@ New things are born **project-local**. When a *second* project needs the same th
 to a pack; when every project needs it, promote to core. Never copy downward — copying framework
 files into projects recreates the fork-and-sync rot this repo exists to eliminate.
 
+```mermaid
+flowchart LR
+  P["project-local<br/>.claude/"] -- "a 2nd project needs it" --> K["domain pack"]
+  K -- "every project needs it" --> C["core"]
+  C -. "never copy down" .-> P
+  K -. "never copy down" .-> P
+```
+
 Promotion checklist:
 1. De-flavor it (see `docs/NEUTRALITY.md`) — values move to `project.json` reads.
 2. Move the file into the pack/core; bump that plugin's semver.

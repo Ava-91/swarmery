@@ -70,6 +70,11 @@ cited by a recommendation matches what the pages show.
 
 ## 4. The advisor — rules R1–R6
 
+> [!NOTE]
+> The advisor registers more rules than this section documents. `advisor.Run` in
+> `internal/advisor/advisor.go` is the authoritative list; the rules described below
+> are the original six.
+
 `internal/advisor` runs at daemon startup, on a 24 h ticker, and on demand
 (`Analyze now` → `POST /api/retro/advise`). Every rule evaluates the trailing
 **14-day** window; re-runs update open recommendations' evidence in place (no
