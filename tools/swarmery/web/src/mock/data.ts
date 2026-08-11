@@ -1289,6 +1289,7 @@ function boardTask(p: Partial<BoardTask> & Pick<BoardTask, 'id' | 'externalId' |
     verifyRetryCount: 0,
     verifyVerdict: null,
     verifyDetail: null,
+    resultNote: null,
     agent: null,
     origin: 'manual',
     originSessionId: null,

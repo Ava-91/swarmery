@@ -247,6 +247,12 @@ type boardTaskDTO struct {
 	VerifyRetryCount int     `json:"verifyRetryCount"`
 	VerifyVerdict    *string `json:"verifyVerdict"`
 	VerifyDetail     *string `json:"verifyDetail"`
+	// ResultNote is the one-line outcome of the card: the sentinel line the
+	// dispatcher recorded on a no-op exit, or — since the review loop (§3.2) — the
+	// URL of the PR `land` opened. It was already on the row (0001_init) and
+	// already written by dispatch; the board simply never showed it, so a landed
+	// card had its PR link nowhere but the HTTP response that created it.
+	ResultNote *string `json:"resultNote"`
 	// Agent is the registry agent name this card dispatches as (0048); null = a
 	// plain run. Origin/OriginSessionID are capture provenance: 'manual' for a
 	// hand-written card, 'session'/'llm' for one minted from a session. The
@@ -270,7 +276,7 @@ const boardTaskSelect = `
 	       t.priority, t.status, t.board_column, t.paused, t.user_paused,
 	       t.dependencies, t.model, t.playbook, t.file_scope, t.labels, t.branch, t.worktree_path,
 	       t.dispatch_error, t.start_point, t.retry_count, t.verify_retry_count,
-	       t.verify_verdict, t.verify_detail,
+	       t.verify_verdict, t.verify_detail, t.result_note,
 	       t.agent, t.origin, t.origin_session_id,
 	       t.column_moved_at, t.created_at
 	FROM tasks t JOIN projects p ON p.id = t.project_id`
@@ -286,7 +292,7 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 		&priority, &d.Status, &d.BoardColumn, &paused, &userPaused,
 		&deps, &d.Model, &d.Playbook, &scope, &labs, &d.Branch, &d.WorktreePath,
 		&d.DispatchError, &d.StartPoint, &d.RetryCount, &d.VerifyRetryCount,
-		&d.VerifyVerdict, &d.VerifyDetail,
+		&d.VerifyVerdict, &d.VerifyDetail, &d.ResultNote,
 		&d.Agent, &d.Origin, &d.OriginSessionID,
 		&d.ColumnMovedAt, &d.CreatedAt); err != nil {
 		return err
@@ -820,26 +826,40 @@ func (h *Handler) patchBoardTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	publishTaskUpdated(id)
-	// Dispatcher hooks (fusion phase 3): a terminal move reclaims the worktree;
-	// then poke so the scheduler reacts to the fast path — a move to todo, an
-	// unpause, or a dependency reaching done/archived (FN-3895: unblocking
-	// dependents must be an event, not the 15s sweep). Both are no-ops when the
-	// dispatcher is not attached.
-	if dispatchSvc != nil && columnChanged && (d.BoardColumn == "done" || d.BoardColumn == "archived") {
+	if columnChanged {
+		h.applyTerminalColumnEffects(id, d.BoardColumn)
+	}
+	// Poke so the scheduler reacts to the fast path — a move to todo, an unpause,
+	// or a dependency reaching done/archived (FN-3895: unblocking dependents must
+	// be an event, not the 15s sweep). No-op when the dispatcher is not attached.
+	pokeDispatch()
+	writeJSON(w, d, nil)
+}
+
+// applyTerminalColumnEffects performs the side effects a board card's arrival in
+// a terminal column carries: reclaiming its worktree (done and archived both,
+// keeping the branch) and resolving the plan phase it was minted from (done
+// only — archiving can mean "abandoned", and abandoned work must not tick a
+// plan's acceptance boxes). A no-op for every non-terminal column, so callers
+// need no guard of their own.
+//
+// Extracted from patchBoardTask because the review exits (land, discard in
+// tasks_review.go) must fire the IDENTICAL effects: a card landed by the button
+// and a card dragged to done are the same state, and a second inline copy is
+// exactly how the two would drift — one of them silently stopping to reclaim
+// worktrees or tick phase docs. Both hooks are no-ops when the dispatcher is not
+// attached / the task was minted from no phase.
+func (h *Handler) applyTerminalColumnEffects(id int64, column string) {
+	if dispatchSvc != nil && (column == "done" || column == "archived") {
 		dispatchSvc.RemoveWorktreeFor(id)
 	}
-	// A move to done resolves the plan phase this task was minted from (if any):
-	// check its doc's remaining acceptance boxes so plan progress follows the
-	// board verdict. Archived is excluded — archiving can mean "abandoned".
-	if columnChanged && d.BoardColumn == "done" {
+	if column == "done" {
 		if n, err := wsingest.TickPhaseChecklist(h.DB, id); err != nil {
 			log.Printf("warn: api: tick phase checklist (task %d): %v", id, err)
 		} else if n > 0 {
 			log.Printf("api: task %d done — ticked %d phase checkbox(es)", id, n)
 		}
 	}
-	pokeDispatch()
-	writeJSON(w, d, nil)
 }
 
 // DELETE /api/board/tasks/{id} → 204. Permanently removes a board row the user

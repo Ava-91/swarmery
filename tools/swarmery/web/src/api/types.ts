@@ -1338,6 +1338,12 @@ export interface BoardTask {
   verifyRetryCount: number;
   verifyVerdict: string | null;
   verifyDetail: string | null;
+  /**
+   * One-line outcome of the card: the sentinel line the dispatcher recorded on a
+   * no-op exit, or the URL of the PR `land` opened (board redesign phase 3). It
+   * was always on the row; the board only started showing it with the review loop.
+   */
+  resultNote: string | null;
   /** Registry agent name this card dispatches as; null = a plain run. */
   agent: string | null;
   /** Where the card came from: hand-written, captured from a session, or LLM-suggested. */
@@ -1354,6 +1360,55 @@ export interface BoardTask {
   stalenessReason?: string;
   columnMovedAt: string | null;
   createdAt: string;
+}
+
+// --- board redesign phase 3: the review loop ---------------------------------
+
+/** One commit on a card's run branch (item of `TaskDiff.commits`). */
+export interface TaskDiffCommit {
+  sha: string;
+  subject: string;
+}
+
+/**
+ * One changed path with its line deltas. A binary file reports 0/0 — git prints
+ * no counts for one, and the path is what the file table is for.
+ */
+export interface TaskDiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * GET /api/board/tasks/{id}/diff — what the agent committed on this card's run
+ * branch, measured from the start point admission pinned it to. Mirrors
+ * taskDiffDTO in internal/api/tasks_diff.go.
+ */
+export interface TaskDiff {
+  /** The pinned start-point SHA the branch is measured against. */
+  base: string;
+  branch: string;
+  commits: TaskDiffCommit[];
+  files: TaskDiffFile[];
+  /** Unified diff, capped at 200 KB — see `patchTruncated`. */
+  patch: string;
+  patchTruncated: boolean;
+}
+
+/** POST /api/board/tasks/{id}/discard — 200 once the branch is gone. */
+export interface DiscardTaskResponse {
+  /** False when the branch was already gone: discarding is idempotent. */
+  deleted: boolean;
+  branch: string;
+  task: BoardTask;
+}
+
+/** POST /api/board/tasks/{id}/land — 200 once the PR exists and the card is done. */
+export interface LandTaskResponse {
+  prUrl: string;
+  branch: string;
+  task: BoardTask;
 }
 
 // --- fusion phase 13: playbooks (selectable workflows) ------------------------

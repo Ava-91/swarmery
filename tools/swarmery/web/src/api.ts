@@ -18,7 +18,10 @@ import type {
   Connector,
   ConnectorsResponse,
   DetachResponse,
+  DiscardTaskResponse,
   DispatchStatus,
+  LandTaskResponse,
+  TaskDiff,
   AutonomyResp,
   DocDetail,
   DocMeta,
@@ -979,6 +982,93 @@ export async function deleteBoardTask(id: number): Promise<void> {
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(data.error ?? `delete task failed: ${String(res.status)}`);
   }
+}
+
+// --- board redesign phase 3: the review loop ---------------------------------
+
+/**
+ * Unwraps a review-action failure into an Error carrying the SERVER's sentence.
+ *
+ * The three exits answer with three different 4xx shapes — 409 {error, code},
+ * 422 {error, hint, detail}, plain {error} — and every one of them is written to
+ * be read by a human ("the branch is pushed, but `gh` is not on PATH… run this").
+ * Flattening them to "request failed: 422" in the client would throw away the
+ * only part of the response that tells the user what to do next.
+ */
+async function reviewActionError(res: Response, fallback: string): Promise<Error> {
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    hint?: string;
+    detail?: string;
+  };
+  const parts = [body.error ?? `${fallback}: ${String(res.status)}`];
+  if (body.hint !== undefined && body.hint !== '') parts.push(body.hint);
+  if (body.detail !== undefined && body.detail !== '') parts.push(body.detail);
+  return new Error(parts.join('\n\n'));
+}
+
+/**
+ * GET /api/board/tasks/{id}/diff — the commits, file stats and unified patch of
+ * a card's run branch. 409 when the card was never dispatched or has no pinned
+ * base; 404 when the branch was deleted out of band.
+ */
+export async function getBoardTaskDiff(id: number): Promise<TaskDiff> {
+  const res = await fetch(`/api/board/tasks/${String(id)}/diff`);
+  if (!res.ok) throw await reviewActionError(res, 'diff failed');
+  return (await res.json()) as TaskDiff;
+}
+
+/**
+ * POST /api/tasks/{id}/verify → 202. Re-grade a card. NOT a board route: the
+ * manual verify trigger predates the review loop and already carries the right
+ * preflight (404 unknown / 422 no worktree / 409 already running / 503 verifier
+ * not attached), so the review UI calls it rather than a board-scoped twin.
+ *
+ * 202 means "started" — the verdict lands later on a task_updated frame.
+ */
+export async function verifyBoardTask(id: number): Promise<void> {
+  const res = await fetch(`/api/tasks/${String(id)}/verify`, { method: 'POST' });
+  if (!res.ok) throw await reviewActionError(res, 'verify failed');
+}
+
+/**
+ * POST /api/board/tasks/{id}/rerun — append the reviewer's feedback to the
+ * card's prompt and send it back to todo. 409 outside in_review/done.
+ */
+export async function rerunBoardTask(id: number, feedback: string): Promise<BoardTask> {
+  const res = await fetch(`/api/board/tasks/${String(id)}/rerun`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feedback }),
+  });
+  if (!res.ok) throw await reviewActionError(res, 'rerun failed');
+  return (await res.json()) as BoardTask;
+}
+
+/**
+ * POST /api/board/tasks/{id}/discard — reclaim the worktree, delete the run
+ * branch AND its commits, archive the card. Idempotent: a branch already gone
+ * still succeeds with `deleted: false`. 409 while the card is running.
+ */
+export async function discardBoardTask(id: number): Promise<DiscardTaskResponse> {
+  const res = await fetch(`/api/board/tasks/${String(id)}/discard`, { method: 'POST' });
+  if (!res.ok) throw await reviewActionError(res, 'discard failed');
+  return (await res.json()) as DiscardTaskResponse;
+}
+
+/**
+ * POST /api/board/tasks/{id}/land — push the run branch, open a PR for it, and
+ * move the card to done. 422 (with a `hint` naming the exact manual commands)
+ * when the repo has no origin or `gh` is not installed.
+ */
+export async function landBoardTask(id: number, draft = false): Promise<LandTaskResponse> {
+  const res = await fetch(`/api/board/tasks/${String(id)}/land`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft }),
+  });
+  if (!res.ok) throw await reviewActionError(res, 'land failed');
+  return (await res.json()) as LandTaskResponse;
 }
 
 /**

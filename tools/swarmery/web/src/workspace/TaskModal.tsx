@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { BoardTask, TaskPriority } from '../api/types';
 import type { PatchBoardTaskInput } from '../api';
+import { discardBoardTask, landBoardTask, rerunBoardTask, verifyBoardTask } from '../api';
 import { fmtAgo } from '../lib/format';
 import { displaySlug, findProject } from '../lib/projectSlug';
 import { useScope } from '../lib/scope';
@@ -28,6 +29,7 @@ import { AgentHint, AgentSelect, useAgentRoster } from './AgentPicker';
 import { TASK_MODELS, TASK_PRIORITIES } from './boardModel';
 import { PlaybookHint, PlaybookSelect, usePlaybooks } from './PlaybookPicker';
 import { useWorkspaceTerminal } from './ProjectWorkspaceLayout';
+import { TaskDiff } from './TaskDiff';
 import { ChipEditor, FieldLabel } from './TaskFields';
 
 function ReadOnlyRow({ label, value }: { label: string; value: string }): JSX.Element {
@@ -66,6 +68,17 @@ export function TaskModal({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // Review-loop state (board redesign phase 3). `reviewBusy` is one flag for all
+  // four actions: they are mutually exclusive decisions about the same card, and
+  // letting a user click Discard while Land is mid-push is not a state worth
+  // supporting. `reviewNote` carries the last success line (a PR URL, "re-verify
+  // started") since the card itself only updates once the WS frame arrives.
+  const [feedback, setFeedback] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewNote, setReviewNote] = useState<string | null>(null);
+  const [confirmLand, setConfirmLand] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
   const { playbooks } = usePlaybooks(task.projectId);
   const { agents } = useAgentRoster(task.projectId, task.projectSlug);
@@ -92,6 +105,13 @@ export function TaskModal({
     setFileScope(task.fileScope);
     setDependencies(task.dependencies);
     setSaveError(null);
+    // Review state is per-card too: another card's feedback draft, error or PR
+    // link must not survive into this one.
+    setFeedback('');
+    setReviewError(null);
+    setReviewNote(null);
+    setConfirmLand(false);
+    setConfirmDiscard(false);
   }, [task.id]);
 
   // Initial focus is MOUNT-ONLY, deliberately split from the Escape listener
@@ -111,16 +131,18 @@ export function TaskModal({
     closeRef.current?.focus();
   }, [task.id]);
 
-  // Escape closes the modal — but not while the delete confirmation is up, or
-  // one key would dismiss both layers and the user would lose the dialog they
-  // are reading (that dialog owns its own cancel).
+  // Escape closes the modal — but not while a confirmation is up, or one key
+  // would dismiss both layers and the user would lose the dialog they are
+  // reading (each dialog owns its own cancel). All three destructive/irreversible
+  // confirms count, not just Delete.
+  const confirming = confirmDelete || confirmLand || confirmDiscard;
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && !confirmDelete) onClose();
+      if (e.key === 'Escape' && !confirming) onClose();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose, confirmDelete]);
+  }, [onClose, confirming]);
 
   const dirty = useMemo(
     () =>
@@ -173,6 +195,68 @@ export function TaskModal({
   };
 
   const blocked = task.paused || task.userPaused;
+
+  // The review loop is offered for a card that has actually been through a run:
+  // in_review is its home, and done keeps it reachable so a shipped-but-wrong
+  // card can still be re-run or its branch discarded.
+  const inReview = task.boardColumn === 'in_review' || task.boardColumn === 'done';
+
+  /**
+   * Runs one review action, funnelling every server 4xx into `reviewError`. The
+   * server's messages are written to be read (a 422 from Land carries the exact
+   * commands to finish by hand), so they are shown verbatim rather than
+   * re-worded here. The board's WS subscription refreshes the card itself.
+   */
+  const runReview = (action: () => Promise<string | null>): void => {
+    setReviewBusy(true);
+    setReviewError(null);
+    setReviewNote(null);
+    action()
+      .then((note) => {
+        setReviewNote(note);
+        setConfirmLand(false);
+        setConfirmDiscard(false);
+      })
+      .catch((e: unknown) => setReviewError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setReviewBusy(false));
+  };
+
+  const reverify = (): void => {
+    runReview(async () => {
+      await verifyBoardTask(task.id);
+      // 202: the verdict lands later, on a task_updated frame.
+      return 're-verification started — the verdict will appear here when it finishes';
+    });
+  };
+
+  const rerun = (): void => {
+    const text = feedback.trim();
+    if (text === '') {
+      setReviewError('feedback is required — a re-run with no notes would repeat the same work');
+      return;
+    }
+    runReview(async () => {
+      await rerunBoardTask(task.id, text);
+      setFeedback('');
+      return 'sent back to todo with your feedback appended to the prompt';
+    });
+  };
+
+  const land = (): void => {
+    runReview(async () => {
+      const res = await landBoardTask(task.id);
+      return `pull request opened: ${res.prUrl}`;
+    });
+  };
+
+  const discard = (): void => {
+    runReview(async () => {
+      const res = await discardBoardTask(task.id);
+      return res.deleted
+        ? `branch ${res.branch} deleted — card archived`
+        : `branch ${res.branch} was already gone — card archived`;
+    });
+  };
 
   return (
     <div
@@ -358,6 +442,171 @@ export function TaskModal({
             )}
           </ConfirmDialog>
 
+          {/* The review loop (board redesign phase 3). Shown only for a card that
+            * has been through a run: the verdict it was given, the diff it
+            * produced, and the three exits that make `done` a consequence of a
+            * decision rather than a drag. */}
+          {inReview && (
+            <div className="mt-1 flex flex-col gap-2 border-t border-line pt-3">
+              <FieldLabel>review</FieldLabel>
+
+              {task.verifyVerdict !== null && (
+                <div>
+                  <ReadOnlyRow label="verdict" value={task.verifyVerdict} />
+                  {task.verifyDetail !== null && (
+                    <ReadOnlyRow label="detail" value={task.verifyDetail} />
+                  )}
+                </div>
+              )}
+
+              {/* A card whose worktree was reclaimed cannot be re-graded — the
+                * verifier has nothing to run against. Disabled WITH the reason,
+                * rather than hidden: the button's absence would read as a bug. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={reviewBusy || task.worktreePath === null}
+                  onClick={reverify}
+                  title={
+                    task.worktreePath === null
+                      ? 'the worktree was reclaimed, so there is nothing left to grade — re-run the card instead'
+                      : 'run verification again against the worktree'
+                  }
+                  className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Re-verify
+                </button>
+                {task.worktreePath === null && (
+                  <span className="font-mono text-[10px] text-ink-faint">
+                    worktree reclaimed — nothing to re-grade
+                  </span>
+                )}
+              </div>
+
+              <TaskDiff taskId={task.id} />
+
+              {/* Re-run needs its notes before it can do anything, so the textarea
+                * sits with the button rather than behind a dialog. */}
+              <div>
+                <FieldLabel>reviewer feedback</FieldLabel>
+                <textarea
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  rows={3}
+                  aria-label="reviewer feedback"
+                  placeholder="what to fix on the next pass — appended to the prompt"
+                  className="w-full resize-y rounded-[8px] border border-line bg-field px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-ink outline-none focus:border-ink-dim"
+                />
+              </div>
+
+              {reviewError !== null && (
+                <div className="rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[11px] whitespace-pre-wrap text-red">
+                  {reviewError}
+                </div>
+              )}
+              {reviewNote !== null && (
+                <div className="rounded-lg border border-green/25 bg-green/5 px-2.5 py-2 font-mono text-[11px] break-all text-green">
+                  {reviewNote}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={reviewBusy || task.branch === null}
+                  onClick={() => setConfirmLand(true)}
+                  title={
+                    task.branch === null
+                      ? 'this card has no run branch — there is nothing to push'
+                      : 'push the branch and open a pull request'
+                  }
+                  className="rounded-lg border border-brand/50 bg-brand/10 px-3 py-1.5 text-[12px] font-semibold text-brand transition-colors hover:bg-brand/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Land
+                </button>
+                <button
+                  type="button"
+                  disabled={reviewBusy || feedback.trim() === ''}
+                  onClick={rerun}
+                  title={
+                    feedback.trim() === ''
+                      ? 'write the feedback first — a re-run with no notes repeats the same work'
+                      : 'append the feedback to the prompt and send the card back to todo'
+                  }
+                  className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Re-run with feedback
+                </button>
+                <button
+                  type="button"
+                  disabled={reviewBusy}
+                  onClick={() => setConfirmDiscard(true)}
+                  className="ml-auto rounded-lg border border-red/40 bg-red/5 px-3 py-1.5 text-[12px] text-red transition-colors hover:bg-red/15 disabled:opacity-40"
+                >
+                  Discard
+                </button>
+              </div>
+
+              {/* The landed PR. `result_note` also carries a dispatcher sentinel
+                * line on a no-op exit, so it is only linked when it IS a URL. */}
+              {task.resultNote !== null && task.resultNote !== '' && (
+                <div className="font-mono text-[10.5px] break-all text-ink-dim">
+                  {task.resultNote.startsWith('http') ? (
+                    <a
+                      href={task.resultNote}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline transition-colors hover:text-ink"
+                    >
+                      ❯ {task.resultNote}
+                    </a>
+                  ) : (
+                    task.resultNote
+                  )}
+                </div>
+              )}
+
+              <ConfirmDialog
+                open={confirmLand}
+                title={`Land ${task.externalId}?`}
+                confirmLabel="land"
+                busy={reviewBusy}
+                onConfirm={land}
+                onCancel={() => setConfirmLand(false)}
+              >
+                Pushes <span className="font-mono text-[12px] text-ink">{task.branch ?? '—'}</span>{' '}
+                to <span className="font-mono text-[12px] text-ink">origin</span> and opens a pull
+                request with <span className="font-mono">gh</span>, then moves the card to done. The
+                branch is kept.
+                {reviewError !== null && (
+                  <div className="mt-2.5 rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[11px] whitespace-pre-wrap text-red">
+                    {reviewError}
+                  </div>
+                )}
+              </ConfirmDialog>
+
+              <ConfirmDialog
+                open={confirmDiscard}
+                title={`Discard ${task.externalId}?`}
+                confirmLabel="discard"
+                danger
+                busy={reviewBusy}
+                onConfirm={discard}
+                onCancel={() => setConfirmDiscard(false)}
+              >
+                Deletes the branch{' '}
+                <span className="font-mono text-[12px] text-ink">{task.branch ?? '—'}</span> and
+                every commit on it, reclaims the worktree, and archives the card. The work is not
+                recoverable.
+                {reviewError !== null && (
+                  <div className="mt-2.5 rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[11px] whitespace-pre-wrap text-red">
+                    {reviewError}
+                  </div>
+                )}
+              </ConfirmDialog>
+            </div>
+          )}
+
           {/* Read-only dispatcher-owned state. */}
           <div className="mt-1 border-t border-line pt-3">
             <FieldLabel>dispatcher</FieldLabel>
@@ -391,7 +640,9 @@ export function TaskModal({
                 {task.dispatchError}
               </div>
             )}
-            {task.verifyVerdict !== null && (
+            {/* Not repeated when the Review section above is showing it — one
+              * card should state its verdict once. */}
+            {!inReview && task.verifyVerdict !== null && (
               <div className="mt-1.5">
                 <ReadOnlyRow label="verdict" value={task.verifyVerdict} />
                 {task.verifyDetail !== null && <ReadOnlyRow label="detail" value={task.verifyDetail} />}

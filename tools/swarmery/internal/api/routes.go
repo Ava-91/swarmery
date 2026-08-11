@@ -140,6 +140,20 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// and this is POST. Same D4 origin hardening as every other board write.
 	mux.HandleFunc("POST /api/board/tasks/bulk-archive", requireLocalOrigin(h.bulkArchiveBoardTasks))
 
+	// board redesign phase 3: the review loop — the evidence and the three exits
+	// out of in_review (tasks_diff.go, tasks_review.go). The diff is a read and
+	// carries no origin fence, matching every other board GET; the exits all
+	// mutate (two of them destroy) and carry the same D4 hardening as the writes
+	// above.
+	//
+	// There is deliberately NO …/verify route here: POST /api/tasks/{id}/verify
+	// (below) already IS the manual re-verify trigger, with the exact preflight
+	// this surface would have had to duplicate. The review UI calls that one.
+	mux.HandleFunc("GET /api/board/tasks/{id}/diff", h.boardTaskDiff)
+	mux.HandleFunc("POST /api/board/tasks/{id}/rerun", requireLocalOrigin(h.rerunBoardTask))
+	mux.HandleFunc("POST /api/board/tasks/{id}/discard", requireLocalOrigin(h.discardBoardTask))
+	mux.HandleFunc("POST /api/board/tasks/{id}/land", requireLocalOrigin(h.landBoardTask))
+
 	// fusion phase 3: dispatcher control — status + pause/resume (global or
 	// per-project). The pause write carries the same D4 origin hardening.
 	mux.HandleFunc("GET /api/dispatch", h.getDispatch)
