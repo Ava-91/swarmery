@@ -15,7 +15,7 @@ touching saves a lot of confusion later.
 12 | plugins in the marketplace | hot
 59 | Go packages in the daemon
 172 | HTTP API routes
-10 | docs served at /docs
+12 | docs served at /docs
 ```
 
 ## What is swarmery
