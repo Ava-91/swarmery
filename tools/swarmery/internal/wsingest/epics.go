@@ -66,7 +66,8 @@ type epicPhase struct {
 	// filesystem and on project.json, which is the run surface's decision at Start
 	// time (internal/repopath). "" when the plan declares nothing.
 	repo             string
-	completionReport string // `## Completion Report` section body; "" when absent
+	completionReport string   // `## Completion Report` section body; "" when absent
+	covers           []string // spec-criteria ids (`**Covers:** SC-1, SC-3`) the doc declares it delivers; nil when absent
 }
 
 var (
@@ -158,6 +159,107 @@ func parseDocRepo(text string) string {
 		}
 	}
 	return ""
+}
+
+// SpecCriterion is one SC-tagged acceptance-criterion checkbox from plan/spec.md.
+type SpecCriterion struct {
+	Cid  string // "SC-1"
+	Text string
+	Done bool
+	Line int // 0-based line index in spec.md
+}
+
+// specCriterionRe: `- [ ] **SC-1** — text` (also `*` bullets, `[x]`, and
+// `:` / `-` / `–` / `—` separators).
+var specCriterionRe = regexp.MustCompile(`(?i)^\s*[-*]\s+\[( |x)\]\s+\*\*(SC-\d+)\*\*\s*[:–—-]?\s*(.*)$`)
+
+// ParseSpecCriteria extracts SC-tagged checkbox criteria. Checkboxes without an
+// **SC-n** marker are NOT criteria (plain narrative checkboxes stay legal in
+// spec.md). Duplicate cids: first occurrence wins, later ones are dropped (the
+// scan-side caller warns per drop — see parseSpec). Pure; unit-tested.
+//
+// Exported for the same reason CountCheckboxes is: this is the single definition
+// of what a spec criterion IS, and the plan-run gate (internal/planrun) re-reads
+// spec.md with it at run-admission time — a second parser would drift and the
+// two readers would disagree about the same file.
+func ParseSpecCriteria(md string) []SpecCriterion {
+	crits, _ := parseSpecCriteria(md)
+	return crits
+}
+
+// parseSpecCriteria is ParseSpecCriteria plus the duplicate cids it dropped, so
+// the scan can warn about them without re-parsing the format.
+func parseSpecCriteria(md string) (crits []SpecCriterion, dups []string) {
+	seen := map[string]bool{}
+	for i, line := range strings.Split(md, "\n") {
+		m := specCriterionRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		cid := strings.ToUpper(m[2])
+		if seen[cid] {
+			dups = append(dups, cid)
+			continue
+		}
+		seen[cid] = true
+		crits = append(crits, SpecCriterion{
+			Cid:  cid,
+			Text: strings.TrimSpace(m[3]),
+			Done: strings.EqualFold(m[1], "x"),
+			Line: i,
+		})
+	}
+	return crits, dups
+}
+
+var (
+	// The phase doc's header table row: `| **Covers** | SC-1, SC-3 |`.
+	coversRowRe = regexp.MustCompile(`(?i)^\|\s*\*\*Covers:?\*\*\s*\|\s*(.+?)\s*\|\s*$`)
+	// The prose header form: `**Covers:** SC-1, SC-3`.
+	coversLineRe = regexp.MustCompile(`(?i)^\s*\*\*Covers:\*\*\s*(.+?)\s*$`)
+	// SC-id tokens inside a Covers cell; anything else in the cell is ignored.
+	coversTokenRe = regexp.MustCompile(`\bSC-\d+\b`)
+)
+
+// ParseCovers returns the deduped, order-preserving SC ids a phase doc declares
+// via a `**Covers:** SC-1, SC-3` header line or a `| **Covers** | … |` header
+// table row — scanned the same way parseDocRepo scans **Repo**: bounded to the
+// doc's header block, first match wins, so a `**Covers:**` line quoted inside an
+// embedded agent prompt further down describes someone else's phase, not this
+// one's. nil when the doc declares nothing. Pure; unit-tested.
+//
+// Exported alongside ParseSpecCriteria as the single definition of the Covers
+// format (internal/planrun's gate re-reads phase docs with it).
+func ParseCovers(md string) []string {
+	lines := strings.Split(md, "\n")
+	if len(lines) > docStatusHeaderLines {
+		lines = lines[:docStatusHeaderLines]
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			break
+		}
+		cell := ""
+		if m := coversRowRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			cell = m[1]
+		} else if m := coversLineRe.FindStringSubmatch(line); m != nil {
+			cell = m[1]
+		}
+		if cell == "" {
+			continue
+		}
+		var out []string
+		seen := map[string]bool{}
+		for _, tok := range coversTokenRe.FindAllString(strings.ToUpper(cell), -1) {
+			if seen[tok] {
+				continue
+			}
+			seen[tok] = true
+			out = append(out, tok)
+		}
+		return out // first Covers declaration wins, even when it names no ids
+	}
+	return nil
 }
 
 // CountCheckboxes counts acceptance-criteria checkboxes in a doc, returning
@@ -398,6 +500,7 @@ func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 		if repo := parseDocRepo(string(body)); repo != "" {
 			phases[i].repo = repo
 		}
+		phases[i].covers = ParseCovers(string(body))
 		if fi, err := os.Stat(abs); err == nil {
 			phases[i].docUpdatedAt = fi.ModTime().UTC().Format(time.RFC3339)
 		}
@@ -439,13 +542,34 @@ func pruneDanglingDeps(phases []epicPhase, planDir string, warn func(string, ...
 	}
 }
 
+// parseSpec reads <planDir>/spec.md into its SC-tagged criteria. A missing file
+// is the common case (the spec is optional) — nil, no warn. Any other stumble
+// warns and degrades to nil; the scan never fails over a spec.
+func parseSpec(planDir string, warn func(string, ...any)) []SpecCriterion {
+	b, err := os.ReadFile(filepath.Join(planDir, "spec.md"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			warn("epics plan %s: spec.md unreadable: %v", planDir, err)
+		}
+		return nil
+	}
+	crits, dups := parseSpecCriteria(string(b))
+	for _, cid := range dups {
+		warn("epics plan %s: spec.md declares %s more than once — first occurrence wins", planDir, cid)
+	}
+	return crits
+}
+
 // parserVersion identifies WHAT parsePlan extracts. It is mixed into planHash so
 // a parser that learns a new field re-parses plans whose bytes are unchanged.
 // v2: epic_phases.repo (declared `Repo` column / phase doc header), migration 0046.
 // v3: pruneDanglingDeps — depends_on no longer keeps a seq that names no phase
 // in the plan (issue #190); already-indexed rows carrying a phantom dependency
 // need a re-parse to shed it even though their plan bytes never changed.
-const parserVersion = "v3"
+// v4: spec.md criteria + phase Covers — plan/spec.md's SC-tagged checkboxes
+// become spec_criteria rows and a phase doc's `**Covers:**` declaration lands in
+// epic_phases.covers; already-indexed plans need a re-parse to populate both.
+const parserVersion = "v4"
 
 // planHash combines every plan file's bytes into one content hash, so the gate
 // re-parses when the README OR any phase doc changes (a checkbox flip lives in a
@@ -515,6 +639,7 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 	}
 
 	phases := parsePlan(planDir, warn)
+	crits := parseSpec(planDir, warn)
 
 	// README presence gates the prune: a plan dir caught mid-`git checkout` (or
 	// mid-archive-move) has neither README nor docs, and must not be read as
@@ -532,6 +657,11 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 	if err := applyEpics(tx, taskID, phases, readmePresent); err != nil {
 		tx.Rollback()
 		warn("epics task#%d (%s): %v", taskID, planDir, err)
+		return
+	}
+	if err := applySpec(tx, taskID, crits); err != nil {
+		tx.Rollback()
+		warn("epics task#%d (%s): spec: %v", taskID, planDir, err)
 		return
 	}
 	if _, err := tx.Exec(`
@@ -561,7 +691,7 @@ func (s *Scanner) scanEpics(taskID int64, dir string, warn func(string, ...any))
 // on the natural key UNIQUE(workspace_task_id, doc_path).
 //
 // The plan doc is authoritative for STRUCTURE only — seq, name, depends_on,
-// checkbox counts, doc status, completion report. It owns nothing else. Everything
+// covers, checkbox counts, doc status, completion report. It owns nothing else. Everything
 // the daemon writes about a phase (activated_at / activated_board_task_id and the
 // whole run_* family) is deliberately absent from the DO UPDATE SET list, so it
 // survives a rescan untouched.
@@ -603,6 +733,13 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 		if p.dependsOn == nil {
 			depJSON = []byte("[]")
 		}
+		coversJSON, err := json.Marshal(p.covers)
+		if err != nil {
+			return err
+		}
+		if p.covers == nil {
+			coversJSON = []byte("[]")
+		}
 		var docStatus any
 		if p.docStatus != "" {
 			docStatus = p.docStatus
@@ -623,8 +760,8 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 			INSERT INTO epic_phases
 				(workspace_task_id, seq, name, doc_path, depends_on,
 				 checkboxes_total, checkboxes_done, doc_status, doc_updated_at,
-				 completion_report, repo)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 completion_report, repo, covers)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(workspace_task_id, doc_path) DO UPDATE SET
 				seq               = excluded.seq,
 				name              = excluded.name,
@@ -634,10 +771,11 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 				doc_status        = excluded.doc_status,
 				doc_updated_at    = excluded.doc_updated_at,
 				completion_report = excluded.completion_report,
-				repo              = excluded.repo`,
+				repo              = excluded.repo,
+				covers            = excluded.covers`,
 			taskID, p.seq, p.name, p.docPath, string(depJSON),
 			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
-			completionReport, repo); err != nil {
+			completionReport, repo, string(coversJSON)); err != nil {
 			return err
 		}
 	}
@@ -712,9 +850,48 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 	return nil
 }
 
+// applySpec folds the parsed plan/spec.md criteria into the task's spec_criteria
+// rows by UPSERTING on the natural key UNIQUE(workspace_task_id, cid), then
+// pruning by exclusion — an empty parse (spec.md removed, or emptied of SC
+// checkboxes) deletes every row for the task. Unlike epic_phases there is no
+// daemon-owned state on these rows: wsingest owns them outright, so the prune
+// needs no running-guard and identity churn is harmless (readers key on cid).
+func applySpec(tx *sql.Tx, taskID int64, crits []SpecCriterion) error {
+	for i, c := range crits {
+		done := 0
+		if c.Done {
+			done = 1
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO spec_criteria (workspace_task_id, pos, cid, text, done, line)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(workspace_task_id, cid) DO UPDATE SET
+				pos  = excluded.pos,
+				text = excluded.text,
+				done = excluded.done,
+				line = excluded.line`,
+			taskID, i, c.Cid, c.Text, done, c.Line); err != nil {
+			return err
+		}
+	}
+	args := make([]any, 0, len(crits)+1)
+	args = append(args, taskID)
+	q := `DELETE FROM spec_criteria WHERE workspace_task_id = ?`
+	if len(crits) > 0 {
+		ph := make([]string, 0, len(crits))
+		for _, c := range crits {
+			ph = append(ph, "?")
+			args = append(args, c.Cid)
+		}
+		q += ` AND cid NOT IN (` + strings.Join(ph, ",") + `)`
+	}
+	_, err := tx.Exec(q, args...)
+	return err
+}
+
 // phaseState is the daemon-owned half of an epic_phases row — everything the plan doc
-// does NOT author. The plan doc owns structure (seq, name, depends_on, checkbox counts,
-// doc status, completion report); these columns are written by dispatch and by the run
+// does NOT author. The plan doc owns structure (seq, name, depends_on, covers, checkbox
+// counts, doc status, completion report); these columns are written by dispatch and by the run
 // services, and a rescan must never be able to invent or destroy them.
 type phaseState struct {
 	id                   int64
