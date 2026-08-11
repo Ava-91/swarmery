@@ -294,6 +294,51 @@ func TestScheduleAdmitsAndRunsExit0(t *testing.T) {
 	}
 }
 
+// TestAdmitPersistsStartPoint pins the base verification is allowed to measure
+// against. admit() is the ONLY place that knows which SHA the worktree was
+// pinned to (Acquired.StartPoint); if it does not write that down, every later
+// consumer has to guess, and the verifier's guess used to be the task's own
+// branch — a diff of the branch against itself, forever empty.
+func TestAdmitPersistsStartPoint(t *testing.T) {
+	db := testDB(t)
+	wt := &stubWt{} // Acquire returns StartPoint "deadbeef"
+	r := &stubRunner{run: func(spec RunSpec) (*Run, error) {
+		ingestSession(t, db, spec.SessionUUID, "Done.")
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}}
+	s := newTestService(t, db, r, wt)
+	id := insertTask(t, db, "T-sp1", taskOpts{})
+
+	s.Schedule()
+
+	sp := taskField(t, db, id, "start_point")
+	if !sp.Valid || sp.String != "deadbeef" {
+		t.Fatalf("start_point = %v (valid=%v), want the acquired StartPoint %q",
+			sp.String, sp.Valid, "deadbeef")
+	}
+	// The same UPDATE still carries branch + worktree_path — start_point rides
+	// along on the guarded CAS, it does not replace anything.
+	if b := taskField(t, db, id, "branch"); b.String != "swarm/T-sp1" {
+		t.Errorf("branch = %q, want swarm/T-sp1", b.String)
+	}
+}
+
+// A task that never gets admitted must not carry a start_point: the column
+// states "this worktree was pinned here", and a row that lost the admission
+// race owns no worktree.
+func TestAdmitFailureLeavesStartPointNull(t *testing.T) {
+	db := testDB(t)
+	wt := &stubWt{acquireErr: errAcquire}
+	s := newTestService(t, db, &stubRunner{}, wt)
+	id := insertTask(t, db, "T-sp2", taskOpts{})
+
+	s.Schedule()
+
+	if sp := taskField(t, db, id, "start_point"); sp.Valid {
+		t.Fatalf("start_point = %q on a task that was never admitted, want NULL", sp.String)
+	}
+}
+
 func TestScheduleNonzeroExitSurfacesError(t *testing.T) {
 	db := testDB(t)
 	r := &stubRunner{run: func(spec RunSpec) (*Run, error) {

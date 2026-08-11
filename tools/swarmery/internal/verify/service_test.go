@@ -20,15 +20,17 @@ import (
 type stubRunner struct {
 	mu    sync.Mutex
 	calls int
-	out   string // canned stdout (parsed into a verdict)
-	run   *Run   // full canned Run (overrides out when set)
-	err   error  // canned start error
+	specs []RunSpec // every spec handed to Run, for prompt assertions
+	out   string    // canned stdout (parsed into a verdict)
+	run   *Run      // full canned Run (overrides out when set)
+	err   error     // canned start error
 	outFn func(RunSpec) *Run
 }
 
 func (s *stubRunner) Run(_ context.Context, spec RunSpec) (*Run, error) {
 	s.mu.Lock()
 	s.calls++
+	s.specs = append(s.specs, spec)
 	fn, canned, out, err := s.outFn, s.run, s.out, s.err
 	s.mu.Unlock()
 	if err != nil {
@@ -45,11 +47,43 @@ func (s *stubRunner) Run(_ context.Context, spec RunSpec) (*Run, error) {
 
 func (s *stubRunner) count() int { s.mu.Lock(); defer s.mu.Unlock(); return s.calls }
 
+// lastPrompt is the prompt of the most recent spec (the rendered verifier
+// prompt, which carries the "diff vs <base>" instruction).
+func (s *stubRunner) lastPrompt() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.specs) == 0 {
+		return ""
+	}
+	return s.specs[len(s.specs)-1].Prompt
+}
+
+// diffProbe records the bases DiffFileCount was asked about. stubTrees is used
+// BY VALUE everywhere, so the recorder has to be behind a pointer to survive
+// the copy — that is the whole reason it is a separate type.
+type diffProbe struct {
+	mu    sync.Mutex
+	bases []string
+}
+
+func (p *diffProbe) record(base string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.bases = append(p.bases, base)
+}
+
+func (p *diffProbe) seen() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.bases...)
+}
+
 // stubTrees returns a scripted tree hash (and can force an error to simulate the
 // worktree-vanished race).
 type stubTrees struct {
-	diffFiles int   // files reported by DiffFileCount
-	diffErr   error // when set, the diff size is UNREADABLE
+	diffFiles int        // files reported by DiffFileCount
+	diffErr   error      // when set, the diff size is UNREADABLE
+	probe     *diffProbe // when set, records every base the gate asked about
 	hash      string
 	err       error
 }
@@ -59,6 +93,9 @@ func (t stubTrees) TreeHash(string) (string, error) { return t.hash, t.err }
 // DiffFileCount is the scope-gate signal. diffFiles defaults to 0, which keeps every
 // pre-existing test under any bound — the gate must be invisible to them.
 func (t stubTrees) DiffFileCount(worktreePath, base string) (int, error) {
+	if t.probe != nil {
+		t.probe.record(base)
+	}
 	return t.diffFiles, t.diffErr
 }
 
@@ -101,10 +138,25 @@ type taskOpts struct {
 	worktree   string
 	fileScope  string
 	model      string
-	retryCount int
-	paused     int
-	playbook   string // selected recipe name (drives the verify knob via PlaybookVerify seam)
+	retryCount int // dispatch-owned budget (HealDeadProcess); verify must never read it
+	// verifyRetryCount is the verify-owned fix-chain budget (0051). Split from
+	// retryCount so a flaky-run heal cannot silently spend the fix budget.
+	verifyRetryCount int
+	paused           int
+	playbook         string // selected recipe name (drives the verify knob via PlaybookVerify seam)
+	// startPoint is the SHA admit() pinned the worktree to. Defaults to a
+	// non-empty value because every post-0051 dispatched row HAS one; the
+	// pre-0051 world is the exception and is opted into with legacyNoStartPoint.
+	startPoint string
+	// legacyNoStartPoint models a row dispatched before 0051: start_point is
+	// NULL, so no honest diff base exists.
+	legacyNoStartPoint bool
 }
+
+// defaultStartPoint is the harness's stand-in for Acquired.StartPoint. It is
+// deliberately NOT a branch name: a test that passes only because the base
+// happens to equal the branch would be exactly the bug 0051 fixes.
+const defaultStartPoint = "base0000"
 
 func insertTask(t *testing.T, db *sql.DB, o taskOpts) int64 {
 	t.Helper()
@@ -126,15 +178,23 @@ func insertTask(t *testing.T, db *sql.DB, o taskOpts) int64 {
 	if o.fileScope == "" {
 		o.fileScope = "[]"
 	}
+	if o.startPoint == "" {
+		o.startPoint = defaultStartPoint
+	}
+	if o.legacyNoStartPoint {
+		o.startPoint = ""
+	}
 	res, err := db.Exec(`
 		INSERT INTO tasks(project_id, title, prompt, priority, status, created_at,
 		                  source, origin, external_id, board_column, model, file_scope,
-		                  dependencies, worktree_path, branch, retry_count, paused, playbook)
+		                  dependencies, worktree_path, branch, retry_count, verify_retry_count,
+		                  paused, playbook, start_point)
 		VALUES(1, ?, ?, 5, 'needs_review', '2026-07-24T00:00:00.000Z',
-		       ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?)`,
+		       ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)`,
 		"title "+o.externalID, "do the thing for "+o.externalID,
 		o.source, o.origin, o.externalID, o.column, nullStr(o.model), o.fileScope,
-		o.worktree, "swarm/"+o.externalID, o.retryCount, o.paused, nullStr(o.playbook))
+		o.worktree, "swarm/"+o.externalID, o.retryCount, o.verifyRetryCount,
+		o.paused, nullStr(o.playbook), nullStr(o.startPoint))
 	if err != nil {
 		t.Fatalf("insert task: %v", err)
 	}
@@ -323,9 +383,9 @@ func TestVerifyFail_CreatesOneFixTask(t *testing.T) {
 	if n := countFixTasks(t, db, "T-root1"); n != 1 {
 		t.Fatalf("fix tasks = %d, want exactly 1", n)
 	}
-	// Root retry_count charged to 1.
-	if rc := intField(t, db, id, "retry_count"); rc != 1 {
-		t.Fatalf("root retry_count = %d, want 1", rc)
+	// Root verify budget charged to 1 (0051: retry_count stays dispatch-owned).
+	if rc := intField(t, db, id, "verify_retry_count"); rc != 1 {
+		t.Fatalf("root verify_retry_count = %d, want 1", rc)
 	}
 	// The fix task carries the root external_id + failure reasons + same file scope.
 	var prompt, scope string
@@ -438,9 +498,10 @@ func TestVerifyFail_DedupsOpenFix(t *testing.T) {
 }
 
 // The runaway-spend guard (pre-mortem #4): a FIX task that itself fails charges
-// the ROOT's budget, not its own. Budget = 3 (root retry_count < 3 → create a
-// fix), so exactly 3 fix tasks are created across failures; the 4th failure
-// (root retry_count already 3) pauses the chain — a bounded, non-runaway result.
+// the ROOT's budget, not its own. Budget = 3 (root verify_retry_count < 3 →
+// create a fix), so exactly 3 fix tasks are created across failures; the 4th
+// failure (root verify_retry_count already 3) pauses the chain — a bounded,
+// non-runaway result.
 func TestVerifyFail_RootChargedAndBudgetExhausts(t *testing.T) {
 	db := testDB(t)
 	r := &stubRunner{out: "VERDICT: FAIL"}
@@ -467,13 +528,13 @@ func TestVerifyFail_RootChargedAndBudgetExhausts(t *testing.T) {
 		}
 	}
 
-	// Failure 1 on the ROOT → fix#1, root.retry_count 0→1.
+	// Failure 1 on the ROOT → fix#1, root.verify_retry_count 0→1.
 	verifyOne(root, "h0", "/wt/p/root")
 	assertRetry(t, db, root, 1)
 	fix1 := fixTaskID(t, db, "T-root1")
-	// The fix task's OWN retry_count stays 0 — the budget is root-inherited.
-	if intField(t, db, fix1, "retry_count") != 0 {
-		t.Fatal("fix task's OWN retry_count must stay 0 (budget is root-inherited)")
+	// The fix task's OWN budget stays 0 — the budget is root-inherited.
+	if intField(t, db, fix1, "verify_retry_count") != 0 {
+		t.Fatal("fix task's OWN verify_retry_count must stay 0 (budget is root-inherited)")
 	}
 
 	// Failure 2 charged to the ROOT (fix#1 → external_id=root) → fix#2, rc 1→2.
@@ -488,8 +549,8 @@ func TestVerifyFail_RootChargedAndBudgetExhausts(t *testing.T) {
 	fix3 := newestFix(t, db, "T-root1", fix2)
 	supersede(fix2)
 
-	// Failure 4: root retry_count is already 3 (== budget) → NO 4th fix; pause the
-	// chain (root + the failing fix) with the budget marker.
+	// Failure 4: root verify_retry_count is already 3 (== budget) → NO 4th fix;
+	// pause the chain (root + the failing fix) with the budget marker.
 	verifyOne(fix3, "h3", "/wt/p/fix3")
 	assertRetry(t, db, root, 3) // not charged further
 
@@ -665,10 +726,16 @@ func mustVerify(t *testing.T, s *Service, id int64) {
 	}
 }
 
+// assertRetry checks the VERIFY budget (0051). It also pins that the dispatch
+// counter never moves as a side effect: the two budgets are separate, and the
+// whole point of the split is that spending one cannot spend the other.
 func assertRetry(t *testing.T, db *sql.DB, id int64, want int) {
 	t.Helper()
-	if got := intField(t, db, id, "retry_count"); got != want {
-		t.Fatalf("retry_count(%d) = %d, want %d", id, got, want)
+	if got := intField(t, db, id, "verify_retry_count"); got != want {
+		t.Fatalf("verify_retry_count(%d) = %d, want %d", id, got, want)
+	}
+	if got := intField(t, db, id, "retry_count"); got != 0 {
+		t.Fatalf("retry_count(%d) = %d, want 0 — verification must never charge the dispatch budget", id, got)
 	}
 }
 
@@ -770,6 +837,158 @@ func TestScopeGateDisabledByZero(t *testing.T) {
 	}
 	if r.count() != 1 {
 		t.Errorf("runner calls = %d, want 1 — 0 must disable the bound entirely", r.count())
+	}
+}
+
+// ── diff base: the persisted start point, never the branch (0051) ──
+
+// The load-bearing test for this whole phase. Verification used to diff
+// tk.branch against tk.branch — always zero files, so the scope gate could
+// never fire and the prompt told the model to "diff vs <its own branch>". Both
+// consumers must now see the SHA admit() pinned the worktree to.
+func TestVerifyDiffsAgainstPersistedStartPoint(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	probe := &diffProbe{}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-sp", diffFiles: 3, probe: probe})
+	s.Cfg.MaxDiffFiles = 40
+	id := insertTask(t, db, taskOpts{externalID: "T-root1", startPoint: "cafebabe"})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+
+	bases := probe.seen()
+	if len(bases) != 1 || bases[0] != "cafebabe" {
+		t.Fatalf("DiffFileCount bases = %v, want exactly [cafebabe] — the persisted start point", bases)
+	}
+	prompt := r.lastPrompt()
+	if !strings.Contains(prompt, "diff vs cafebabe") {
+		t.Errorf("prompt does not name the start point as the diff base:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "diff vs swarm/T-root1") {
+		t.Error("prompt still points the model at the task's own branch (a self-diff, always empty)")
+	}
+}
+
+// With an honest base, the gate can finally fire: a genuinely oversized diff is
+// refused BEFORE a session is spent on it.
+func TestScopeGateFiresAgainstStartPoint(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	probe := &diffProbe{}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-spbig", diffFiles: 200, probe: probe})
+	s.Cfg.MaxDiffFiles = 40
+	id := insertTask(t, db, taskOpts{startPoint: "cafebabe"})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if r.count() != 0 {
+		t.Errorf("runner calls = %d, want 0 — the gate must refuse before spawning", r.count())
+	}
+	if bases := probe.seen(); len(bases) != 1 || bases[0] != "cafebabe" {
+		t.Errorf("DiffFileCount bases = %v, want [cafebabe]", bases)
+	}
+	if got := verdictOf(t, db, id); got != "inconclusive" {
+		t.Errorf("verdict = %q, want inconclusive", got)
+	}
+}
+
+// A row dispatched before 0051 has no start_point. There is no honest base, so
+// the gate is SKIPPED entirely rather than run against a base we would have to
+// invent: an unmeasurable diff is not evidence of a huge one, and gating on the
+// branch (the old behavior) is a guaranteed-zero measurement dressed up as a
+// check. The prompt falls back to the branch as before.
+func TestVerifyLegacyRowSkipsGateAndFallsBackToBranch(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: PASS"}
+	probe := &diffProbe{}
+	// diffFiles is far over the bound: if the gate ran at all, this task would
+	// be refused, and the runner-call assertion below would catch it.
+	s := newTestService(t, db, r, stubTrees{hash: "tree-legacy", diffFiles: 5000, probe: probe})
+	s.Cfg.MaxDiffFiles = 40
+	id := insertTask(t, db, taskOpts{externalID: "T-root1", legacyNoStartPoint: true})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if bases := probe.seen(); len(bases) != 0 {
+		t.Errorf("DiffFileCount was called with %v; a legacy row must skip the gate entirely", bases)
+	}
+	if r.count() != 1 {
+		t.Fatalf("runner calls = %d, want 1 — a legacy row still verifies", r.count())
+	}
+	if got := verdictOf(t, db, id); got != "pass" {
+		t.Errorf("verdict = %q, want pass", got)
+	}
+	if prompt := r.lastPrompt(); !strings.Contains(prompt, "diff vs swarm/T-root1") {
+		t.Errorf("legacy prompt should fall back to the branch:\n%s", prompt)
+	}
+}
+
+// ── retry budgets are separate (0051) ──
+
+// handleFail charges the VERIFY budget. retry_count belongs to the dispatcher's
+// no-progress heal; sharing one counter meant a flaky run could silently eat
+// the fix budget (and vice versa).
+func TestVerifyFail_ChargesVerifyBudgetOnly(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: FAIL"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-vb"})
+	// A task that already burned two DISPATCH retries.
+	id := insertTask(t, db, taskOpts{externalID: "T-root1", retryCount: 2})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if got := intField(t, db, id, "verify_retry_count"); got != 1 {
+		t.Errorf("verify_retry_count = %d, want 1", got)
+	}
+	if got := intField(t, db, id, "retry_count"); got != 2 {
+		t.Errorf("retry_count = %d, want 2 untouched — it is dispatch-owned", got)
+	}
+	if n := countFixTasks(t, db, "T-root1"); n != 1 {
+		t.Errorf("fix tasks = %d, want 1 — spent dispatch retries must not deny a fix", n)
+	}
+}
+
+// The budget READ is the other half of the split: a root whose dispatch retries
+// are exhausted still has its full verify budget.
+func TestVerifyFail_DispatchRetriesDoNotExhaustVerifyBudget(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: FAIL"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-vb2"})
+	id := insertTask(t, db, taskOpts{externalID: "T-root1", retryCount: 99})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if intField(t, db, id, "paused") != 0 {
+		t.Fatal("a root with spent DISPATCH retries must not be paused by the VERIFY budget")
+	}
+	if n := countFixTasks(t, db, "T-root1"); n != 1 {
+		t.Fatalf("fix tasks = %d, want 1", n)
+	}
+}
+
+// …and the verify budget still bounds itself: at the budget, the chain pauses.
+func TestVerifyFail_VerifyBudgetExhaustionPauses(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{out: "VERDICT: FAIL"}
+	s := newTestService(t, db, r, stubTrees{hash: "tree-vb3"})
+	id := insertTask(t, db, taskOpts{
+		externalID: "T-root1", verifyRetryCount: DefaultRetryBudget,
+	})
+
+	if err := s.VerifyTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if intField(t, db, id, "paused") != 1 {
+		t.Fatal("at the verify budget the chain must pause")
+	}
+	if n := countFixTasks(t, db, "T-root1"); n != 0 {
+		t.Fatalf("fix tasks = %d, want 0 at budget exhaustion", n)
 	}
 }
 

@@ -1290,15 +1290,19 @@ export type TaskPriority = 'urgent' | 'high' | 'normal' | 'low';
  * Where a board card came from. 'manual' is a hand-written card (the default
  * every pre-capture row carries); 'session' and 'llm' are minted by capture and
  * are never creatable over HTTP — see insertCapturedTask in tasks_board.go.
+ * 'verify-fix' is minted by the verifier when a graded card FAILS (createFixTask
+ * in internal/verify/service.go). It was missing from this union, so consumers
+ * were written against an incomplete set — and the one that indexes a Record by
+ * origin crashed the card renderer on the first fix card that reached the board.
  */
-export type TaskOrigin = 'manual' | 'session' | 'llm';
+export type TaskOrigin = 'manual' | 'session' | 'llm' | 'verify-fix';
 
 /**
  * A dispatchable board task — response of POST/PATCH /api/board/tasks, item of
  * GET /api/board/tasks, and the `task_updated` WS payload. Mirrors
  * boardTaskDTO in internal/api/tasks_board.go. Dispatcher-owned fields
- * (branch, worktreePath, dispatchError, retryCount, verifyVerdict,
- * verifyDetail) are read-only from the client until Phase 3/6 fill them.
+ * (branch, worktreePath, startPoint, dispatchError, retryCount,
+ * verifyRetryCount, verifyVerdict, verifyDetail) are read-only from the client.
  */
 export interface BoardTask {
   id: number;
@@ -1321,8 +1325,17 @@ export interface BoardTask {
   labels: string[];
   branch: string | null;
   worktreePath: string | null;
+  /**
+   * SHA the worktree was pinned to at admission (0051) — the base verification
+   * diffs against. Null on a card that was never admitted, and on rows
+   * dispatched before the column existed.
+   */
+  startPoint: string | null;
   dispatchError: string | null;
+  /** Dispatcher's no-progress heal budget. Distinct from `verifyRetryCount`. */
   retryCount: number;
+  /** Verification's fix-chain budget (0051). Distinct from `retryCount`. */
+  verifyRetryCount: number;
   verifyVerdict: string | null;
   verifyDetail: string | null;
   /** Registry agent name this card dispatches as; null = a plain run. */

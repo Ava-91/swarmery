@@ -25,7 +25,8 @@ var boardTaskKeys = []string{
 	"id", "externalId", "projectId", "projectSlug", "title", "prompt",
 	"priority", "status", "boardColumn", "paused", "userPaused",
 	"dependencies", "model", "playbook", "fileScope", "labels", "branch", "worktreePath",
-	"dispatchError", "retryCount", "verifyVerdict", "verifyDetail",
+	"dispatchError", "startPoint", "retryCount", "verifyRetryCount",
+	"verifyVerdict", "verifyDetail",
 	"agent", "origin", "originSessionId",
 	"columnMovedAt", "createdAt",
 }
@@ -485,6 +486,58 @@ func TestWSTaskUpdatedShape(t *testing.T) {
 	}
 	if bt.ID != created.ID || bt.ExternalID == "" || bt.BoardColumn != "triage" || bt.Title != "ws task" {
 		t.Errorf("task_updated payload = %+v, want hydrated board task %d", bt, created.ID)
+	}
+}
+
+// TestBoardTaskExposesDispatchTruth: the two 0051 columns reach the client with
+// their real values. The key-set assertion above proves the fields EXIST; this
+// proves they carry the right ones — the failure mode a positional Scan invites
+// is two same-typed columns silently swapping, which a key check cannot see.
+// startPoint answers "graded against what?" on a card whose verdict is disputed.
+func TestBoardTaskExposesDispatchTruth(t *testing.T) {
+	srv, db := testServerWithDB(t)
+	id := createdBoardTask(t, srv.URL, "dispatch truth")
+
+	// The list endpoint is the only reader (there is no GET-by-id route); pick our
+	// row out of it.
+	fetch := func() boardTaskDTO {
+		t.Helper()
+		var list []boardTaskDTO
+		getJSON(t, srv.URL+"/api/board/tasks?projectId=1", &list)
+		for _, d := range list {
+			if d.ID == id {
+				return d
+			}
+		}
+		t.Fatalf("task %d not in the board list", id)
+		return boardTaskDTO{}
+	}
+
+	// A fresh card was never admitted: no start point, no spent verify budget.
+	fresh := fetch()
+	if fresh.StartPoint != nil {
+		t.Errorf("startPoint = %q on a never-admitted card, want null", *fresh.StartPoint)
+	}
+	if fresh.VerifyRetryCount != 0 {
+		t.Errorf("verifyRetryCount = %d, want 0", fresh.VerifyRetryCount)
+	}
+
+	// Now model an admitted card that failed verification twice while the
+	// dispatcher healed it once: the two counters must not blur together.
+	if _, err := db.Exec(
+		`UPDATE tasks SET start_point='cafebabe', retry_count=1, verify_retry_count=2 WHERE id=?`,
+		id); err != nil {
+		t.Fatal(err)
+	}
+	got := fetch()
+	if got.StartPoint == nil || *got.StartPoint != "cafebabe" {
+		t.Errorf("startPoint = %v, want cafebabe", got.StartPoint)
+	}
+	if got.RetryCount != 1 {
+		t.Errorf("retryCount = %d, want 1 (dispatch heals)", got.RetryCount)
+	}
+	if got.VerifyRetryCount != 2 {
+		t.Errorf("verifyRetryCount = %d, want 2 (verify fix chain)", got.VerifyRetryCount)
 	}
 }
 

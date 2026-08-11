@@ -36,8 +36,8 @@ func TestVerifyCachedFail_CreatesFixWithoutSpawn(t *testing.T) {
 	if got := verdictOf(t, db, id); got != "fail" {
 		t.Fatalf("verdict = %q, want fail", got)
 	}
-	if rc := intField(t, db, id, "retry_count"); rc != 2 {
-		t.Fatalf("root retry_count = %d, want 2 (cached fail re-charges)", rc)
+	if rc := intField(t, db, id, "verify_retry_count"); rc != 2 {
+		t.Fatalf("root verify_retry_count = %d, want 2 (cached fail re-charges)", rc)
 	}
 }
 
