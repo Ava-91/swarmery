@@ -29,6 +29,12 @@ const claudeTimeout = 5 * time.Minute
 // internal/improve, internal/provision, internal/planning and internal/verify.
 const defaultModel = "claude-opus-5"
 
+// defaultEffort pins reasoning depth for this headless run: without --effort
+// the CLI inherits its xhigh default. Extraction is a mechanical
+// classification pass over a ≤16KB digest — per the Opus 5 prompting guide,
+// medium effort holds quality on such tasks at a fraction of the tokens.
+const defaultEffort = "medium"
+
 // stderrTailBytes caps how much captured stderr lands in the error (and thus in
 // the 502 detail the operator sees).
 const stderrTailBytes = 4096
@@ -42,6 +48,8 @@ type ClaudeRunner struct {
 	Timeout time.Duration
 	// Model overrides defaultModel when non-empty.
 	Model string
+	// Effort overrides defaultEffort when non-empty.
+	Effort string
 }
 
 // isDir reports whether path exists and is a directory.
@@ -62,10 +70,15 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	if model == "" {
 		model = defaultModel
 	}
+	effort := r.Effort
+	if effort == "" {
+		effort = defaultEffort
+	}
 	// --setting-sources project,local: skip user-level settings (global plugin
 	// stack) — headless runs don't need them; project plugins and OAuth are
-	// unaffected. Keep the flag order identical to the improve/trajjudge twins.
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text", "--setting-sources", "project,local")
+	// unaffected. Keep the flag order identical to the improve twin (trajjudge
+	// matches minus --effort).
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--effort", effort, "--output-format", "text", "--setting-sources", "project,local")
 	// System home, not the inherited launchd cwd "/": transcripts then attribute
 	// to the deliberate "System" project (see internal/ingest) — which is also
 	// what keeps THIS run from capturing itself, since CaptureSkipReason refuses

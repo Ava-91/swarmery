@@ -621,6 +621,15 @@ func TestModelPin(t *testing.T) {
 	}
 }
 
+// TestEffortPin: without --effort the CLI inherits its xhigh default —
+// overkill for a mechanical classification pass (Opus 5 holds quality at
+// medium at a fraction of the tokens).
+func TestEffortPin(t *testing.T) {
+	if defaultEffort != "medium" {
+		t.Errorf("defaultEffort = %q, want medium", defaultEffort)
+	}
+}
+
 // TestCaptureKeyShape pins the key format the phase specifies, since it is the
 // permanent idempotency identity of every extracted card and re-keying would
 // duplicate the whole board.

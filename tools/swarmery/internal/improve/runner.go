@@ -27,6 +27,12 @@ const claudeTimeout = 10 * time.Minute
 // price). Full ID, not an alias — aliases re-resolve over time.
 const defaultModel = "claude-opus-5"
 
+// defaultEffort pins reasoning depth for this headless run: without --effort
+// the CLI inherits its xhigh default. Proposal generation needs real
+// reasoning but not the ceiling — per the Opus 5 prompting guide, high is the
+// cost/quality sweet spot and lower efforts hold quality unusually well.
+const defaultEffort = "high"
+
 // stderrTailBytes caps how much captured stderr lands in the error (and thus
 // in agent_change_proposals.error).
 const stderrTailBytes = 4096
@@ -40,6 +46,8 @@ type ClaudeRunner struct {
 	Timeout time.Duration
 	// Model overrides defaultModel when non-empty.
 	Model string
+	// Effort overrides defaultEffort when non-empty.
+	Effort string
 }
 
 // isDir reports whether path exists and is a directory.
@@ -60,10 +68,15 @@ func (r ClaudeRunner) Run(ctx context.Context, prompt string) (string, error) {
 	if model == "" {
 		model = defaultModel
 	}
+	effort := r.Effort
+	if effort == "" {
+		effort = defaultEffort
+	}
 	// --setting-sources project,local: skip user-level settings (global plugin
 	// stack) — headless runs don't need them; project plugins and OAuth are
-	// unaffected. Keep the flag order identical to the trajjudge twin.
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--output-format", "text", "--setting-sources", "project,local")
+	// unaffected. Keep the flag order identical to the extract twin (trajjudge
+	// matches minus --effort).
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--model", model, "--effort", effort, "--output-format", "text", "--setting-sources", "project,local")
 	// System home, not the inherited launchd cwd "/": transcripts then
 	// attribute to the deliberate "System" project (see internal/ingest).
 	// Only when it actually exists — a missing dir would fail the spawn with

@@ -61,3 +61,16 @@ func TestClaudeRunnerMissingBinary(t *testing.T) {
 		t.Fatal("want error when claude is not on PATH")
 	}
 }
+
+// TestModelAndEffortPins: headless runs that carry no override MUST name a
+// full model id (an alias would silently re-resolve; no --model inherits the
+// expensive account default) and pin effort (no --effort inherits the CLI's
+// xhigh ceiling — high is the cost/quality sweet spot for proposal generation).
+func TestModelAndEffortPins(t *testing.T) {
+	if defaultModel != "claude-opus-5" {
+		t.Errorf("defaultModel = %q, want claude-opus-5", defaultModel)
+	}
+	if defaultEffort != "high" {
+		t.Errorf("defaultEffort = %q, want high", defaultEffort)
+	}
+}

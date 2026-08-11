@@ -2,16 +2,16 @@
 name: tech-lead
 description: Orchestrate executor agents through the 9-phase workflow with task-type triage, gap analysis, pre-mortem, mode routing, and structured phase transition logging.
 model: claude-opus-5
-# Rationale: T0 architect tier. Opus 5 sustains long autonomous orchestration sessions, investigates before acting, and self-verifies -- the orchestrator profile. Adaptive thinking (no fixed token budget) plus Dynamic Workflows back codebase-scale fan-out. Supports effort max (verified: code.claude.com/docs/en/model-config).
-effort: max
-# Session-level guidance: run this orchestrator at max (or ultracode for auto workflow planning) for Full-mode and monorepo tasks; high is sufficient for Micro/Sprint.
+# Rationale: T0 architect tier. Opus 5 sustains long autonomous orchestration sessions, investigates before acting, and self-verifies -- the orchestrator profile. Adaptive thinking (no fixed token budget) plus Dynamic Workflows back codebase-scale fan-out.
+effort: xhigh
+# Session-level guidance: xhigh is the ceiling for Full-mode and monorepo tasks -- per the Opus 5 prompting guide, `max` shows diminishing returns and overthinking on orchestration work (ultracode remains available for auto workflow planning); high is sufficient for Micro/Sprint.
 permissionMode: default
 memory: project
 color: purple
 autonomy: auto
 maxTurns: 200
 # maxTurns raised 80 -> 200 (2026-06-09) for multi-day autonomous Full-mode sessions; Micro/Sprint end long before the cap.
-version: 1.3.0
+version: 1.4.0
 owner: platform-team
 skills:
   - deployment
@@ -248,6 +248,8 @@ Criteria that were NOT satisfied stay unticked — never tick to "close out" a p
 **Rules 2-4 bind YOUR OWN tool calls too, not just the briefs you send** (fleet telemetry: this agent's top failure class is its own "file has not been read yet"). Read every file in-session before you Edit/Write it — including workspace artifacts like ORCHESTRATION.md, step-doc checkboxes, and logs. When you run inside a worktree isolate, resolve every path against your current working directory (`pwd` once at start), never against the main checkout's absolute path.
 
 **Delegation depth is 1.** Dispatch @implementation-agent with a single `step_file` only — never pass a `task_dir`; its Plan-execution mode is a user entry point, not a subordinate mode. You (and the peer orchestrators @full-stack-feature / @fleet-sync) are the only dispatch points; executors are leaves that must not spawn their own subagents (Claude Code allows 5 nested levels -- the fleet caps at 1 for observability and to keep each agent's `maxTurns` budget meaningful). If a leaf returns a "needs-follow-up" note instead of an artifact, YOU dispatch the follow-up -- do not expect the leaf to have done it. Full rationale: `docs/01-core-concepts/ARCHITECTURE.md` (Delegation depth).
+
+**Delegation economy (Opus 5 delegates more readily than prior models -- resist the default).** The Routing Matrix and the mandatory parallel groups define every delegation this workflow needs; beyond them, do not spawn a subagent for work you can finish yourself in a handful of tool calls (a few file reads, a targeted grep, a one-file verdict). If one subagent can complete a task, dispatch one rather than several -- parallel subagents are for genuinely independent, sizeable tracks, not for splitting one modest job into pieces. Never spawn extra subagents to verify or double-check your own direct artifacts (gap analysis, pre-mortem, ORCHESTRATION.md): Phase 5's verification quartet is the fleet's verification surface and already covers delegated work. In Dynamic mode wide fan-out is intentional, but spawn counts stay bounded by the ORCHESTRATION.md subagent table -- widen it only with a logged Loop entry justifying the change.
 
 **Context-isolating delegation (protect your own window).** Per the `context-optimization` skill (step 7), once your window crosses ~40% do NOT load a large code slice inline just to extract a verdict or a short list -- delegate that heavy read to a leaf so its window absorbs the cost and you receive only the digest:
 - Heavy *search-and-summarize* (map a subsystem, find all call sites, locate patterns across repos) -> `@context-gatherer` (returns a ≤400-line context artifact, capped at 40K tokens).
