@@ -1350,6 +1350,14 @@ export interface BoardTask {
   origin: TaskOrigin;
   /** Session a captured card was minted from; null for manual cards. */
   originSessionId: number | null;
+  /**
+   * Derived server-side on every request, never stored: whether a task that
+   * claims to be running actually is, and the evidence behind that verdict.
+   * OMITTED (not null) when there is no hint to give — absence is the signal —
+   * which is why these two are optional rather than nullable.
+   */
+  staleness?: string;
+  stalenessReason?: string;
   columnMovedAt: string | null;
   createdAt: string;
 }
@@ -1418,6 +1426,13 @@ export type PlaybookVerify = 'strict' | 'normal' | 'off';
 export type PlaybookSource = 'builtin' | 'project';
 
 /**
+ * The `--permission-mode` a playbook's runs spawn under. `''` (the neutral
+ * default every built-in ships) inherits the daemon's global knob; `'default'`
+ * means the flag is omitted entirely.
+ */
+export type PlaybookPermissionMode = '' | 'bypassPermissions' | 'acceptEdits' | 'default';
+
+/**
  * A playbook — item of GET /api/playbooks. Mirrors playbookDTO in
  * internal/api/playbooks.go. Structure is read-only in the UI; a project makes
  * a built-in's prompts editable by duplicating it (POST …/duplicate).
@@ -1427,6 +1442,8 @@ export interface Playbook {
   description: string;
   model: string;
   verify: PlaybookVerify;
+  /** Spawn permission mode; '' = inherit the daemon's global knob. */
+  permissionMode: PlaybookPermissionMode;
   source: PlaybookSource;
   stages: PlaybookStage[];
   /** On-disk path of a project playbook (""/absent for a built-in). */

@@ -102,6 +102,61 @@ function LabelBadges({ labels }: { labels: readonly string[] }): JSX.Element | n
   );
 }
 
+/**
+ * The three one-click exits from Triage. A captured card is a suggestion, and
+ * a suggestion needs a decision, not a drag: Run accepts it into the dispatch
+ * queue, Plan carries it to Planning Mode, Dismiss retires it. Only Plan is a
+ * new capability — Run and Dismiss are the existing column move, surfaced as a
+ * verb so triaging 200 cards is 200 clicks instead of 200 drags.
+ *
+ * stopPropagation on the row (not per button): the whole card is a click target
+ * that opens the modal, and every control here is an alternative to that.
+ */
+function TriageActions({
+  onRun,
+  onPlan,
+  onDismiss,
+}: {
+  onRun: () => void;
+  onPlan: () => void;
+  onDismiss: () => void;
+}): JSX.Element {
+  const base =
+    'rounded border px-1.5 py-[2px] font-mono text-[9.5px] transition-colors disabled:opacity-50';
+  return (
+    <div
+      className="mt-2 flex items-center gap-1.5"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={onRun}
+        data-tip="accept into Todo — the dispatcher picks it up"
+        className={`${base} border-brand/45 bg-brand/10 text-brand hover:bg-brand/20`}
+      >
+        ▶ Run
+      </button>
+      <button
+        type="button"
+        onClick={onPlan}
+        data-tip="open Planning Mode prefilled with this card"
+        className={`${base} border-line text-ink-dim hover:border-line-strong hover:text-ink`}
+      >
+        ◇ Plan
+      </button>
+      <button
+        type="button"
+        onClick={onDismiss}
+        data-tip="archive — it stays findable, it stops being an inbox item"
+        className={`${base} ml-auto border-transparent text-ink-faint hover:border-line hover:text-ink-dim`}
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
 /** Keyboard alternative to drag: a native <select> that moves the card. Sits
  * on every card so column changes never require a pointer. */
 function ColumnMenu({
@@ -138,6 +193,7 @@ export function TaskCard({
   onDragStart,
   onDragEnd,
   dragging,
+  onPlan,
 }: {
   task: BoardTask;
   onOpen: () => void;
@@ -145,8 +201,19 @@ export function TaskCard({
   onDragStart: () => void;
   onDragEnd: () => void;
   dragging: boolean;
+  /**
+   * Hand-off to Planning Mode for this card. Optional because it is the one
+   * triage action the card cannot perform on its own (Run and Dismiss are just
+   * `onMove`) — omit it and the action row does not render, which is what every
+   * non-Triage caller wants anyway.
+   */
+  onPlan?: () => void;
 }): JSX.Element {
   const blocked = task.paused || task.userPaused;
+  // Triage is the only column where a card is still a question. Elsewhere it is
+  // committed work, and both the verbs and the "why is this still here" hint
+  // would be noise.
+  const inTriage = task.boardColumn === 'triage';
   return (
     <div
       draggable
@@ -161,6 +228,12 @@ export function TaskCard({
       aria-label={`task ${task.externalId}: ${task.title}`}
       onClick={onOpen}
       onKeyDown={(e) => {
+        // Only the card itself opens on Enter/Space. Without this guard the
+        // preventDefault below would run during the bubble phase of a keydown
+        // aimed at a nested control (the action buttons, the column select,
+        // the session link) and cancel that control's own activation — the
+        // card would open instead of the button firing.
+        if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           onOpen();
@@ -228,6 +301,24 @@ export function TaskCard({
           <ColumnMenu column={task.boardColumn} onMove={onMove} />
         </span>
       </div>
+
+      {/* Why this card is still here. The server has computed this on every
+          board read since staleness landed and nothing ever rendered it; on a
+          Triage card it is the difference between Dismiss as a guess and
+          Dismiss as an informed click. */}
+      {inTriage && task.stalenessReason !== undefined && task.stalenessReason !== '' && (
+        <div className="mt-1.5 font-mono text-[9.5px] leading-snug text-ink-faint">
+          {task.stalenessReason}
+        </div>
+      )}
+
+      {inTriage && onPlan !== undefined && (
+        <TriageActions
+          onRun={() => onMove('todo')}
+          onPlan={onPlan}
+          onDismiss={() => onMove('archived')}
+        />
+      )}
     </div>
   );
 }

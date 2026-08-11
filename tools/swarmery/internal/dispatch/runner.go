@@ -22,6 +22,13 @@ type RunSpec struct {
 	Model       string // optional --model override ("" = account default)
 	Agent       string // optional registry agent name ("" = plain run, no mention)
 
+	// PermissionMode is the task's playbook-declared --permission-mode, a
+	// per-run override of this spawn site's env knob. "" (the common case)
+	// inherits the knob, so a card whose recipe says nothing behaves exactly as
+	// it did before the field existed. Validated against a closed set at
+	// playbook parse time — an unknown mode makes `claude` refuse to start.
+	PermissionMode string
+
 	// Account is the Claude Code account key this run must execute under,
 	// resolved by the CALLER from the task's PROJECT — never from Cwd. Cwd is a
 	// worktree, which carries no project settings file, so resolving it here
@@ -112,6 +119,32 @@ func agentPrompt(spec RunSpec) string {
 	return "@" + agent + ": " + spec.Prompt
 }
 
+// permissionArgs resolves ONE run's --permission-mode: the task's playbook wins
+// over this spawn site's env knob, which internal/claudeflags resolves as
+// before. The precedence is the same shape as the model fallback in
+// runPlaybook — the specific choice beats the general default.
+//
+// The three cases are deliberately distinct:
+//
+//	""        the recipe says nothing → inherit the knob (pre-phase-5 behaviour)
+//	"default" the recipe says "no flag" → claude's own default, flag omitted
+//	<mode>    the recipe pins a mode → it reaches argv verbatim
+//
+// A pinned mode is passed through without re-validation because the closed set
+// lives at the parse boundary (internal/playbooks): a value that never parsed
+// cannot be on a Playbook, and re-checking here would duplicate the set in a
+// second place where the two could drift apart.
+func permissionArgs(playbookMode string) []string {
+	switch mode := strings.TrimSpace(playbookMode); mode {
+	case "":
+		return claudeflags.PermissionModeArgs(permEnv)
+	case "default":
+		return nil
+	default:
+		return []string{"--permission-mode", mode}
+	}
+}
+
 func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	// --setting-sources project,local: skip user-level settings (global plugin
 	// stack) — headless runs don't need them; project plugins and OAuth are
@@ -121,7 +154,7 @@ func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	// Without this the executor cannot write, run or commit — and it still exits
 	// 0, so the task is stamped done over an empty diff. See
 	// internal/claudeflags (knob: SWARMERY_DISPATCH_PERMISSION_MODE).
-	args = append(args, claudeflags.PermissionModeArgs(permEnv)...)
+	args = append(args, permissionArgs(spec.PermissionMode)...)
 	if m := strings.TrimSpace(spec.Model); m != "" {
 		args = append(args, "--model", m)
 	}

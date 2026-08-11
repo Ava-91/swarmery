@@ -71,8 +71,8 @@ verify: strict
 	// Built-ins only (no projectId).
 	var builtins []playbookDTO
 	getJSON(t, srv.URL+"/api/playbooks", &builtins)
-	if len(builtins) != 4 {
-		t.Fatalf("built-in list = %d, want 4", len(builtins))
+	if len(builtins) != 3 {
+		t.Fatalf("built-in list = %d, want 3", len(builtins))
 	}
 	for _, p := range builtins {
 		if p.Source != "builtin" {
@@ -83,8 +83,8 @@ verify: strict
 	// Scoped to the project: 'standard' now comes from the project (override).
 	var scoped []playbookDTO
 	getJSON(t, srv.URL+"/api/playbooks?projectId="+itoa64(pid), &scoped)
-	if len(scoped) != 4 {
-		t.Fatalf("scoped list = %d, want 4", len(scoped))
+	if len(scoped) != 3 {
+		t.Fatalf("scoped list = %d, want 3", len(scoped))
 	}
 	var found bool
 	for _, p := range scoped {
@@ -244,7 +244,7 @@ func TestBoardTask_PlaybookField(t *testing.T) {
 
 	// PATCH to another valid playbook.
 	req, _ := http.NewRequest(http.MethodPatch,
-		srv.URL+"/api/board/tasks/"+itoa64(created.ID), bytes.NewReader([]byte(`{"playbook":"quick-fix"}`)))
+		srv.URL+"/api/board/tasks/"+itoa64(created.ID), bytes.NewReader([]byte(`{"playbook":"plan-first"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	presp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestBoardTask_PlaybookField(t *testing.T) {
 	var patched boardTaskDTO
 	json.NewDecoder(presp.Body).Decode(&patched)
 	presp.Body.Close()
-	if presp.StatusCode != http.StatusOK || patched.Playbook == nil || *patched.Playbook != "quick-fix" {
+	if presp.StatusCode != http.StatusOK || patched.Playbook == nil || *patched.Playbook != "plan-first" {
 		t.Fatalf("patch playbook = %d / %v", presp.StatusCode, patched.Playbook)
 	}
 
@@ -270,6 +270,92 @@ func TestBoardTask_PlaybookField(t *testing.T) {
 	presp2.Body.Close()
 	if cleared.Playbook != nil {
 		t.Fatalf("cleared playbook = %v, want null", cleared.Playbook)
+	}
+}
+
+// ── the quick-fix alias on the API surface (phase 5) ──
+
+// quick-fix is no longer a choice: it must not appear in the list the picker is
+// built from.
+func TestListPlaybooks_OmitsAliasedQuickFix(t *testing.T) {
+	srv, pid := playbookServer(t, t.TempDir())
+	var list []playbookDTO
+	getJSON(t, srv.URL+"/api/playbooks?projectId="+itoa64(pid), &list)
+	for _, p := range list {
+		if p.Name == "quick-fix" {
+			t.Fatal("GET /api/playbooks still offers quick-fix")
+		}
+	}
+}
+
+// A write naming the alias is ACCEPTED (stored cards and old clients keep
+// working) and canonicalized: the row stores 'standard', so the card's chip
+// shows what will actually run.
+func TestBoardTask_QuickFixCanonicalizedOnWrite(t *testing.T) {
+	srv, pid := playbookServer(t, t.TempDir())
+
+	// Create with the alias → stored as standard.
+	resp, err := http.Post(srv.URL+"/api/board/tasks", "application/json",
+		bytes.NewReader([]byte(`{"projectId":`+itoa64(pid)+`,"title":"t","prompt":"p","playbook":"quick-fix"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created boardTaskDTO
+	json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create with alias = %d, want 201", resp.StatusCode)
+	}
+	if created.Playbook == nil || *created.Playbook != "standard" {
+		t.Fatalf("created playbook = %v, want standard (alias canonicalized)", created.Playbook)
+	}
+
+	// PATCH with the alias → also canonicalized.
+	req, _ := http.NewRequest(http.MethodPatch,
+		srv.URL+"/api/board/tasks/"+itoa64(created.ID), bytes.NewReader([]byte(`{"playbook":"quick-fix"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	presp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patched boardTaskDTO
+	json.NewDecoder(presp.Body).Decode(&patched)
+	presp.Body.Close()
+	if presp.StatusCode != http.StatusOK || patched.Playbook == nil || *patched.Playbook != "standard" {
+		t.Fatalf("patched playbook = %d / %v, want standard", presp.StatusCode, patched.Playbook)
+	}
+}
+
+// The DTO carries the permission_mode knob so the UI can show what a recipe
+// runs under. Built-ins ship it neutral in this phase.
+func TestListPlaybooks_CarriesPermissionMode(t *testing.T) {
+	root := t.TempDir()
+	pdir := playbooks.ProjectDir(root)
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "locked.md"), []byte(`---
+name: locked
+permission_mode: acceptEdits
+---
+## Stage: implement
+{task_prompt}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, pid := playbookServer(t, root)
+
+	var list []playbookDTO
+	getJSON(t, srv.URL+"/api/playbooks?projectId="+itoa64(pid), &list)
+	byName := map[string]playbookDTO{}
+	for _, p := range list {
+		byName[p.Name] = p
+	}
+	if got := byName["locked"].PermissionMode; got != "acceptEdits" {
+		t.Errorf("locked permissionMode = %q, want acceptEdits", got)
+	}
+	if got := byName["standard"].PermissionMode; got != "" {
+		t.Errorf("built-in standard permissionMode = %q, want \"\" (neutral)", got)
 	}
 }
 

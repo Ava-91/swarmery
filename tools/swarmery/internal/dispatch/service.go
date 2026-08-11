@@ -662,15 +662,17 @@ func (s *Service) admit(c candidate) bool {
 
 	s.notify(c.ID)
 
-	// Resolve the playbook (fusion phase 13): NULL/unknown ⇒ the classic
-	// single-stage flow. The resolved stage list drives how many sequential
-	// headless runs execute in this one worktree. The first stage reuses the
-	// pre-generated uuid recorded above (so the task↔session link already points
-	// at stage 1); later stages mint their own uuids inside runPlaybook.
-	stages := s.resolvePlaybook(c)
+	// Resolve the playbook (fusion phase 13): NULL ⇒ an auto-profile picks one and
+	// stamps it back on the card; unknown ⇒ the classic single-stage flow. The
+	// resolved stage list drives how many sequential headless runs execute in this
+	// one worktree; the recipe's model/permission knobs shape every spawn. The
+	// first stage reuses the pre-generated uuid recorded above (so the task↔session
+	// link already points at stage 1); later stages mint their own uuids inside
+	// runPlaybook.
+	pb := s.resolvePlaybook(c)
 
 	// Spawn the run. The goroutine owns exit handling + slot release.
-	s.spawn(func() { s.runPlaybook(c, acq, stages, uuid) })
+	s.spawn(func() { s.runPlaybook(c, acq, pb, uuid) })
 	return true
 }
 
@@ -682,25 +684,92 @@ type resolvedStage struct {
 	body string // the playbook stage body (template vars unresolved except per-stage ones)
 }
 
-// resolvePlaybook returns the ordered stage list for a candidate. With no
-// registry attached, or a NULL/unknown playbook name, it degrades to a single
-// implicit stage whose body is the task's own prompt — byte-for-byte the
+// resolvedPlaybook is a candidate's recipe as the run needs it: the ordered
+// stages plus the knobs that shape every spawn of the chain. Model and
+// permission mode belong to the RECIPE, not to one step of it, so they are
+// resolved once here and applied to each stage identically.
+type resolvedPlaybook struct {
+	stages         []resolvedStage
+	model          string // recipe's declared --model ("" = fall through to card/default)
+	permissionMode string // recipe's --permission-mode ("" = inherit the global knob)
+}
+
+// resolvePlaybook returns the resolved recipe for a candidate. With no registry
+// attached, or an unresolvable playbook name, it degrades to a single implicit
+// stage whose body is the task's own prompt and no knobs — byte-for-byte the
 // pre-playbook behavior. Stage bodies are returned unrendered; runPlaybook
 // renders each with the per-run var map (incl. previous_stage_output).
-func (s *Service) resolvePlaybook(c candidate) []resolvedStage {
-	single := []resolvedStage{{name: "implement", body: c.Prompt}}
+//
+// A card that never chose a playbook gets one auto-selected here and STAMPED
+// back onto the row, so the board shows the recipe that actually ran.
+func (s *Service) resolvePlaybook(c candidate) resolvedPlaybook {
+	single := resolvedPlaybook{stages: []resolvedStage{{name: "implement", body: c.Prompt}}}
 	if s.Playbooks == nil {
 		return single
 	}
-	pb, ok := s.Playbooks.Get(c.ProjectPath, c.Playbook.String)
+
+	// An implicit default that is never written down is invisible: the playbook
+	// column sat 99% NULL for its whole life while every one of those cards
+	// silently ran 'standard'. Pick explicitly, then record the pick.
+	name := strings.TrimSpace(c.Playbook.String)
+	chosen := name == ""
+	if chosen {
+		name = autoProfile(c.Prompt, c.Dependencies)
+	}
+
+	pb, ok := s.Playbooks.Get(c.ProjectPath, name)
 	if !ok || len(pb.Stages) == 0 {
 		return single
 	}
+	if chosen {
+		// pb.Name, not name: the registry canonicalizes (an alias resolves to the
+		// recipe it points at), and the card must name what ran.
+		s.stampPlaybook(c.ID, pb.Name)
+	}
+
 	out := make([]resolvedStage, 0, len(pb.Stages))
 	for _, st := range pb.Stages {
 		out = append(out, resolvedStage{name: st.Name, body: st.Body})
 	}
-	return out
+	return resolvedPlaybook{stages: out, model: pb.Model, permissionMode: pb.PermissionMode}
+}
+
+// autoProfileThreshold is the prompt size above which a card is treated as
+// plan-worthy. Deliberately a plain byte count: it is available before any model
+// runs, costs nothing, and is reproducible — a card dispatched twice profiles
+// the same way both times.
+const autoProfileThreshold = 1500
+
+// autoProfile picks a recipe for a card that never chose one. Deterministic and
+// cheap on purpose: prompt size and declared dependencies are the two signals we
+// have before any model runs. A big ask or one that lands on top of other work
+// earns a planning stage first; everything else runs the single pass.
+//
+// review-heavy is NEVER auto-selected. It is a human opt-in: auto-escalating to
+// strict verification would spend the verify budget on noise.
+func autoProfile(prompt string, deps []string) string {
+	if len(prompt) > autoProfileThreshold || len(deps) > 0 {
+		return "plan-first"
+	}
+	return "standard"
+}
+
+// stampPlaybook records an auto-selected recipe on the card. The WHERE clause —
+// not the caller — is the durable guarantee that an explicit choice is never
+// overwritten: a concurrent PATCH that lands between resolution and this UPDATE
+// wins, and the run simply keeps the recipe it already resolved. Best-effort;
+// a failure to record must not fail the dispatch.
+func (s *Service) stampPlaybook(id int64, name string) {
+	res, err := s.DB.Exec(
+		`UPDATE tasks SET playbook=? WHERE id=? AND (playbook IS NULL OR playbook='')`, name, id)
+	if err != nil {
+		log.Printf("error: dispatch: stamp auto-profiled playbook (task %d): %v", id, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return // an explicit choice landed first — nothing to announce
+	}
+	s.notify(id)
 }
 
 // failAdmission stamps dispatch_error on a task that could not be admitted,
@@ -729,8 +798,10 @@ func (s *Service) failAdmission(id int64, msg string) {
 // A single-stage playbook (the default) walks this loop exactly once, so its
 // behavior is byte-for-byte the pre-playbook runAndHandle: link → sentinel →
 // exit-code routing → pokeVerify.
-func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resolvedStage, firstUUID string) {
+func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPlaybook, firstUUID string) {
 	defer s.clearActive(c.ID)
+
+	stages := pb.stages
 
 	// The Claude account every stage of this task runs under, resolved ONCE from
 	// the PROJECT path. It cannot be resolved at the spawn site: that runs with
@@ -762,15 +833,25 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, stages []resol
 			PreviousStageOutput: prevOutput,
 		}
 		prompt := BuildStagePrompt(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, c.FileScope)
+		// Model precedence, most specific first: the card's own override, then the
+		// recipe's declared model, then the global default. The middle step is what
+		// makes the `model:` frontmatter knob real — it parsed and rendered as a UI
+		// chip since phase 13 while dispatch ignored it, so the chip named a model
+		// no run ever used.
 		model := c.Model.String
+		if model == "" {
+			model = pb.model
+		}
 		if model == "" {
 			model = defaultModel
 		}
 		// Agent is carried, never applied: ClaudeRunner.agentPrompt owns the single
 		// "@<agent>: " prefix site. Every stage of a playbook runs as the same agent
-		// — the selection belongs to the card, not to one recipe step.
+		// — the selection belongs to the card, not to one recipe step. The same
+		// holds for the permission mode: it is the recipe's, so every stage of the
+		// chain gets it ("" ⇒ the runner falls back to the global knob).
 		spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: acq.Path, Model: model,
-			Agent: c.Agent.String, Account: account}
+			Agent: c.Agent.String, Account: account, PermissionMode: pb.permissionMode}
 
 		run, err := s.runStage(spec)
 		if err != nil {

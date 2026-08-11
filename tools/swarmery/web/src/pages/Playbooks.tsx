@@ -195,6 +195,17 @@ function PlaybookDetail({
             model {playbook.model}
           </span>
         )}
+        {/* Only shown when the recipe PINS a mode: the neutral default ('')
+            inherits the daemon's global knob, and a chip reading "inherit"
+            beside every built-in would be noise, not information. */}
+        {playbook.permissionMode !== '' && (
+          <span
+            className="rounded border border-line px-1 py-[1px] font-mono text-[9px] text-ink-dim"
+            data-tip={`spawns run with --permission-mode ${playbook.permissionMode}`}
+          >
+            perm {playbook.permissionMode}
+          </span>
+        )}
       </div>
       <p className="mb-3 text-[12px] text-ink-dim">{playbook.description}</p>
 
