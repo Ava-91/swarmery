@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"io/fs"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -30,10 +31,27 @@ type docDetailDTO struct {
 	Markdown string `json:"markdown"`
 }
 
-// docOrder pins the dashboard nav order for the well-known docs (the
-// onboarding → concepts → workflow → extending → neutrality reading order);
-// anything else sorts alphabetically after them.
-var docOrder = map[string]int{"onboarding": 0, "concepts": 1, "workflow": 2, "extending": 3, "neutrality": 4}
+// docOrder pins the dashboard nav order: the illustrated guides first, in
+// reading order, then the reference docs (onboarding → concepts → workflow →
+// extending → neutrality); anything else sorts alphabetically after both.
+//
+// The two bands are numbered 0–3 and 10–14 rather than 0–8 so a guide or a
+// reference doc can be slotted in later without renumbering the other band.
+// The `guide-` prefix is load-bearing beyond ordering: the dashboard rail
+// groups on it (web/src/pages/docsRail.ts), and it is what survives the
+// Makefile flattening guides into the flat embed root.
+var docOrder = map[string]int{
+	"guide-getting-started": 0,
+	"guide-board":           1,
+	"guide-plans":           2,
+	"guide-sessions":        3,
+
+	"onboarding": 10,
+	"concepts":   11,
+	"workflow":   12,
+	"extending":  13,
+	"neutrality": 14,
+}
 
 // GET /api/docs
 func (h *Handler) listDocs(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +121,12 @@ func docRank(slug string) int {
 	if r, ok := docOrder[slug]; ok {
 		return r
 	}
-	return len(docOrder)
+	// Unpinned docs sort after every pinned one, then alphabetically among
+	// themselves. This MUST NOT be len(docOrder): the pins are banded (guides
+	// 0–3, reference 10–14) with gaps for future entries, so a count is not an
+	// upper bound — at 9 entries it would have sorted unpinned docs ahead of
+	// the whole reference band.
+	return math.MaxInt
 }
 
 // docTitle returns the text of the first "# " heading line, or fallback.

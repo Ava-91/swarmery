@@ -10,6 +10,7 @@ import type { DocDetail, DocMeta } from '../api/types';
 import { fetchDoc, fetchDocs } from '../api';
 import { Markdown } from '../lib/markdown';
 import { Empty, ErrorBox, Loading } from '../components/ui';
+import { groupDocs } from './docsRail';
 
 /** Drop a leading `# Title` line — the pane renders its own heading. */
 function stripLeadingH1(markdown: string): { title: string | null; body: string } {
@@ -77,6 +78,7 @@ export function Docs(): JSX.Element {
   }, [doc, hash, key]);
 
   const rendered = useMemo(() => (doc === null ? null : stripLeadingH1(doc.markdown)), [doc]);
+  const groups = useMemo(() => groupDocs(docs ?? []), [docs]);
 
   if (listError !== null) return <ErrorBox message={listError} />;
   if (docs === null) return <Loading label="docs…" />;
@@ -87,30 +89,49 @@ export function Docs(): JSX.Element {
       <div className="desk:grid desk:grid-cols-[220px_minmax(0,1fr)] desk:items-start desk:gap-7">
         {/* Sticky offset is relative to the <main> scroller (frame layout). */}
         <div className="min-w-0 desk:sticky desk:top-[85px]">
-          <div className="mb-2.5 font-mono text-[10.5px] tracking-[0.14em] text-ink-faint uppercase">
-            Documentation
-          </div>
-          <nav className="flex flex-col gap-0.5" aria-label="Documentation pages">
-            {docs.map((d) => {
-              const active = d.slug === activeSlug;
-              return (
-                <Link
-                  key={d.slug}
-                  to={`/docs/${d.slug}`}
-                  aria-current={active ? 'page' : undefined}
-                  className={`min-h-[44px] rounded-lg px-3 py-[9px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 ${
-                    active ? 'bg-surface2' : 'hover:bg-surface2/50'
-                  }`}
+          {/* The old single "Documentation" eyebrow is now one eyebrow per
+              group (Guides / Reference). With no guides embedded groupDocs
+              returns just Reference, so the rail is the same flat list it has
+              always been, under a different word. */}
+          <nav className="flex flex-col gap-4" aria-label="Documentation pages">
+            {groups.map((group) => (
+              // role="group" + aria-labelledby, so the Guides/Reference
+              // boundary exists for a screen reader too. Without it the rail
+              // is one undifferentiated run of links — which was fine when it
+              // WAS one list, and stops being fine the moment it is two.
+              <div key={group.label} role="group" aria-labelledby={`docgroup-${group.label}`}>
+                <div
+                  id={`docgroup-${group.label}`}
+                  className="mb-2.5 font-mono text-[10.5px] tracking-[0.14em] text-ink-faint uppercase"
                 >
-                  <span
-                    className={`block text-[13px] font-semibold ${active ? 'text-brand' : 'text-ink'}`}
-                  >
-                    {d.title}
-                  </span>
-                  <span className="mt-px block font-mono text-[10px] text-ink-faint">{d.file}</span>
-                </Link>
-              );
-            })}
+                  {group.label}
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  {group.items.map((d) => {
+                    const active = d.slug === activeSlug;
+                    return (
+                      <Link
+                        key={d.slug}
+                        to={`/docs/${d.slug}`}
+                        aria-current={active ? 'page' : undefined}
+                        className={`min-h-[44px] rounded-lg px-3 py-[9px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 ${
+                          active ? 'bg-surface2' : 'hover:bg-surface2/50'
+                        }`}
+                      >
+                        <span
+                          className={`block text-[13px] font-semibold ${active ? 'text-brand' : 'text-ink'}`}
+                        >
+                          {d.title}
+                        </span>
+                        <span className="mt-px block font-mono text-[10px] text-ink-faint">
+                          {d.file}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
         </div>
 

@@ -78,6 +78,43 @@ func TestDocsListAndDetail(t *testing.T) {
 	}
 }
 
+// TestDocsGuidesOrder pins the three-band nav order the dashboard rail relies
+// on: guides (docOrder 0–3) ahead of the pinned reference docs (10–14), and
+// both ahead of anything unpinned, which falls back to alphabetical.
+//
+// The rail groups client-side on the `guide-` slug prefix, so this ordering is
+// its precondition: if a guide ever sorted into the middle of the reference
+// band, the two groups would still render but in a nonsensical order.
+func TestDocsGuidesOrder(t *testing.T) {
+	srv := docsServer(t, fstest.MapFS{
+		".gitkeep": {Data: []byte("")},
+		// Deliberately seeded out of order, and with the alphabetically-first
+		// name (`aaa.md`) unpinned, so passing cannot be an accident of
+		// ReadDir order or of a plain alphabetical sort.
+		"zzz.md":                {Data: []byte("# Zulu\n")},
+		"onboarding.md":         {Data: []byte("# Onboarding\n")},
+		"aaa.md":                {Data: []byte("# Alpha\n")},
+		"guide-board.md":        {Data: []byte("# The board\n")},
+		"neutrality.md":         {Data: []byte("# Neutrality\n")},
+		"guide-getting-started": {Data: []byte("not markdown, must be ignored\n")},
+	})
+
+	var list []struct {
+		Slug string `json:"slug"`
+	}
+	getJSON(t, srv.URL+"/api/docs", &list)
+
+	want := []string{"guide-board", "onboarding", "neutrality", "aaa", "zzz"}
+	if len(list) != len(want) {
+		t.Fatalf("docs = %d, want %d (%+v)", len(list), len(want), list)
+	}
+	for i, w := range want {
+		if list[i].Slug != w {
+			t.Errorf("docs[%d].slug = %q, want %q (full order %+v)", i, list[i].Slug, w, list)
+		}
+	}
+}
+
 // TestDocsEmptyEmbed pins the CI behavior: with only .gitkeep in the embed
 // (no `make copy-docs` ran), /api/docs is an empty JSON array, not null.
 func TestDocsEmptyEmbed(t *testing.T) {
