@@ -242,13 +242,23 @@ func LatestStaged(db *sql.DB, taskID int64) (*Revision, error) {
 	return r, nil
 }
 
+// execer abstracts *sql.DB / *sql.Tx so the decision CAS can run standalone
+// (Reject) or inside Apply's stamp transaction.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // Decide moves a staged revision to a terminal status. It is a CAS on
 // status='staged': false, nil means a concurrent Apply/Reject already won.
 func Decide(db *sql.DB, id int64, status, decidedBy, ts string) (bool, error) {
+	return decide(db, id, status, decidedBy, ts)
+}
+
+func decide(x execer, id int64, status, decidedBy, ts string) (bool, error) {
 	if !decidedStatuses[status] {
 		return false, fmt.Errorf("planrev: %q is not a decision status", status)
 	}
-	res, err := db.Exec(`
+	res, err := x.Exec(`
 		UPDATE plan_revisions SET status = ?, decided_by = ?, decided_at = ?
 		WHERE id = ? AND status = ?`,
 		status, decidedBy, ts, id, StatusStaged)

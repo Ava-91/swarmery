@@ -1073,6 +1073,14 @@ func cmdServe(args []string) error {
 				log.Printf("error: wsingest scanner stopped: %v", err)
 			}
 		}()
+		// plan-revision phase 3: a revision Apply pokes the SAME scanner pass
+		// that converges plan-doc writes — once, after all writes and renames —
+		// so the Plans page never renders a half-applied plan.
+		api.AttachRevisionRescan(func(string) {
+			if _, err := scanner.Scan(); err != nil {
+				log.Printf("error: wsingest rescan after revision apply: %v", err)
+			}
+		})
 		log.Printf("swarmery workspace scanner watching %s (rescan %s)", wsCfg.WorkspaceRoot, wsingest.DefaultRescanInterval)
 
 		// phase 4: system registry — read-only scanner of the agent-system
