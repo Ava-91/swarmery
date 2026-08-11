@@ -1,12 +1,20 @@
-// Board task card (fusion phase 4): the draggable unit on the kanban board.
+// Board task card (fusion phase 4): the unit on the board.
 // Shows title, the T-xxxx id chip, a priority dot, a model chip (when set), an
 // origin badge on cards the capture pipeline minted rather than a human, a
 // verdict badge (pass/fail/inconclusive — phase 6 fills verifyVerdict), a
 // dispatch-error warning icon with tooltip, a paused badge, and a session link
-// glyph when a branch/worktree exists. Native HTML5 draggable; a keyboard
-// alternative (a "move to →" menu) lives on the card via ColumnMenu so drag is
-// never the only path (WCAG). Clicking the card body opens the TaskModal.
+// glyph when a branch/worktree exists. Clicking the card body opens the TaskModal.
+//
+// Drag&drop is GONE (board redesign phase 4). It used to be the dispatch
+// mechanism — HTML5 draggable on the card, a drop handler per column — and it
+// made the one irreversible thing on this board (accepting a card into the
+// dispatch queue) the easiest thing to do by accident, while being invisible to
+// a keyboard and unusable on touch. Movement is verbs now: each lane renders the
+// exits that make sense for a card in it (CardActions below), and the "move
+// to →" ColumnMenu stays as the escape hatch covering every remaining legal
+// transition.
 
+import type { ReactNode } from 'react';
 import type { BoardColumn, BoardTask, TaskOrigin, TaskPriority } from '../api/types';
 import { BOARD_COLUMNS, COLUMN_LABELS, labelColor, visibleLabels } from './boardModel';
 
@@ -102,15 +110,39 @@ function LabelBadges({ labels }: { labels: readonly string[] }): JSX.Element | n
   );
 }
 
+/** One size for every card verb. */
+const ACTION_BTN =
+  'rounded border px-1.5 py-[2px] font-mono text-[9.5px] transition-colors disabled:opacity-50';
+/** The primary verb of a lane — the one the card is usually here to receive. */
+const ACTION_PRIMARY = `${ACTION_BTN} border-brand/45 bg-brand/10 text-brand hover:bg-brand/20`;
+/** A secondary verb: available, not the point of the lane. */
+const ACTION_PLAIN = `${ACTION_BTN} border-line text-ink-dim hover:border-line-strong hover:text-ink`;
+/** A retiring verb, pushed to the right edge of its row. */
+const ACTION_QUIET = `${ACTION_BTN} border-transparent text-ink-faint hover:border-line hover:text-ink-dim`;
+
 /**
- * The three one-click exits from Triage. A captured card is a suggestion, and
- * a suggestion needs a decision, not a drag: Run accepts it into the dispatch
- * queue, Plan carries it to Planning Mode, Dismiss retires it. Only Plan is a
- * new capability — Run and Dismiss are the existing column move, surfaced as a
- * verb so triaging 200 cards is 200 clicks instead of 200 drags.
- *
- * stopPropagation on the row (not per button): the whole card is a click target
- * that opens the modal, and every control here is an alternative to that.
+ * Shared chrome of every action row. stopPropagation sits on the ROW, not on
+ * each button: the whole card is a click target that opens the modal, and every
+ * control in here is an alternative to that.
+ */
+function ActionRow({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <div
+      className="mt-2 flex items-center gap-1.5"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The three one-click exits from the Inbox. A captured card is a suggestion, and
+ * a suggestion needs a decision: Run accepts it into the dispatch queue, Plan
+ * carries it to Planning Mode, Dismiss retires it. Only Plan is a new
+ * capability — Run and Dismiss are the existing column move, surfaced as a verb
+ * so triaging 200 cards is 200 clicks instead of 200 drags.
  */
 function TriageActions({
   onRun,
@@ -121,19 +153,13 @@ function TriageActions({
   onPlan: () => void;
   onDismiss: () => void;
 }): JSX.Element {
-  const base =
-    'rounded border px-1.5 py-[2px] font-mono text-[9.5px] transition-colors disabled:opacity-50';
   return (
-    <div
-      className="mt-2 flex items-center gap-1.5"
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => e.stopPropagation()}
-    >
+    <ActionRow>
       <button
         type="button"
         onClick={onRun}
-        data-tip="accept into Todo — the dispatcher picks it up"
-        className={`${base} border-brand/45 bg-brand/10 text-brand hover:bg-brand/20`}
+        data-tip="accept into the Working queue — the dispatcher picks it up"
+        className={ACTION_PRIMARY}
       >
         ▶ Run
       </button>
@@ -141,7 +167,7 @@ function TriageActions({
         type="button"
         onClick={onPlan}
         data-tip="open Planning Mode prefilled with this card"
-        className={`${base} border-line text-ink-dim hover:border-line-strong hover:text-ink`}
+        className={ACTION_PLAIN}
       >
         ◇ Plan
       </button>
@@ -149,16 +175,141 @@ function TriageActions({
         type="button"
         onClick={onDismiss}
         data-tip="archive — it stays findable, it stops being an inbox item"
-        className={`${base} ml-auto border-transparent text-ink-faint hover:border-line hover:text-ink-dim`}
+        className={`${ACTION_QUIET} ml-auto`}
       >
         Dismiss
       </button>
-    </div>
+    </ActionRow>
   );
 }
 
-/** Keyboard alternative to drag: a native <select> that moves the card. Sits
- * on every card so column changes never require a pointer. */
+/**
+ * Exits for a QUEUED card — one that has been accepted but has not started. All
+ * three are still cheap here, which is the point of showing them: the window
+ * between "accepted" and "running" is the last moment a wrong card costs
+ * nothing, so taking it back has to be as easy as sending it was.
+ */
+function QueuedActions({
+  onBackToInbox,
+  onTogglePause,
+  paused,
+  onEdit,
+}: {
+  onBackToInbox: () => void;
+  onTogglePause: (() => void) | undefined;
+  paused: boolean;
+  onEdit: () => void;
+}): JSX.Element {
+  return (
+    <ActionRow>
+      <button
+        type="button"
+        onClick={onBackToInbox}
+        data-tip="take it back out of the queue — nothing has run yet"
+        className={ACTION_PLAIN}
+      >
+        ↩ Inbox
+      </button>
+      {onTogglePause !== undefined && (
+        <button
+          type="button"
+          onClick={onTogglePause}
+          data-tip={
+            paused
+              ? 'let the dispatcher consider this card again'
+              : 'hold this card in the queue without losing its place'
+          }
+          className={ACTION_PLAIN}
+        >
+          {paused ? '▶ Resume' : '❙❙ Pause'}
+        </button>
+      )}
+      <button type="button" onClick={onEdit} data-tip="open the full card" className={`${ACTION_QUIET} ml-auto`}>
+        Edit
+      </button>
+    </ActionRow>
+  );
+}
+
+/**
+ * Exits for a RUNNING card. Deliberately the thinnest row on the board: the two
+ * useful things to do to work in flight are stop feeding it and go look at it.
+ * Everything else is a decision for when it lands in Review.
+ */
+function RunningActions({
+  onTogglePause,
+  paused,
+  onOpenTerminal,
+}: {
+  onTogglePause: (() => void) | undefined;
+  paused: boolean;
+  onOpenTerminal: (() => void) | undefined;
+}): JSX.Element | null {
+  if (onTogglePause === undefined && onOpenTerminal === undefined) return null;
+  return (
+    <ActionRow>
+      {onTogglePause !== undefined && (
+        <button
+          type="button"
+          onClick={onTogglePause}
+          data-tip={paused ? 'unpause this card' : 'pause — the run finishes, nothing new starts'}
+          className={ACTION_PLAIN}
+        >
+          {paused ? '▶ Resume' : '❙❙ Pause'}
+        </button>
+      )}
+      {onOpenTerminal !== undefined && (
+        <button
+          type="button"
+          onClick={onOpenTerminal}
+          data-tip="open a terminal in this card's worktree"
+          className={`${ACTION_PLAIN} ml-auto`}
+        >
+          ❯_ Terminal
+        </button>
+      )}
+    </ActionRow>
+  );
+}
+
+/**
+ * Exits for a card in REVIEW. The four real decisions — Land, Re-run with
+ * feedback, Discard, Re-verify — live in the TaskModal, because each of them
+ * needs something the card has no room for (a confirm, a feedback textarea, the
+ * diff, the verdict). So the card offers the one-click override that needs no
+ * context, and a labelled door to the rest rather than making the reviewer guess
+ * that clicking the card is where the decisions are.
+ */
+function ReviewActions({ onMarkDone, onReview }: { onMarkDone: () => void; onReview: () => void }): JSX.Element {
+  return (
+    <ActionRow>
+      <button
+        type="button"
+        onClick={onReview}
+        data-tip="Land, Re-run with feedback, Discard, Re-verify — with the diff and the verdict"
+        className={ACTION_PRIMARY}
+      >
+        ◇ Review…
+      </button>
+      <button
+        type="button"
+        onClick={onMarkDone}
+        data-tip="mark done without landing a branch — the manual override"
+        className={`${ACTION_QUIET} ml-auto`}
+      >
+        ✓ Mark done
+      </button>
+    </ActionRow>
+  );
+}
+
+/**
+ * The escape hatch: a native <select> covering every legal column, on every
+ * card. The lane verbs above are the paths worth naming; this is what makes the
+ * remaining transitions reachable at all — and, being a real <select>, it is
+ * what keeps them reachable from a keyboard and a screen reader. It still speaks
+ * COLUMNS, not lanes, because that is what the PATCH carries.
+ */
 function ColumnMenu({
   column,
   onMove,
@@ -190,39 +341,32 @@ export function TaskCard({
   task,
   onOpen,
   onMove,
-  onDragStart,
-  onDragEnd,
-  dragging,
   onPlan,
+  onTogglePause,
+  onOpenTerminal,
 }: {
   task: BoardTask;
   onOpen: () => void;
   onMove: (to: BoardColumn) => void;
-  onDragStart: () => void;
-  onDragEnd: () => void;
-  dragging: boolean;
   /**
    * Hand-off to Planning Mode for this card. Optional because it is the one
    * triage action the card cannot perform on its own (Run and Dismiss are just
-   * `onMove`) — omit it and the action row does not render, which is what every
-   * non-Triage caller wants anyway.
+   * `onMove`) — omit it and the Inbox action row does not render, which is what
+   * every history caller wants anyway.
    */
-  onPlan?: () => void;
+  onPlan?: (() => void) | undefined;
+  /** Flip `user_paused`. Omitted in the history drawer, where it is meaningless. */
+  onTogglePause?: (() => void) | undefined;
+  /** Open a terminal in this card's worktree; omitted when there is no worktree
+   * to open, or outside a workspace layout that owns a dock. */
+  onOpenTerminal?: (() => void) | undefined;
 }): JSX.Element {
   const blocked = task.paused || task.userPaused;
   // Triage is the only column where a card is still a question. Elsewhere it is
-  // committed work, and both the verbs and the "why is this still here" hint
-  // would be noise.
+  // committed work, and the "why is this still here" hint would be noise.
   const inTriage = task.boardColumn === 'triage';
   return (
     <div
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData('text/plain', String(task.id));
-        e.dataTransfer.effectAllowed = 'move';
-        onDragStart();
-      }}
-      onDragEnd={onDragEnd}
       role="button"
       tabIndex={0}
       aria-label={`task ${task.externalId}: ${task.title}`}
@@ -239,9 +383,7 @@ export function TaskCard({
           onOpen();
         }
       }}
-      className={`group cursor-pointer rounded-lg border bg-surface p-2.5 transition-colors hover:border-line-strong focus:border-ink-dim focus:outline-none ${
-        dragging ? 'border-ink-dim opacity-40' : 'border-line'
-      }`}
+      className="group cursor-pointer rounded-lg border border-line bg-surface p-2.5 transition-colors hover:border-line-strong focus:border-ink-dim focus:outline-none"
     >
       <div className="flex items-start gap-2">
         <span
@@ -312,12 +454,30 @@ export function TaskCard({
         </div>
       )}
 
-      {inTriage && onPlan !== undefined && (
-        <TriageActions
-          onRun={() => onMove('todo')}
-          onPlan={onPlan}
-          onDismiss={() => onMove('archived')}
+      {/* The lane's own verbs. Every card carries exactly the exits that make
+          sense where it is standing — which is what replaced dragging it
+          somewhere else. History cards (done/archived) get none: they are a
+          record, and the card body still opens the full modal. */}
+      {task.boardColumn === 'triage' && onPlan !== undefined && (
+        <TriageActions onRun={() => onMove('todo')} onPlan={onPlan} onDismiss={() => onMove('archived')} />
+      )}
+      {task.boardColumn === 'todo' && (
+        <QueuedActions
+          onBackToInbox={() => onMove('triage')}
+          onTogglePause={onTogglePause}
+          paused={task.userPaused}
+          onEdit={onOpen}
         />
+      )}
+      {task.boardColumn === 'in_progress' && (
+        <RunningActions
+          onTogglePause={onTogglePause}
+          paused={task.userPaused}
+          onOpenTerminal={onOpenTerminal}
+        />
+      )}
+      {task.boardColumn === 'in_review' && (
+        <ReviewActions onMarkDone={() => onMove('done')} onReview={onOpen} />
       )}
     </div>
   );

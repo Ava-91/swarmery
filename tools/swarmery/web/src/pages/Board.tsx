@@ -1,32 +1,44 @@
-// Board page (fusion phase 4): the kanban board of a project workspace. Six
-// columns Triage→Todo→In Progress→In Review→Done→Archived. Native HTML5
-// drag&drop (Fusion's choice — no dnd lib): dragstart serializes the task id,
-// a column drop issues an OPTIMISTIC PATCH that reverts on error (the revert +
-// toast live in useBoard). Every card also carries a keyboard "move to →" menu
-// so drag is never the only path. A "+ New task" button sits at the top of
-// Triage and opens NewTaskModal (the full intake form); the
-// Done column is sorted by columnMovedAt desc; Archived is lazy — it loads
-// on first expand (boardColumn='archived' fetch) to keep the default view light.
+// Board page: the board of a project workspace. THREE lanes — Inbox (undecided)
+// → Working (accepted: a Queued group in dispatcher order, then the running
+// cards) → Review (ran, awaiting a decision) — with done + archived behind a
+// collapsed history strip along the bottom. That is the whole change of board
+// redesign phase 4; the five-column kanban it replaced is still what the wire
+// speaks (`board_column`), still what the dispatcher triggers on
+// (`board_column='todo'`), and still what every PATCH carries. Lanes are derived
+// at render time by boardModel.splitLanes and nowhere else.
+//
+// Drag&drop is GONE. It was the dispatch mechanism — drop a card in Todo and the
+// dispatcher runs it — which made the one expensive action on this board a
+// gesture you could perform by accident, could not perform from a keyboard, and
+// could not perform at all on touch. Movement is verbs now: each card renders
+// the exits of the lane it is in (TaskCard), the TaskModal holds the review
+// decisions, and the card's "move to →" menu remains the escape hatch for any
+// legal transition none of those cover.
+//
+// A "+ New task" button sits at the top of Inbox and opens NewTaskModal (the
+// full intake form). Archived stays lazy — it loads on the first expand of the
+// history strip (boardColumn='archived' fetch) to keep the default view light.
 //
 // The board reads the shared BoardState from the workspace layout so the card,
 // the status bar, and the detail modal all reflect one source of truth. Demo
 // mode (VITE_MOCK) renders a full board from fixtures.
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type { BoardColumn, BoardTask } from '../api/types';
+import type { BoardTask } from '../api/types';
 import { bulkArchiveBoardTasks, fetchBoardTasks } from '../api';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
-import { useWorkspaceBoard } from '../workspace/ProjectWorkspaceLayout';
+import { useWorkspaceBoard, useWorkspaceTerminal } from '../workspace/ProjectWorkspaceLayout';
 import {
   AMNESTY_AGE_DAYS,
   AMNESTY_THRESHOLD,
   amnestyCandidates,
   amnestyCutoff,
-  BOARD_COLUMNS,
-  COLUMN_LABELS,
+  BOARD_LANES,
+  LANE_TITLES,
   labelFilterOptions,
   matchesLabelFilter,
+  splitLanes,
 } from '../workspace/boardModel';
 import { NewTaskModal } from '../workspace/NewTaskModal';
 import { TaskCard } from '../workspace/TaskCard';
@@ -34,8 +46,24 @@ import { TaskModal } from '../workspace/TaskModal';
 import { TaskGraph } from '../workspace/TaskGraph';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 
-/** Board header view mode: the kanban columns or the dependency graph. */
+/** Board header view mode: the lanes or the dependency graph. */
 type BoardView = 'board' | 'graph';
+
+/** A muted group heading INSIDE a lane or the history strip. Deliberately
+ * quieter than a lane title: a group is a subdivision of one lane, and it must
+ * not read as a fourth lane. */
+function GroupLabel({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <div className="px-1 pt-1 font-mono text-[9.5px] leading-snug tracking-[0.06em] text-ink-faint uppercase">
+      {children}
+    </div>
+  );
+}
+
+/** A one-line status note where cards would otherwise be (empty, loading…). */
+function Note({ children }: { children: ReactNode }): JSX.Element {
+  return <div className="px-1 py-2 font-mono text-[10px] text-ink-faint">{children}</div>;
+}
 
 /**
  * The amnesty is a two-step action, so it needs a state rather than a boolean:
@@ -48,12 +76,10 @@ type AmnestyState =
   | { phase: 'confirm'; matched: number }
   | { phase: 'running' };
 
-/** Live columns render immediately; Archived is fetched only when expanded. */
-const EAGER_COLUMNS: BoardColumn[] = ['triage', 'todo', 'in_progress', 'in_review', 'done'];
-
 export function Board(): JSX.Element {
   const { project, projectId, slug, loading: projLoading } = useProjectWorkspace();
   const board = useWorkspaceBoard();
+  const openTerminal = useWorkspaceTerminal();
   const navigate = useNavigate();
   // Agent Hub "Run now" deep-links here with ?compose=@<agent>: — the modal
   // opens prefilled from it (the agent picker resolves the "@name:" prefix) so a
@@ -63,12 +89,11 @@ export function Board(): JSX.Element {
   const [composing, setComposing] = useState(compose !== '');
   const [openId, setOpenId] = useState<number | null>(null);
   const [view, setView] = useState<BoardView>('board');
-  const [draggingId, setDraggingId] = useState<number | null>(null);
-  const [dropCol, setDropCol] = useState<BoardColumn | null>(null);
 
-  // Archived lazy state — separate from the live board query.
+  // History strip: `done` rides the live board query, `archived` is its own lazy
+  // fetch — unchanged from when these were two columns, only its trigger moved.
   const [archived, setArchived] = useState<BoardTask[] | null>(null);
-  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [archiveLoading, setArchiveLoading] = useState(false);
 
   // Label filter — kept in the URL (not local state) so `?label=jira-ticket`
@@ -90,21 +115,17 @@ export function Board(): JSX.Element {
     [setSearchParams],
   );
   const labelOptions = useMemo(() => labelFilterOptions(board.tasks, labelFilter), [board.tasks, labelFilter]);
-  // Filtered BEFORE the column split so Archived (its own lazy fetch) and the
-  // Done sort are untouched — this list only ever feeds byColumn below.
+  // Filtered BEFORE the lane split so Archived (its own lazy fetch) is
+  // untouched — this list only ever feeds `lanes` below.
   const labelFilteredTasks = useMemo(
     () => board.tasks.filter((t) => matchesLabelFilter(t, labelFilter)),
     [board.tasks, labelFilter],
   );
 
-  const byColumn = useMemo(() => {
-    const map = new Map<BoardColumn, BoardTask[]>();
-    for (const c of BOARD_COLUMNS) map.set(c, []);
-    for (const t of labelFilteredTasks) map.get(t.boardColumn)?.push(t);
-    // Done: most-recently-moved first (spec).
-    map.get('done')?.sort((a, b) => (b.columnMovedAt ?? '').localeCompare(a.columnMovedAt ?? ''));
-    return map;
-  }, [labelFilteredTasks]);
+  // Every grouping and ordering decision the board makes lives in this one pure
+  // call — including the Queued group's dispatcher order — so what the board
+  // claims about "what runs next" is testable without rendering anything.
+  const lanes = useMemo(() => splitLanes(labelFilteredTasks), [labelFilteredTasks]);
 
   // --- inbox amnesty ----------------------------------------------------------
   // Counted off the UNFILTERED list on purpose: the banner reports the state of
@@ -172,8 +193,24 @@ export function Board(): JSX.Element {
     navigate(`/p/${encodeURIComponent(slug)}/planning?idea=${encodeURIComponent(idea)}`);
   };
 
-  const openArchive = (): void => {
-    setArchiveOpen((v) => !v);
+  /**
+   * Park or un-park a card from its own card — the Working-lane verb. Goes
+   * through `patchTask` (not `moveTask`): pausing is a flag, not a column, and
+   * the card must NOT jump lanes when it is paused. `patchTask` rejects rather
+   * than toasting, so the failure is routed into the board's one action-error
+   * strip by hand.
+   */
+  const togglePause = (task: BoardTask): void => {
+    board.patchTask(task.id, { userPaused: !task.userPaused }).catch((e: unknown) => {
+      board.setActionError(e instanceof Error ? e.message : String(e));
+    });
+  };
+
+  // Same lazy fetch the Archived column used to own; only its trigger moved to
+  // the history strip. Fetched once per mount — the amnesty resets it to null
+  // when it archives rows so the next expand sees the new arrivals.
+  const toggleHistory = (): void => {
+    setHistoryOpen((v) => !v);
     if (archived === null && projectId !== null) {
       setArchiveLoading(true);
       fetchBoardTasks(projectId, 'archived')
@@ -185,13 +222,43 @@ export function Board(): JSX.Element {
 
   const openTask = openId !== null ? board.tasks.find((t) => t.id === openId) ?? null : null;
 
-  // The Archived column renders from its own lazy fetch, so a deleted row has to
-  // be dropped there too — the board list alone would leave the card on screen
-  // until the next expand.
+  // The history strip's archived half renders from its own lazy fetch, so a
+  // deleted row has to be dropped there too — the board list alone would leave
+  // the card on screen until the next expand.
   const deleteTask = (id: number): Promise<void> =>
     board.deleteTask(id).then(() => {
       setArchived((prev) => (prev === null ? prev : prev.filter((t) => t.id !== id)));
     });
+
+  /**
+   * A card in a lane, wired to every verb any lane might offer. TaskCard picks
+   * which of them actually render from the card's own column, so the lane bodies
+   * below stay pure layout and there is one place to change what a card can do.
+   */
+  const liveCard = (t: BoardTask): JSX.Element => {
+    const worktree = t.worktreePath;
+    return (
+      <TaskCard
+        key={t.id}
+        task={t}
+        onOpen={() => setOpenId(t.id)}
+        onMove={(to) => board.moveTask(t.id, to)}
+        onPlan={() => planTask(t)}
+        onTogglePause={() => togglePause(t)}
+        onOpenTerminal={
+          openTerminal !== null && worktree !== null
+            ? () => openTerminal(t.externalId, worktree)
+            : undefined
+        }
+      />
+    );
+  };
+
+  /** A card in the history strip: a record, so it opens and it can be moved back
+   * out, but it carries none of the lane verbs. */
+  const historyCard = (t: BoardTask): JSX.Element => (
+    <TaskCard key={t.id} task={t} onOpen={() => setOpenId(t.id)} onMove={(to) => board.moveTask(t.id, to)} />
+  );
 
   if (projLoading) return <Loading label="workspace…" />;
   if (project === null) {
@@ -353,115 +420,117 @@ export function Board(): JSX.Element {
       ) : view === 'graph' ? (
         <TaskGraph tasks={board.tasks} onOpen={setOpenId} />
       ) : (
-        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
-          {EAGER_COLUMNS.map((col) => {
-            const tasks = byColumn.get(col) ?? [];
-            const isDropTarget = dropCol === col;
-            return (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
+            {BOARD_LANES.map((lane) => (
               <section
-                key={col}
-                aria-label={`${COLUMN_LABELS[col]} column`}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (dropCol !== col) setDropCol(col);
-                }}
-                onDragLeave={(e) => {
-                  // Only clear when leaving the column, not moving between its cards.
-                  if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropCol((c) => (c === col ? null : c));
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const raw = e.dataTransfer.getData('text/plain');
-                  const id = Number.parseInt(raw, 10);
-                  setDropCol(null);
-                  setDraggingId(null);
-                  if (!Number.isNaN(id)) board.moveTask(id, col);
-                }}
-                className={`flex w-[248px] shrink-0 flex-col rounded-xl border transition-colors ${
-                  isDropTarget ? 'border-brand/50 bg-brand/5' : 'border-line bg-surface/40'
-                }`}
+                key={lane}
+                aria-label={`${LANE_TITLES[lane]} lane`}
+                className="flex min-w-[232px] flex-1 basis-0 flex-col rounded-xl border border-line bg-surface/40"
               >
                 <div className="flex items-center gap-2 px-3 pt-3 pb-2">
                   <span className="font-mono text-[10.5px] tracking-[0.1em] text-ink-dim uppercase">
-                    {COLUMN_LABELS[col]}
+                    {LANE_TITLES[lane]}
                   </span>
-                  <span className="font-mono text-[10px] text-ink-faint">{tasks.length}</span>
+                  <span className="font-mono text-[10px] text-ink-faint">
+                    {lane === 'inbox'
+                      ? lanes.inbox.length
+                      : lane === 'working'
+                        ? lanes.queued.length + lanes.running.length
+                        : lanes.review.length}
+                  </span>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-                  {col === 'triage' && projectId !== null && (
-                    <button
-                      type="button"
-                      onClick={() => setComposing(true)}
-                      className="w-full rounded-lg border border-dashed border-line bg-transparent px-2.5 py-2 text-left text-[12px] text-ink-faint transition-colors hover:border-ink-dim hover:bg-field hover:text-ink"
-                    >
-                      + New task
-                    </button>
+                  {lane === 'inbox' && (
+                    <>
+                      {projectId !== null && (
+                        <button
+                          type="button"
+                          onClick={() => setComposing(true)}
+                          className="w-full rounded-lg border border-dashed border-line bg-transparent px-2.5 py-2 text-left text-[12px] text-ink-faint transition-colors hover:border-ink-dim hover:bg-field hover:text-ink"
+                        >
+                          + New task
+                        </button>
+                      )}
+                      {lanes.inbox.map(liveCard)}
+                    </>
                   )}
-                  {tasks.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      task={t}
-                      dragging={draggingId === t.id}
-                      onOpen={() => setOpenId(t.id)}
-                      onMove={(to) => board.moveTask(t.id, to)}
-                      onDragStart={() => setDraggingId(t.id)}
-                      onDragEnd={() => {
-                        setDraggingId(null);
-                        setDropCol(null);
-                      }}
-                      // The card renders its Run/Plan/Dismiss row only when it
-                      // can hand off to Planning Mode, so this prop is what
-                      // turns the triage verbs on — Archived below omits it.
-                      onPlan={() => planTask(t)}
-                    />
-                  ))}
-                  {tasks.length === 0 && col !== 'triage' && (
-                    <div className="px-1 py-2 font-mono text-[10px] text-ink-faint">empty</div>
+
+                  {/* Working is the only lane with internal structure, because
+                      "accepted" covers two states a reviewer must not confuse:
+                      still cancellable, and already burning a slot. The queue is
+                      shown in the dispatcher's own candidate order so the top
+                      card IS the next one to start. */}
+                  {lane === 'working' && (
+                    <>
+                      {lanes.queued.length > 0 && (
+                        <>
+                          <GroupLabel>Queued — waiting for a dispatch slot</GroupLabel>
+                          {lanes.queued.map(liveCard)}
+                        </>
+                      )}
+                      {lanes.running.length > 0 && (
+                        <>
+                          <GroupLabel>Running</GroupLabel>
+                          {lanes.running.map(liveCard)}
+                        </>
+                      )}
+                      {lanes.queued.length === 0 && lanes.running.length === 0 && <Note>empty</Note>}
+                    </>
+                  )}
+
+                  {lane === 'review' && (
+                    <>
+                      {lanes.review.map(liveCard)}
+                      {lanes.review.length === 0 && <Note>empty</Note>}
+                    </>
                   )}
                 </div>
               </section>
-            );
-          })}
+            ))}
+          </div>
 
-          {/* Archived — lazy, collapsed by default. */}
-          <section
-            aria-label="Archived column"
-            className="flex w-[248px] shrink-0 flex-col rounded-xl border border-line bg-surface/20"
-          >
+          {/* History: done + archived, collapsed. They are not a lane — nothing
+              is waiting on them — but they must stay reachable, and the counts
+              are the cheapest honest signal that the board is being worked. */}
+          <section aria-label="history" className="mt-1 shrink-0 rounded-xl border border-line bg-surface/20">
             <button
               type="button"
-              onClick={openArchive}
-              aria-expanded={archiveOpen}
-              className="flex items-center gap-2 px-3 pt-3 pb-2 text-left"
+              onClick={toggleHistory}
+              aria-expanded={historyOpen}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left"
             >
               <span className="font-mono text-[10.5px] tracking-[0.1em] text-ink-dim uppercase">
-                {COLUMN_LABELS.archived}
+                History
               </span>
               <span aria-hidden="true" className="font-mono text-[9px] text-ink-faint">
-                {archiveOpen ? '▾' : '▸'}
+                {historyOpen ? '▾' : '▸'}
               </span>
-              {archived !== null && <span className="font-mono text-[10px] text-ink-faint">{archived.length}</span>}
+              <span className="font-mono text-[10px] text-ink-faint">
+                {lanes.done.length} done
+                {/* An em-dash rather than 0 until the lazy fetch has run: the
+                    board genuinely does not know the archived count yet, and
+                    printing 0 would be a claim it cannot make. */}
+                {' · '}
+                {archived === null ? '—' : archived.length} archived
+              </span>
             </button>
-            {archiveOpen && (
-              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-                {archiveLoading ? (
-                  <div className="px-1 py-2 font-mono text-[10px] text-ink-faint">loading…</div>
-                ) : archived !== null && archived.length > 0 ? (
-                  archived.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      task={t}
-                      dragging={false}
-                      onOpen={() => setOpenId(t.id)}
-                      onMove={(to) => board.moveTask(t.id, to)}
-                      onDragStart={() => undefined}
-                      onDragEnd={() => undefined}
-                    />
-                  ))
-                ) : (
-                  <div className="px-1 py-2 font-mono text-[10px] text-ink-faint">empty</div>
-                )}
+            {historyOpen && (
+              <div className="flex max-h-[38vh] gap-3 overflow-x-auto border-t border-line px-2 py-2">
+                <div className="flex w-[248px] shrink-0 flex-col gap-2 overflow-y-auto">
+                  <GroupLabel>Done</GroupLabel>
+                  {lanes.done.length > 0 ? lanes.done.map(historyCard) : <Note>empty</Note>}
+                </div>
+                <div className="flex w-[248px] shrink-0 flex-col gap-2 overflow-y-auto">
+                  <GroupLabel>Archived</GroupLabel>
+                  {archiveLoading ? (
+                    <Note>loading…</Note>
+                  ) : archived !== null && archived.length > 0 ? (
+                    archived.map(historyCard)
+                  ) : (
+                    <Note>empty</Note>
+                  )}
+                </div>
               </div>
             )}
           </section>

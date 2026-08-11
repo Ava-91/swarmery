@@ -1,5 +1,6 @@
 // Board presentation model (fusion phase 4): the closed column order, their
-// display labels, and the client-side derivation of the status-bar counts.
+// display labels, the three-lane collapse the board renders through (phase 4 of
+// the board redesign), and the client-side derivation of the status-bar counts.
 // Kept pure so it is trivially unit-testable and shared by Board + StatusBar.
 
 import type { BoardColumn, BoardTask, TaskPriority } from '../api/types';
@@ -23,8 +24,132 @@ export const COLUMN_LABELS: Record<BoardColumn, string> = {
   archived: 'Archived',
 };
 
+// --- lanes (board redesign phase 4) -------------------------------------------
+//
+// The board renders three LANES, not six columns. The `board_column` enum above
+// is untouched — it is still what the API speaks, what the dispatcher triggers
+// on (`board_column='todo'`), and what every PATCH carries. Lanes are a pure
+// presentation collapse derived at render time, which is what keeps this
+// revertable and keeps the wire contract independent of how the board looks.
+
+/** The three lanes a live card can sit in. */
+export type BoardLane = 'inbox' | 'working' | 'review';
+
+/** Left-to-right lane order on the board. */
+export const BOARD_LANES: BoardLane[] = ['inbox', 'working', 'review'];
+
+/**
+ * Which lane each LIVE column collapses into. `done` and `archived` are
+ * deliberately excluded from the key type rather than mapped to a lane: they
+ * render in the history drawer, and excluding them makes "which lane does done
+ * go in?" a compile error instead of a silently wrong answer.
+ */
+export const LANE_OF: Record<Exclude<BoardColumn, 'done' | 'archived'>, BoardLane> = {
+  triage: 'inbox',
+  todo: 'working',
+  in_progress: 'working',
+  in_review: 'review',
+};
+
+export const LANE_TITLES: Record<BoardLane, string> = {
+  inbox: 'Inbox',
+  working: 'Working',
+  review: 'Review',
+};
+
+/** The lane a column renders in, or null for the two history columns. */
+export function laneOf(column: BoardColumn): BoardLane | null {
+  if (column === 'done' || column === 'archived') return null;
+  return LANE_OF[column];
+}
+
 /** Priority tokens, highest first — the option order of every priority select. */
 export const TASK_PRIORITIES: TaskPriority[] = ['urgent', 'high', 'normal', 'low'];
+
+/**
+ * The INTEGER priority scale the server stores, mirrored token for token from
+ * api/tasks_board.go `priorityLabels`. Ascending — urgent sorts first — because
+ * that is the direction dispatch/service.go `candidates()` sorts in, and the
+ * Queued group exists to show that order. The absolute values matter only in
+ * that they preserve the same total ordering as the server's.
+ */
+export const PRIORITY_RANK: Record<TaskPriority, number> = {
+  urgent: 1,
+  high: 3,
+  normal: 5,
+  low: 7,
+};
+
+/**
+ * The dispatcher's candidate order, comparator for comparator: priority asc →
+ * createdAt asc → id asc (dispatch/service.go `candidates()`). The Queued group
+ * displays `todo` cards through this so the top card on screen is the next one
+ * the dispatcher will actually pick up — a board that ordered them any other way
+ * would be lying about what happens next.
+ *
+ * One honest difference from the server: `candidates()` also filters out paused
+ * cards, while Queued shows them (badged `paused`) so a parked card does not
+ * vanish. Order among the unpaused cards is identical.
+ */
+export function compareDispatchOrder(a: BoardTask, b: BoardTask): number {
+  const pa = PRIORITY_RANK[a.priority];
+  const pb = PRIORITY_RANK[b.priority];
+  if (pa !== pb) return pa - pb;
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+  return a.id - b.id;
+}
+
+/**
+ * The board split into what each lane renders. Working is pre-split into its two
+ * groups because they are ordered by different rules and carry different
+ * actions: `queued` is dispatcher-ordered and still cancellable, `running` is
+ * in-flight. `archived` is absent by construction — it has its own lazy fetch
+ * and never appears in the live board list.
+ */
+export interface BoardLanes {
+  readonly inbox: readonly BoardTask[];
+  /** `todo` — in the dispatcher's own candidate order. */
+  readonly queued: readonly BoardTask[];
+  /** `in_progress` — in list order (the dispatcher no longer ranks these). */
+  readonly running: readonly BoardTask[];
+  readonly review: readonly BoardTask[];
+  /** `done` — most-recently-moved first; the history drawer's eager half. */
+  readonly done: readonly BoardTask[];
+}
+
+/** Group a board list into its lanes. Pure: one pass, then the two sorts that
+ * each group's own contract requires. */
+export function splitLanes(tasks: readonly BoardTask[]): BoardLanes {
+  const inbox: BoardTask[] = [];
+  const queued: BoardTask[] = [];
+  const running: BoardTask[] = [];
+  const review: BoardTask[] = [];
+  const done: BoardTask[] = [];
+  for (const t of tasks) {
+    switch (t.boardColumn) {
+      case 'triage':
+        inbox.push(t);
+        break;
+      case 'todo':
+        queued.push(t);
+        break;
+      case 'in_progress':
+        running.push(t);
+        break;
+      case 'in_review':
+        review.push(t);
+        break;
+      case 'done':
+        done.push(t);
+        break;
+      default:
+        break; // archived — lazy-fetched separately, never in this list
+    }
+  }
+  queued.sort(compareDispatchOrder);
+  done.sort((a, b) => (b.columnMovedAt ?? '').localeCompare(a.columnMovedAt ?? ''));
+  return { inbox, queued, running, review, done };
+}
 
 /**
  * Model tokens the dispatcher passes to `claude --model`. 'default' is the UI's
