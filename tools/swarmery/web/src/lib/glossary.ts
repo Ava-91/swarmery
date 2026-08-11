@@ -148,14 +148,14 @@ const RAW = {
       },
       {
         title: 'Make it your own',
-        body: 'Built-ins ship inside the daemon and are read-only. “Duplicate to project” copies the markdown into <project>/.claude/playbooks/ where its prompts become editable; a project file with the same name overrides the built-in. Frontmatter takes name, description, verify, and an optional model override.',
+        body: 'Built-ins ship inside the daemon and are read-only. “Duplicate to project” copies the markdown into <project>/.claude/playbooks/ where its prompts become editable; a project file with the same name overrides the built-in. Frontmatter takes name, description, verify, and optional model and permission_mode overrides.',
       },
     ],
     // `steps` is not rendered in the popover (see Explain.tsx) — these facts are
     // what the trigger shows, so they carry the reference load on their own.
     facts: [
-      { label: 'built-ins', value: 'standard · quick-fix · plan-first · review-heavy' },
-      { label: 'no selection', value: 'standard' },
+      { label: 'built-ins', value: 'standard · plan-first · review-heavy' },
+      { label: 'no selection', value: 'auto-profiled at dispatch, then stamped on the card' },
       { label: 'make your own', value: '.claude/playbooks/<name>.md' },
     ],
     doc: { slug: 'concepts', anchor: 'playbooks' },

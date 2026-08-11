@@ -1505,21 +1505,15 @@ const mockEpics: Epic[] = [
 /** fusion phase 13: the built-in playbooks (mirrors internal/playbooks/builtin). */
 const mockPlaybooks: Playbook[] = [
   {
-    name: 'quick-fix',
-    description: 'One focused pass for a small, well-scoped change. Verification runs at the normal bar.',
-    model: '', verify: 'normal', source: 'builtin', path: '',
-    stages: [{ name: 'implement', body: '{task_prompt}' }],
-  },
-  {
     name: 'standard',
     description: 'The default recipe — a single implementation pass with normal verification.',
-    model: '', verify: 'normal', source: 'builtin', path: '',
+    model: '', verify: 'normal', permissionMode: '', source: 'builtin', path: '',
     stages: [{ name: 'implement', body: '{task_prompt}' }],
   },
   {
     name: 'review-heavy',
     description: 'Implement, then adversarially self-review the diff before handing to verification. Verification runs strict.',
-    model: '', verify: 'strict', source: 'builtin', path: '',
+    model: '', verify: 'strict', permissionMode: '', source: 'builtin', path: '',
     stages: [
       { name: 'implement', body: '{task_prompt}' },
       {
@@ -1531,7 +1525,7 @@ const mockPlaybooks: Playbook[] = [
   {
     name: 'plan-first',
     description: 'Produce a short step plan first, then implement it in a second stage. Verification runs at the normal bar.',
-    model: '', verify: 'normal', source: 'builtin', path: '',
+    model: '', verify: 'normal', permissionMode: '', source: 'builtin', path: '',
     stages: [
       { name: 'plan', body: 'Do NOT edit any files. Produce a concise implementation plan.\n\n{task_prompt}' },
       { name: 'implement', body: 'Implement by following the plan from the previous stage:\n\n{previous_stage_output}' },

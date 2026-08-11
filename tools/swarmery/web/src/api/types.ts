@@ -1426,6 +1426,13 @@ export type PlaybookVerify = 'strict' | 'normal' | 'off';
 export type PlaybookSource = 'builtin' | 'project';
 
 /**
+ * The `--permission-mode` a playbook's runs spawn under. `''` (the neutral
+ * default every built-in ships) inherits the daemon's global knob; `'default'`
+ * means the flag is omitted entirely.
+ */
+export type PlaybookPermissionMode = '' | 'bypassPermissions' | 'acceptEdits' | 'default';
+
+/**
  * A playbook — item of GET /api/playbooks. Mirrors playbookDTO in
  * internal/api/playbooks.go. Structure is read-only in the UI; a project makes
  * a built-in's prompts editable by duplicating it (POST …/duplicate).
@@ -1435,6 +1442,8 @@ export interface Playbook {
   description: string;
   model: string;
   verify: PlaybookVerify;
+  /** Spawn permission mode; '' = inherit the daemon's global knob. */
+  permissionMode: PlaybookPermissionMode;
   source: PlaybookSource;
   stages: PlaybookStage[];
   /** On-disk path of a project playbook (""/absent for a built-in). */

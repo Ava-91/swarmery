@@ -16,15 +16,15 @@ func newRegistry(t *testing.T) *Registry {
 	return r
 }
 
-// The four built-ins ship in the binary; assert their shape matches the spec so
-// a broken embed or a renamed file fails loudly.
+// The three built-ins ship in the binary; assert their shape matches the spec so
+// a broken embed or a renamed file fails loudly. (quick-fix was byte-identical
+// to standard and is now an alias, not a file — see the alias tests below.)
 func TestBuiltins_ShapeMatchesSpec(t *testing.T) {
 	r := newRegistry(t)
 	want := map[string]struct {
 		stages int
 		verify string
 	}{
-		"quick-fix":    {1, "normal"},
 		"standard":     {1, "normal"},
 		"review-heavy": {2, "strict"},
 		"plan-first":   {2, "normal"},
@@ -90,6 +90,79 @@ func TestBuiltin_ReviewHeavyIsTwoStageStrict(t *testing.T) {
 	}
 }
 
+// ── the quick-fix alias (phase 5) ──
+//
+// quick-fix shipped byte-identical to standard and was picked once across 253
+// cards. The built-in is deleted; the NAME still resolves so every stored card
+// and API caller keeps working, but it resolves TO standard.
+
+func TestAlias_QuickFixResolvesToStandard(t *testing.T) {
+	r := newRegistry(t)
+	pb, ok := r.Get("", "quick-fix")
+	if !ok {
+		t.Fatal("quick-fix did not resolve — the alias must keep stored cards working")
+	}
+	if pb.Name != DefaultName {
+		t.Fatalf("quick-fix resolved to %q, want %q", pb.Name, DefaultName)
+	}
+	if pb.Source != SourceBuiltin {
+		t.Fatalf("aliased quick-fix source = %q, want builtin", pb.Source)
+	}
+}
+
+// The alias resolves but is NOT offered: a name that is only another spelling of
+// standard must not appear as a separate choice in the picker.
+func TestAlias_QuickFixAbsentFromList(t *testing.T) {
+	r := newRegistry(t)
+	for _, pb := range r.List("") {
+		if pb.Name == "quick-fix" {
+			t.Fatal("quick-fix is still listed; an alias must not be offered as a choice")
+		}
+	}
+}
+
+// Project resolution runs BEFORE the alias: a consumer that wrote its own
+// .claude/playbooks/quick-fix.md keeps it (the graduation override), and it is
+// listed, because that file is a real recipe rather than an alias.
+func TestAlias_ProjectQuickFixStillOverrides(t *testing.T) {
+	dir := t.TempDir()
+	writePlaybook(t, dir, "quick-fix.md", `---
+name: quick-fix
+description: PROJECT QUICK FIX
+verify: off
+---
+## Stage: patch
+{task_prompt}
+`)
+	r := newRegistry(t)
+
+	pb, ok := r.Get(dir, "quick-fix")
+	if !ok {
+		t.Fatal("project quick-fix missing")
+	}
+	if pb.Name != "quick-fix" || pb.Source != SourceProject || pb.Description != "PROJECT QUICK FIX" {
+		t.Fatalf("the alias shadowed the project override: %+v", pb)
+	}
+	var listed bool
+	for _, p := range r.List(dir) {
+		if p.Name == "quick-fix" {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatal("a project-local quick-fix must be listed (it is a real recipe, not the alias)")
+	}
+}
+
+// The deleted built-in is no longer duplicable — BuiltinMarkdown is the
+// duplicate-to-project source and must not resurrect an aliased name.
+func TestAlias_QuickFixHasNoBuiltinMarkdown(t *testing.T) {
+	r := newRegistry(t)
+	if _, ok := r.BuiltinMarkdown("quick-fix"); ok {
+		t.Fatal("BuiltinMarkdown still returns quick-fix; the built-in file must be gone")
+	}
+}
+
 func TestGet_EmptyNameResolvesDefault(t *testing.T) {
 	r := newRegistry(t)
 	pb, ok := r.Get("", "")
@@ -149,8 +222,8 @@ verify: off
 `)
 	r := newRegistry(t)
 	list := r.List(dir)
-	if len(list) != 5 { // 4 built-ins + hotfix
-		t.Fatalf("List after add = %d, want 5", len(list))
+	if len(list) != 4 { // 3 built-ins + hotfix
+		t.Fatalf("List after add = %d, want 4", len(list))
 	}
 	pb, ok := r.Get(dir, "hotfix")
 	if !ok || pb.Verify != "off" {
@@ -172,13 +245,13 @@ name: good
 	if _, ok := r.Get(dir, "good"); !ok {
 		t.Fatal("good playbook hidden by a sibling malformed file")
 	}
-	// Still all four built-ins present.
+	// Still all three built-ins present.
 	if _, ok := r.Get(dir, "standard"); !ok {
 		t.Fatal("built-in dropped due to malformed project file")
 	}
 	list := r.List(dir)
-	if len(list) != 5 { // 4 built-ins + good (broken skipped)
-		t.Fatalf("List with a malformed file = %d, want 5", len(list))
+	if len(list) != 4 { // 3 built-ins + good (broken skipped)
+		t.Fatalf("List with a malformed file = %d, want 4", len(list))
 	}
 }
 
@@ -254,12 +327,12 @@ name: cached
 
 func TestList_EmptyProjectPathBuiltinsOnly(t *testing.T) {
 	r := newRegistry(t)
-	if got := len(r.List("")); got != 4 {
-		t.Fatalf("built-in-only List = %d, want 4", got)
+	if got := len(r.List("")); got != 3 {
+		t.Fatalf("built-in-only List = %d, want 3", got)
 	}
 	// A non-existent project path also yields built-ins only (no panic).
-	if got := len(r.List("/no/such/dir")); got != 4 {
-		t.Fatalf("missing-dir List = %d, want 4", got)
+	if got := len(r.List("/no/such/dir")); got != 3 {
+		t.Fatalf("missing-dir List = %d, want 3", got)
 	}
 }
 

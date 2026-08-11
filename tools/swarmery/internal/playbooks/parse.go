@@ -26,10 +26,12 @@ var knownVars = map[string]bool{
 const stageHeaderPrefix = "## Stage:"
 
 // Parse turns a playbook markdown file into a validated Playbook. It parses the
-// leading `---` frontmatter block (name/description/model/verify), splits the
-// remainder into `## Stage:` sections, and validates: frontmatter present with a
-// name, verify in {strict,normal,off} (default normal when omitted), at least
-// one stage, every stage named and non-empty, and every {var} recognized.
+// leading `---` frontmatter block (name/description/model/verify/
+// permission_mode), splits the remainder into `## Stage:` sections, and
+// validates: frontmatter present with a name, verify in {strict,normal,off}
+// (default normal when omitted), permission_mode in the closed set when present,
+// at least one stage, every stage named and non-empty, and every {var}
+// recognized.
 func Parse(content, source string) (Playbook, error) {
 	fm, rest, err := splitFrontmatter(content)
 	if err != nil {
@@ -49,6 +51,8 @@ func Parse(content, source string) (Playbook, error) {
 			if val != "" {
 				pb.Verify = val
 			}
+		case "permission_mode":
+			pb.PermissionMode = val
 		}
 	}
 
@@ -57,6 +61,13 @@ func Parse(content, source string) (Playbook, error) {
 	}
 	if !verifyValues[pb.Verify] {
 		return Playbook{}, fmt.Errorf("invalid verify %q (want strict|normal|off)", pb.Verify)
+	}
+	// Empty is legal (inherit the global knob); anything present must be in the
+	// closed set — an unknown mode reaching `claude` kills the spawn before the
+	// run starts, turning a typo into a dead task.
+	if pb.PermissionMode != "" && !permissionModeValues[pb.PermissionMode] {
+		return Playbook{}, fmt.Errorf(
+			"invalid permission_mode %q (want bypassPermissions|acceptEdits|default)", pb.PermissionMode)
 	}
 
 	stages, err := parseStages(rest)
