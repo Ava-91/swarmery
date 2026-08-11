@@ -89,9 +89,11 @@ func TestWizardGET_DTOFieldNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The FROZEN field-name contract — phase 3 mirrors these in TypeScript.
-	want := []string{"active", "currentQuestion", "history", "planDir", "rawReply",
-		"runningPlan", "sessionId", "sessionUuid", "startedAt", "status"}
+	// The FROZEN field-name contract — phase 3 mirrors these in TypeScript
+	// (mode/reviseTaskId: plan-revision phase 4 does the same).
+	want := []string{"active", "currentQuestion", "history", "mode", "planDir",
+		"rawReply", "reviseTaskId", "runningPlan", "sessionId", "sessionUuid",
+		"startedAt", "status"}
 	var keys []string
 	for k := range got {
 		keys = append(keys, k)

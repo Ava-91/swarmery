@@ -21,8 +21,12 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrev"
 )
 
 // Sentinel errors mapped to HTTP statuses by the api layer.
@@ -33,6 +37,16 @@ var (
 	ErrProjectNotFound = errors.New("project not found")
 	// ErrNoPath: the project has no filesystem path to run the planner in (409).
 	ErrNoPath = errors.New("project has no known path to plan in")
+	// ErrTaskNotFound: no workspace task row for the given id (404).
+	ErrTaskNotFound = errors.New("workspace task not found")
+	// ErrNoPlan: the task has no plan artifact — nothing to revise (409).
+	ErrNoPlan = errors.New("task has no plan directory")
+	// ErrPlanBusy: a phase of the plan (or the whole-plan run) is running —
+	// revising mid-run would race the executor's own doc edits (409).
+	ErrPlanBusy = errors.New("plan has a running phase or an active plan run")
+	// ErrRevisionOpen: the plan already has a staged revision awaiting a
+	// decision — one open revision per plan (409).
+	ErrRevisionOpen = errors.New("a staged revision is already open for this plan")
 )
 
 // run is one in-flight planner: its cancel (aborts the child claude), start
@@ -68,9 +82,19 @@ type Service struct {
 	// source in processAlive, which is what makes a planner that outlived a daemon
 	// restart still read as alive. nil ⇒ a ps scan (procfind). Test seam.
 	FindRun func(sessionUUID string) (int, bool)
+	// ScratchRoot is where revise sessions stage proposed plan files (one
+	// subdir per session uuid). Wired by cmd/swarmery to <db dir>/revisions;
+	// "" falls back to the OS temp dir (bare unit tests).
+	ScratchRoot string
 
 	mu     sync.Mutex
 	active map[int64]run // projectID → in-flight planner
+	// triggers remembers the epic_phases.id a revise session was started FROM
+	// (a phase-diagnosis "Revise plan" action), keyed by session uuid, so Stage
+	// can stamp origin=phase_diagnosis + trigger_phase_id on the revision row.
+	// In-memory only: a daemon restart mid-interview degrades the origin to
+	// operator_revise, which is honest — nobody can prove the trigger anymore.
+	triggers map[string]int64
 }
 
 // NewService builds a planning service. The caller wires DB + Run (ClaudeRunner);
@@ -167,10 +191,12 @@ func (s *Service) Start(projectID int64, idea string) (sessionUUID string, err e
 	if s.markCancelled(projectID) {
 		log.Printf("planning: project=%d superseded an open wizard", projectID)
 	}
+	// mode='plan' explicitly, never via the column default — the two modes must
+	// be distinguishable in the row itself, not by which code path inserted it.
 	if _, err := s.DB.Exec(
-		`INSERT INTO planning_sessions(project_id, session_uuid, status, idea, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?)`,
-		projectID, uuid, StatusGenerating, idea, now, now); err != nil {
+		`INSERT INTO planning_sessions(project_id, session_uuid, status, idea, mode, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?)`,
+		projectID, uuid, StatusGenerating, idea, ModePlan, now, now); err != nil {
 		// Non-fatal: the run still executes; the wizard just has no durable row
 		// (OnSessionTurns will no-op on the uuid miss).
 		log.Printf("error: planning: insert wizard row project=%d uuid=%s: %v", projectID, uuid, err)
@@ -182,6 +208,171 @@ func (s *Service) Start(projectID int64, idea string) (sessionUUID string, err e
 	spec := RunSpec{Prompt: BuildPrompt(idea), SessionUUID: uuid, Cwd: path.String}
 	s.spawn(func() { s.runAndHandle(ctx, cancel, projectID, spec) })
 	return uuid, nil
+}
+
+// scratchRoot resolves the staging root for revise sessions.
+func (s *Service) scratchRoot() string {
+	if s.ScratchRoot != "" {
+		return s.ScratchRoot
+	}
+	return filepath.Join(os.TempDir(), "swarmery-revisions")
+}
+
+// StartRevise admits a revise-mode wizard for an existing plan: the SAME
+// interview loop as Start, but seeded with the plan being revised plus the
+// evidence of what its phases achieved, and ending in a staged revision
+// (REVISION STAGED: sentinel → Stage) instead of a new plan dir. Nothing under
+// the plan dir is written by this path — Apply is a later, separate decision.
+//
+// triggerPhaseID is the epic_phases.id of the diagnosis that prompted the
+// revision (nil for a plain operator "Revise" action); it selects the staged
+// revision's origin.
+func (s *Service) StartRevise(taskID int64, reason string, triggerPhaseID *int64) (sessionUUID string, err error) {
+	// Resolve the workspace task → project id/path + title. Same resolution the
+	// api layer's epic endpoints perform; duplicated here (with the join pulled
+	// in) because planning must not import internal/api.
+	var (
+		projectID int64
+		projPath  sql.NullString
+		title     string
+	)
+	qerr := s.DB.QueryRow(`
+		SELECT t.project_id, p.path, t.title
+		  FROM tasks t JOIN projects p ON p.id = t.project_id
+		 WHERE t.id = ? AND t.source = 'workspace'`, taskID).
+		Scan(&projectID, &projPath, &title)
+	if errors.Is(qerr, sql.ErrNoRows) {
+		return "", ErrTaskNotFound
+	}
+	if qerr != nil {
+		return "", qerr
+	}
+	if !projPath.Valid || projPath.String == "" {
+		return "", ErrNoPath
+	}
+
+	// Plan dir from the task's plan artifact — the exact SELECT of
+	// api.Handler.resolveEpicDirs (do not drift: both must resolve the same dir).
+	var planDir string
+	qerr = s.DB.QueryRow(
+		`SELECT path FROM task_artifacts WHERE task_id = ? AND kind = 'plan'`,
+		taskID).Scan(&planDir)
+	if errors.Is(qerr, sql.ErrNoRows) {
+		return "", ErrNoPlan
+	}
+	if qerr != nil {
+		return "", qerr
+	}
+
+	// Refuse while the plan is executing: a phase run edits its own phase doc,
+	// and a whole-plan run edits all of them — a revision staged against those
+	// moving bytes would be stale before the operator could read it.
+	var busy int
+	if err := s.DB.QueryRow(`
+		SELECT (SELECT COUNT(*) FROM epic_phases WHERE workspace_task_id = ? AND run_state = 'running')
+		     + (SELECT COUNT(*) FROM plan_runs   WHERE workspace_task_id = ? AND run_state = 'running')`,
+		taskID, taskID).Scan(&busy); err != nil {
+		return "", err
+	}
+	if busy > 0 {
+		return "", ErrPlanBusy
+	}
+
+	// One open revision per plan — a second staged proposal over the same base
+	// would make Apply's base_hash checks meaningless.
+	if rev, err := planrev.LatestStaged(s.DB, taskID); err != nil {
+		return "", err
+	} else if rev != nil {
+		return "", ErrRevisionOpen
+	}
+
+	evidence, doneDocs, err := BuildEvidence(s.DB, taskID)
+	if err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	if _, busyRun := s.active[projectID]; busyRun {
+		s.mu.Unlock()
+		return "", ErrActive
+	}
+	uuid := s.UUID()
+	ctx, cancel := context.WithCancel(context.Background())
+	s.active[projectID] = run{cancel: cancel, startedAt: s.clock(), uuid: uuid}
+	if triggerPhaseID != nil {
+		if s.triggers == nil {
+			s.triggers = make(map[string]int64)
+		}
+		s.triggers[uuid] = *triggerPhaseID
+	}
+	s.mu.Unlock()
+
+	release := func() {
+		cancel()
+		s.mu.Lock()
+		delete(s.active, projectID)
+		delete(s.triggers, uuid)
+		s.mu.Unlock()
+	}
+
+	scratchDir := filepath.Join(s.scratchRoot(), uuid)
+	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
+		release()
+		return "", err
+	}
+
+	// Durable wizard row: mode='revise' + the task link. idea = the operator's
+	// reason, so the existing history UI has something meaningful to show.
+	now := s.ts()
+	if s.markCancelled(projectID) {
+		log.Printf("planning: project=%d superseded an open wizard (revise)", projectID)
+	}
+	if _, err := s.DB.Exec(
+		`INSERT INTO planning_sessions(project_id, session_uuid, status, idea, mode, revise_task_id, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?)`,
+		projectID, uuid, StatusGenerating, reason, ModeRevise, taskID, now, now); err != nil {
+		// Non-fatal, mirroring Start: the run still executes; OnSessionTurns
+		// no-ops on the uuid miss and no revision can be staged for it.
+		log.Printf("error: planning: insert revise wizard row task=%d uuid=%s: %v", taskID, uuid, err)
+	}
+
+	// Seed: the full current plan (README + every phase doc) travels in the
+	// prompt so the agent starts from what IS, not from a re-read that could
+	// race a concurrent edit.
+	readme, _ := os.ReadFile(filepath.Join(planDir, "README.md")) // "" when absent
+	prompt := BuildRevisePrompt(ReviseInput{
+		Reason:     reason,
+		PlanDir:    planDir,
+		ScratchDir: scratchDir,
+		PlanTitle:  title,
+		Evidence:   evidence,
+		DoneDocs:   doneDocs,
+		Readme:     string(readme),
+		Docs:       readSeedDocs(planDir),
+	})
+
+	log.Printf("planning: start revise task=%d project=%d uuid=%s plan=%q scratch=%q",
+		taskID, projectID, uuid, planDir, scratchDir)
+	s.notify(projectID)
+
+	spec := RunSpec{Prompt: prompt, SessionUUID: uuid, Cwd: projPath.String}
+	s.spawn(func() { s.runAndHandle(ctx, cancel, projectID, spec) })
+	return uuid, nil
+}
+
+// readSeedDocs loads every phase/step doc of the plan dir (sorted, README
+// excluded) for the revise prompt seed. Best-effort: an unreadable doc is
+// skipped — the evidence table still names it.
+func readSeedDocs(planDir string) []SeedDoc {
+	var docs []SeedDoc
+	for _, name := range listPlanDocNames(planDir) {
+		b, err := os.ReadFile(filepath.Join(planDir, name))
+		if err != nil {
+			continue
+		}
+		docs = append(docs, SeedDoc{Name: name, Content: string(b)})
+	}
+	return docs
 }
 
 // runAndHandle executes the planner run to completion and always releases the

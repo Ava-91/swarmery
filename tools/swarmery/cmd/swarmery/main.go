@@ -1450,6 +1450,9 @@ func cmdServe(args []string) error {
 	// startup: in-flight planning is in-memory only, so a restart simply forgets
 	// any orphaned run (the plan it wrote is still picked up by wsingest).
 	planningSvc := planning.NewService(db, planning.ClaudeRunner{})
+	// Revise sessions stage proposed plan files here (one subdir per session)
+	// until the daemon validates them into plan_revisions rows.
+	planningSvc.ScratchRoot = filepath.Join(filepath.Dir(*dbPath), "revisions")
 	api.AttachPlanning(planningSvc)
 
 	// interactive planning v2 phase 5: phase runs — execute ONE plan phase
