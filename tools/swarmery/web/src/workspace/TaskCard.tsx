@@ -16,7 +16,15 @@
 
 import type { ReactNode } from 'react';
 import type { BoardColumn, BoardTask, TaskOrigin, TaskPriority } from '../api/types';
-import { BOARD_COLUMNS, COLUMN_LABELS, labelColor, visibleLabels } from './boardModel';
+import {
+  BOARD_COLUMNS,
+  BOARD_LANES,
+  COLUMN_LABELS,
+  laneOf,
+  LANE_TITLES,
+  labelColor,
+  visibleLabels,
+} from './boardModel';
 
 const PRIORITY_DOT: Record<TaskPriority, string> = {
   urgent: 'bg-red',
@@ -303,12 +311,21 @@ function ReviewActions({ onMarkDone, onReview }: { onMarkDone: () => void; onRev
   );
 }
 
+/** The two history columns, grouped under their own heading in ColumnMenu —
+ * `laneOf` returns null for both, which is exactly why they need a fallback
+ * group rather than being silently dropped from the list. */
+const HISTORY_COLUMNS: BoardColumn[] = ['done', 'archived'];
+
 /**
  * The escape hatch: a native <select> covering every legal column, on every
  * card. The lane verbs above are the paths worth naming; this is what makes the
  * remaining transitions reachable at all — and, being a real <select>, it is
- * what keeps them reachable from a keyboard and a screen reader. It still speaks
- * COLUMNS, not lanes, because that is what the PATCH carries.
+ * what keeps them reachable from a keyboard and a screen reader. Grouped into
+ * `<optgroup>`s by the lane each column now renders in (plus a History group
+ * for done/archived) so the list reads in the three-lane vocabulary the rest
+ * of the post-redesign board uses, rather than a flat pre-redesign column
+ * list — the `value`s underneath are still raw COLUMNS, because that is what
+ * the PATCH carries.
  */
 function ColumnMenu({
   column,
@@ -328,11 +345,22 @@ function ColumnMenu({
       }}
       className="rounded-md border border-line bg-field px-1 py-[1px] font-mono text-[9.5px] text-ink-dim outline-none transition-colors hover:border-line-strong focus:border-ink-dim"
     >
-      {BOARD_COLUMNS.map((c) => (
-        <option key={c} value={c}>
-          {COLUMN_LABELS[c]}
-        </option>
+      {BOARD_LANES.map((lane) => (
+        <optgroup key={lane} label={LANE_TITLES[lane]}>
+          {BOARD_COLUMNS.filter((c) => laneOf(c) === lane).map((c) => (
+            <option key={c} value={c}>
+              {COLUMN_LABELS[c]}
+            </option>
+          ))}
+        </optgroup>
       ))}
+      <optgroup label="History">
+        {HISTORY_COLUMNS.map((c) => (
+          <option key={c} value={c}>
+            {COLUMN_LABELS[c]}
+          </option>
+        ))}
+      </optgroup>
     </select>
   );
 }

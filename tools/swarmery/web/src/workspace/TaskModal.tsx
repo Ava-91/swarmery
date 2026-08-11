@@ -4,7 +4,7 @@
 // is about — and it matches every other detail surface in the dashboard.
 //
 // Editable: title, prompt, priority, model, agent, playbook, file scope (chips),
-// dependencies (chips of T-ids). Actions: Move to Todo, Pause/Resume
+// dependencies (chips of T-ids). Actions: Move to Queued, Pause/Resume
 // (user_paused), Archive, Delete. Read-only (dispatcher-owned): branch,
 // worktree path, dispatch error, verdict + detail, a link to the linked
 // session's list, and — on a captured card — a link to the session it was
@@ -383,9 +383,10 @@ export function TaskModal({
                 type="button"
                 disabled={busy}
                 onClick={() => run({ boardColumn: 'todo' })}
+                data-tip="the Working lane's Queued group — waiting for a dispatch slot"
                 className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] text-ink-2 transition-colors hover:bg-surface2 disabled:opacity-40"
               >
-                Move to Todo
+                Move to Queued
               </button>
             )}
             <button
