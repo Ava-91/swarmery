@@ -274,8 +274,8 @@ function DispatchGatesFigure(): JSX.Element {
         <div>
           Clear all nine and the card gets an isolated worktree on{' '}
           <span className="font-mono text-[10.5px] text-ink-3">swarm/&lt;T-id&gt;</span>, cut from
-          the default branch tip — that SHA is persisted, so verification and the review diff both
-          stand on it.
+          the tip of whatever branch the main checkout is on — that SHA is persisted, so
+          verification and the review diff both stand on it.
         </div>
       }
     >
