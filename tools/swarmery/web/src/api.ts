@@ -50,9 +50,12 @@ import type {
   PermissionRequest,
   PermissionRequestStatus,
   PlanDoc,
+  PlanRevision,
   PlanRunMode,
   PlanningStart,
   PlanningStatus,
+  RevisionConflict,
+  RevisionFile,
   ProjectDetail,
   RunConflictCode,
   ProjectMeta,
@@ -1260,6 +1263,111 @@ export async function proceedPlanning(projectId: number): Promise<{ status: stri
     throw new Error(data.error ?? `proceed planning failed: ${String(res.status)}`);
   }
   return (await res.json()) as { status: string };
+}
+
+// --- plan revisions (plan-revision phase 4) -----------------------------------
+
+/** startRevision 409: when a staged revision is already open, the server names
+ * it so the UI can offer "review it" instead of a dead end. */
+export interface RevisionStartError extends Error {
+  revisionId?: number;
+}
+
+/** applyRevision 409: every file whose live content drifted since staging. */
+export interface RevisionApplyError extends Error {
+  conflicts?: RevisionConflict[];
+}
+
+/**
+ * POST /api/epics/{taskId}/revisions {reason, phaseId?} → 202 {sessionUuid} — a
+ * revise wizard against the task's existing plan. Non-2xx (400 empty reason,
+ * 404 unknown task, 409 plan busy / revision open / planner active, 503 not
+ * attached) throws the server's {error}; the revision-open 409 carries the open
+ * revision's id on the thrown error (RevisionStartError).
+ */
+export async function startRevision(
+  taskId: number,
+  reason: string,
+  phaseId?: number,
+): Promise<PlanningStart> {
+  if (MOCK) return mockApi.startRevision(taskId, reason, phaseId);
+  const res = await fetch(`/api/epics/${String(taskId)}/revisions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason, ...(phaseId !== undefined ? { phaseId } : {}) }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string; revisionId?: number };
+    const err: RevisionStartError = new Error(
+      data.error ?? `start revision failed: ${String(res.status)}`,
+    );
+    if (typeof data.revisionId === 'number') err.revisionId = data.revisionId;
+    throw err;
+  }
+  return (await res.json()) as PlanningStart;
+}
+
+/** GET /api/epics/{taskId}/revisions — every revision of the task's plan,
+ * newest first (file actions only, no diffs). */
+export async function fetchRevisions(taskId: number): Promise<PlanRevision[]> {
+  if (MOCK) return mockApi.revisions(taskId);
+  const data = await get<{ revisions: PlanRevision[] }>(
+    `/api/epics/${String(taskId)}/revisions`,
+  );
+  return data.revisions;
+}
+
+/** GET /api/revisions/{id} — one revision with per-file `stale` flags and
+ * unified diffs rendered against the LIVE docs at request time. */
+export async function fetchRevision(revisionId: number): Promise<PlanRevision> {
+  if (MOCK) return mockApi.revision(revisionId);
+  const data = await get<{ revision: PlanRevision; files: RevisionFile[] }>(
+    `/api/revisions/${String(revisionId)}`,
+  );
+  return { ...data.revision, files: data.files };
+}
+
+/**
+ * POST /api/revisions/{id}/apply → 200 {status:"applied", files:N} — the one
+ * irreversible step. A 409 (content drifted since staging) throws an error
+ * whose MESSAGE names the conflicting docs and whose `conflicts` carries the
+ * full rows (RevisionApplyError), so the review view can render them.
+ */
+export async function applyRevision(
+  revisionId: number,
+): Promise<{ status: string; files: number }> {
+  if (MOCK) return mockApi.applyRevision(revisionId);
+  const res = await fetch(`/api/revisions/${String(revisionId)}/apply`, { method: 'POST' });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      conflicts?: RevisionConflict[];
+    };
+    const docs = (data.conflicts ?? []).map((c) => c.docPath);
+    const err: RevisionApplyError = new Error(
+      docs.length > 0
+        ? `${data.error ?? 'apply conflicts'}: ${docs.join(', ')}`
+        : (data.error ?? `apply revision failed: ${String(res.status)}`),
+    );
+    if (data.conflicts !== undefined) err.conflicts = data.conflicts;
+    throw err;
+  }
+  return (await res.json()) as { status: string; files: number };
+}
+
+/** POST /api/revisions/{id}/reject {note?} → 200 — decline the staged diff; no
+ * plan file changes. The note lands on the revision's reason ("Rejected: …"). */
+export async function rejectRevision(revisionId: number, note?: string): Promise<void> {
+  if (MOCK) return mockApi.rejectRevision(revisionId, note);
+  const res = await fetch(`/api/revisions/${String(revisionId)}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(note !== undefined && note.trim() !== '' ? { note } : {}),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `reject revision failed: ${String(res.status)}`);
+  }
 }
 
 /** POST /api/dispatch/pause — global or per-project pause toggle. */

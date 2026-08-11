@@ -45,13 +45,14 @@
 // (column moves on legacy-linked board tasks) AND on `plan_updated` (checkbox
 // flips, lifecycle transitions, plan rescans) so progress ticks without a reload.
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import type {
   BoardColumn,
   Epic,
   EpicPhase,
   PhaseRunOutcome,
+  PlanRevision,
   Session,
   SessionStatus,
   WSMessage,
@@ -62,24 +63,29 @@ import {
   epicLifecycle,
   fetchEpics,
   fetchPlanDoc,
+  fetchRevisions,
   fetchSessions,
   runEpicPhase,
   runEpicPlan,
   savePlanDoc,
+  startRevision,
   togglePlanCheckbox,
   type EpicLifecycleAction,
   type PhaseRunBranchError,
+  type RevisionStartError,
 } from '../api';
 import { fetchSystemItems } from '../api/system';
 import type { PlanRunMode } from '../api/types';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
 import { useLiveUpdates } from '../lib/ws';
 import { Markdown } from '../lib/markdown';
-import { fmtCost, fmtDateTime, fmtElapsed } from '../lib/format';
+import { fmtAgo, fmtCost, fmtDateTime, fmtElapsed } from '../lib/format';
 import { useSessionHref } from '../lib/sessionHref';
 import { Empty, ErrorBox, Loading } from '../components/ui';
 import { RunOutcomeModal } from '../components/RunOutcomeModal';
 import { PlanBranchDirtyModal, type PlanBranchDirty } from '../components/PlanBranchDirtyModal';
+import { RevisionReview, ORIGIN_LABEL } from './planning/RevisionReview';
+import { ReviseModal } from './planning/ReviseModal';
 
 /** A board column that counts as "resolved" for the dependency gate. */
 function isResolvedColumn(col: BoardColumn | null): boolean {
@@ -367,7 +373,7 @@ function epicFilterOf(status: Epic['status']): EpicFilter {
 
 /** Plan-details tab ids. Spec exists only on plans with a spec.md; Summary
  * only on complete plans. */
-type PlanDetailTab = 'plan' | 'spec' | 'summary' | 'edit';
+type PlanDetailTab = 'plan' | 'spec' | 'summary' | 'revisions' | 'edit';
 
 /** Phase-details tab ids. All three always exist — a phase with nothing shipped
  * yet still shows Summary (with an empty note) rather than hiding the tab, which
@@ -468,10 +474,52 @@ export function Plans(): JSX.Element {
     });
   }, [filtered]);
 
+  // ?task=<id>[&tab=revisions] hand-off (Planning Mode's revise banner and its
+  // "Review changes" affordance): preselect the plan — switching the filter to
+  // the tab the plan lives under — and optionally open its Revisions tab.
+  // Consumed and STRIPPED in one pass (the self-disarming idiom PlanningMode
+  // uses for ?idea=), and only once the epics have loaded so the target can be
+  // resolved. The pending ref survives the [selected] reset effect below.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pendingDetailRef = useRef<DetailTarget | null>(null);
+  useEffect(() => {
+    if (epics === null) return;
+    const raw = searchParams.get('task');
+    if (raw === null) return;
+    const wantRevisions = searchParams.get('tab') === 'revisions';
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('task');
+        next.delete('tab');
+        return next;
+      },
+      { replace: true },
+    );
+    const taskId = Number(raw);
+    const epic = epics.find((e) => e.taskId === taskId);
+    if (epic === undefined) return;
+    setFilter(epicFilterOf(epic.status));
+    const target: DetailTarget | null = wantRevisions ? { kind: 'plan', tab: 'revisions' } : null;
+    setSelected((cur) => {
+      if (cur === taskId) {
+        // No selection change → the reset effect will not fire; open directly.
+        if (target !== null) setDetailTarget(target);
+        return cur;
+      }
+      pendingDetailRef.current = target;
+      return taskId;
+    });
+  }, [epics, searchParams, setSearchParams]);
+
   // The detail panel describes ONE epic's phase/plan — switching plans closes it,
   // and the run-diagnosis modal with it (its phase id belongs to the old plan).
+  // A pending deep-link target (set together with the selection above) opens
+  // instead of the default close.
   useEffect(() => {
-    setDetailTarget(null);
+    const pending = pendingDetailRef.current;
+    pendingDetailRef.current = null;
+    setDetailTarget(pending);
     setOutcomeFor(null);
   }, [selected]);
 
@@ -765,6 +813,10 @@ export function Plans(): JSX.Element {
           }
           onClose={() => setOutcomeFor(null)}
           onRetry={() => startRun(activeEpic.taskId, outcomeFor)}
+          onOpenRevisions={() => {
+            setOutcomeFor(null);
+            setDetailTarget({ kind: 'plan', tab: 'revisions' });
+          }}
         />
       )}
 
@@ -828,6 +880,57 @@ function EpicDetail({
   // next to it would invite two worktrees editing the same files.
   const planRunning = epic.planRun?.runState === 'running';
 
+  // Plan revisions (plan-revision phase 4), fetched once per selected plan and
+  // shared by the Revisions tab, its count badge, and the phase panels'
+  // "revised — see Revisions" note. `null` while loading; a fetch failure (e.g.
+  // 503 planning not attached) surfaces in the tab, not as a page error.
+  const [revisions, setRevisions] = useState<PlanRevision[] | null>(null);
+  const [revisionsErr, setRevisionsErr] = useState<string | null>(null);
+  const reloadRevisions = useCallback((): void => {
+    fetchRevisions(epic.taskId)
+      .then((rs) => {
+        setRevisions(rs);
+        setRevisionsErr(null);
+      })
+      .catch((e: unknown) => {
+        setRevisions([]);
+        setRevisionsErr(e instanceof Error ? e.message : String(e));
+      });
+  }, [epic.taskId]);
+  useEffect(() => {
+    setRevisions(null);
+    setRevisionsErr(null);
+    reloadRevisions();
+  }, [reloadRevisions]);
+  const stagedCount = useMemo(
+    () => (revisions ?? []).filter((r) => r.status === 'staged').length,
+    [revisions],
+  );
+
+  // Revise-plan entry point: reason modal → POST → land on the planning page,
+  // where the revise wizard interviews against this plan.
+  const navigate = useNavigate();
+  const { slug } = useProjectWorkspace();
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [reviseBusy, setReviseBusy] = useState(false);
+  const [reviseErr, setReviseErr] = useState<string | null>(null);
+  const [reviseOpenRevId, setReviseOpenRevId] = useState<number | null>(null);
+  const submitRevise = (reason: string): void => {
+    setReviseBusy(true);
+    setReviseErr(null);
+    setReviseOpenRevId(null);
+    startRevision(epic.taskId, reason)
+      .then(() => {
+        navigate(`/p/${slug}/planning`);
+      })
+      .catch((e: unknown) => {
+        setReviseErr(e instanceof Error ? e.message : String(e));
+        const openId = (e as RevisionStartError).revisionId;
+        if (typeof openId === 'number') setReviseOpenRevId(openId);
+      })
+      .finally(() => setReviseBusy(false));
+  };
+
   // Escape backs out of the details — the same affordance the rail's ✕ had,
   // without stealing the key while the phase list is showing.
   const open = detail !== null;
@@ -888,6 +991,23 @@ function EpicDetail({
             {busyLifecycle ? '…' : label}
           </button>
         ))}
+        <button
+          type="button"
+          disabled={reviseBusy || planRunning || phaseRunActive}
+          data-tip={
+            planRunning || phaseRunActive
+              ? 'a run owns the plan docs — revise once it finishes'
+              : 'interview against this plan and stage the changes as a reviewable diff'
+          }
+          onClick={() => {
+            setReviseErr(null);
+            setReviseOpenRevId(null);
+            setReviseOpen(true);
+          }}
+          className="rounded-md border border-brand/40 px-2 py-1 font-mono text-[10.5px] text-brand transition-colors hover:bg-brand/10 disabled:cursor-not-allowed disabled:border-line disabled:text-ink-faint"
+        >
+          Revise plan
+        </button>
         {complete && (
           <button
             type="button"
@@ -947,6 +1067,8 @@ function EpicDetail({
                   onCancelRun={() => onCancelRun(detail.phase.id)}
                   onOpenOutcome={() => onOpenOutcome(detail.phase.id)}
                   onDocChanged={onDocChanged}
+                  revisions={revisions}
+                  onOpenRevisions={() => onOpenPlan('revisions')}
                 />
               ) : (
                 <PlanDetailPanel
@@ -954,6 +1076,13 @@ function EpicDetail({
                   tab={detail.tab}
                   onTab={onOpenPlan}
                   onDocChanged={onDocChanged}
+                  revisions={revisions}
+                  revisionsErr={revisionsErr}
+                  stagedCount={stagedCount}
+                  onRevisionsChanged={() => {
+                    reloadRevisions();
+                    onDocChanged();
+                  }}
                 />
               )}
             </>
@@ -976,6 +1105,21 @@ function EpicDetail({
           activePhaseId={detail !== null && detail.kind === 'phase' ? detail.phase.id : null}
         />
       </div>
+
+      <ReviseModal
+        open={reviseOpen}
+        planTitle={epic.title}
+        busy={reviseBusy}
+        error={reviseErr}
+        openRevisionId={reviseOpenRevId}
+        onClose={() => setReviseOpen(false)}
+        onSubmit={submitRevise}
+        onOpenRevision={() => {
+          setReviseOpen(false);
+          reloadRevisions();
+          onOpenPlan('revisions');
+        }}
+      />
     </div>
   );
 }
@@ -1907,6 +2051,8 @@ function PhaseDetailPanel({
   onCancelRun,
   onOpenOutcome,
   onDocChanged,
+  revisions,
+  onOpenRevisions,
 }: {
   epic: Epic;
   phase: EpicPhase;
@@ -1920,6 +2066,10 @@ function PhaseDetailPanel({
   /** Open the run-diagnosis modal for this phase. */
   onOpenOutcome: () => void;
   onDocChanged: () => void;
+  /** The plan's revisions (fetched by EpicDetail) — feeds the "revised" note. */
+  revisions: PlanRevision[] | null;
+  /** Jump to the plan's Revisions tab. */
+  onOpenRevisions: () => void;
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
   const sessionHref = useSessionHref();
@@ -1942,6 +2092,17 @@ function PhaseDetailPanel({
   );
   const [busyLine, setBusyLine] = useState<number | null>(null);
   const [toggleErr, setToggleErr] = useState<string | null>(null);
+
+  // The newest APPLIED revision that touched this phase's doc (by its current
+  // path or as a rename source) — the one-line provenance note in the header.
+  const appliedRevision = useMemo(() => {
+    const hits = (revisions ?? []).filter(
+      (r) =>
+        r.status === 'applied' &&
+        r.files.some((f) => f.docPath === phase.docRelPath || f.renameFrom === phase.docRelPath),
+    );
+    return hits.length > 0 ? hits[0] : undefined; // list arrives newest first
+  }, [revisions, phase.docRelPath]);
 
   // Toggling a criterion PATCHes that exact source line; the response is the
   // fresh doc, and the page refetch keeps the rollup/list in step.
@@ -2043,6 +2204,19 @@ function PhaseDetailPanel({
               </span>
             ))}
           </div>
+          {appliedRevision !== undefined && (
+            <div className="mt-1.5 font-mono text-[10px] text-ink-faint">
+              this doc was changed by an applied revision{' '}
+              {fmtAgo(appliedRevision.decidedAt ?? appliedRevision.createdAt)} —{' '}
+              <button
+                type="button"
+                onClick={onOpenRevisions}
+                className="text-brand underline-offset-2 transition-colors hover:underline"
+              >
+                see Revisions
+              </button>
+            </div>
+          )}
         </>
       }
       tabBar={
@@ -2168,11 +2342,21 @@ function PlanDetailPanel({
   tab,
   onTab,
   onDocChanged,
+  revisions,
+  revisionsErr,
+  stagedCount,
+  onRevisionsChanged,
 }: {
   epic: Epic;
   tab: PlanDetailTab;
   onTab: (tab: PlanDetailTab) => void;
   onDocChanged: () => void;
+  /** The plan's revisions, newest first (fetched by EpicDetail). */
+  revisions: PlanRevision[] | null;
+  revisionsErr: string | null;
+  stagedCount: number;
+  /** A revision was decided — refetch the list (and the docs, on apply). */
+  onRevisionsChanged: () => void;
 }): JSX.Element {
   const resolvedSeqs = useMemo(() => computeResolvedSeqs(epic.phases), [epic.phases]);
   const complete = planComplete(epic, resolvedSeqs);
@@ -2185,6 +2369,7 @@ function PlanDetailPanel({
     { id: 'plan', label: 'Plan' },
     ...(epic.hasSpec ? [{ id: 'spec' as const, label: 'Spec' }] : []),
     ...(complete ? [{ id: 'summary' as const, label: 'Summary' }] : []),
+    { id: 'revisions', label: stagedCount > 0 ? `Revisions (${String(stagedCount)})` : 'Revisions' },
     { id: 'edit', label: 'Edit' },
   ];
 
@@ -2216,10 +2401,105 @@ function PlanDetailPanel({
         <PlanReadme epic={epic} />
       ) : activeTab === 'spec' ? (
         <PlanSpec epic={epic} />
+      ) : activeTab === 'revisions' ? (
+        <PlanRevisionsTab
+          revisions={revisions}
+          revisionsErr={revisionsErr}
+          onChanged={onRevisionsChanged}
+        />
+
       ) : (
         <PlanSummary epic={epic} resolvedSeqs={resolvedSeqs} />
       )}
     </DetailShell>
+  );
+}
+
+const REVISION_STATUS_CHIP: Record<PlanRevision['status'], string> = {
+  staged: 'border-amber/40 bg-amber/10 text-amber',
+  applied: 'border-green/40 bg-green/10 text-green',
+  rejected: 'border-red/40 bg-red/10 text-red',
+  superseded: 'border-line text-ink-faint',
+  failed: 'border-red/40 bg-red/10 text-red',
+};
+
+/** Revisions tab body: the open (staged) revision as a full diff review, and
+ * below it the decided history — every row answers "was it manual or
+ * automated?" with its `origin` and `decidedBy`, never only the open one. */
+function PlanRevisionsTab({
+  revisions,
+  revisionsErr,
+  onChanged,
+}: {
+  revisions: PlanRevision[] | null;
+  revisionsErr: string | null;
+  onChanged: () => void;
+}): JSX.Element {
+  if (revisionsErr !== null) return <ErrorBox message={revisionsErr} onRetry={onChanged} />;
+  if (revisions === null) return <Loading label="revisions…" />;
+  const staged = revisions.find((r) => r.status === 'staged');
+  const decided = revisions.filter((r) => r.status !== 'staged');
+  if (staged === undefined && decided.length === 0) {
+    return (
+      <div className="font-mono text-[11.5px] text-ink-faint">
+        no revisions — &quot;Revise plan&quot; in the action row starts one
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      {staged !== undefined && (
+        <RailSection label="staged — awaiting your decision">
+          <RevisionReview revisionId={staged.id} onDecided={onChanged} />
+        </RailSection>
+      )}
+      {decided.length > 0 && (
+        <RailSection label="history">
+          <ul className="space-y-2">
+            {decided.map((r) => (
+              <li key={r.id} className="rounded-lg border border-line bg-surface/40 px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`rounded border px-1.5 py-px font-mono text-[9.5px] ${REVISION_STATUS_CHIP[r.status]}`}
+                  >
+                    {r.status}
+                  </span>
+                  <span className="rounded border border-line-strong bg-surface2 px-1.5 py-px font-mono text-[9.5px] text-ink-dim">
+                    {ORIGIN_LABEL[r.origin]}
+                  </span>
+                  <span className="font-mono text-[10px] text-ink-faint">
+                    {r.decidedAt !== undefined
+                      ? `decided ${fmtDateTime(r.decidedAt)}${r.decidedBy !== undefined ? ` by ${r.decidedBy}` : ''}`
+                      : `created ${fmtDateTime(r.createdAt)}`}
+                  </span>
+                </div>
+                <div className="mt-1.5 line-clamp-3 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2">
+                  {r.reason}
+                </div>
+                {r.error !== undefined && r.error !== '' && (
+                  <div className="mt-1 font-mono text-[10.5px] break-words text-red">{r.error}</div>
+                )}
+                <div className="mt-1.5 font-mono text-[10px] text-ink-faint">
+                  {r.files.length} doc{r.files.length === 1 ? '' : 's'}
+                  {r.files.length > 0 && (
+                    <>
+                      {': '}
+                      {r.files
+                        .map((f) =>
+                          f.action === 'rename' && f.renameFrom !== undefined
+                            ? `${f.renameFrom} → ${f.docPath} (rename)`
+                            : `${f.docPath} (${f.action})`,
+                        )
+                        .join(', ')}
+                    </>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </RailSection>
+      )}
+    </div>
   );
 }
 

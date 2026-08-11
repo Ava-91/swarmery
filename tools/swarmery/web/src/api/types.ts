@@ -1563,11 +1563,70 @@ export interface PlanningStatus {
   rawReply: string | null;
   history: PlanningTurn[];
   planDir: string | null;
+  /** Wizard mode (plan-revision phase 2): `revise` interviews against an
+   * EXISTING plan and stages a diff instead of writing docs. The empty string
+   * mirrors the wire ("" when no wizard row exists), same as `status`. */
+  mode: 'plan' | 'revise' | '';
+  /** The workspace task whose plan a `revise` wizard targets; null otherwise. */
+  reviseTaskId: number | null;
 }
 
 /** POST /api/projects/{id}/planning → 202 body. */
 export interface PlanningStart {
   sessionUuid: string;
+}
+
+// --- plan revisions (plan-revision phase 3/4) ---------------------------------
+// Go DTOs: internal/api/revisions.go (revisionDTO / revisionDetailFileDTO) and
+// the apply 409 body (internal/planrev.Conflict). Field names are FROZEN there.
+
+/** planrev status column — `staged` is the only open state. */
+export type RevisionStatus = 'staged' | 'applied' | 'rejected' | 'superseded' | 'failed';
+
+/** Who asked for the revision: the operator, or a blocked-phase diagnosis. */
+export type RevisionOrigin = 'operator_revise' | 'phase_diagnosis';
+
+/** What a revision does to one plan doc. */
+export type RevisionAction = 'create' | 'update' | 'delete' | 'rename';
+
+/** One file of a revision. The list endpoint sends actions only; the detail
+ * endpoint adds `stale` (live file drifted since staging) and `diff` (unified
+ * diff against the LIVE bytes at request time). */
+export interface RevisionFile {
+  docPath: string;
+  action: RevisionAction;
+  renameFrom?: string;
+  /** Detail endpoint only: the live file changed since staging. */
+  stale?: boolean;
+  /** Detail endpoint only: unified diff, live → proposed. */
+  diff?: string;
+}
+
+/** Go `revisionDTO` — one revision of GET /api/epics/{taskId}/revisions
+ * (newest first) and the `revision` half of GET /api/revisions/{id}. */
+export interface PlanRevision {
+  id: number;
+  status: RevisionStatus;
+  origin: RevisionOrigin;
+  reason: string;
+  /** epic_phases id of the diagnosing phase (origin=phase_diagnosis). */
+  triggerPhaseId?: number;
+  /** The revise wizard session that staged this revision. */
+  sessionUuid?: string;
+  /** Staging failure detail (status=failed). */
+  error?: string;
+  createdAt: string;
+  decidedAt?: string;
+  decidedBy?: string;
+  files: RevisionFile[];
+}
+
+/** Go `planrev.Conflict` — one row of the apply 409 body's `conflicts`. */
+export interface RevisionConflict {
+  docPath: string;
+  baseHash: string;
+  diskHash: string;
+  diff: string;
 }
 
 // --- Phase 4: system registry (Stage 1) — additive contracts ------------------

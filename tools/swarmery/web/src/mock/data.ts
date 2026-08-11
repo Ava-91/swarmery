@@ -19,6 +19,7 @@ import type {
   PhaseDiagnosis,
   PlanDoc,
   Playbook,
+  PlanRevision,
   PlanningQuestion,
   PlanningStart,
   PlanningStatus,
@@ -1518,6 +1519,107 @@ const mockEpics: Epic[] = [
   },
 ];
 
+// plan-revision phase 4: revision fixtures for the first epic — one STAGED
+// revision (multi-file: update + create + rename) so the Revisions tab and the
+// per-file diff view render under VITE_MOCK, and one APPLIED one for history.
+// Mutable store: Apply/Reject flip the staged row so the demo round-trips.
+const mockRevisionDiffUpdate = [
+  '--- a/phase-3-board-ui.md',
+  '+++ b/phase-3-board-ui.md',
+  '@@ -8,9 +8,12 @@',
+  ' ## Objective',
+  ' ',
+  '-Render the board with drag-and-drop between columns.',
+  '+Render the board as three lanes; explicit actions replace drag-and-drop',
+  '+(the DnD library fails the a11y gate — see the revision reason).',
+  ' ',
+  ' ## Acceptance criteria',
+  ' ',
+  '-- [ ] Cards drag between columns',
+  '+- [ ] Cards move via a per-card action menu',
+  '+- [ ] The menu is fully keyboard-operable',
+  ' - [ ] Column counts update live',
+].join('\n');
+
+const mockRevisionDiffCreate = [
+  '--- a/phase-5-a11y-audit.md',
+  '+++ b/phase-5-a11y-audit.md',
+  '@@ -0,0 +1,7 @@',
+  '+# Phase 5 — Accessibility audit',
+  '+',
+  '+## Objective',
+  '+',
+  '+Audit the board against WCAG 2.2 AA before release.',
+  '+',
+  '+- [ ] Keyboard walkthrough of every board action recorded',
+].join('\n');
+
+const mockRevisionDiffRename = [
+  '--- a/phase-4-epics-rollup.md',
+  '+++ b/phase-4-rollup-graph.md',
+  '@@ -1,4 +1,4 @@',
+  '-# Phase 4 — Epics rollup + graph',
+  '+# Phase 4 — Rollup graph',
+  ' ',
+  ' ## Objective',
+  ' ',
+].join('\n');
+
+// Revisions keyed by workspace task id (the wire DTO carries no task field —
+// the list endpoint is already task-scoped). A revise wizard's proceed appends
+// a fresh staged row for its task, so the planning-page → "Review changes" →
+// Revisions-tab loop round-trips in mock.
+const mockRevisions: PlanRevision[] = [
+  {
+    id: 9102,
+    status: 'staged',
+    origin: 'phase_diagnosis',
+    triggerPhaseId: 3,
+    reason:
+      'Phase 3 "Board UI" failed: the drag-and-drop library cannot pass the keyboard-a11y gate. Replace DnD with explicit per-card actions and add an audit phase.',
+    sessionUuid: 'mock-revise-session-uuid',
+    createdAt: iso(30 * MIN),
+    files: [
+      { docPath: 'phase-3-board-ui.md', action: 'update', stale: false, diff: mockRevisionDiffUpdate },
+      { docPath: 'phase-5-a11y-audit.md', action: 'create', stale: false, diff: mockRevisionDiffCreate },
+      {
+        docPath: 'phase-4-rollup-graph.md',
+        action: 'rename',
+        renameFrom: 'phase-4-epics-rollup.md',
+        stale: false,
+        diff: mockRevisionDiffRename,
+      },
+    ],
+  },
+  {
+    id: 9101,
+    status: 'applied',
+    origin: 'operator_revise',
+    reason: 'Split the dispatcher phase — the queue schema landed with a different shape.',
+    sessionUuid: 'mock-revise-earlier-uuid',
+    createdAt: iso(2 * 24 * 60 * MIN),
+    decidedAt: iso(2 * 24 * 60 * MIN - 20 * MIN),
+    decidedBy: 'operator',
+    files: [
+      // phase-2.md matches mockEpicPhase(seq 2)'s docRelPath, so the phase
+      // detail panel's "changed by an applied revision" note renders in mock.
+      { docPath: 'phase-2.md', action: 'update' },
+      { docPath: 'phase-2b-dispatch-metrics.md', action: 'create' },
+    ],
+  },
+];
+
+const mockRevisionsByTask = new Map<number, PlanRevision[]>([[7010, mockRevisions]]);
+let mockNextRevisionId = 9200;
+
+function mockFindRevision(revisionId: number): PlanRevision | undefined {
+  for (const list of mockRevisionsByTask.values()) {
+    const hit = list.find((r) => r.id === revisionId);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+}
+
 /** fusion phase 13: the built-in playbooks (mirrors internal/playbooks/builtin). */
 const mockPlaybooks: Playbook[] = [
   {
@@ -1569,6 +1671,8 @@ const mockPlanningIdle: PlanningStatus = {
   rawReply: null,
   history: [],
   planDir: null,
+  mode: '',
+  reviseTaskId: null,
 };
 
 /** Running plan v1 — shown beside the first interview question. */
@@ -2474,6 +2578,7 @@ export const mockApi = {
       status: 'awaiting_answer',
       currentQuestion: mockPlanQuestion,
       runningPlan: mockPlanSummary,
+      mode: 'plan',
       history: [
         ...mockPlanHistory,
         { seq: 3, question: mockPlanQuestion, answer: null, reasoning: '' },
@@ -2552,10 +2657,98 @@ export const mockApi = {
         status: 'done',
         currentQuestion: null,
         planDir:
-          '/Volumes/Work/swarmery-workspace/demo/workspace/working/2026/07/27/bulk-csv-export/plan',
+          cur.mode === 'revise'
+            ? cur.planDir
+            : '/Volumes/Work/swarmery-workspace/demo/workspace/working/2026/07/27/bulk-csv-export/plan',
       };
+      // A revise wizard's proceed STAGES a revision instead of writing docs —
+      // mirror that so the "Review changes" hand-off renders in mock.
+      if (cur.mode === 'revise' && cur.reviseTaskId !== null) {
+        const list = mockRevisionsByTask.get(cur.reviseTaskId) ?? [];
+        mockRevisionsByTask.set(cur.reviseTaskId, [
+          {
+            id: mockNextRevisionId++,
+            status: 'staged',
+            origin: 'operator_revise',
+            reason: 'Revision staged by the revise wizard (mock).',
+            sessionUuid: cur.sessionUuid,
+            createdAt: new Date().toISOString(),
+            files: [
+              { docPath: 'phase-1.md', action: 'update', stale: false, diff: mockRevisionDiffUpdate },
+            ],
+          },
+          ...list,
+        ]);
+      }
     }
     return { status: 'proceeding' };
+  },
+
+  // --- plan revisions (plan-revision phase 4) ---
+
+  async startRevision(taskId: number, reason: string, _phaseId?: number): Promise<PlanningStart> {
+    await delay(120);
+    // Same 409 the daemon serves while a staged revision is open — the thrown
+    // error carries the open revision's id so the UI can link to it.
+    const open = (mockRevisionsByTask.get(taskId) ?? []).find((r) => r.status === 'staged');
+    if (open !== undefined) {
+      const err = new Error(
+        'a staged revision is already open for this plan',
+      ) as Error & { revisionId?: number };
+      err.revisionId = open.id;
+      throw err;
+    }
+    const projectId = mockEpics.find((e) => e.taskId === taskId)?.projectId ?? 3;
+    const uuid = `mock-revise-${String(taskId)}-${String(Date.now())}`;
+    mockPlanning[projectId] = {
+      ...mockPlanningIdle,
+      active: true,
+      sessionUuid: uuid,
+      sessionId: 9002,
+      startedAt: new Date().toISOString(),
+      status: 'awaiting_answer',
+      currentQuestion: { ...mockPlanQuestion, description: reason },
+      runningPlan: mockPlanSummary,
+      mode: 'revise',
+      reviseTaskId: taskId,
+      history: [{ seq: 1, question: mockPlanQuestion, answer: null, reasoning: '' }],
+    };
+    return { sessionUuid: uuid };
+  },
+
+  async revisions(taskId: number): Promise<PlanRevision[]> {
+    await delay(70);
+    const list = mockRevisionsByTask.get(taskId) ?? [];
+    return list.map((r) => ({ ...r, files: r.files.map((f) => ({ ...f })) }));
+  },
+
+  async revision(revisionId: number): Promise<PlanRevision> {
+    await delay(90);
+    const r = mockFindRevision(revisionId);
+    if (r === undefined) throw new Error('revision not found');
+    return { ...r, files: r.files.map((f) => ({ ...f })) };
+  },
+
+  async applyRevision(revisionId: number): Promise<{ status: string; files: number }> {
+    await delay(150);
+    const r = mockFindRevision(revisionId);
+    if (r === undefined) throw new Error('revision not found');
+    if (r.status !== 'staged') throw new Error('revision is not staged');
+    r.status = 'applied';
+    r.decidedAt = new Date().toISOString();
+    r.decidedBy = 'operator';
+    return { status: 'applied', files: r.files.length };
+  },
+
+  async rejectRevision(revisionId: number, note?: string): Promise<void> {
+    await delay(150);
+    const r = mockFindRevision(revisionId);
+    if (r === undefined) throw new Error('revision not found');
+    if (r.status !== 'staged') throw new Error('revision is not staged');
+    r.status = 'rejected';
+    r.decidedAt = new Date().toISOString();
+    r.decidedBy = 'operator';
+    if (note !== undefined && note.trim() !== '') r.reason = `${r.reason}\n\nRejected: ${note}`;
   },
 
   // --- phase 2 — approvals (mutable store in ./approvals.ts) ---

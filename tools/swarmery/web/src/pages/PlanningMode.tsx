@@ -27,11 +27,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import type { PlanningStatus, TaskSummary, WSMessage } from '../api/types';
+import type { PlanRevision, PlanningStatus, TaskSummary, WSMessage } from '../api/types';
 import {
   answerPlanning,
   cancelPlanning,
   fetchPlanning,
+  fetchRevisions,
   fetchTasks,
   proceedPlanning,
   refinePlanning,
@@ -101,6 +102,13 @@ export function PlanningMode(): JSX.Element {
     wstatus === 'generating' || wstatus === 'proceeding' || (wstatus === '' && status?.active === true);
   const wizardOpen = thinking || wstatus === 'awaiting_answer';
 
+  // Revise mode (plan-revision phase 4): the wizard interviews against an
+  // EXISTING plan and stages a diff — this page renders the same interview
+  // with a banner, no intake (a revise session starts from the Plans page),
+  // and a "Review changes" hand-off once the staged revision lands.
+  const isRevise = status?.mode === 'revise';
+  const reviseTaskId = status?.reviseTaskId ?? null;
+
   const loadStatus = useCallback((): void => {
     if (projectId === null) return;
     // Capture the mutation counter at call time; discard the response if a
@@ -154,7 +162,9 @@ export function PlanningMode(): JSX.Element {
   // be the pretty name slug.
   const dbSlug = project?.slug ?? '';
   useEffect(() => {
-    if (projectId === null || dbSlug === '' || wstatus !== 'done' || plan !== null) return undefined;
+    // A revise run saves no new plan — the staged-revision poll below owns done.
+    if (projectId === null || dbSlug === '' || wstatus !== 'done' || plan !== null || isRevise)
+      return undefined;
     const runStartedMs = status?.startedAt != null ? new Date(status.startedAt).getTime() : 0;
     let disposed = false;
     const poll = (): void => {
@@ -181,7 +191,7 @@ export function PlanningMode(): JSX.Element {
       disposed = true;
       window.clearInterval(t);
     };
-  }, [projectId, dbSlug, wstatus, plan, status?.startedAt]);
+  }, [projectId, dbSlug, wstatus, plan, status?.startedAt, isRevise]);
 
   // The "start another plan" intake belongs to the done state only — once a new
   // run (or any other status) takes over, drop the flag so the normal branches
@@ -189,6 +199,65 @@ export function PlanningMode(): JSX.Element {
   useEffect(() => {
     if (wstatus !== 'done') setNewPlanMode(false);
   }, [wstatus]);
+
+  // The plan a revise wizard is revising, for the banner (title + link).
+  const [reviseTask, setReviseTask] = useState<TaskSummary | null>(null);
+  useEffect(() => {
+    if (!isRevise || reviseTaskId === null) {
+      setReviseTask(null);
+      return undefined;
+    }
+    let alive = true;
+    fetchTasks()
+      .then((tasks) => {
+        if (alive) setReviseTask(tasks.find((t) => t.id === reviseTaskId) ?? null);
+      })
+      .catch(() => {
+        /* banner degrades to "the plan" */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [isRevise, reviseTaskId]);
+
+  // Once a revise session is done, its staged revision appears when the daemon
+  // ingests the wizard's staging pass — poll until it (or a staging failure)
+  // lands, then hand off to the review.
+  const [stagedRevision, setStagedRevision] = useState<PlanRevision | null>(null);
+  const [stagingError, setStagingError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isRevise || reviseTaskId === null || wstatus !== 'done') {
+      setStagedRevision(null);
+      setStagingError(null);
+      return undefined;
+    }
+    let disposed = false;
+    const poll = (): void => {
+      fetchRevisions(reviseTaskId)
+        .then((revs) => {
+          if (disposed) return;
+          const staged = revs.find((r) => r.status === 'staged');
+          if (staged !== undefined) {
+            setStagedRevision(staged);
+            setStagingError(null);
+            return;
+          }
+          // Newest first: a failed newest row means THIS run's staging died.
+          const newest = revs[0];
+          if (newest !== undefined && newest.status === 'failed')
+            setStagingError(newest.error ?? 'staging the revision failed');
+        })
+        .catch(() => {
+          /* revisions unavailable — retry next tick */
+        });
+    };
+    poll();
+    const t = window.setInterval(poll, STATUS_POLL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(t);
+    };
+  }, [isRevise, reviseTaskId, wstatus]);
 
   // ?idea= hand-off (Board's triage "Plan" action): seed the intake with the
   // card's text and put the cursor in it, so a suggestion too big to just Run
@@ -352,8 +421,9 @@ export function PlanningMode(): JSX.Element {
   }
 
   // Idle, cancelled AND failed all land here — failed shows the error card
-  // above an intake prefilled with the same idea.
-  const showIntake = !wizardOpen && (wstatus !== 'done' || newPlanMode);
+  // above an intake prefilled with the same idea. A revise wizard never shows
+  // the intake: revise sessions start from the Plans page, not from an idea box.
+  const showIntake = !isRevise && !wizardOpen && (wstatus !== 'done' || newPlanMode);
 
   /** Shared run header: pulse dot, started-ago, session link, History, cancel. */
   const runHeader = (label: string, pulse: boolean): JSX.Element => (
@@ -420,6 +490,30 @@ export function PlanningMode(): JSX.Element {
         </div>
       )}
 
+      {/* REVISE banner — above whatever card the wizard state renders, so at
+          every step the operator knows this interview edits nothing directly. */}
+      {isRevise && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber/40 bg-amber/5 px-3 py-2">
+          <span className="rounded border border-amber/40 bg-amber/10 px-1.5 py-px font-mono text-[9.5px] text-amber">
+            revising
+          </span>
+          <span className="text-[12.5px] leading-relaxed text-ink-2">
+            Revising{' '}
+            {reviseTaskId !== null ? (
+              <Link
+                to={`/p/${slug}/plans?task=${String(reviseTaskId)}`}
+                className="text-brand hover:underline"
+              >
+                {reviseTask?.title ?? 'the plan'}
+              </Link>
+            ) : (
+              'the plan'
+            )}{' '}
+            — nothing is written until you approve the diff.
+          </span>
+        </div>
+      )}
+
       {/* FAILED — the run died; the intake below is prefilled to start again */}
       {wstatus === 'failed' && (
         <Card>
@@ -447,7 +541,58 @@ export function PlanningMode(): JSX.Element {
           "Start another plan" is pressed the plan is already on the Plans page
           and the card only crowds the next idea box, so it gives way to the
           intake. "keep the plan card" brings it back. */}
-      {wstatus === 'done' && !newPlanMode && (
+      {/* DONE (revise) — no plan was saved: the proposal sits STAGED behind the
+          plan's Revisions tab, and the review is the only next step offered. */}
+      {wstatus === 'done' && isRevise && (
+        <Card>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span
+              className={`inline-block h-[7px] w-[7px] shrink-0 rounded-full ${
+                stagingError !== null ? 'bg-red' : stagedRevision !== null ? 'bg-green' : 'bg-amber animate-pulse'
+              }`}
+              aria-hidden="true"
+            />
+            <span className="text-[13px] font-semibold text-ink">
+              {stagingError !== null
+                ? 'Staging the revision failed'
+                : stagedRevision !== null
+                  ? 'Revision staged'
+                  : 'Interview done — staging the revision'}
+            </span>
+            {sessionUuid !== '' && (
+              <Link
+                to={sessionHref(sessionUuid)}
+                className="font-mono text-[11px] text-ink-dim transition-colors hover:text-brand"
+              >
+                open session →
+              </Link>
+            )}
+            {stagedRevision !== null && reviseTaskId !== null && (
+              <Link
+                to={`/p/${slug}/plans?task=${String(reviseTaskId)}&tab=revisions`}
+                className="ml-auto rounded-lg border border-green/45 bg-green/12 px-3 py-1 font-mono text-[11px] font-semibold text-green transition-colors hover:bg-green/20"
+              >
+                Review changes →
+              </Link>
+            )}
+          </div>
+          <div className="mt-2 text-[12.5px] leading-relaxed text-ink-2">
+            {stagingError !== null ? (
+              <span className="font-mono text-[11px] text-red">{stagingError}</span>
+            ) : stagedRevision !== null ? (
+              <>
+                {stagedRevision.files.length} plan doc
+                {stagedRevision.files.length === 1 ? '' : 's'} staged as a diff — review it per
+                file, then Apply or Reject. Nothing has been written yet.
+              </>
+            ) : (
+              'the wizard finished; its staged diff is being picked up by the daemon…'
+            )}
+          </div>
+        </Card>
+      )}
+
+      {wstatus === 'done' && !isRevise && !newPlanMode && (
         <Card>
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="inline-block h-[7px] w-[7px] shrink-0 rounded-full bg-green" aria-hidden="true" />
