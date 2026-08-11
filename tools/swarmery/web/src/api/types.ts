@@ -1344,6 +1344,14 @@ export interface BoardTask {
   origin: TaskOrigin;
   /** Session a captured card was minted from; null for manual cards. */
   originSessionId: number | null;
+  /**
+   * Derived server-side on every request, never stored: whether a task that
+   * claims to be running actually is, and the evidence behind that verdict.
+   * OMITTED (not null) when there is no hint to give — absence is the signal —
+   * which is why these two are optional rather than nullable.
+   */
+  staleness?: string;
+  stalenessReason?: string;
   columnMovedAt: string | null;
   createdAt: string;
 }

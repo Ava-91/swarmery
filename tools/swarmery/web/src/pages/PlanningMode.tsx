@@ -26,7 +26,7 @@
 // poll while the wizard is open and a settle-poll for the workspace task row.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import type { PlanningStatus, TaskSummary, WSMessage } from '../api/types';
 import {
   answerPlanning,
@@ -65,6 +65,7 @@ function fmtElapsed(startedAt: string, nowMs: number): string {
 export function PlanningMode(): JSX.Element {
   const { projectId, project, slug, loading } = useProjectWorkspace();
   const sessionHref = useSessionHref();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [status, setStatus] = useState<PlanningStatus | null>(null);
   const [idea, setIdea] = useState('');
@@ -188,6 +189,32 @@ export function PlanningMode(): JSX.Element {
   useEffect(() => {
     if (wstatus !== 'done') setNewPlanMode(false);
   }, [wstatus]);
+
+  // ?idea= hand-off (Board's triage "Plan" action): seed the intake with the
+  // card's text and put the cursor in it, so a suggestion too big to just Run
+  // becomes a plan in one hop.
+  //
+  // The param is consumed and STRIPPED in the same pass, which makes this
+  // effect self-disarming: a reload, a back-navigation, or a re-render after
+  // the user edited the textarea can no longer overwrite what they typed. It
+  // also refuses to fire while a wizard is open — a live interview must never
+  // be clobbered by a stale link — and does not care whether the strip or the
+  // read happens first, since the guard is `idea !== ''` on the raw param.
+  useEffect(() => {
+    const seed = searchParams.get('idea');
+    if (seed === null) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('idea');
+        return next;
+      },
+      { replace: true },
+    );
+    if (wizardOpen || seed.trim() === '') return;
+    setIdea(seed);
+    window.setTimeout(() => ideaRef.current?.focus(), 0);
+  }, [searchParams, setSearchParams, wizardOpen]);
 
   // Live nudges: session_updated / task_updated → refresh the wizard DTO.
   const onMessage = useCallback(

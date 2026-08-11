@@ -63,6 +63,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysedit"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/sysscan"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskcap"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/term"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/toolproc"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/trajeval"
@@ -1241,6 +1242,40 @@ func cmdServe(args []string) error {
 		log.Printf("swarmery handoff started (interval 30m, model %s)", handoffModel)
 	}
 
+	// board inbox lifecycle: a captured card is a suggestion, not a commitment,
+	// so one that sat untouched in Triage past SWARMERY_INBOX_TTL is archived
+	// rather than left to accumulate as permanent debt. Pure DB work off
+	// internal/taskcap (the same package that mints the cards), so it runs with
+	// or without ingest; a failure is logged, never fatal.
+	//
+	// Hourly rather than the advisor's 24h: the TTL is measured in days, so the
+	// cadence only decides how promptly a card crosses it, and an hourly UPDATE
+	// that usually matches zero rows costs nothing. Silent on a no-op sweep —
+	// a log line per hour saying "archived 0" is noise in `swarmery console`.
+	if inboxTTL := envInboxTTL(); inboxTTL <= 0 {
+		log.Printf("swarmery inbox sweeper disabled (SWARMERY_INBOX_TTL=%q)", os.Getenv("SWARMERY_INBOX_TTL"))
+	} else {
+		go func() {
+			sweepInbox := func() {
+				n, err := taskcap.SweepStaleInbox(db, inboxTTL, time.Now())
+				if err != nil {
+					log.Printf("error: inbox sweep: %v", err)
+					return
+				}
+				if n > 0 {
+					log.Printf("swarmery inbox sweep: archived %d stale captured card(s) (ttl %s)", n, inboxTTL)
+				}
+			}
+			sweepInbox()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				sweepInbox()
+			}
+		}()
+		log.Printf("swarmery inbox sweeper started (interval 1h, ttl %s)", inboxTTL)
+	}
+
 	// phase 2: approvals — long-poll registry + expiry sweeper + heartbeat.
 	svc := approvals.New(db, bus, approvals.Options{
 		Timeout:        *approvalTimeout,
@@ -1624,6 +1659,27 @@ func envApprovalTimeout() time.Duration {
 		log.Printf("warn: ignoring invalid SWARMERY_APPROVAL_TIMEOUT=%q", v)
 	}
 	return approvals.DefaultTimeout
+}
+
+// envInboxTTL resolves how long a captured card may sit untouched in Triage
+// before the sweeper archives it, from SWARMERY_INBOX_TTL (a Go duration, e.g.
+// "168h"), falling back to taskcap.DefaultInboxTTL (14 days).
+//
+// A non-positive value ("0") is the documented off switch and is returned as-is
+// — the caller reads <= 0 as "do not start the sweeper". An UNPARSEABLE value
+// falls back to the default instead: a typo must not silently disable a
+// retention job, and the warning says which value was ignored.
+func envInboxTTL() time.Duration {
+	v := os.Getenv("SWARMERY_INBOX_TTL")
+	if v == "" {
+		return taskcap.DefaultInboxTTL
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("warn: ignoring invalid SWARMERY_INBOX_TTL=%q", v)
+		return taskcap.DefaultInboxTTL
+	}
+	return d
 }
 
 // envOr returns the env value when set and non-empty, else def.
