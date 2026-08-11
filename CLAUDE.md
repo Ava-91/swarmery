@@ -66,7 +66,7 @@ CI also enforces that every `plugins/*/agents/*.md` has `name:` and `description
 - `overlays/_schema/project.schema.json` — schema for consumers' `.claude/project.json`; `overlays/example/` is the reference overlay.
 - `scripts/init.sh` — one-command consumer bootstrap (settings.json + project.json skeleton + workspace namespace).
 - `plugins/core/bin/agent-work.sh` — project-aware workspace CLI (`setup|init|phase|pause|resume|complete|archive|restore|index|list|search|view|metrics|cleanup`). Resolves the workspace via `AGENT_WORKSPACE_ROOT` + `AGENT_PROJECT` env; work artifacts (plans/sessions/tasks) live in a separate private workspace repo, **never here**.
-- `tools/swarmery/` — Go + React session-monitoring control plane (see exception note above): `cmd/swarmery/`, `config/`, `internal/` (focused packages — `store`, `ingest`, `api`, `approvals`, `cost`, `sysscan`, `wsingest`, …), `web/` (React SPA), `testdata/fixtures/`, `docs/{jsonl-format.md,plan/}`.
+- `tools/swarmery/` — Go + React session-monitoring control plane (see exception note above): `cmd/swarmery/`, `config/`, `internal/` (focused packages — `store`, `ingest`, `api`, `approvals`, `cost`, `sysscan`, `wsingest`, …), `web/` (React SPA), `testdata/fixtures/`, `docs/{jsonl-format.md,plan/}`. A saved plan is revised through the dashboard's revise flow (`tools/swarmery/docs/plan-revisions.md`): markdown stays the source of truth — a revision is a staged proposal until the operator applies it.
 
 ### Work artifacts (hard rule)
 

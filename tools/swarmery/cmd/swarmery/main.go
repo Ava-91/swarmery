@@ -1461,7 +1461,34 @@ func cmdServe(args []string) error {
 	// Revise sessions stage proposed plan files here (one subdir per session)
 	// until the daemon validates them into plan_revisions rows.
 	planningSvc.ScratchRoot = filepath.Join(filepath.Dir(*dbPath), "revisions")
+	// plan-revision phase 5: a revise session that died before its sentinel
+	// leaves its scratch dir behind — sweep dirs whose session can no longer
+	// stage (no wizard row, or the wizard is terminal) once, on start.
+	if removed, err := planning.SweepScratchOrphans(db, planningSvc.ScratchRoot); err != nil {
+		log.Printf("warning: revision scratch sweep: %v", err)
+	} else if len(removed) > 0 {
+		log.Printf("revision scratch sweep: removed %d orphaned dir(s)", len(removed))
+	}
 	api.AttachPlanning(planningSvc)
+
+	// plan-revision phase 5: revision retention, daily alongside the other
+	// maintenance tickers — staged proposals nobody decided go superseded
+	// after 14 days; decided revisions' document bodies are nulled after 90.
+	go func() {
+		tick := func() {
+			if st, err := prune.PruneRevisions(db, time.Now()); err != nil {
+				log.Printf("error: revision prune: %v", err)
+			} else if st.Superseded > 0 || st.ContentNulled > 0 {
+				log.Printf("revision prune: superseded=%d content_nulled=%d", st.Superseded, st.ContentNulled)
+			}
+		}
+		tick()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			tick()
+		}
+	}()
 
 	// interactive planning v2 phase 5: phase runs — execute ONE plan phase
 	// headlessly in an isolated worktree straight from its phase doc (state on

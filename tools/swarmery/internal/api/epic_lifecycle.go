@@ -241,6 +241,16 @@ func (h *Handler) lifecycleUpdateRows(taskID int64, oldTaskDir, newTaskDir, oldP
 		tx.Rollback()
 		return err
 	}
+	// plan_revisions stores the ABSOLUTE plan dir resolved at staging time
+	// (diff + apply read live bytes through it) — a zone move that skipped it
+	// would leave every revision of this task pointing into the pruned tree.
+	if _, err := tx.Exec(
+		`UPDATE plan_revisions SET plan_dir = REPLACE(plan_dir, ?, ?) WHERE workspace_task_id = ?`,
+		oldTaskDir+string(os.PathSeparator), newTaskDir+string(os.PathSeparator),
+		taskID); err != nil {
+		tx.Rollback()
+		return err
+	}
 	return tx.Commit()
 }
 

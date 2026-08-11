@@ -15,15 +15,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrev"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/textdiff"
 )
 
 // revisionRescan, when attached, pokes the SAME wsingest scan pass that
@@ -181,20 +178,10 @@ func (h *Handler) listRevisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"revisions": dtos}, nil)
 }
 
-// revisionDetailFileDTO is the detail-endpoint file shape: the unified diff is
-// computed against the LIVE bytes at request time (the diff IS the contract —
-// raw proposed content is never a separate field), stale flags a live file
-// whose hash drifted from base_hash since staging.
-type revisionDetailFileDTO struct {
-	DocPath    string `json:"docPath"`
-	Action     string `json:"action"`
-	RenameFrom string `json:"renameFrom,omitempty"`
-	Stale      bool   `json:"stale"`
-	Diff       string `json:"diff"`
-}
-
 // GET /api/revisions/{revisionId} → 200 {revision, files:[{docPath, action,
-// renameFrom, stale, diff}]}. 404 unknown; 503 planning not attached.
+// renameFrom, stale, diff}]}. The per-file live diff + stale computation lives
+// in planrev.LiveDiffs — one shared implementation for the handler and the e2e
+// test. 404 unknown; 503 planning not attached.
 func (h *Handler) getRevision(w http.ResponseWriter, r *http.Request) {
 	if planningSvc == nil {
 		writeClientErr(w, http.StatusServiceUnavailable, "planning not attached")
@@ -213,28 +200,7 @@ func (h *Handler) getRevision(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusNotFound, "revision not found")
 		return
 	}
-	files := make([]revisionDetailFileDTO, 0, len(rev.Files))
-	for _, f := range rev.Files {
-		live := ""
-		if f.Action != planrev.ActionCreate {
-			livePath := filepath.Join(rev.PlanDir, f.DocPath)
-			if f.Action == planrev.ActionRename {
-				livePath = filepath.Join(rev.PlanDir, f.RenameFrom)
-			}
-			if b, rerr := os.ReadFile(livePath); rerr == nil {
-				live = string(b)
-			}
-		}
-		proposed := f.Proposed // "" for delete: the diff renders live → gone
-		files = append(files, revisionDetailFileDTO{
-			DocPath:    f.DocPath,
-			Action:     f.Action,
-			RenameFrom: f.RenameFrom,
-			Stale:      f.BaseHash != "" && planrev.Sha256Hex([]byte(live)) != f.BaseHash,
-			Diff:       textdiff.UnifiedDiff("a/"+f.DocPath, "b/"+f.DocPath, live, proposed),
-		})
-	}
-	writeJSON(w, map[string]any{"revision": toRevisionDTO(*rev), "files": files}, nil)
+	writeJSON(w, map[string]any{"revision": toRevisionDTO(*rev), "files": planrev.LiveDiffs(rev)}, nil)
 }
 
 // POST /api/revisions/{revisionId}/apply → 200 {status:"applied", files:N}.
