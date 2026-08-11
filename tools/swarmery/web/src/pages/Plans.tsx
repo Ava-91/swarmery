@@ -481,7 +481,12 @@ export function Plans(): JSX.Element {
   // uses for ?idea=), and only once the epics have loaded so the target can be
   // resolved. The pending ref survives the [selected] reset effect below.
   const [searchParams, setSearchParams] = useSearchParams();
-  const pendingDetailRef = useRef<DetailTarget | null>(null);
+  // The deep link's target, pinned to ITS task id: the [selected] reset effect
+  // below may fire for the very transition the deep link caused (including the
+  // initial null → first-epic settle when the target IS the first epic), and
+  // must open the pending target instead of closing the panel — but only for
+  // that task, so a stale pending can never leak onto another plan.
+  const pendingDetailRef = useRef<{ taskId: number; target: DetailTarget | null } | null>(null);
   useEffect(() => {
     if (epics === null) return;
     const raw = searchParams.get('task');
@@ -501,25 +506,22 @@ export function Plans(): JSX.Element {
     if (epic === undefined) return;
     setFilter(epicFilterOf(epic.status));
     const target: DetailTarget | null = wantRevisions ? { kind: 'plan', tab: 'revisions' } : null;
+    pendingDetailRef.current = { taskId, target };
     setSelected((cur) => {
-      if (cur === taskId) {
-        // No selection change → the reset effect will not fire; open directly.
-        if (target !== null) setDetailTarget(target);
-        return cur;
-      }
-      pendingDetailRef.current = target;
+      // Already selected → the reset effect may never fire; open directly (the
+      // ref stays armed for the null→taskId settle race and is task-guarded).
+      if (cur === taskId && target !== null) setDetailTarget(target);
       return taskId;
     });
   }, [epics, searchParams, setSearchParams]);
 
   // The detail panel describes ONE epic's phase/plan — switching plans closes it,
   // and the run-diagnosis modal with it (its phase id belongs to the old plan).
-  // A pending deep-link target (set together with the selection above) opens
-  // instead of the default close.
+  // A pending deep-link target for THIS task opens instead of the default close.
   useEffect(() => {
     const pending = pendingDetailRef.current;
     pendingDetailRef.current = null;
-    setDetailTarget(pending);
+    setDetailTarget(pending !== null && pending.taskId === selected ? pending.target : null);
     setOutcomeFor(null);
   }, [selected]);
 
