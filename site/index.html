@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>swarmery — the craft of agent swarms</title>
+<meta name="description" content="A vendor-neutral agent framework for Claude Code: one shared core, opt-in domain packs, and a local control plane that watches every session, cost and verdict.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg:#F7F6F2; --panel:#FFFFFF; --panel2:#F0EEE8;
+    --ink:#23252B; --ink-dim:#6E6C66; --line:#E2E0D8; --line-strong:#C9C6BC;
+    --accent:#A8721F; --accent-soft:#F3E4C8;
+    --good:#2F8F4E; --bad:#C24040; --info:#3D74AD; --warn:#B07818;
+    --code-bg:#F0EEE8;
+    --on-accent:#12100B;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --serif:Fraunces,Georgia,"Times New Roman",serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0F1013; --panel:#16181D; --panel2:#1C1F25;
+      --ink:#E9E7E1; --ink-dim:#96938B; --line:#262930; --line-strong:#3A3E48;
+      --accent:#E3A44A; --accent-soft:#2C2417;
+      --good:#5FBF77; --bad:#E06868; --info:#7FADDC; --warn:#D9A03F;
+      --code-bg:#1C1F25;
+    }
+  }
+
+  *,*::before,*::after{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:Inter,-apple-system,"Segoe UI",system-ui,sans-serif;
+    line-height:1.6; font-size:16px; overflow-x:hidden;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:0 24px;}
+  h1,h2,h3{font-family:var(--serif); text-wrap:balance; line-height:1.2;}
+  h1{font-size:clamp(2.1rem,6vw,3.2rem); font-weight:600; margin:0 0 14px; letter-spacing:-.01em;}
+  h2{font-size:clamp(1.5rem,3.4vw,2rem); font-weight:600; margin:0 0 10px;}
+  h3{font-size:1.05rem; font-weight:600; margin:0 0 6px;}
+  p{margin:10px 0; max-width:68ch;}
+  a{color:var(--accent); text-decoration-thickness:1px; text-underline-offset:3px;}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:4px;}
+  code{
+    font-family:var(--mono); font-size:.85em; background:var(--code-bg);
+    border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+  }
+  pre{margin:0; overflow-x:auto;}
+  pre code{border:none; background:none; padding:0; white-space:pre; font-size:.82rem;}
+  .eyebrow{
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 12px;
+  }
+  .lede{font-size:1.1rem; color:var(--ink-dim); max-width:62ch;}
+  .skip{
+    position:absolute; left:-9999px; top:0; z-index:50; background:var(--panel);
+    border:1px solid var(--accent); border-radius:0 0 8px 0; padding:10px 16px;
+    font-family:var(--mono); font-size:.8rem;
+  }
+  .skip:focus{left:0;}
+
+  /* ── masthead ── */
+  .masthead-outer{
+    position:sticky; top:0; z-index:20;
+    background:var(--bg); border-bottom:1px solid var(--line);
+  }
+  .masthead{display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:16px; padding:12px 0;}
+  .brand{font-family:var(--mono); font-weight:600; font-size:.95rem; color:var(--ink); text-decoration:none; letter-spacing:-.01em;}
+  .brand:hover{color:var(--accent);}
+  .nav-links{display:flex; gap:20px; overflow-x:auto; min-width:0; scrollbar-width:none;}
+  .nav-links::-webkit-scrollbar{display:none;}
+  .nav-links a{
+    font-family:var(--mono); font-size:.76rem; white-space:nowrap;
+    color:var(--ink-dim); text-decoration:none; padding:4px 0;
+  }
+  .nav-links a:hover{color:var(--accent);}
+
+  /* ── buttons ── */
+  .btn{
+    display:inline-flex; align-items:center; gap:8px; font-family:var(--mono);
+    font-size:.8rem; font-weight:500; padding:10px 16px; border-radius:8px;
+    border:1px solid var(--line-strong); color:var(--ink); text-decoration:none; background:var(--panel);
+  }
+  .btn:hover{border-color:var(--accent); color:var(--accent);}
+  .btn-primary{background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:600;}
+  .btn-primary:hover{background:var(--accent); border-color:var(--accent); color:var(--on-accent); opacity:.88;}
+  .btn-sm{padding:6px 12px; font-size:.72rem;}
+  .cta-row{display:flex; flex-wrap:wrap; gap:12px; margin:26px 0 0;}
+
+  /* ── sections ── */
+  main section{padding:56px 0 8px;}
+  main section + section > .wrap > .sec-head{border-top:1px solid var(--line); padding-top:28px;}
+  section{scroll-margin-top:72px;}
+  #hero{padding:72px 0 8px;}
+  .sec-head{margin-bottom:22px;}
+
+  /* ── stat strip ── */
+  .stats{display:flex; gap:14px; margin:30px 0 0; flex-wrap:wrap;}
+  .stat{flex:1 1 140px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px;}
+  .stat .n{font-family:var(--serif); font-size:1.7rem; font-weight:600; font-variant-numeric:tabular-nums; line-height:1.2;}
+  .stat .n.sm{font-size:1.15rem;}
+  .stat .l{font-size:.75rem; color:var(--ink-dim); letter-spacing:.04em;}
+  .stat.hot .n{color:var(--accent);}
+
+  /* ── code cards ── */
+  .code-card{
+    position:relative; background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:16px 18px;
+  }
+  .code-card pre{padding-right:70px;}
+  .code-card .cap{margin:12px 0 0; font-size:.82rem; color:var(--ink-dim); max-width:none;}
+  .copy{
+    position:absolute; top:12px; right:12px; font-family:var(--mono); font-size:.68rem;
+    background:var(--panel2); color:var(--ink-dim); border:1px solid var(--line-strong);
+    border-radius:6px; padding:3px 9px; cursor:pointer;
+  }
+  .copy:hover{border-color:var(--accent); color:var(--accent);}
+
+  /* ── generic grids ── */
+  .grid-3{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr)); gap:16px;}
+  .grid-plugins{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr)); gap:14px;}
+  .split{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr)); gap:32px; align-items:start;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px;}
+  .card p{margin:0; font-size:.92rem; color:var(--ink-dim); max-width:none;}
+  .card .eyebrow{margin-bottom:8px;}
+  .plugin{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px;}
+  .plugin.is-core{border:2px solid var(--accent);}
+  .plugin .name{font-family:var(--mono); font-size:.86rem; font-weight:600; color:var(--ink); display:block; margin-bottom:6px;}
+  .plugin.is-core .name{color:var(--accent);}
+  .plugin p{margin:0; font-size:.84rem; color:var(--ink-dim); max-width:none;}
+
+  /* ── three-lane board mockup ── */
+  .board{
+    display:flex; gap:14px; margin:26px 0 10px; padding:18px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:14px;
+    overflow-x:auto;
+  }
+  .lane{flex:1 1 0; min-width:210px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px;}
+  .lane-title{
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--ink-dim); display:flex; justify-content:space-between; gap:8px; margin-bottom:10px;
+  }
+  .lane-title b{color:var(--ink); font-weight:600;}
+  .mcard{border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:.8rem; background:var(--bg);}
+  .mcard .tid{font-family:var(--mono); font-size:.68rem; color:var(--ink-dim);}
+  .mcard .row{display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;}
+  .chip{font-family:var(--mono); font-size:.64rem; border:1px solid var(--line-strong); border-radius:99px; padding:1px 8px; color:var(--ink-dim);}
+  .chip.act{border-color:var(--accent); color:var(--accent);}
+  .chip.good{border-color:var(--good); color:var(--good);}
+  .chip.bad{border-color:var(--bad); color:var(--bad);}
+  .grouphead{font-family:var(--mono); font-size:.68rem; color:var(--ink-dim); text-transform:uppercase; letter-spacing:.1em; margin:10px 0 6px;}
+  .drawer{
+    padding:10px 16px; border:1px dashed var(--line-strong); border-radius:10px;
+    color:var(--ink-dim); font-size:.78rem; font-family:var(--mono);
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  }
+
+  /* ── flow strip ── */
+  .flow{display:flex; flex-wrap:wrap; align-items:center; gap:6px 0; list-style:none; padding:0; margin:18px 0 0;}
+  .flow li{display:flex; align-items:center;}
+  .flow li span{
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.06em;
+    border:1px solid var(--line-strong); border-radius:99px; padding:5px 13px;
+    color:var(--ink-dim); background:var(--panel); white-space:nowrap;
+  }
+  .flow li.now span{border-color:var(--accent); color:var(--accent); background:var(--accent-soft); font-weight:500;}
+  .flow li:not(:last-child)::after{content:"\2192"; color:var(--line-strong); padding:0 10px; font-size:.8rem;}
+
+  /* ── control-plane list + app mockup ── */
+  .feature-list{list-style:none; padding:0; margin:18px 0 0;}
+  .feature-list li{padding:12px 0; border-top:1px solid var(--line); font-size:.92rem; color:var(--ink-dim);}
+  .feature-list li b{font-family:var(--mono); font-size:.78rem; letter-spacing:.06em; text-transform:uppercase; color:var(--ink); display:block; margin-bottom:2px;}
+  .app{display:flex; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--panel); min-height:230px;}
+  .app-side{width:132px; flex:0 0 132px; background:var(--panel2); border-right:1px solid var(--line); padding:12px 10px;}
+  .app-brand{display:block; font-family:var(--mono); font-size:.74rem; font-weight:600; color:var(--accent); margin-bottom:12px;}
+  .app-nav{display:block; font-family:var(--mono); font-size:.7rem; color:var(--ink-dim); padding:5px 8px; border-radius:6px;}
+  .app-nav.on{background:var(--accent-soft); color:var(--accent);}
+  .app-main{flex:1 1 auto; padding:12px 14px; min-width:0;}
+  .app-row{display:flex; justify-content:space-between; gap:10px; font-family:var(--mono); font-size:.68rem; color:var(--ink-dim); padding:7px 0; border-bottom:1px solid var(--line);}
+  .app-row b{color:var(--ink); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .app-row:last-child{border-bottom:none;}
+
+  /* ── license note + footer ── */
+  .note{
+    border-left:3px solid var(--accent); background:var(--accent-soft);
+    padding:14px 18px; border-radius:0 10px 10px 0; margin:20px 0 0; font-size:.95rem; max-width:70ch;
+  }
+  .note p{margin:0 0 8px;}
+  .note p:last-child{margin-bottom:0;}
+  footer{margin-top:72px; border-top:1px solid var(--line); background:var(--panel2);}
+  .foot{display:flex; flex-wrap:wrap; gap:10px 22px; align-items:center; justify-content:space-between; padding:22px 0; font-size:.8rem; color:var(--ink-dim);}
+  .foot nav{display:flex; flex-wrap:wrap; gap:18px;}
+  .foot a{font-family:var(--mono); font-size:.76rem;}
+  .foot .copyright{font-family:var(--mono); font-size:.72rem;}
+
+  @media (prefers-reduced-motion: no-preference){
+    html{scroll-behavior:smooth;}
+    .mcard{transition:border-color .15s ease;}
+    .mcard:hover{border-color:var(--accent);}
+  }
+</style>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="masthead-outer">
+  <div class="wrap masthead">
+    <a class="brand" href="#hero">swarmery</a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#why">Why</a>
+      <a href="#how">How it works</a>
+      <a href="#control-plane">Control plane</a>
+      <a href="#plugins">Plugins</a>
+      <a href="https://github.com/atretyak1985/swarmery/tree/main/docs">Docs</a>
+    </nav>
+    <a class="btn btn-sm" href="https://github.com/atretyak1985/swarmery">GitHub</a>
+  </div>
+</header>
+
+<main id="main">
+
+  <section id="hero">
+    <div class="wrap">
+      <p class="eyebrow">vendor-neutral · claude code · source-available</p>
+      <h1>The craft of agent swarms.</h1>
+      <p class="lede">A vendor-neutral agent framework for Claude Code: one shared core, opt-in domain packs, and a local control plane that watches every session, cost, and verdict.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/atretyak1985/swarmery">View on GitHub</a>
+        <a class="btn" href="https://github.com/atretyak1985/swarmery/tree/main/docs">Read the docs</a>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="n">12</div><div class="l">plugin packs</div></div>
+        <div class="stat"><div class="n">54</div><div class="l">agents</div></div>
+        <div class="stat"><div class="n">60</div><div class="l">skills</div></div>
+        <div class="stat hot"><div class="n">:7777</div><div class="l">local control plane</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">quick start</p>
+        <h2>Three commands to a running swarm.</h2>
+        <p>Nothing to sign up for and nothing to host. The marketplace installs into Claude Code, the bootstrap script writes a project overlay, and the control plane runs on your own machine.</p>
+      </div>
+      <div class="grid-3">
+        <div class="code-card">
+          <button class="copy" type="button" hidden>Copy</button>
+          <pre><code>/plugin marketplace add atretyak1985/swarmery
+/plugin install core@swarmery</code></pre>
+          <p class="cap">Install the marketplace in Claude Code, then the vendor-neutral core. Domain packs are opt-in on top.</p>
+        </div>
+        <div class="code-card">
+          <button class="copy" type="button" hidden>Copy</button>
+          <pre><code>bash scripts/init.sh</code></pre>
+          <p class="cap">Bootstrap a consumer project: <code>settings.json</code>, a <code>project.json</code> skeleton and its private workspace namespace.</p>
+        </div>
+        <div class="code-card">
+          <button class="copy" type="button" hidden>Copy</button>
+          <pre><code>cd tools/swarmery &amp;&amp; make build &amp;&amp; ./swarmery</code></pre>
+          <p class="cap">Build and run the control plane. One binary, one SQLite file, listening on <code>:7777</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="why">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">why swarmery</p>
+        <h2>Six decisions that hold the whole thing together.</h2>
+        <p>Every one of them is enforced by something you can run: a scan, a gate, a worktree, a verdict. None of them is a convention you have to remember.</p>
+      </div>
+      <div class="grid-3">
+        <div class="card">
+          <p class="eyebrow">neutrality</p>
+          <h3>A core that names no one</h3>
+          <p>Brand tokens are forbidden anywhere under <code>plugins/</code>, and a CI ratchet keeps the count at zero. Each project's flavor — its repos, stacks and naming — arrives at runtime from its own <code>project.json</code>.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">graduation</p>
+          <h3>Flow goes up only</h3>
+          <p>A component is born project-local, is promoted to a domain pack when a second project needs it, and reaches the core only when every project does. Framework files are never copied downward into a project.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">isolation</p>
+          <h3>One worktree per task</h3>
+          <p>Every dispatched task runs on its own <code>swarm/&lt;T-id&gt;</code> branch inside an isolated git worktree, cut from the tip of the default branch. Your working tree is never the agent's workspace.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">verification</p>
+          <h3>Verdicts that can say no</h3>
+          <p>A read-only verifier diffs the work against the persisted <code>start_point</code> — not the branch against itself — and returns PASS, FAIL or INCONCLUSIVE. A FAIL births a fix card with a bounded retry budget instead of a quiet green tick.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">plans</p>
+          <h3>A phase DAG, not a wish list</h3>
+          <p>An idea becomes a phased plan in which every phase carries measurable acceptance criteria and a completion report. Runs execute that graph in dependency order, with a review between phases.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">observability</p>
+          <h3>Everything on the record</h3>
+          <p>The control plane indexes every session transcript into local SQLite: tokens, cost, approvals, accounts and retro insights. Nothing has to leave the machine for any of it to work.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">how it works</p>
+        <h2>A funnel, not a parallel kanban.</h2>
+        <p>Work enters as a proposal, gets dispatched into an isolated worktree, and leaves through a review with exactly three honest exits. Cards are moved by actions, never by dragging.</p>
+      </div>
+
+      <div class="board" role="img" aria-label="Mockup of the swarmery board: three lanes side by side. Inbox holds captured proposals with Run, Plan and Dismiss actions. Working shows a queued card and a running card on its own swarm branch. Review shows a finished card with a passing verdict and Land, Re-run and Discard actions.">
+        <div class="lane">
+          <div class="lane-title"><b>Inbox</b><span>triage</span></div>
+          <div class="mcard">
+            <span class="tid">T-9k2f1a · session</span>
+            <div>Remove the dead flag in settings</div>
+            <div class="row"><span class="chip act">Run</span><span class="chip act">Plan</span><span class="chip">Dismiss</span></div>
+          </div>
+          <div class="mcard">
+            <span class="tid">T-4mq88x · llm</span>
+            <div>Add an index on the sessions table</div>
+            <div class="row"><span class="chip">awaiting triage</span></div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-title"><b>Working</b><span>queued + running</span></div>
+          <div class="grouphead">Queued — waiting for a slot</div>
+          <div class="mcard">
+            <span class="tid">T-7pp3vd · plan-first</span>
+            <div>Migrate the routine config to v2</div>
+            <div class="row"><span class="chip">prio high</span><span class="chip">Back to Inbox</span><span class="chip">Pause</span></div>
+          </div>
+          <div class="grouphead">Running</div>
+          <div class="mcard">
+            <span class="tid">T-3mg7xy · standard</span>
+            <div>Fix the flaky worker test</div>
+            <div class="row"><span class="chip act">swarm/T-3mg7xy</span><span class="chip">Terminal</span></div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-title"><b>Review</b><span>in_review</span></div>
+          <div class="mcard">
+            <span class="tid">T-5rr0bn · review-heavy</span>
+            <div>Add retries to the sync handshake</div>
+            <div class="row"><span class="chip good">verify: pass</span></div>
+            <div class="row"><span class="chip act">Land</span><span class="chip act">Re-run</span><span class="chip bad">Discard</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="drawer"><span>History</span><span>done and archived cards live in the drawer</span></div>
+
+      <h3>The life of a card</h3>
+      <ol class="flow">
+        <li><span>captured</span></li>
+        <li><span>queued</span></li>
+        <li class="now"><span>running</span></li>
+        <li><span>review</span></li>
+        <li><span>landed</span></li>
+      </ol>
+      <p>A captured card is a proposal, not a commitment: it has a lifetime and an expiry. Once dispatched it gets an isolated worktree whose starting commit is persisted, so the verifier and the review diff both measure against the same honest baseline. Landing pushes the branch and opens the pull request; discarding removes the worktree and deletes the branch it names.</p>
+    </div>
+  </section>
+
+  <section id="control-plane">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">control plane</p>
+        <h2>One binary that watches the whole swarm.</h2>
+      </div>
+      <div class="split">
+        <div>
+          <p>A single Go daemon with an embedded React dashboard. It reads the session transcripts Claude Code already writes, indexes them into local SQLite, and serves everything on one port that never leaves the loopback interface.</p>
+          <ul class="feature-list">
+            <li><b>Sessions</b>Every transcript indexed as it is written, with the tool calls, files and errors of each run.</li>
+            <li><b>Cost &amp; usage</b>Tokens and spend per session, project and account, against the live quota window.</li>
+            <li><b>Approvals</b>Permission prompts reach your phone, so a waiting run is unblocked without going back to the desk.</li>
+            <li><b>Plans</b>Phase documents stay the source of truth; ticked criteria and completion reports render straight from the markdown.</li>
+            <li><b>Board</b>The three-lane funnel above, driven by actions with a dispatcher underneath it.</li>
+            <li><b>Retro loop</b>Finished runs are scored and mined for the improvements that go into the next ones.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="app" role="img" aria-label="Mockup of the swarmery dashboard: a left sidebar listing Sessions, Board, Plans, Costs, Approvals and Retro, with Sessions selected, next to a main panel listing recent sessions with their status and token counts.">
+            <div class="app-side">
+              <span class="app-brand">swarmery</span>
+              <span class="app-nav on">Sessions</span>
+              <span class="app-nav">Board</span>
+              <span class="app-nav">Plans</span>
+              <span class="app-nav">Costs</span>
+              <span class="app-nav">Approvals</span>
+              <span class="app-nav">Retro</span>
+            </div>
+            <div class="app-main">
+              <div class="app-row"><b>landing-site</b><span>running</span></div>
+              <div class="app-row"><b>engine-unification</b><span>review</span></div>
+              <div class="app-row"><b>board-redesign</b><span>landed</span></div>
+              <div class="app-row"><b>security-alerts</b><span>landed</span></div>
+              <div class="app-row"><b>plugin-drift</b><span>queued</span></div>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="n">61</div><div class="l">Go packages</div></div>
+            <div class="stat"><div class="n">189</div><div class="l">REST routes</div></div>
+            <div class="stat hot"><div class="n">:7777</div><div class="l">dashboard port</div></div>
+            <div class="stat"><div class="n sm">127.0.0.1</div><div class="l">the only interface it binds</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="plugins">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">plugins</p>
+        <h2>One core, eleven opt-in packs.</h2>
+        <p>The core carries everything that is true for every project. Domain packs add the vocabulary and tooling of one kind of work, and a project enables only the ones it actually uses.</p>
+      </div>
+      <div class="grid-plugins">
+        <div class="plugin is-core">
+          <span class="name">core</span>
+          <p>Vendor-neutral agent-development core: generic agents, skills, commands, hooks, and the project-aware agent-work CLI.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">uav-pack</span>
+          <p>UAV/drone domain pack: MAVLink-style telemetry, mission planning, embedded/edge runtime.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">iot-pack</span>
+          <p>IoT domain pack: BLE communication, device telemetry, health-metrics processing.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">web-pack</span>
+          <p>Web/marketing domain pack: SEO, i18n, landing-page CRO, Figma-to-code styling.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">infra-pack</span>
+          <p>Infrastructure &amp; delivery domain pack: Kubernetes/Helm, GitOps promotion, IaC, GitLab CI, GCP CI auth, Keycloak.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">lsp-pack</span>
+          <p>Semantic code-navigation pack: Serena LSP MCP server.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">claude-eng-pack</span>
+          <p>Claude-engineering pack: skills for building and auditing Claude agent systems — agent architecture, tool and MCP design, prompt engineering, Claude Code config, context reliability.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">graphify-pack</span>
+          <p>Knowledge-graph pack: the graphify skill turns a repo or folder into a persistent knowledge graph with query, path and affected tools plus HTML, JSON and Neo4j exports.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">architecture-pack</span>
+          <p>Repo-wide architecture map: a machine-readable JSON contract of layers, modules and file-anchored flows plus a self-contained HTML viewer, freshness-stamped per commit.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">jira-pack</span>
+          <p>Issue-tracker pack: drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix, evidence comment, QA transition.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">accounts-pack</span>
+          <p>Multi-account pack: bind a project to one of several Claude Code accounts and run every session under it, with a shell wrapper and a wrong-account warning.</p>
+        </div>
+        <div class="plugin">
+          <span class="name">design-pack</span>
+          <p>Design-handoff pack: takes an exported design and re-expresses it in the project's stack pixel-accurately — token inventory, reuse-versus-create recon, an approval gate, and a measured pixel diff as the completion criterion.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="license">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">license</p>
+        <h2>Source-available, and honest about it.</h2>
+      </div>
+      <div class="note">
+        <p>swarmery is published under the <b>PolyForm Noncommercial License 1.0.0</b>. Every line is readable, forkable and yours to build on — for personal projects, learning, research and other open-source work, at no cost.</p>
+        <p>Commercial use is the one thing the license does not grant. If you want swarmery inside a company's paid workflow, read the terms first and get in touch.</p>
+      </div>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/atretyak1985/swarmery">View on GitHub</a>
+        <a class="btn" href="https://github.com/atretyak1985/swarmery/blob/main/LICENSE">Read the license</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <nav aria-label="Footer">
+      <a href="https://github.com/atretyak1985/swarmery">GitHub</a>
+      <a href="https://github.com/atretyak1985/swarmery/tree/main/docs">Docs</a>
+      <a href="https://github.com/atretyak1985/swarmery/blob/main/LICENSE">License</a>
+    </nav>
+    <span class="copyright">© 2026 swarmery · PolyForm Noncommercial 1.0.0</span>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    if (!navigator.clipboard) { return; }
+    var cards = document.querySelectorAll('.code-card');
+    for (var i = 0; i < cards.length; i++) {
+      (function (card) {
+        var btn = card.querySelector('.copy');
+        var pre = card.querySelector('pre');
+        if (!btn || !pre) { return; }
+        btn.hidden = false;
+        btn.addEventListener('click', function () {
+          navigator.clipboard.writeText(pre.textContent.trim()).then(function () {
+            btn.textContent = 'Copied';
+            window.setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+          });
+        });
+      })(cards[i]);
+    }
+  })();
+</script>
+
+</body>
+</html>
