@@ -1,3 +1,5 @@
+-- Numbered 0053: slot 52 is burned on the live deployment by 0052_plan_revisions.sql
+-- (plan-revision branch, applied 2026-08-11), so this file shipped as 0052 was skipped there.
 -- Spec criteria parsed from plan/spec.md (wsingest owns these rows; prune-by-exclusion per task on each parse).
 CREATE TABLE IF NOT EXISTS spec_criteria (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,

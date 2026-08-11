@@ -2,21 +2,21 @@ package store
 
 import "testing"
 
-// TestMigrate0052FreshDB verifies 0052 applies on a brand-new database: the
+// TestMigrate0053FreshDB verifies 0053 applies on a brand-new database: the
 // spec_criteria table exists with its natural key and index, and epic_phases
 // carries the covers column.
-func TestMigrate0052FreshDB(t *testing.T) {
+func TestMigrate0053FreshDB(t *testing.T) {
 	db := openRaw(t)
 	if err := Migrate(db); err != nil {
 		t.Fatalf("migrate fresh db: %v", err)
 	}
 
 	var name string
-	if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version = 52`).Scan(&name); err != nil {
-		t.Fatalf("migration 52 not recorded: %v", err)
+	if err := db.QueryRow(`SELECT name FROM schema_migrations WHERE version = 53`).Scan(&name); err != nil {
+		t.Fatalf("migration 53 not recorded: %v", err)
 	}
-	if name != "0052_plan_spec.sql" {
-		t.Errorf("migration 52 name: want 0052_plan_spec.sql, got %s", name)
+	if name != "0053_plan_spec.sql" {
+		t.Errorf("migration 53 name: want 0053_plan_spec.sql, got %s", name)
 	}
 	mustHaveColumns(t, db, "spec_criteria",
 		"id", "workspace_task_id", "pos", "cid", "text", "done", "line")
@@ -45,22 +45,22 @@ func TestMigrate0052FreshDB(t *testing.T) {
 	}
 }
 
-// TestMigrate0052OnPopulatedDB: a database created before 0052 gains the table
+// TestMigrate0053OnPopulatedDB: a database created before 0053 gains the table
 // and the covers column, and every pre-existing epic_phases row backfills to
 // '[]' — a phase indexed before Covers shipped declares nothing, not NULL.
-func TestMigrate0052OnPopulatedDB(t *testing.T) {
+func TestMigrate0053OnPopulatedDB(t *testing.T) {
 	db := openRaw(t)
 	migrateUpTo(t, db, 51)
 
 	if cols := columnSet(t, db, "epic_phases"); cols["covers"] {
-		t.Fatal("epic_phases.covers exists before 0052 — migrateUpTo applied too much")
+		t.Fatal("epic_phases.covers exists before 0053 — migrateUpTo applied too much")
 	}
 	if cols := columnSet(t, db, "spec_criteria"); len(cols) != 0 {
-		t.Fatal("spec_criteria exists before 0052 — migrateUpTo applied too much")
+		t.Fatal("spec_criteria exists before 0053 — migrateUpTo applied too much")
 	}
 	if _, err := db.Exec(
 		`INSERT INTO epic_phases (workspace_task_id, seq, name, doc_path)
-		 VALUES (1, 1, 'pre-0052 phase', '/tmp/plan/phase-1-old.md')`); err != nil {
+		 VALUES (1, 1, 'pre-0053 phase', '/tmp/plan/phase-1-old.md')`); err != nil {
 		t.Fatalf("insert phase: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestMigrate0052OnPopulatedDB(t *testing.T) {
 		t.Fatalf("read migrated phase: %v", err)
 	}
 	if covers != "[]" {
-		t.Errorf("covers = %q, want '[]' (pre-0052 rows declare nothing)", covers)
+		t.Errorf("covers = %q, want '[]' (pre-0053 rows declare nothing)", covers)
 	}
 
 	// Idempotency: a second Migrate run is a no-op.
