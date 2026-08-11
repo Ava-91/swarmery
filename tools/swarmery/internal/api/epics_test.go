@@ -419,6 +419,88 @@ func TestPlanStatusDerivation(t *testing.T) {
 	}
 }
 
+// TestListEpicsSpecCoverage: an epic with a spec answers hasSpec plus the
+// coverage object — criteria with coveredBy phase seqs, covered/total, and an
+// unknown ref for a phase covering an id the spec never declared. The fixture
+// plants the rows wsingest would have written (spec_criteria + the covers
+// column) and the spec.md file the hasSpec stat probes.
+func TestListEpicsSpecCoverage(t *testing.T) {
+	srv, db, taskID, planDir := epicFixture(t)
+	if err := os.WriteFile(filepath.Join(planDir, "spec.md"),
+		[]byte("# Spec\n\n- [x] **SC-1** — first\n- [ ] **SC-2** — second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO spec_criteria (workspace_task_id, pos, cid, text, done, line)
+		VALUES (?, 0, 'SC-1', 'first', 1, 2), (?, 1, 'SC-2', 'second', 0, 3)`, taskID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	// Phase 1 covers SC-1 and the never-declared SC-9; phase 2 covers nothing.
+	if _, err := db.Exec(`UPDATE epic_phases SET covers='["SC-1","SC-9"]'
+		WHERE workspace_task_id=? AND seq=1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	var epics []epicDTO
+	getJSON(t, srv.URL+"/api/epics", &epics)
+	if len(epics) != 1 {
+		t.Fatalf("epics = %d, want 1", len(epics))
+	}
+	e := epics[0]
+	if !e.HasSpec {
+		t.Error("hasSpec = false, want true (plan/spec.md exists)")
+	}
+	if e.Spec == nil {
+		t.Fatal("spec = null, want the coverage object")
+	}
+	if e.Spec.Covered != 1 || e.Spec.Total != 2 {
+		t.Errorf("covered/total = %d/%d, want 1/2", e.Spec.Covered, e.Spec.Total)
+	}
+	if len(e.Spec.Criteria) != 2 {
+		t.Fatalf("criteria = %d, want 2", len(e.Spec.Criteria))
+	}
+	c1, c2 := e.Spec.Criteria[0], e.Spec.Criteria[1]
+	if c1.Cid != "SC-1" || !c1.Done || c1.Text != "first" {
+		t.Errorf("criteria[0] = %+v, want SC-1/done/first", c1)
+	}
+	if !reflect.DeepEqual(c1.CoveredBy, []int{1}) {
+		t.Errorf("criteria[0].coveredBy = %v, want [1]", c1.CoveredBy)
+	}
+	if c2.Cid != "SC-2" || c2.Done || len(c2.CoveredBy) != 0 {
+		t.Errorf("criteria[1] = %+v, want SC-2 uncovered", c2)
+	}
+	if c2.CoveredBy == nil {
+		t.Error("criteria[1].coveredBy = null, want [] (uncovered is a value, not an absence)")
+	}
+	if len(e.Spec.UnknownRefs) != 1 || e.Spec.UnknownRefs[0].Seq != 1 || e.Spec.UnknownRefs[0].Cid != "SC-9" {
+		t.Errorf("unknownRefs = %+v, want [{1 SC-9}]", e.Spec.UnknownRefs)
+	}
+}
+
+// TestListEpicsNoSpec: a spec-less plan is wire-unchanged — hasSpec:false,
+// spec:null (asserted on the raw JSON, so a future omitempty cannot silently
+// drop the contract).
+func TestListEpicsNoSpec(t *testing.T) {
+	srv, _, _, _ := epicFixture(t)
+	resp, err := http.Get(srv.URL + "/api/epics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var raw []map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("epics = %d, want 1", len(raw))
+	}
+	if got := string(raw[0]["hasSpec"]); got != "false" {
+		t.Errorf("hasSpec = %s, want false", got)
+	}
+	if got := string(raw[0]["spec"]); got != "null" {
+		t.Errorf("spec = %s, want null for a spec-less plan", got)
+	}
+}
+
 // TestListEpicsDerivedStatus: the fixture epic (running, rollup 1/3) reads
 // "active" — the raw tasks.status value never leaks through the DTO.
 func TestListEpicsDerivedStatus(t *testing.T) {

@@ -90,6 +90,30 @@ type epicRollupDTO struct {
 	Pct   float64 `json:"pct"` // 0..100, 0 when total==0 (no divide-by-zero)
 }
 
+// specCriterionDTO is one SC-tagged acceptance criterion from plan/spec.md,
+// with the phases that declare they deliver it.
+type specCriterionDTO struct {
+	Cid       string `json:"cid"`
+	Text      string `json:"text"`
+	Done      bool   `json:"done"`
+	CoveredBy []int  `json:"coveredBy"` // phase seqs declaring this cid; empty = uncovered
+}
+
+// specUnknownRefDTO is a phase Covers reference to an id the spec never
+// declared — a speculation signal.
+type specUnknownRefDTO struct {
+	Seq int    `json:"seq"`
+	Cid string `json:"cid"`
+}
+
+// epicSpecDTO is the per-epic spec-coverage rollup (criteria × phase Covers).
+type epicSpecDTO struct {
+	Criteria    []specCriterionDTO  `json:"criteria"`
+	Covered     int                 `json:"covered"`
+	Total       int                 `json:"total"`
+	UnknownRefs []specUnknownRefDTO `json:"unknownRefs"`
+}
+
 // epicDTO is one epic (workspace task) with its phases and rollup.
 type epicDTO struct {
 	TaskID      int64   `json:"taskId"`
@@ -103,9 +127,16 @@ type epicDTO struct {
 	// True when plan/SUMMARY.md exists — the plan-level completion summary the
 	// executor writes when the whole plan lands. The UI opens it (via the docs
 	// endpoint, path=SUMMARY.md) in a summary modal on done plans.
-	HasSummary bool           `json:"hasSummary"`
-	Phases     []epicPhaseDTO `json:"phases"`
-	Rollup     epicRollupDTO  `json:"rollup"`
+	HasSummary bool `json:"hasSummary"`
+	// True when plan/spec.md exists — the business-level spec the plan derives
+	// from. Independent of Spec below: the file may exist before the scanner has
+	// parsed criteria rows out of it.
+	HasSpec bool `json:"hasSpec"`
+	// Spec is the per-epic spec coverage (criteria + coveredBy phase seqs +
+	// covered/total + unknown refs); null when the task has no spec_criteria rows.
+	Spec   *epicSpecDTO   `json:"spec"`
+	Phases []epicPhaseDTO `json:"phases"`
+	Rollup epicRollupDTO  `json:"rollup"`
 	// Whole-plan run state (migration 0040), null until the plan has ever been
 	// run. Distinct from the per-phase RunState above: this is ONE agent handed
 	// the whole plan, so it never stamps individual phases.
@@ -220,19 +251,30 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// Same posture for spec criteria: one query keyed by task, materialized
+	// before the per-epic pass (single-connection pool — see the comment above).
+	specCriteria, err := h.specCriteriaByTask()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	for i := range out {
 		out[i].PlanRun = planRuns[out[i].TaskID]
-		phases, rollup, err := h.epicPhases(out[i].TaskID, out[i].PlanDir)
+		phases, rollup, covers, err := h.epicPhases(out[i].TaskID, out[i].PlanDir)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
 		out[i].Phases = phases
 		out[i].Rollup = rollup
+		out[i].Spec = buildEpicSpec(specCriteria[out[i].TaskID], covers)
 		if out[i].PlanDir != "" {
 			if fi, err := os.Stat(filepath.Join(out[i].PlanDir, "SUMMARY.md")); err == nil && !fi.IsDir() {
 				out[i].HasSummary = true
+			}
+			if fi, err := os.Stat(filepath.Join(out[i].PlanDir, "spec.md")); err == nil && !fi.IsDir() {
+				out[i].HasSpec = true
 			}
 		}
 		// Normalize the raw tasks.status (running|paused|done) into the plan
@@ -280,12 +322,87 @@ func (h *Handler) planRunsByTask() (map[int64]*planRunDTO, error) {
 	return out, rows.Err()
 }
 
-// epicPhases loads one epic's phases (joined to the board task an activation
-// minted) plus the checkbox rollup. planDir is used to compute each phase's
-// path relative to plan/ (the ?path= the doc endpoints accept).
-func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epicRollupDTO, error) {
+// specCriteriaByTask loads every spec_criteria row keyed by workspace task id,
+// in spec.md order. Plans with a spec are rare enough that one whole-table
+// fetch is cheaper (and pool-safer) than a per-epic lookup.
+func (h *Handler) specCriteriaByTask() (map[int64][]specCriterionDTO, error) {
 	rows, err := h.DB.Query(`
-		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on,
+		SELECT workspace_task_id, cid, text, done
+		  FROM spec_criteria
+		 ORDER BY workspace_task_id, pos`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]specCriterionDTO{}
+	for rows.Next() {
+		var (
+			taskID int64
+			c      specCriterionDTO
+		)
+		if err := rows.Scan(&taskID, &c.Cid, &c.Text, &c.Done); err != nil {
+			return nil, err
+		}
+		c.CoveredBy = []int{} // empty array, not null — "uncovered" is a value
+		out[taskID] = append(out[taskID], c)
+	}
+	return out, rows.Err()
+}
+
+// phaseCovers pairs a phase's seq with the spec-criterion ids its doc declares
+// (epic_phases.covers, parsed by wsingest).
+type phaseCovers struct {
+	seq  int
+	cids []string
+}
+
+// buildEpicSpec cross-joins a task's spec criteria with its phases' Covers
+// declarations: CoveredBy = seqs of phases declaring the cid, UnknownRefs =
+// (seq, cid) pairs where a phase covers an id the spec never declared. nil when
+// the task has zero criteria rows — the DTO's `spec` is null for spec-less plans.
+func buildEpicSpec(criteria []specCriterionDTO, covers []phaseCovers) *epicSpecDTO {
+	if len(criteria) == 0 {
+		return nil
+	}
+	byCid := make(map[string]int, len(criteria))
+	for i, c := range criteria {
+		byCid[c.Cid] = i
+	}
+	spec := &epicSpecDTO{
+		Criteria:    criteria,
+		Total:       len(criteria),
+		UnknownRefs: []specUnknownRefDTO{},
+	}
+	seenRef := map[string]bool{} // dedupes both coveredBy seqs and unknown pairs
+	for _, pc := range covers {
+		for _, cid := range pc.cids {
+			key := strconv.Itoa(pc.seq) + " " + cid
+			if seenRef[key] {
+				continue
+			}
+			seenRef[key] = true
+			if i, ok := byCid[cid]; ok {
+				spec.Criteria[i].CoveredBy = append(spec.Criteria[i].CoveredBy, pc.seq)
+			} else {
+				spec.UnknownRefs = append(spec.UnknownRefs, specUnknownRefDTO{Seq: pc.seq, Cid: cid})
+			}
+		}
+	}
+	for _, c := range spec.Criteria {
+		if len(c.CoveredBy) > 0 {
+			spec.Covered++
+		}
+	}
+	return spec
+}
+
+// epicPhases loads one epic's phases (joined to the board task an activation
+// minted) plus the checkbox rollup and each phase's Covers declaration. planDir
+// is used to compute each phase's path relative to plan/ (the ?path= the doc
+// endpoints accept).
+func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epicRollupDTO, []phaseCovers, error) {
+	rows, err := h.DB.Query(`
+		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on, e.covers,
 		       e.checkboxes_total, e.checkboxes_done, e.doc_status, e.doc_updated_at,
 		       e.completion_report, e.activated_at, e.activated_board_task_id,
 		       bt.external_id, bt.board_column,
@@ -296,16 +413,18 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		WHERE e.workspace_task_id = ?
 		ORDER BY e.seq, e.id`, taskID)
 	if err != nil {
-		return nil, epicRollupDTO{}, err
+		return nil, epicRollupDTO{}, nil, err
 	}
 	defer rows.Close()
 
 	phases := []epicPhaseDTO{}
+	covers := []phaseCovers{}
 	var rollup epicRollupDTO
 	for rows.Next() {
 		var (
 			p            epicPhaseDTO
 			depsJSON     string
+			coversJSON   string
 			docStatus    sql.NullString
 			docUpdatedAt sql.NullString
 			completion   sql.NullString
@@ -322,14 +441,15 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 			runCheckboxesBefore sql.NullInt64
 			runCheckboxesAfter  sql.NullInt64
 		)
-		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.DocPath, &depsJSON,
+		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.DocPath, &depsJSON, &coversJSON,
 			&p.CheckboxesTotal, &p.CheckboxesDone, &docStatus, &docUpdatedAt,
 			&completion, &p.ActivatedAt, &boardTaskID, &boardExtID, &boardCol,
 			&p.RunState, &runUUID, &runStartedAt, &runError,
 			&runEndedAt, &runCheckboxesBefore, &runCheckboxesAfter); err != nil {
-			return nil, epicRollupDTO{}, err
+			return nil, epicRollupDTO{}, nil, err
 		}
 		p.DependsOn = decodeIntList(depsJSON)
+		covers = append(covers, phaseCovers{seq: p.Seq, cids: decodeStrList(coversJSON)})
 		p.DocRelPath = relToPlan(planDir, p.DocPath)
 		if docStatus.Valid {
 			p.DocStatus = &docStatus.String
@@ -379,7 +499,7 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 	if rollup.Total > 0 {
 		rollup.Pct = float64(rollup.Done) / float64(rollup.Total) * 100
 	}
-	return phases, rollup, rows.Err()
+	return phases, rollup, covers, rows.Err()
 }
 
 // decodeIntList parses a JSON array of ints; [] on empty/garbage.
@@ -390,6 +510,19 @@ func decodeIntList(s string) []int {
 	}
 	if err := json.Unmarshal([]byte(s), &out); err != nil || out == nil {
 		return []int{}
+	}
+	return out
+}
+
+// decodeStrList parses a JSON array of strings; [] on empty/garbage (the same
+// posture decodeIntList takes for depends_on).
+func decodeStrList(s string) []string {
+	out := []string{}
+	if strings.TrimSpace(s) == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(s), &out); err != nil || out == nil {
+		return []string{}
 	}
 	return out
 }

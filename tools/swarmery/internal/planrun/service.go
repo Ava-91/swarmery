@@ -32,6 +32,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
 // Sentinel errors mapped to HTTP statuses by the api layer.
@@ -68,7 +69,19 @@ var (
 	// a *BranchDirtyError, which errors.Is-matches this sentinel. Mirrors
 	// phaserun.ErrBranchDirty — the two run surfaces answer retry identically.
 	ErrBranchDirty = errors.New("run branch has unmerged commits")
+	// ErrSpecUncovered is returned by Start when plan/spec.md declares acceptance
+	// criteria that no phase doc covers — the plan is not ready to run whole.
+	ErrSpecUncovered = errors.New("spec has uncovered criteria")
 )
+
+// SpecUncoveredError carries the uncovered ids (mirrors PlanSpansReposError).
+type SpecUncoveredError struct{ Uncovered []string }
+
+func (e *SpecUncoveredError) Error() string {
+	return "spec.md criteria not covered by any phase: " + strings.Join(e.Uncovered, ", ")
+}
+
+func (e *SpecUncoveredError) Unwrap() error { return ErrSpecUncovered }
 
 // BranchDirtyError names the blocking branch and how many commits would be lost, so
 // the api's 409 body and the UI can offer an explicit delete-or-merge decision
@@ -296,6 +309,34 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	readme, err := os.ReadFile(filepath.Join(info.PlanDir, "README.md"))
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", ErrNoDoc, filepath.Join(info.PlanDir, "README.md"))
+	}
+	// Spec-coverage gate: while plan/spec.md declares criteria no phase doc
+	// covers, the plan is not ready to run whole. Files, not DB, on purpose — the
+	// gate stays truthful even when the 60s rescan hasn't converged. Still ahead
+	// of the single-flight slot: a refusal leaves no state.
+	if specBytes, serr := os.ReadFile(filepath.Join(info.PlanDir, "spec.md")); serr == nil {
+		criteria := wsingest.ParseSpecCriteria(string(specBytes))
+		if len(criteria) > 0 {
+			covered := map[string]bool{}
+			for _, ph := range info.Phases {
+				body, rerr := os.ReadFile(ph.DocPath)
+				if rerr != nil {
+					continue // missing doc is ErrNoDoc territory elsewhere; not this gate's job
+				}
+				for _, cid := range wsingest.ParseCovers(string(body)) {
+					covered[cid] = true
+				}
+			}
+			var uncovered []string
+			for _, c := range criteria {
+				if !covered[c.Cid] {
+					uncovered = append(uncovered, c.Cid)
+				}
+			}
+			if len(uncovered) > 0 {
+				return "", &SpecUncoveredError{Uncovered: uncovered}
+			}
+		}
 	}
 	// Resolve the repository BEFORE anything hands a path to git: projects.path is
 	// the project ROOT, which for a multi-repo project is not a checkout at all,

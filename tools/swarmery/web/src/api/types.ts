@@ -2764,6 +2764,34 @@ export interface EpicRollup {
   pct: number;
 }
 
+/** One SC-tagged acceptance criterion from plan/spec.md, with the phases that
+ * declare they deliver it — mirrors specCriterionDTO in internal/api/epics.go. */
+export interface SpecCriterion {
+  /** Uppercase spec-criterion id ("SC-1"). */
+  cid: string;
+  text: string;
+  done: boolean;
+  /** Phase seqs whose `**Covers:**` line declares this cid; empty = uncovered
+   * (never null). */
+  coveredBy: number[];
+}
+
+/** A phase `**Covers:**` reference to an id the spec never declared — a
+ * speculation signal. Mirrors specUnknownRefDTO. */
+export interface SpecUnknownRef {
+  seq: number;
+  cid: string;
+}
+
+/** Per-epic spec coverage rollup (criteria × phase Covers) — mirrors
+ * epicSpecDTO. */
+export interface EpicSpec {
+  criteria: SpecCriterion[];
+  covered: number;
+  total: number;
+  unknownRefs: SpecUnknownRef[];
+}
+
 /** One epic (a workspace plan) — mirrors epicDTO in internal/api/epics.go.
  * `status` is the derived planStatus (zone > README > rollup precedence). */
 export interface Epic {
@@ -2778,6 +2806,11 @@ export interface Epic {
   /** True when plan/SUMMARY.md exists — openable via the docs endpoint
    * (path=SUMMARY.md) in the plan-level summary modal. */
   hasSummary: boolean;
+  /** True when plan/spec.md exists. Independent of `spec` below: the file may
+   * exist before the scanner has parsed criteria rows out of it. */
+  hasSpec: boolean;
+  /** Per-epic spec coverage; null when the task has no spec_criteria rows. */
+  spec: EpicSpec | null;
   phases: EpicPhase[];
   rollup: EpicRollup;
   /** Whole-plan run state (one agent handed the whole plan, driving core's

@@ -30,6 +30,8 @@ func TestBuildPrompt(t *testing.T) {
 		"@implementation-planner", // large-scope agent
 		"fenced json block",       // structured-output contract
 		"runningPlan",             // running plan required every turn
+		"plan/spec.md",            // spec artifact required in PHASE B
+		"**Covers:**",             // per-phase spec-coverage line
 	} {
 		if !strings.Contains(p, must) {
 			t.Errorf("prompt missing required instruction %q", must)

@@ -542,6 +542,53 @@ func TestRunPlan_PlanSpansRepos_409(t *testing.T) {
 	}
 }
 
+// The spec-coverage gate's HTTP face: spec.md declares criteria the fixture's
+// phase docs (no **Covers:** lines) leave uncovered ⇒ 409 with the frozen
+// `spec_uncovered` code, the ids in the message, and the structured list.
+func TestRunPlan_SpecUncovered_409(t *testing.T) {
+	srv, db, taskID := planFixtureWithReadme(t)
+	var planDir string
+	if err := db.QueryRow(`SELECT path FROM task_artifacts WHERE task_id=? AND kind='plan'`,
+		taskID).Scan(&planDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planDir, "spec.md"),
+		[]byte("# Spec\n\n- [ ] **SC-1** — first\n- [ ] **SC-2** — second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attachPlanRun(t, db, &planrunStubRunner{}, true)
+
+	resp := postPlanRun(t, planRunURL(srv, taskID), "")
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct {
+		Error     string   `json:"error"`
+		Code      string   `json:"code"`
+		Uncovered []string `json:"uncovered"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "spec_uncovered" {
+		t.Errorf("code = %q, want spec_uncovered", body.Code)
+	}
+	if len(body.Uncovered) != 2 || body.Uncovered[0] != "SC-1" || body.Uncovered[1] != "SC-2" {
+		t.Errorf("uncovered = %v, want [SC-1 SC-2]", body.Uncovered)
+	}
+	if !strings.Contains(body.Error, "SC-1, SC-2") || !strings.Contains(body.Error, "**Covers:**") {
+		t.Errorf("error = %q, want the ids and the Covers remedy named", body.Error)
+	}
+	// A refusal leaves no run state behind.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM plan_runs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("plan_runs rows = %d, want 0 after a spec refusal", n)
+	}
+}
+
 // The phase surface answers the same condition with the same code — the two run
 // surfaces must not disagree about a state the user has to resolve once.
 func TestRunPhase_NoRepoRoot_409(t *testing.T) {

@@ -88,6 +88,12 @@ const (
 	codePlanInactive = "plan-not-active"
 	codeNoPhases     = "no-phases"
 	codePlanComplete = "plan-complete"
+	// codeSpecUncovered: plan/spec.md declares acceptance criteria that no phase
+	// doc covers, so a whole-plan run would execute a plan that provably misses
+	// promised outcomes. The message names the uncovered ids; the fix is a
+	// **Covers:** line in a phase doc (or trimming the spec). Underscore, not
+	// hyphen — the spec (SC-5) froze this wire value before the code existed.
+	codeSpecUncovered = "spec_uncovered"
 )
 
 // writeConflict replies 409 {"error": msg, "code": code}.

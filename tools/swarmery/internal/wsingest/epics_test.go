@@ -1132,3 +1132,250 @@ func TestPlanHashIncludesParserVersion(t *testing.T) {
 		t.Fatal("planHash ignores parserVersion — a parser upgrade would never re-parse existing plans")
 	}
 }
+
+func TestParseSpecCriteria(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []SpecCriterion
+	}{
+		{"em-dash separator", "- [ ] **SC-1** — wsingest parses spec.md\n",
+			[]SpecCriterion{{Cid: "SC-1", Text: "wsingest parses spec.md"}}},
+		{"colon separator", "- [ ] **SC-2**: colon form\n",
+			[]SpecCriterion{{Cid: "SC-2", Text: "colon form"}}},
+		{"hyphen separator", "- [ ] **SC-3** - hyphen form\n",
+			[]SpecCriterion{{Cid: "SC-3", Text: "hyphen form"}}},
+		{"en-dash separator", "- [ ] **SC-4** – en-dash form\n",
+			[]SpecCriterion{{Cid: "SC-4", Text: "en-dash form"}}},
+		{"no separator at all", "- [ ] **SC-5** bare text\n",
+			[]SpecCriterion{{Cid: "SC-5", Text: "bare text"}}},
+		{"ticked box and star bullet", "* [X] **SC-6** — shipped\n",
+			[]SpecCriterion{{Cid: "SC-6", Text: "shipped", Done: true}}},
+		{"checkbox without an SC marker is not a criterion",
+			"- [ ] plain narrative box\n- [ ] **SC-1** — real\n",
+			[]SpecCriterion{{Cid: "SC-1", Text: "real", Line: 1}}},
+		{"duplicate cid — first occurrence wins",
+			"- [ ] **SC-1** — first\n- [x] **SC-1** — second\n",
+			[]SpecCriterion{{Cid: "SC-1", Text: "first"}}},
+		{"line index counts every source line",
+			"# Spec\n\nprose\n\n- [x] **SC-1** — here\n",
+			[]SpecCriterion{{Cid: "SC-1", Text: "here", Done: true, Line: 4}}},
+		{"empty input", "", nil},
+		{"prose only", "## Acceptance criteria\n\nnothing tagged\n", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ParseSpecCriteria(c.in); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("ParseSpecCriteria = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseCovers(t *testing.T) {
+	cases := []struct {
+		name, in string
+		want     []string
+	}{
+		{"prose header line", "# Phase 1\n\n**Covers:** SC-1, SC-3\n", []string{"SC-1", "SC-3"}},
+		{"header table row", "# Phase 1\n\n| | |\n|---|---|\n| **Covers** | SC-2 |\n", []string{"SC-2"}},
+		{"junk tokens in the cell are ignored",
+			"# P\n**Covers:** SC-1, D-11 (decision), and SC-2\n", []string{"SC-1", "SC-2"}},
+		{"dedup keeps first-seen order", "# P\n**Covers:** SC-3, SC-1, SC-3\n", []string{"SC-3", "SC-1"}},
+		{"first declaration wins", "# P\n**Covers:** SC-1\n**Covers:** SC-2\n", []string{"SC-1"}},
+		{"absent", "# P\n\nno declaration here\n", nil},
+		{
+			// A quoted agent prompt further down describes someone else's phase —
+			// the header-block bound keeps it out, exactly like parseDocRepo.
+			name: "after a section heading is ignored",
+			in:   "# P\n\n## Agent prompt\n\n**Covers:** SC-9\n",
+			want: nil,
+		},
+		{
+			name: "beyond the header window is ignored",
+			in:   "# P\n" + strings.Repeat("\n", 20) + "**Covers:** SC-1\n",
+			want: nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ParseCovers(c.in); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("ParseCovers = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// parseSpec warns once per duplicate cid — ParseSpecCriteria itself stays pure
+// and silently keeps the first occurrence.
+func TestParseSpecWarnsOnDuplicates(t *testing.T) {
+	dir := writePlan(t, map[string]string{
+		"spec.md": "- [ ] **SC-1** — first\n- [x] **SC-1** — second\n",
+	})
+	warn, msgs := collectWarn(t)
+	crits := parseSpec(dir, warn)
+	if len(crits) != 1 || crits[0].Text != "first" {
+		t.Errorf("crits = %+v, want just the first SC-1", crits)
+	}
+	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "SC-1") {
+		t.Errorf("warnings = %v, want one naming SC-1", *msgs)
+	}
+}
+
+// specWorkspace builds a temp workspace with one epic task whose plan carries a
+// spec.md (3 criteria) and two phase docs declaring Covers — one via the header
+// table row, one via the prose line. Returns the root and the plan dir.
+func specWorkspace(t *testing.T) (root, planDir string) {
+	t.Helper()
+	root = t.TempDir()
+	taskDir := filepath.Join(root, "demo", "workspace", "working", "2026", "08", "11", "demo")
+	planDir = filepath.Join(taskDir, "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(taskDir, "README.md"): "# Task: Demo epic\n\n" +
+			"- **Статус**: active\n- **Старт**: 2026-08-11 · **Завершено**: —\n- **Ціль**: demo goal\n",
+		filepath.Join(planDir, "README.md"): "# Demo plan\n\n" +
+			"| # | Phase | Doc | Depends on |\n|---|---|---|---|\n" +
+			"| 1 | Parser | `phase-1-parser.md` | — |\n" +
+			"| 2 | API | `phase-2-api.md` | 1 |\n",
+		filepath.Join(planDir, "phase-1-parser.md"): "# Phase 1 — Parser\n\n" +
+			"| | |\n|---|---|\n| **Covers** | SC-1 |\n\n## Acceptance criteria\n- [ ] a\n",
+		filepath.Join(planDir, "phase-2-api.md"): "# Phase 2 — API\n\n" +
+			"**Covers:** SC-2\n\n## Acceptance criteria\n- [ ] b\n",
+		filepath.Join(planDir, "spec.md"): "# Spec — demo\n\n## Acceptance criteria\n\n" +
+			"- [x] **SC-1** — parser lands\n" +
+			"- [ ] **SC-2** — API exposes coverage\n" +
+			"- [ ] **SC-3** — UI tab\n",
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, planDir
+}
+
+// specRows reads the task's spec_criteria ordered by pos.
+func specRows(t *testing.T, db *sql.DB) []SpecCriterion {
+	t.Helper()
+	rows, err := db.Query(`SELECT cid, text, done, line FROM spec_criteria ORDER BY pos`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []SpecCriterion
+	for rows.Next() {
+		var c SpecCriterion
+		var done int
+		if err := rows.Scan(&c.Cid, &c.Text, &done, &c.Line); err != nil {
+			t.Fatal(err)
+		}
+		c.Done = done != 0
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestScanEpicsSpecLifecycle drives the whole SC surface end-to-end: first index
+// persists spec_criteria + epic_phases.covers; dropping a criterion from spec.md
+// prunes its row by exclusion; deleting spec.md empties the table while leaving
+// the phases (identity and covers) untouched.
+func TestScanEpicsSpecLifecycle(t *testing.T) {
+	db := testDB(t)
+	root, planDir := specWorkspace(t)
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 1: %v", err)
+	}
+
+	want := []SpecCriterion{
+		{Cid: "SC-1", Text: "parser lands", Done: true, Line: 4},
+		{Cid: "SC-2", Text: "API exposes coverage", Line: 5},
+		{Cid: "SC-3", Text: "UI tab", Line: 6},
+	}
+	if got := specRows(t, db); !reflect.DeepEqual(got, want) {
+		t.Errorf("spec_criteria = %+v, want %+v", got, want)
+	}
+
+	var covers1, covers2 string
+	if err := db.QueryRow(`SELECT covers FROM epic_phases WHERE seq = 1`).Scan(&covers1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT covers FROM epic_phases WHERE seq = 2`).Scan(&covers2); err != nil {
+		t.Fatal(err)
+	}
+	if covers1 != `["SC-1"]` || covers2 != `["SC-2"]` {
+		t.Errorf("covers = %q / %q, want [\"SC-1\"] / [\"SC-2\"]", covers1, covers2)
+	}
+	idsBefore := phaseIDsByDoc(t, db)
+
+	// The spec loses SC-3 — its row must be pruned by exclusion on rescan.
+	if err := os.WriteFile(filepath.Join(planDir, "spec.md"),
+		[]byte("# Spec — demo\n\n- [x] **SC-1** — parser lands\n- [ ] **SC-2** — API exposes coverage\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+	if got := specRows(t, db); len(got) != 2 || got[0].Cid != "SC-1" || got[1].Cid != "SC-2" {
+		t.Errorf("spec_criteria after dropping SC-3 = %+v, want SC-1 + SC-2", got)
+	}
+
+	// spec.md deleted entirely — zero rows, and the phases stay untouched.
+	if err := os.Remove(filepath.Join(planDir, "spec.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan 3: %v", err)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM spec_criteria`); n != 0 {
+		t.Errorf("spec_criteria after deleting spec.md = %d, want 0", n)
+	}
+	idsAfter := phaseIDsByDoc(t, db)
+	if !reflect.DeepEqual(idsAfter, idsBefore) {
+		t.Errorf("phase identities changed: %v → %v", idsBefore, idsAfter)
+	}
+	if err := db.QueryRow(`SELECT covers FROM epic_phases WHERE seq = 1`).Scan(&covers1); err != nil {
+		t.Fatal(err)
+	}
+	if covers1 != `["SC-1"]` {
+		t.Errorf("covers after spec removal = %q, want [\"SC-1\"] (doc still declares it)", covers1)
+	}
+}
+
+// TestScanEpicsNoSpecUnchanged: a plan without spec.md indexes exactly as it did
+// before parser v4 — no spec rows, covers defaults to '[]', and parseSpec on the
+// spec-less dir is silent (a missing spec is the common case, not a warning).
+func TestScanEpicsNoSpecUnchanged(t *testing.T) {
+	db := testDB(t)
+	root, phaseDoc := demoWorkspace(t)
+	s := New(db, Config{WorkspaceRoot: root})
+	if _, err := s.Scan(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if n := count(t, db, `SELECT COUNT(*) FROM spec_criteria`); n != 0 {
+		t.Errorf("spec_criteria = %d, want 0 for a plan without spec.md", n)
+	}
+	var covers string
+	if err := db.QueryRow(`SELECT covers FROM epic_phases`).Scan(&covers); err != nil {
+		t.Fatal(err)
+	}
+	if covers != "[]" {
+		t.Errorf("covers = %q, want '[]' when the doc declares nothing", covers)
+	}
+
+	warn, msgs := collectWarn(t)
+	if got := parseSpec(filepath.Dir(phaseDoc), warn); got != nil {
+		t.Errorf("parseSpec(no spec.md) = %+v, want nil", got)
+	}
+	if len(*msgs) != 0 {
+		t.Errorf("warnings = %v, want none — the spec is optional", *msgs)
+	}
+}

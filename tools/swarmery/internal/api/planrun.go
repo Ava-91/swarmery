@@ -90,6 +90,7 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 	var (
 		dirtyErr *planrun.BranchDirtyError
 		spansErr *planrun.PlanSpansReposError
+		specErr  *planrun.SpecUncoveredError
 	)
 	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
 	// errors.Is still matches through the wrap. Resolved before the switch and
@@ -124,6 +125,13 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 		writeConflictFields(w, codePlanSpansRepos, spansErr.Error(), map[string]any{
 			"repos": spansErr.Repos,
 		})
+	// spec.md promises outcomes no phase delivers: name the uncovered ids, so the
+	// fix (a **Covers:** line, or trimming the spec) is an instruction, not a hunt.
+	case errors.As(err, &specErr):
+		writeConflictFields(w, codeSpecUncovered,
+			"spec.md declares criteria no phase covers: "+strings.Join(specErr.Uncovered, ", ")+
+				". Add **Covers:** lines to the phase docs or trim the spec.",
+			map[string]any{"uncovered": specErr.Uncovered})
 	// The previous run's branch still holds commits, so reclaiming its name would
 	// destroy them. Same body shape runPhase emits (error/code/branch/commitsAhead/
 	// base) — the two run surfaces answer retry identically, and the UI parses one

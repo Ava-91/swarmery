@@ -1035,6 +1035,109 @@ func TestDeleteRunBranch_PropagatesFailure(t *testing.T) {
 	}
 }
 
+// ── spec-coverage gate ──
+
+// TestStart_SpecUncovered_Refuses: plan/spec.md declares SC-1..3, the phase docs
+// cover only 1 and 2 ⇒ Start refuses with a typed error naming SC-3, before any
+// state exists (no spawn, no worktree, no plan_runs row, slot free). Once the
+// missing Covers line is added the very next Start is admitted — the gate reads
+// the files live, not a stale scan.
+func TestStart_SpecUncovered_Refuses(t *testing.T) {
+	db, taskID, planDir := fixture(t)
+	mustWrite(t, filepath.Join(planDir, "spec.md"),
+		"# Spec\n\n## Acceptance criteria\n\n- [ ] **SC-1** — first\n- [ ] **SC-2** — second\n- [ ] **SC-3** — third\n")
+	// Covers must live in the doc HEADER (ParseCovers scans the first lines and
+	// stops at the first `## ` section) — both declared forms are exercised.
+	mustWrite(t, filepath.Join(planDir, "phase-1-schema.md"),
+		"# Phase 1 — Schema\n\n**Covers:** SC-1\n\n## Acceptance criteria\n- [ ] a\n- [ ] b\n")
+	mustWrite(t, filepath.Join(planDir, "phase-2-ui.md"),
+		"# Phase 2 — UI\n\n| **Covers** | SC-2 |\n\n## Acceptance criteria\n- [ ] c\n")
+	r := &stubRunner{}
+	wt := &stubWt{}
+	s := newTestService(db, r, wt)
+
+	_, err := s.Start(taskID, "", "")
+	if !errors.Is(err, ErrSpecUncovered) {
+		t.Fatalf("Start error = %v, want ErrSpecUncovered", err)
+	}
+	var sue *SpecUncoveredError
+	if !errors.As(err, &sue) {
+		t.Fatalf("err = %v, want a *SpecUncoveredError", err)
+	}
+	if len(sue.Uncovered) != 1 || sue.Uncovered[0] != "SC-3" {
+		t.Errorf("Uncovered = %v, want [SC-3]", sue.Uncovered)
+	}
+	if r.count() != 0 || wt.acquiredCount() != 0 {
+		t.Error("a spec-gated Start must not spawn or acquire a worktree")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM plan_runs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("plan_runs rows = %d, want 0 (a refusal leaves no state)", n)
+	}
+	s.mu.Lock()
+	inFlight := len(s.active)
+	s.mu.Unlock()
+	if inFlight != 0 {
+		t.Errorf("in-flight slots = %d, want 0 after a spec refusal", inFlight)
+	}
+
+	// Cover SC-3 and the retry is admitted.
+	mustWrite(t, filepath.Join(planDir, "phase-2-ui.md"),
+		"# Phase 2 — UI\n\n| **Covers** | SC-2, SC-3 |\n\n## Acceptance criteria\n- [ ] c\n")
+	if _, err := s.Start(taskID, "", ""); err != nil {
+		t.Fatalf("retry after covering SC-3: %v", err)
+	}
+	if state, _, _, _, _ := planRow(t, db, taskID); state != "done" {
+		t.Errorf("run_state = %q, want done", state)
+	}
+}
+
+// TestStart_SpecAllCovered_Proceeds: every declared criterion is covered ⇒ the
+// gate is a pass-through and the run completes exactly like the happy path.
+func TestStart_SpecAllCovered_Proceeds(t *testing.T) {
+	db, taskID, planDir := fixture(t)
+	mustWrite(t, filepath.Join(planDir, "spec.md"),
+		"# Spec\n\n- [ ] **SC-1** — first\n- [x] **SC-2** — second\n")
+	mustWrite(t, filepath.Join(planDir, "phase-1-schema.md"),
+		"# Phase 1 — Schema\n\n**Covers:** SC-1, SC-2\n\n## Acceptance criteria\n- [ ] a\n- [ ] b\n")
+	s := newTestService(db, &stubRunner{}, &stubWt{})
+
+	if _, err := s.Start(taskID, "", ""); err != nil {
+		t.Fatalf("Start with a fully covered spec: %v", err)
+	}
+	if state, _, _, _, _ := planRow(t, db, taskID); state != "done" {
+		t.Errorf("run_state = %q, want done", state)
+	}
+}
+
+// TestStart_NoSpec_AdmissionUnchanged: a plan without spec.md — or with a
+// spec.md that declares no SC criteria — is admission-identical to the
+// pre-gate behavior.
+func TestStart_NoSpec_AdmissionUnchanged(t *testing.T) {
+	t.Run("no spec.md", func(t *testing.T) {
+		db, taskID, _ := fixture(t)
+		s := newTestService(db, &stubRunner{}, &stubWt{})
+		if _, err := s.Start(taskID, "", ""); err != nil {
+			t.Fatalf("Start without spec.md: %v", err)
+		}
+		if state, _, _, _, _ := planRow(t, db, taskID); state != "done" {
+			t.Errorf("run_state = %q, want done", state)
+		}
+	})
+	t.Run("spec.md without criteria", func(t *testing.T) {
+		db, taskID, planDir := fixture(t)
+		mustWrite(t, filepath.Join(planDir, "spec.md"),
+			"# Spec\n\nProse only — narrative checkboxes are not criteria:\n\n- [ ] plain box\n")
+		s := newTestService(db, &stubRunner{}, &stubWt{})
+		if _, err := s.Start(taskID, "", ""); err != nil {
+			t.Fatalf("Start with a criterion-less spec.md: %v", err)
+		}
+	})
+}
+
 func TestPhaseRunStateIsNeverTouched(t *testing.T) {
 	// A plan run is ONE session for the whole plan; claiming per-phase run rows
 	// would make the two mechanisms lie about each other.
