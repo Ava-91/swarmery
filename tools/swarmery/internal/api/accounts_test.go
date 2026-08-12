@@ -1012,7 +1012,7 @@ func TestAccountsProbeIsSingleFlight(t *testing.T) {
 	attachHomeAccounts(t, ingest.DefaultAccount, "nabu-org")
 	_, srv := accountsTestDB(t, "accounts-probe-flight.db")
 
-	entered := make(chan struct{})  // closed when the leader is inside the probe
+	entered := make(chan struct{}) // closed when the leader is inside the probe
 	release := make(chan struct{}) // the test holds the leader here
 	calls := useProbe(t, func(context.Context, string) claudeprobe.Result {
 		close(entered)
