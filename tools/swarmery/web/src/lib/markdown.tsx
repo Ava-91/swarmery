@@ -8,26 +8,9 @@
 // `^https?://`; every other shape either becomes a router <Link> to a route
 // this app owns, or plain text — so `javascript:`/`data:` cannot survive.
 //
-// The one deliberate exception lives in docBlocks.tsx: a ```mermaid fence
-// assigns mermaid's own DOMPurify-sanitised SVG string to innerHTML, because
-// mermaid ships no React renderer. See that file's header for why it is safe
-// and why nothing else here may follow it.
-//
 // Supported: paragraphs, headings (#–####), fenced code blocks,
-// unordered/ordered lists, pipe tables, blockquotes, **bold**, *italic*,
-// `inline code`, [links](href).
-//
-// Doc-surface fences dispatch on the info string (the word after ```):
-//   ```mermaid        → a lazily-chunked mermaid diagram
-//   ```stats          → a strip of `value | label [| hot]` tiles
-//   ```figure <name>  → a canonical illustration from docFigures.tsx
-// Any other info string (```go, bare ```) keeps the plain <pre> path, so a
-// doc using none of these renders byte-identically to before — and the three
-// dialects degrade to ordinary code blocks on GitHub.
-//
-// Blockquotes support GitHub's admonition syntax: a first line of `[!NOTE]`,
-// `[!TIP]`, `[!WARNING]` or `[!IMPORTANT]` becomes a styled callout, and
-// GitHub renders the same source natively, so shared root docs may use it.
+// unordered/ordered lists, pipe tables, **bold**, *italic*, `inline code`,
+// [links](href).
 //
 // Known limitations, both a consequence of the deliberately flat inline regex:
 //   · nested brackets — `[a [b] c](d)` matches nothing (the label class
@@ -38,8 +21,6 @@
 
 import { Fragment, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Callout, CodeBlock, MermaidBlock, StatsStrip, calloutType } from './docBlocks';
-import { DocFigure } from './docFigures';
 
 /* ----- inline: `code` | [link](href) | **bold** | *italic* ----- */
 
@@ -291,8 +272,21 @@ function flushParagraph(lines: string[], key: string, out: ReactNode[]): void {
  * plan summary and a doc body side by side, Chat.tsx one per message — where
  * two `## Summary` headings would collide into a duplicate `id="summary"`.
  * Docs.tsx renders exactly one body per page, so it is the one caller that can
- * safely own the id namespace, and the only one that needs it (deep links). */
-export function Markdown({ text, anchors = false }: { text: string; anchors?: boolean }): JSX.Element {
+ * safely own the id namespace, and the only one that needs it (deep links).
+ *
+ * `codeLabels` opts into a mono chip naming the fence's info string (```json →
+ * "json") on a header strip above the code. Off by default: chat bubbles and
+ * plan panes render many small snippets where the strip is noise; the docs
+ * reading pane is the surface the label was designed for. */
+export function Markdown({
+  text,
+  anchors = false,
+  codeLabels = false,
+}: {
+  text: string;
+  anchors?: boolean;
+  codeLabels?: boolean;
+}): JSX.Element {
   const lines = text.split('\n');
   const out: ReactNode[] = [];
   const para: string[] = [];
@@ -302,12 +296,10 @@ export function Markdown({ text, anchors = false }: { text: string; anchors?: bo
     const line = lines[i] ?? '';
     const key = `md-${String(i)}`;
 
-    // Fenced block. The info string (everything after the opening ```) picks
-    // the renderer; anything unrecognised falls through to the plain <pre>
-    // this branch has always produced.
+    // Fenced code block.
     if (line.trimStart().startsWith('```')) {
       flushParagraph(para, `${key}-p`, out);
-      const info = line.trimStart().slice(3).trim().toLowerCase();
+      const info = line.trim().slice(3).trim();
       const code: string[] = [];
       i += 1;
       while (i < lines.length && !(lines[i] ?? '').trimStart().startsWith('```')) {
@@ -315,18 +307,48 @@ export function Markdown({ text, anchors = false }: { text: string; anchors?: bo
         i += 1;
       }
       i += 1; // closing fence (or EOF)
-      const body = code.join('\n');
-      if (info === 'mermaid') out.push(<MermaidBlock key={key} code={body} />);
-      else if (info === 'stats') out.push(<StatsStrip key={key} source={body} />);
-      else if (info === 'figure' || info.startsWith('figure '))
-        out.push(<DocFigure key={key} name={info.slice(6).trim()} />);
-      else out.push(<CodeBlock key={key} code={body} />);
+      if (codeLabels && info !== '') {
+        // Labelled variant: the border moves to a wrapper so the label strip
+        // and the code share one rounded box.
+        out.push(
+          <div
+            key={key}
+            className="md-codeblock my-2 overflow-hidden rounded-lg border border-line bg-surface first:mt-0 last:mb-0"
+          >
+            <div className="border-b border-line-soft px-3 py-1 font-mono text-[9.5px] tracking-[0.12em] text-ink-faint uppercase">
+              {info}
+            </div>
+            <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[11px] leading-relaxed text-ink-2">
+              <code>{code.join('\n')}</code>
+            </pre>
+          </div>,
+        );
+      } else {
+        out.push(
+          <pre
+            key={key}
+            className="my-2 overflow-x-auto rounded-lg border border-line bg-surface px-3 py-2.5 font-mono text-[11px] leading-relaxed text-ink-2 first:mt-0 last:mb-0"
+          >
+            <code>{code.join('\n')}</code>
+          </pre>,
+        );
+      }
       continue;
     }
 
-    // Blockquote, and GitHub-style admonitions built on it. Must precede the
-    // paragraph fallback, which would otherwise swallow the `>` markers as
-    // literal prose (which is exactly what happened before this branch).
+    // Thematic break. Only when no paragraph is being collected: a `---`
+    // directly under text would be a setext underline in full markdown, which
+    // this renderer has never supported — so it must not eat one either.
+    if (para.length === 0 && /^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      out.push(<hr key={key} className="my-4 border-line" />);
+      i += 1;
+      continue;
+    }
+
+    // Blockquote — consecutive `>` lines form one quote. Without this branch a
+    // `> note` line would fall through to the paragraph collector and render
+    // with its literal `>` marker. A leading GitHub admonition marker
+    // (`> [!NOTE]`) becomes a mono label chip instead of literal text.
     if (line.trimStart().startsWith('>')) {
       flushParagraph(para, `${key}-p`, out);
       const quote: string[] = [];
@@ -334,24 +356,28 @@ export function Markdown({ text, anchors = false }: { text: string; anchors?: bo
         quote.push((lines[i] ?? '').replace(/^\s*>\s?/, ''));
         i += 1;
       }
-      const type = calloutType(quote[0] ?? '');
-      if (type !== null) {
-        const body = quote.slice(1).join('\n');
-        out.push(
-          <Callout key={key} type={type}>
-            {renderInline(body, `${key}-c`)}
-          </Callout>,
-        );
-      } else {
-        out.push(
-          <blockquote
-            key={key}
-            className="my-2 border-l-2 border-line-strong pl-3 text-[13px] leading-relaxed whitespace-pre-line text-ink-dim first:mt-0 last:mb-0"
-          >
-            {renderInline(quote.join('\n'), key)}
-          </blockquote>,
-        );
-      }
+      const adm = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$/i.exec(quote[0] ?? '');
+      const kind = adm?.[1]?.toUpperCase() ?? null;
+      const body = (kind === null ? quote : quote.slice(1)).join('\n');
+      const kindInk =
+        kind === 'WARNING' || kind === 'CAUTION'
+          ? 'text-red'
+          : kind === 'IMPORTANT'
+            ? 'text-brand'
+            : 'text-ink-dim';
+      out.push(
+        <blockquote
+          key={key}
+          className="my-2 border-l-2 border-line-strong pl-3 leading-relaxed whitespace-pre-line text-ink-3 first:mt-0 last:mb-0"
+        >
+          {kind !== null && (
+            <div className={`mb-1 font-mono text-[9.5px] font-medium tracking-[0.12em] uppercase ${kindInk}`}>
+              {kind}
+            </div>
+          )}
+          {renderInline(body, key)}
+        </blockquote>,
+      );
       continue;
     }
 

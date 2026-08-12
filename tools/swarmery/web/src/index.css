@@ -554,3 +554,134 @@
     animation: none;
   }
 }
+
+/* ============================================================================
+ * Docs article body (Canvas v2 — pages/Docs.tsx).
+ *
+ * The doc pane needs its own reading metrics — 12px paragraph rhythm, serif
+ * section headings, a recessed code block — but <Markdown> (lib/markdown.tsx)
+ * is shared with Chat, Plans and memory views and must NOT change. So the
+ * metrics live here, scoped to `.docs-article`, which only that one pane wears.
+ *
+ * These rules are deliberately UNLAYERED: Tailwind's utilities sit in
+ * `@layer utilities`, and unlayered CSS wins over any cascade layer, so the
+ * renderer's own `my-2` / `text-[11px]` classes are overridden without a single
+ * !important and without touching a token or an existing selector.
+ *
+ * Heading levels are offset by one on purpose: the pane owns the <h1>, so the
+ * renderer maps `#`→h2 and `##`→h3. h3 is therefore the doc's section heading
+ * and carries the design's 17px Fraunces; h2/h4/h5 are derived steps around it.
+ * ==========================================================================*/
+
+.docs-article p {
+  margin: 0 0 12px;
+  /* The renderer tags paragraphs `leading-relaxed` (1.625) for the chat/plan
+     surfaces. A doc paragraph inherits the pane's own 1.75 instead — 1.75px
+     per line, which compounds down a long doc. */
+  line-height: inherit;
+}
+
+.docs-article h2,
+.docs-article h3,
+.docs-article h4,
+.docs-article h5 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--color-ink);
+  margin: 26px 0 8px;
+  /* Breathing room above a heading when a TOC entry or a /docs/{slug}#anchor
+     deep link scrolls it to the top (nothing sticky overlaps it anymore). */
+  scroll-margin-top: 26px;
+}
+
+.docs-article h2 {
+  font-size: 19px;
+}
+
+.docs-article h3 {
+  font-size: 17px;
+}
+
+.docs-article h4 {
+  font-size: 14.5px;
+}
+
+.docs-article h5 {
+  font-size: 13.5px;
+}
+
+.docs-article > :first-child {
+  margin-top: 0;
+}
+
+.docs-article pre {
+  margin: 0 0 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--color-ink-3);
+}
+
+/* Labelled fence (Markdown `codeLabels`): the wrapper owns the box, so the
+   inner pre sheds its own border/radius and the label strip sits inside. */
+.docs-article .md-codeblock {
+  margin: 0 0 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+}
+
+.docs-article .md-codeblock pre {
+  margin: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Section numbers: `§ 01` on every `##` heading (rendered as h3 — see the
+   level-offset note above). The TOC rail prints the same numbers from JSX, so
+   heading and rail stay a matched index. */
+.docs-article {
+  counter-reset: docsec;
+}
+
+.docs-article h3 {
+  counter-increment: docsec;
+}
+
+.docs-article h3::before {
+  content: '§ ' counter(docsec, decimal-leading-zero);
+  margin-right: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--color-brand);
+}
+
+/* Blockquote → callout card. The renderer's neutral hairline treatment stays
+   for chat/plan surfaces; the doc pane raises quotes into amber-tinted asides. */
+.docs-article blockquote {
+  margin: 0 0 12px;
+  border-left: 2px solid color-mix(in srgb, var(--color-brand) 45%, transparent);
+  background: color-mix(in srgb, var(--color-brand) 5%, transparent);
+  border-radius: 0 8px 8px 0;
+  padding: 10px 14px;
+  color: var(--color-ink-2);
+}
+
+.docs-article ul,
+.docs-article ol,
+.docs-article table {
+  margin: 0 0 12px;
+}
+
+.docs-article > :last-child {
+  margin-bottom: 0;
+}
