@@ -1,12 +1,18 @@
 // Create-account modal (multi-account, phase 7). Two stages: a form for the
-// account key, then — on success — a copy-the-command stage. This modal NEVER
-// runs `loginCommand` itself: the server only reserves a config dir, it does
-// not (and cannot) drive the operator's own `claude` login flow. Pretending
-// success here would be a lie about whether the account is actually usable.
+// account key, then — on success — the connect stage. The PRIMARY path is the
+// one-click Connect (the daemon's own OAuth flow, credential handoff and CLI
+// probe included — UsageConnect); the CLI command stays as the documented
+// manual alternative. The modal still never runs `loginCommand` itself: the
+// server only reserves a config dir, it does not (and cannot) drive the
+// operator's own `claude` login flow. Pretending success here would be a lie
+// about whether the account is actually usable.
 
 import { useId, useState } from 'react';
 import { createAccount } from '../api';
+import { refreshReadiness } from '../lib/accountReadiness';
 import { ExplainPair } from './Explain';
+import { TerminalPathNote } from './TerminalPathNote';
+import { UsageConnect } from './usage/UsageConnect';
 import { ErrorBox } from './ui';
 
 type Stage =
@@ -30,6 +36,9 @@ export function CreateAccountModal({
   const [stage, setStage] = useState<Stage>({ kind: 'form' });
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // The embedded Connect came out CLI-ready — swap the flow for the terminal
+  // path note. The manual command stays visible until then.
+  const [resolved, setResolved] = useState(false);
 
   if (!open) return null;
   const busy = stage.kind === 'saving';
@@ -39,6 +48,7 @@ export function CreateAccountModal({
     setStage({ kind: 'form' });
     setError(null);
     setCopied(false);
+    setResolved(false);
   }
 
   function close(): void {
@@ -141,22 +151,51 @@ export function CreateAccountModal({
           </form>
         ) : (
           <div className="mt-3">
-            <p className="text-[12px] leading-relaxed text-ink-2">
-              Account <span className="font-mono text-ink">{key.trim()}</span> reserved. Run this
-              command yourself to log in — swarmery never runs it for you:
-            </p>
-            <div className="mt-2 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5">
-              <code className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">
-                {stage.loginCommand}
-              </code>
-              <button
-                type="button"
-                onClick={() => copy(stage.loginCommand)}
-                className="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:bg-surface2"
-              >
-                {copied ? 'copied' : 'copy'}
-              </button>
-            </div>
+            {resolved ? (
+              <div>
+                <p className="text-[12px] leading-relaxed text-ink-2">
+                  Account <span className="font-mono text-ink">{key.trim()}</span> is connected
+                  and CLI-ready.
+                </p>
+                <TerminalPathNote />
+              </div>
+            ) : (
+              <>
+                <p className="text-[12px] leading-relaxed text-ink-2">
+                  Account <span className="font-mono text-ink">{key.trim()}</span> reserved.
+                  Connect it here — one authorization covers the quota read, the CLI
+                  credential, and the readiness check:
+                </p>
+                {/* The one-click flow, including its pty-login fallback step. */}
+                <UsageConnect
+                  account={key.trim()}
+                  onResolved={() => {
+                    setResolved(true);
+                    void refreshReadiness();
+                  }}
+                />
+                <p className="mt-3 text-[11px] leading-relaxed text-ink-dim">
+                  Prefer the terminal? Run this yourself — swarmery never runs it for you:
+                </p>
+                <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-line bg-bg px-2.5 py-1.5">
+                  <code className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">
+                    {stage.loginCommand}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copy(stage.loginCommand)}
+                    className="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:bg-surface2"
+                  >
+                    {copied ? 'copied' : 'copy'}
+                  </button>
+                </div>
+                <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-ink-faint">
+                  on macOS the CLI stores a non-default account&apos;s login in the login
+                  Keychain (no credentials file) — the dashboard reads it from there, so press
+                  &ldquo;check now&rdquo; on the account after logging in
+                </p>
+              </>
+            )}
             {stage.hint !== undefined && stage.hint !== '' && (
               <p className="mt-2 font-mono text-[10.5px] text-amber">{stage.hint}</p>
             )}

@@ -21,6 +21,7 @@ import {
   MOCK,
 } from './api';
 import { fetchSystemSummary } from './api/system';
+import { AccountReadyBanner } from './components/AccountReadyBanner';
 import { CommandPalette } from './components/CommandPalette';
 import { ModeToggle } from './components/ModeToggle';
 import { NewProjectButton } from './components/NewProjectButton';
@@ -286,6 +287,11 @@ function AppShell(): JSX.Element {
         </span>
         </span>
       </header>
+
+      {/* Readiness signal for the scoped project's effective account — renders
+          nothing (no wrapper at all) when unscoped or the account is fine, so
+          the header rhythm is unchanged in the common case. */}
+      <AccountReadyBanner />
 
       <div className="flex min-h-0 flex-1">
         {/* Desktop sidebar — static labelled panel (248px), no collapse.

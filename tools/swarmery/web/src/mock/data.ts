@@ -1902,6 +1902,18 @@ let mockAccounts: Account[] = [
   },
 ];
 
+/** Per-project account bindings ('' = none) — session-scoped mock state. */
+const mockBindings = new Map<string, string>();
+
+function bindingFor(account: string): AccountBinding {
+  return {
+    account,
+    effective: account === '' ? 'default' : account,
+    configDir: account === '' ? '~/.claude' : `~/.claude-${account}`,
+    source: account === '' ? 'default' : 'binding',
+  };
+}
+
 export interface MockFilters {
   project?: string;
   status?: string;
@@ -2941,19 +2953,18 @@ export const mockApi = {
     mockAccounts = mockAccounts.filter((a) => a.key !== key);
     return { ok: true };
   },
-  async projectAccount(_id: number | string): Promise<AccountBinding> {
+  async projectAccount(id: number | string): Promise<AccountBinding> {
     await delay(80);
-    return { account: '', effective: 'default', configDir: '~/.claude', source: 'default' };
+    const account = mockBindings.get(String(id)) ?? '';
+    return bindingFor(account);
   },
-  async putProjectAccount(_id: number | string, account: string): Promise<AccountBinding> {
+  async putProjectAccount(id: number | string, account: string): Promise<AccountBinding> {
     await delay(120);
-    const eff = account === '' ? 'default' : account;
-    return {
-      account,
-      effective: eff,
-      configDir: account === '' ? '~/.claude' : `~/.claude-${account}`,
-      source: account === '' ? 'default' : 'binding',
-    };
+    // Persisted for the session (same as the server's settings-file write), so
+    // the readiness banner's alert state is reachable in mock mode: bind a
+    // project to `nabu-org` (runnable:false) and the banner must appear.
+    mockBindings.set(String(id), account);
+    return bindingFor(account);
   },
 
   // ── Routines (fusion phase 7) ──

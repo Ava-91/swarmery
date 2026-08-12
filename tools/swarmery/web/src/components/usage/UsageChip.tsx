@@ -13,6 +13,7 @@
 import { useEffect, useState } from 'react';
 import type { UsageAccount, UsageProvider, UsageWindow } from '../../api/types';
 import { useActiveUsageAccount } from '../../lib/activeAccount';
+import { useAccountReadiness } from '../../lib/accountReadiness';
 import { useUsage } from '../../lib/usageData';
 import { fmtResetsIn } from './format';
 import { UsageModal } from './UsageModal';
@@ -89,6 +90,7 @@ function buildView(
   accounts: readonly UsageAccount[],
   error: string | null,
   lastUpdated: number | null,
+  notReady: string | null,
 ): ChipView {
   // Nothing has ever loaded and the fetch failed — the only genuinely blind
   // state, so the chip greys out. A failure AFTER a success keeps the last known
@@ -126,20 +128,33 @@ function buildView(
     if (reset !== '') detail.push(reset);
     if (w.pace !== undefined) detail.push(w.pace.message);
     tipParts.push(`${row.account} — ${detail.join(', ')}`);
-    segments.push({ label: segmentLabel(row.account), text: `${pct}%`, tone: toneFor(w) });
+    // The scoped project's effective account failing the CLI-readiness probe
+    // must not look healthy just because its quota reads fine — the segment
+    // takes the warning tone (the whole chip, on a single-account machine).
+    // `notReady` is null whenever readiness is unknown or unasked, so the
+    // healthy single-account chip stays pixel-identical.
+    const tone = row.account === notReady ? 'text-amber' : toneFor(w);
+    segments.push({ label: segmentLabel(row.account), text: `${pct}%`, tone });
   }
 
+  // A not-ready scoped account carries the warning tone even without a healthy
+  // window to hang it on: the whole chip when it is the only story to tell,
+  // else its own amber `!` slot alongside the healthy accounts' percentages.
   if (segments.length === 0) {
     // No healthy card anywhere. When EVERY card is a "not connected" one, say
     // what to connect — the daemon's own headline, which differs per cause
     // (expired, rejected, missing scope, switched off). A mix of not-connected
     // and genuinely broken cards has no single honest headline, so it stays
     // generic and sends the operator to the modal.
+    const tone = notReady !== null ? 'text-amber' : 'text-ink-2';
     const all = rows.flatMap((a) => a.providers);
     if (all.length > 0 && all.every((p) => p.status === 'no-auth')) {
-      return single('usage', 'text-ink-2', noAuthTip(all));
+      return single('usage', tone, noAuthTip(all));
     }
-    return single('usage', 'text-ink-2', 'Subscription usage');
+    return single('usage', tone, 'Subscription usage');
+  }
+  if (notReady !== null && !segments.some((s) => s.label === segmentLabel(notReady))) {
+    segments.push({ label: segmentLabel(notReady), text: '!', tone: 'text-amber' });
   }
 
   if (error !== null) tipParts.push('refresh failed');
@@ -153,6 +168,15 @@ export function UsageChip(): JSX.Element {
   // name and lift the active account. Fetched here, not in the modal — the
   // modal stays pure presentation (see its header note).
   const active = useActiveUsageAccount(open);
+  // Readiness of the scoped effective account (shared cache with the banner —
+  // not a second fetcher). Only an ANSWERED "no" marks the chip: null (never
+  // probed / OAuth off / list unavailable) keeps the chip exactly as it was.
+  const readiness = useAccountReadiness();
+  const notReady =
+    active !== null &&
+    readiness?.find((a) => a.key === active.account)?.runnable === false
+      ? active.account
+      : null;
 
   // Registering the open modal is what bumps the SHARED cadence 120s → 30s; it
   // never starts a second poller. Reference-counted in the provider, so
@@ -163,7 +187,7 @@ export function UsageChip(): JSX.Element {
     return () => setModalOpen(false);
   }, [open, setModalOpen]);
 
-  const view = buildView(providers, accounts, error, lastUpdated);
+  const view = buildView(providers, accounts, error, lastUpdated, notReady);
 
   return (
     <span className="relative">

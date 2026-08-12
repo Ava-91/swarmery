@@ -434,3 +434,24 @@ curl -s localhost:7777/api/usage | jq                    # cached (≤30s old)
 curl -s 'localhost:7777/api/usage?fresh=1' | jq          # live upstream call
 SWARMERY_USAGE_OAUTH=0 ./swarmery serve                  # verify the opt-out path
 ```
+
+## 9. Why `/usage` in my terminal shows a different account
+
+The project → account binding governs what swarmery **dispatches**: runs started from the
+dashboard, and the dashboard's embedded terminal. A `claude` you start by hand in your own
+shell knows nothing about it — without `CLAUDE_CONFIG_DIR` set in that shell, the CLI reads
+`~/.claude`, i.e. the machine's **default** account. So `/usage` in a hand-opened terminal
+can honestly disagree with the account the dashboard says this project runs under; neither
+is lying, they are answering different questions.
+
+To run a hand-started CLI under the project's account, from the project root:
+
+```bash
+swarmery account which            # which account this project runs under, and why
+swarmery account exec -- claude   # run one command under that account
+eval "$(swarmery account env)"    # or export CLAUDE_CONFIG_DIR into this shell
+```
+
+`which|use|clear|env|exec` never contact the daemon, so they keep working with swarmery
+stopped. The accounts pack's `/account setup-shell` installs a shell wrapper that applies
+the binding automatically per directory.

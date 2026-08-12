@@ -11,6 +11,7 @@
 
 import { Link } from 'react-router-dom';
 import { MOCK } from '../api';
+import { AccountReadyBanner } from '../components/AccountReadyBanner';
 import { ModeToggle } from '../components/ModeToggle';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { UsageChip } from '../components/usage/UsageChip';
@@ -59,6 +60,9 @@ export function WorkspaceShell(): JSX.Element {
           </span>
         </span>
       </header>
+      {/* Same component, same placement as the fleet shell (App.tsx), so a
+          route change between shells never loses the readiness signal. */}
+      <AccountReadyBanner />
       <ProjectWorkspaceLayout />
     </div>
   );

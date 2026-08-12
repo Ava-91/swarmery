@@ -11,9 +11,34 @@
 // re-fetched when the scope changes and each time the modal opens, so a binding
 // changed on the Settings page is picked up without a page reload.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { fetchProjectAccount } from '../api';
 import { useScope } from './scope';
+
+// Binding-change signal: a saved binding (AccountSelector) must reach every
+// mounted consumer — the readiness banner and the chip live on EVERY route, so
+// "picked up on the next scope change" is not enough for them. A version
+// counter, not the binding itself: the daemon stays the source of truth and
+// each consumer re-fetches.
+let bindingVersion = 0;
+const bindingListeners = new Set<() => void>();
+
+/** Call after PUT /api/projects/{id}/account succeeds. */
+export function notifyAccountBindingChanged(): void {
+  bindingVersion += 1;
+  for (const fn of bindingListeners) fn();
+}
+
+function subscribeBinding(fn: () => void): () => void {
+  bindingListeners.add(fn);
+  return () => {
+    bindingListeners.delete(fn);
+  };
+}
+
+function bindingSnapshot(): number {
+  return bindingVersion;
+}
 
 export interface ActiveAccount {
   /** The account the scoped project runs under (binding, or the default). */
@@ -34,6 +59,7 @@ export interface ActiveAccount {
 export function useActiveUsageAccount(open: boolean): ActiveAccount | null {
   const { scopeProject } = useScope();
   const [active, setActive] = useState<ActiveAccount | null>(null);
+  const version = useSyncExternalStore(subscribeBinding, bindingSnapshot);
 
   const projectId = scopeProject?.id ?? null;
   const projectName = scopeProject?.name ?? scopeProject?.slug ?? '';
@@ -54,7 +80,7 @@ export function useActiveUsageAccount(open: boolean): ActiveAccount | null {
     return () => {
       alive = false;
     };
-  }, [projectId, projectName, open]);
+  }, [projectId, projectName, open, version]);
 
   return active;
 }

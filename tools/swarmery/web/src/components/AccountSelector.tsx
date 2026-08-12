@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Account, AccountBinding } from '../api/types';
 import { fetchAccounts, fetchProjectAccount, putProjectAccount } from '../api';
+import { notifyAccountBindingChanged } from '../lib/activeAccount';
 import { ExplainPair } from './Explain';
 import { Card, ErrorBox, SectionTitle } from './ui';
 
@@ -21,6 +22,20 @@ interface AccountOption {
   value: string;
   label: string;
   detail: string;
+}
+
+/** "connected" (quota readable) and "ready" (CLI can run) are DIFFERENT
+ * questions, each tri-state — speak them separately, and never render a null
+ * as a failure: an unasked question is silence, not a state. */
+function statusBits(account: Account): string[] {
+  const bits: string[] = [];
+  if (account.connected === true) bits.push('connected');
+  else if (account.connected === false) bits.push('not connected');
+  else bits.push('connection unknown');
+  if (account.runnable === true) bits.push('ready');
+  else if (account.runnable === false)
+    bits.push(account.runnableReason ?? 'CLI login required');
+  return bits;
 }
 
 function buildOptions(accounts: readonly Account[]): AccountOption[] {
@@ -37,13 +52,7 @@ function buildOptions(accounts: readonly Account[]): AccountOption[] {
     const bits: string[] = [];
     if (account.isDefault) bits.push('default');
     bits.push(account.plan !== '' ? account.plan : 'plan unknown');
-    bits.push(
-      account.connected === true
-        ? 'connected'
-        : account.connected === false
-          ? 'not connected'
-          : 'connection unknown',
-    );
+    bits.push(...statusBits(account));
     options.push({ value: account.key, label: account.key, detail: bits.join(' · ') });
   }
   return options;
@@ -91,6 +100,9 @@ export function AccountSelector({ projectId }: { projectId: number }): JSX.Eleme
         setBinding(b);
         setDraft(b.account);
         setError(null);
+        // The banner and the chip read the binding through their own hook —
+        // tell them it moved, or they stay honest-but-stale until a scope change.
+        notifyAccountBindingChanged();
       })
       .catch((e: unknown) => {
         if (!aliveRef.current) return;
@@ -131,6 +143,11 @@ export function AccountSelector({ projectId }: { projectId: number }): JSX.Eleme
   const options = buildOptions(accounts);
   const dirty = draft !== binding.account;
   const sourceLabel = binding.source === 'binding' ? 'explicit binding' : 'default account';
+  // The account the CURRENT draft resolves to ('' follows the default), so the
+  // warning below fires for "Default" too when the default itself is not
+  // ready. Only an answered "no" warns — runnable null is an unasked question.
+  const draftAccount = accounts.find((a) => (draft === '' ? a.isDefault : a.key === draft));
+  const draftNotReady = draftAccount?.runnable === false;
 
   return (
     <>
@@ -201,6 +218,13 @@ export function AccountSelector({ projectId }: { projectId: number }): JSX.Eleme
             >
               reset
             </button>
+          )}
+          {draftNotReady && draftAccount !== undefined && (
+            <span role="alert" className="font-mono text-[10.5px] leading-snug text-amber">
+              {draftAccount.key} is not ready —{' '}
+              {draftAccount.runnableReason ?? 'its CLI login is missing'}; a run dispatched
+              under it will fail at spawn until it is connected (Settings → accounts)
+            </span>
           )}
         </div>
         <div className="mt-2 font-mono text-[10px] text-ink-faint">

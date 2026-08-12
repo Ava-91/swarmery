@@ -62,9 +62,16 @@ const btn =
 export function UsageConnect({
   account,
   variant = 'connect',
+  onResolved,
 }: {
   account: string;
   variant?: ConnectVariant;
+  /** Fires when the account came out of the flow CLI-READY (probe verdict
+   * ready, directly or via the pty-login step) — the hosts that embed this
+   * flow outside the Usage modal (readiness banner, create-account modal) use
+   * it to re-read the account list and show their own resolved state. NOT
+   * called on `later`: a deferred pty login is connected, not resolved. */
+  onResolved?: () => void;
 }): JSX.Element {
   const { refresh } = useUsage();
   const [phase, setPhase] = useState<Phase>('idle');
@@ -115,6 +122,7 @@ export function UsageConnect({
       }
       setPhase('idle');
       await refresh(true);
+      if (outcome.runnable === 'ready') onResolved?.();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
       // Stay in the paste step: the usual cause is a partially copied value,
@@ -137,6 +145,7 @@ export function UsageConnect({
         setReason(null);
         setPhase('idle');
         await refresh(true);
+        onResolved?.();
         return;
       }
       setReason(verdict.runnableReason ?? 'Claude login required for this account');
