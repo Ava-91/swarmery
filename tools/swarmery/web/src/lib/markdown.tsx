@@ -8,9 +8,23 @@
 // `^https?://`; every other shape either becomes a router <Link> to a route
 // this app owns, or plain text — so `javascript:`/`data:` cannot survive.
 //
+// The one deliberate exception lives in docBlocks.tsx: a ```mermaid fence
+// assigns mermaid's own sanitised SVG string to innerHTML, because mermaid
+// ships no React renderer. See that file's header for why it is safe and why
+// nothing else here may follow it.
+//
 // Supported: paragraphs, headings (#–####), fenced code blocks,
 // unordered/ordered lists, pipe tables, **bold**, *italic*, `inline code`,
 // [links](href).
+//
+// Doc-surface fences dispatch on the info string (the word after ```):
+//   ```mermaid        → a lazily-chunked mermaid diagram
+//   ```stats          → a strip of `value | label [| hot]` tiles
+//   ```figure <name>  → a canonical illustration from docFigures.tsx
+// Any other info string (```go, bare ```) keeps the plain <pre> path (or the
+// labelled box under `codeLabels`), so the three dialects degrade to ordinary
+// code blocks on GitHub. Blockquotes support GitHub admonitions: a first line
+// of `[!NOTE]`/`[!TIP]`/`[!WARNING]`/`[!IMPORTANT]` becomes a styled callout.
 //
 // Known limitations, both a consequence of the deliberately flat inline regex:
 //   · nested brackets — `[a [b] c](d)` matches nothing (the label class
@@ -21,6 +35,8 @@
 
 import { Fragment, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { Callout, CodeBlock, MermaidBlock, StatsStrip, calloutType } from './docBlocks';
+import { DocFigure } from './docFigures';
 
 /* ----- inline: `code` | [link](href) | **bold** | *italic* ----- */
 
@@ -307,7 +323,15 @@ export function Markdown({
         i += 1;
       }
       i += 1; // closing fence (or EOF)
-      if (codeLabels && info !== '') {
+      const body = code.join('\n');
+      const dialect = info.toLowerCase();
+      if (dialect === 'mermaid') {
+        out.push(<MermaidBlock key={key} code={body} />);
+      } else if (dialect === 'stats') {
+        out.push(<StatsStrip key={key} source={body} />);
+      } else if (dialect === 'figure' || dialect.startsWith('figure ')) {
+        out.push(<DocFigure key={key} name={dialect.slice(6).trim()} />);
+      } else if (codeLabels && info !== '') {
         // Labelled variant: the border moves to a wrapper so the label strip
         // and the code share one rounded box.
         out.push(
@@ -319,19 +343,12 @@ export function Markdown({
               {info}
             </div>
             <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[11px] leading-relaxed text-ink-2">
-              <code>{code.join('\n')}</code>
+              <code>{body}</code>
             </pre>
           </div>,
         );
       } else {
-        out.push(
-          <pre
-            key={key}
-            className="my-2 overflow-x-auto rounded-lg border border-line bg-surface px-3 py-2.5 font-mono text-[11px] leading-relaxed text-ink-2 first:mt-0 last:mb-0"
-          >
-            <code>{code.join('\n')}</code>
-          </pre>,
-        );
+        out.push(<CodeBlock key={key} code={body} />);
       }
       continue;
     }
@@ -356,28 +373,23 @@ export function Markdown({
         quote.push((lines[i] ?? '').replace(/^\s*>\s?/, ''));
         i += 1;
       }
-      const adm = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$/i.exec(quote[0] ?? '');
-      const kind = adm?.[1]?.toUpperCase() ?? null;
-      const body = (kind === null ? quote : quote.slice(1)).join('\n');
-      const kindInk =
-        kind === 'WARNING' || kind === 'CAUTION'
-          ? 'text-red'
-          : kind === 'IMPORTANT'
-            ? 'text-brand'
-            : 'text-ink-dim';
-      out.push(
-        <blockquote
-          key={key}
-          className="my-2 border-l-2 border-line-strong pl-3 leading-relaxed whitespace-pre-line text-ink-3 first:mt-0 last:mb-0"
-        >
-          {kind !== null && (
-            <div className={`mb-1 font-mono text-[9.5px] font-medium tracking-[0.12em] uppercase ${kindInk}`}>
-              {kind}
-            </div>
-          )}
-          {renderInline(body, key)}
-        </blockquote>,
-      );
+      const type = calloutType(quote[0] ?? '');
+      if (type !== null) {
+        out.push(
+          <Callout key={key} type={type}>
+            {renderInline(quote.slice(1).join('\n'), `${key}-c`)}
+          </Callout>,
+        );
+      } else {
+        out.push(
+          <blockquote
+            key={key}
+            className="my-2 border-l-2 border-line-strong pl-3 leading-relaxed whitespace-pre-line text-ink-3 first:mt-0 last:mb-0"
+          >
+            {renderInline(quote.join('\n'), key)}
+          </blockquote>,
+        );
+      }
       continue;
     }
 
