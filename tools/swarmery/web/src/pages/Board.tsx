@@ -516,12 +516,16 @@ export function Board(): JSX.Element {
               </span>
             </button>
             {historyOpen && (
-              <div className="flex max-h-[38vh] gap-3 overflow-x-auto border-t border-line px-2 py-2">
-                <div className="flex w-[248px] shrink-0 flex-col gap-2 overflow-y-auto">
+              // Two columns only (done/archived, no third lane) so they split the
+              // strip's full width 50/50 — a grid, not the fixed-width flex-none
+              // columns a kanban lane uses, because there is no card-count reason
+              // for either half to stay narrow while the other has room to spare.
+              <div className="grid max-h-[38vh] grid-cols-2 gap-3 border-t border-line px-2 py-2">
+                <div className="flex min-w-0 flex-col gap-2 overflow-y-auto">
                   <GroupLabel>Done</GroupLabel>
                   {lanes.done.length > 0 ? lanes.done.map(historyCard) : <Note>empty</Note>}
                 </div>
-                <div className="flex w-[248px] shrink-0 flex-col gap-2 overflow-y-auto">
+                <div className="flex min-w-0 flex-col gap-2 overflow-y-auto">
                   <GroupLabel>Archived</GroupLabel>
                   {archiveLoading ? (
                     <Note>loading…</Note>

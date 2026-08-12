@@ -12,6 +12,18 @@
   },
   "commitScopes": ["core", "uav-pack", "iot-pack", "web-pack", "infra-pack", "lsp-pack", "design-pack", "marketplace", "docs", "scripts", "evals"],
   "enabledPacks": [],
+  "design": {
+    "tokensFile": "tools/swarmery/web/src/index.css",
+    "componentsRoot": "tools/swarmery/web/src/components",
+    "routesRoot": "tools/swarmery/web/src/pages",
+    "devUrl": "http://localhost:5173",
+    "devCommand": "cd tools/swarmery && make dev",
+    "fontLoader": "link-tag",
+    "verify": {
+      "lint": "cd tools/swarmery/web && npm run lint",
+      "typecheck": "cd tools/swarmery/web && npx tsc --noEmit"
+    }
+  },
   "jira": {
     "baseUrl": "https://nanitor.atlassian.net",
     "projectKey": "NAN",
