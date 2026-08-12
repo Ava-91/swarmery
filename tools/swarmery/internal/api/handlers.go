@@ -43,6 +43,9 @@ type Handler struct {
 	// provisionGo, when non-nil, replaces the `go fn()` dispatch of the async
 	// provision pipeline — a test seam mirroring improveGo.
 	provisionGo func(func())
+	// probes single-flights the account readiness probe (accounts.go) — one
+	// `claude` per account at a time; concurrent re-checks share the result.
+	probes probeFlights
 }
 
 type projectDTO struct {

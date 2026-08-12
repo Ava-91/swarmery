@@ -32,10 +32,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
@@ -719,10 +721,14 @@ func TestAccountsStateChangingRoutesRejectCrossOrigin(t *testing.T) {
 	project := t.TempDir()
 	_, srv := accountsTestDB(t, "accounts-origin.db", project)
 
+	probeCalls := useProbe(t, func(context.Context, string) claudeprobe.Result {
+		return claudeprobe.Result{Status: claudeprobe.StatusReady}
+	})
 	for _, tc := range []struct{ name, method, path, body string }{
 		{"provision", http.MethodPost, "/api/accounts", `{"key":"evil"}`},
 		{"remove", http.MethodDelete, "/api/accounts/nabu-org", ""},
 		{"bind", http.MethodPut, "/api/projects/1/account", `{"account":"nabu-org"}`},
+		{"probe", http.MethodPost, "/api/accounts/nabu-org/probe", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var reader io.Reader
@@ -746,6 +752,9 @@ func TestAccountsStateChangingRoutesRejectCrossOrigin(t *testing.T) {
 	}
 
 	// None of the rejected calls had any effect.
+	if n := probeCalls.Load(); n != 0 {
+		t.Errorf("a cross-origin probe ran the CLI %d time(s)", n)
+	}
 	if _, err := os.Stat(filepath.Join(home, ".claude-evil")); !os.IsNotExist(err) {
 		t.Errorf("a cross-origin provision created a config dir (stat err = %v)", err)
 	}
@@ -785,12 +794,21 @@ func TestAccountResponsesCarryNoSecrets(t *testing.T) {
 		t.Fatal("the fixture credential did not resolve; the scan below would prove nothing")
 	}
 
+	// The probe seam answers no-login, so the runnable fields (runnable,
+	// runnableReason, runnableCheckedAt) are POPULATED in the scanned bodies —
+	// the scan covers them non-vacuously.
+	useProbe(t, func(context.Context, string) claudeprobe.Result {
+		return claudeprobe.Result{Status: claudeprobe.StatusNoLogin, Reason: claudeprobe.ReasonNoLogin}
+	})
+
 	bodies := map[string]string{}
 	for _, call := range []struct{ name, method, path, body string }{
 		{"GET /api/accounts", http.MethodGet, "/api/accounts", ""},
 		{"GET project account", http.MethodGet, "/api/projects/1/account", ""},
 		{"PUT project account", http.MethodPut, "/api/projects/1/account", `{"account":"nabu-org"}`},
 		{"POST /api/accounts", http.MethodPost, "/api/accounts", `{"key":"second-org"}`},
+		{"POST probe", http.MethodPost, "/api/accounts/nabu-org/probe", ""},
+		{"GET /api/accounts after probe", http.MethodGet, "/api/accounts", ""},
 		{"DELETE /api/accounts", http.MethodDelete, "/api/accounts/nabu-org", ""},
 	} {
 		status, body := acctDo(t, call.method, srv.URL+call.path, call.body)
@@ -810,5 +828,224 @@ func TestAccountResponsesCarryNoSecrets(t *testing.T) {
 				t.Errorf("%s body contains %q:\n%s", name, banned, body)
 			}
 		}
+	}
+}
+
+// ── the runnable verdict (probe + stored rows) ──────────────────────────────
+
+// useProbe installs the probe seam for one test and returns a live call
+// counter. The default (claudeprobe.Probe) would spawn the real CLI — no test
+// here may do that.
+func useProbe(t *testing.T, fn func(context.Context, string) claudeprobe.Result) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	prev := probeAccount
+	probeAccount = func(ctx context.Context, dir string) claudeprobe.Result {
+		calls.Add(1)
+		return fn(ctx, dir)
+	}
+	t.Cleanup(func() { probeAccount = prev })
+	return &calls
+}
+
+// TestAccountsRunnableIsNullWhenNeverProbed: no verdict row → runnable null,
+// no reason, no timestamp — and, the SC-3 flip side, GET /api/accounts never
+// runs a probe to fill the gap: the seam stays untouched.
+func TestAccountsRunnableIsNullWhenNeverProbed(t *testing.T) {
+	attachHomeAccounts(t, ingest.DefaultAccount, "nabu-org")
+	_, srv := accountsTestDB(t, "accounts-runnable-null.db")
+	calls := useProbe(t, func(context.Context, string) claudeprobe.Result {
+		t.Error("GET /api/accounts ran a probe")
+		return claudeprobe.Result{Status: claudeprobe.StatusReady}
+	})
+
+	for _, key := range []string{ingest.DefaultAccount, "nabu-org"} {
+		row := accountNamed(t, listAccountsOK(t, srv), key)
+		if row.Runnable != nil {
+			t.Errorf("%s: runnable = %v, want null (never probed)", key, *row.Runnable)
+		}
+		if row.RunnableReason != "" || row.RunnableCheckedAt != "" {
+			t.Errorf("%s: reason/checkedAt = (%q, %q), want empty", key, row.RunnableReason, row.RunnableCheckedAt)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("GET /api/accounts spawned %d probe(s), want 0", n)
+	}
+}
+
+// TestAccountsRunnableFromStoredVerdict: the list serves the persisted row —
+// true for ready, false + reason for no-login, null (with reason and
+// timestamp) for a stored unknown — and the row survives a daemon restart
+// (SC-3): a SECOND server over the same database answers identically.
+func TestAccountsRunnableFromStoredVerdict(t *testing.T) {
+	attachHomeAccounts(t, ingest.DefaultAccount, "nabu-org", "third-org")
+	db, srv := accountsTestDB(t, "accounts-runnable-stored.db")
+	useProbe(t, func(context.Context, string) claudeprobe.Result {
+		t.Error("GET /api/accounts ran a probe")
+		return claudeprobe.Result{}
+	})
+
+	checked := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	for _, put := range []struct{ account, status, reason string }{
+		{ingest.DefaultAccount, "ready", ""},
+		{"nabu-org", "no-login", claudeprobe.ReasonNoLogin},
+		{"third-org", "unknown", claudeprobe.ReasonTimeout},
+	} {
+		if err := store.PutAccountRunnable(db, put.account, put.status, put.reason, "probe", checked); err != nil {
+			t.Fatalf("seed verdict for %s: %v", put.account, err)
+		}
+	}
+
+	assertRows := func(t *testing.T, srv *httptest.Server) {
+		t.Helper()
+		rows := listAccountsOK(t, srv)
+		def := accountNamed(t, rows, ingest.DefaultAccount)
+		if def.Runnable == nil || !*def.Runnable || def.Runnable == def.Connected {
+			t.Errorf("default: runnable = %v, want true (own pointer)", def.Runnable)
+		}
+		if def.RunnableCheckedAt != checked.Format(time.RFC3339) {
+			t.Errorf("default: checkedAt = %q, want %q", def.RunnableCheckedAt, checked.Format(time.RFC3339))
+		}
+		nabu := accountNamed(t, rows, "nabu-org")
+		if nabu.Runnable == nil || *nabu.Runnable {
+			t.Errorf("nabu-org: runnable = %v, want false", nabu.Runnable)
+		}
+		if nabu.RunnableReason != claudeprobe.ReasonNoLogin {
+			t.Errorf("nabu-org: reason = %q, want the fixed no-login phrase", nabu.RunnableReason)
+		}
+		third := accountNamed(t, rows, "third-org")
+		if third.Runnable != nil {
+			t.Errorf("third-org: runnable = %v, want null (stored unknown is not 'not ready')", *third.Runnable)
+		}
+		if third.RunnableReason != claudeprobe.ReasonTimeout || third.RunnableCheckedAt == "" {
+			t.Errorf("third-org: (reason, checkedAt) = (%q, %q), want the stored reason and a timestamp",
+				third.RunnableReason, third.RunnableCheckedAt)
+		}
+	}
+	assertRows(t, srv)
+
+	// "Daemon restart": a fresh server (fresh Handler, fresh in-memory state)
+	// over the same database.
+	h2, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("second server: %v", err)
+	}
+	srv2 := httptest.NewServer(h2)
+	defer srv2.Close()
+	assertRows(t, srv2)
+}
+
+// TestAccountsProbeEndpoint: POST /api/accounts/{account}/probe runs the probe
+// for THAT account's config dir (empty for the default — absence selects it),
+// persists the verdict with source='probe', and returns it.
+func TestAccountsProbeEndpoint(t *testing.T) {
+	home, _ := attachHomeAccounts(t, ingest.DefaultAccount, "nabu-org")
+	db, srv := accountsTestDB(t, "accounts-probe.db")
+
+	var dirs []string
+	useProbe(t, func(_ context.Context, dir string) claudeprobe.Result {
+		dirs = append(dirs, dir)
+		if dir == "" {
+			return claudeprobe.Result{Status: claudeprobe.StatusReady}
+		}
+		return claudeprobe.Result{Status: claudeprobe.StatusNoLogin, Reason: claudeprobe.ReasonNoLogin}
+	})
+
+	// The default account: probed with an EMPTY dir, verdict true.
+	status, body := acctDo(t, http.MethodPost, srv.URL+"/api/accounts/default/probe", "")
+	if status != http.StatusOK {
+		t.Fatalf("POST probe (default) = %d\n%s", status, body)
+	}
+	var resp struct {
+		Runnable          *bool  `json:"runnable"`
+		RunnableReason    string `json:"runnableReason"`
+		RunnableCheckedAt string `json:"runnableCheckedAt"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode probe response: %v\n%s", err, body)
+	}
+	if resp.Runnable == nil || !*resp.Runnable || resp.RunnableCheckedAt == "" {
+		t.Errorf("default probe response = %+v, want runnable=true with a timestamp", resp)
+	}
+
+	// A named account: probed with exactly its dir, verdict false + reason.
+	status, body = acctDo(t, http.MethodPost, srv.URL+"/api/accounts/nabu-org/probe", "")
+	if status != http.StatusOK {
+		t.Fatalf("POST probe (nabu-org) = %d\n%s", status, body)
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode probe response: %v\n%s", err, body)
+	}
+	if resp.Runnable == nil || *resp.Runnable || resp.RunnableReason != claudeprobe.ReasonNoLogin {
+		t.Errorf("nabu-org probe response = %+v, want runnable=false with the no-login reason", resp)
+	}
+
+	want := []string{"", filepath.Join(home, ".claude-nabu-org")}
+	if !slices.Equal(dirs, want) {
+		t.Errorf("probed dirs = %v, want %v (absence, not the dir, selects the default)", dirs, want)
+	}
+
+	// Both verdicts landed in the store with source='probe'.
+	for key, wantStatus := range map[string]string{"default": "ready", "nabu-org": "no-login"} {
+		row, ok, err := store.GetAccountRunnable(db, key)
+		if err != nil || !ok {
+			t.Fatalf("stored verdict for %s: (%v, %v)", key, ok, err)
+		}
+		if row.Status != wantStatus || row.Source != "probe" {
+			t.Errorf("%s stored = %+v, want status=%s source=probe", key, row, wantStatus)
+		}
+	}
+
+	// An unknown account is refused before any probe runs.
+	status, _ = acctDo(t, http.MethodPost, srv.URL+"/api/accounts/ghost/probe", "")
+	if status != http.StatusNotFound {
+		t.Errorf("POST probe (unknown) = %d, want 404", status)
+	}
+	if len(dirs) != 2 {
+		t.Errorf("unknown-account probe ran the CLI: dirs = %v", dirs)
+	}
+}
+
+// TestAccountsProbeIsSingleFlight: a second concurrent probe for the SAME
+// account joins the in-flight one — one CLI invocation, one shared verdict.
+func TestAccountsProbeIsSingleFlight(t *testing.T) {
+	attachHomeAccounts(t, ingest.DefaultAccount, "nabu-org")
+	_, srv := accountsTestDB(t, "accounts-probe-flight.db")
+
+	entered := make(chan struct{})  // closed when the leader is inside the probe
+	release := make(chan struct{}) // the test holds the leader here
+	calls := useProbe(t, func(context.Context, string) claudeprobe.Result {
+		close(entered)
+		<-release
+		return claudeprobe.Result{Status: claudeprobe.StatusReady}
+	})
+
+	do := func() chan string {
+		out := make(chan string, 1)
+		go func() {
+			_, body := acctDo(t, http.MethodPost, srv.URL+"/api/accounts/nabu-org/probe", "")
+			out <- body
+		}()
+		return out
+	}
+	first := do()
+	<-entered // the leader is provably mid-probe…
+	second := do()
+
+	// …so the second request can only either join the flight or start a second
+	// probe. A second probe would panic on the doubly-closed `entered` channel
+	// and bump the counter; joining is the only clean path.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	bodyA, bodyB := <-first, <-second
+	if n := calls.Load(); n != 1 {
+		t.Errorf("probe ran %d times for two concurrent requests, want 1", n)
+	}
+	if bodyA != bodyB {
+		t.Errorf("concurrent probes returned different bodies:\nA: %s\nB: %s", bodyA, bodyB)
+	}
+	if !strings.Contains(bodyA, `"runnable":true`) {
+		t.Errorf("shared verdict body = %s, want runnable true", bodyA)
 	}
 }

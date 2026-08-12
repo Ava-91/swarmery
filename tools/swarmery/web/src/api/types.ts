@@ -2529,6 +2529,16 @@ export interface Account {
   connected: boolean | null;
   /** Raw rateLimitTier, "" when unresolved — display as-is, do not re-derive. */
   plan: string;
+  /** Authoritative "the CLI can run under this account" verdict — a DIFFERENT
+   * question from `connected` (quota readable), and the two legitimately
+   * disagree. Tri-state like `connected`: true/false = probed and answered,
+   * null = never probed or the probe could not determine an answer. Served
+   * from the stored verdict; refresh via POST /api/accounts/{key}/probe. */
+  runnable: boolean | null;
+  /** Short fixed phrase explaining a false/undetermined verdict, absent otherwise. */
+  runnableReason?: string;
+  /** RFC3339 time the verdict was taken; absent when never probed. */
+  runnableCheckedAt?: string;
   ingested: boolean;
   /** Project paths EXPLICITLY bound to this account (not "every unbound project"). */
   projects: string[];
@@ -2550,6 +2560,14 @@ export interface ProvisionResponse {
 export interface RemoveAccountResponse {
   ok: boolean;
   danglingBindings?: string[];
+}
+
+/** Go: accountProbeResponse — POST /api/accounts/{account}/probe. The same
+ * three fields as on Account, so a client can patch its row in place. */
+export interface AccountProbeResponse {
+  runnable: boolean | null;
+  runnableReason?: string;
+  runnableCheckedAt?: string;
 }
 
 /** Go: accountBindingDTO (internal/api/accounts.go:137) */
