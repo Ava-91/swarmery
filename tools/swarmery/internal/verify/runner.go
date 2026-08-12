@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
@@ -79,6 +80,17 @@ type ClaudeRunner struct {
 	// Timeout overrides claudeTimeout when > 0 (tests shrink it; the service
 	// sets it from SWARMERY_VERIFY_TIMEOUT_MIN).
 	Timeout time.Duration
+
+	// AccountVerdict, when set, is called after a run finishes with the account
+	// the run used ("" = the default account, spec.Account's own convention) and
+	// how its exit reads as a readiness verdict — a verifier already runs
+	// `claude` under the account's config dir, so its death demanding a login is
+	// a free authoritative probe. Optional: a nil hook leaves run behaviour
+	// byte-identical to before this existed. Not called on a timeout or a
+	// failed start: neither is an exit, so neither says anything about the
+	// account. The classified output is the stdout this runner captures anyway
+	// plus the stderr tail — matched, never logged through this path.
+	AccountVerdict func(account string, r claudeprobe.Result)
 }
 
 func (r ClaudeRunner) Run(ctx context.Context, spec RunSpec) (*Run, error) {
@@ -130,11 +142,12 @@ func (r ClaudeRunner) Run(ctx context.Context, spec RunSpec) (*Run, error) {
 	if ctx.Err() == context.DeadlineExceeded {
 		run.TimedOut = true
 		run.ExitCode = -1
-		return run, nil // a timeout is an outcome (→ INCONCLUSIVE), not a Start error
+		return run, nil // a timeout is an outcome (→ INCONCLUSIVE), not a Start error — and not an exit, so no verdict
 	}
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			run.ExitCode = ee.ExitCode()
+			r.reportVerdict(spec, run.ExitCode, run.Output, run.Stderr)
 			return run, nil // nonzero exit is an outcome the service routes (still parse stdout)
 		}
 		// The process could not be started/observed at all (PATH miss, fork
@@ -143,7 +156,18 @@ func (r ClaudeRunner) Run(ctx context.Context, spec RunSpec) (*Run, error) {
 		return run, err
 	}
 	run.ExitCode = 0
+	r.reportVerdict(spec, 0, run.Output, run.Stderr)
 	return run, nil
+}
+
+// reportVerdict feeds one finished run's exit through the probe's shared
+// classifier and into the AccountVerdict hook. The combined output exists in
+// this call only for matching — it is never stored or logged through this path.
+func (r ClaudeRunner) reportVerdict(spec RunSpec, exitCode int, stdout, stderrTail string) {
+	if r.AccountVerdict == nil {
+		return
+	}
+	r.AccountVerdict(spec.Account, claudeprobe.ClassifyExit(exitCode, stdout+"\n"+stderrTail))
 }
 
 // tail returns the last <= n bytes of s, trimmed.

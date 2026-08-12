@@ -80,15 +80,6 @@ var resolveBin = claudebin.Resolve
 // measurement that chose it.
 var probeArgs = []string{"auth", "status"}
 
-// noLoginMarkers are the CLI's recorded no-login output shapes, one per
-// invocation family: the `auth status` JSON field, and the plain-run line
-// (kept so a future CLI without the subcommand still classifies). Fixed
-// matchers — classification never feeds output anywhere else.
-var noLoginMarkers = []string{
-	`"loggedIn": false`,
-	"Not logged in",
-}
-
 // Probe runs the cheapest authenticating `claude` invocation under configDir
 // and classifies the outcome.
 //
@@ -136,7 +127,7 @@ func Probe(ctx context.Context, configDir string) Result {
 		// before answering, so nothing was determined.
 		return Result{Status: StatusUnknown, Reason: ReasonTimeout}
 	case runErr == nil:
-		return Result{Status: StatusReady}
+		return ClassifyExit(0, out.String())
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(runErr, &exitErr) {
@@ -144,12 +135,7 @@ func Probe(ctx context.Context, configDir string) Result {
 		// permission). Distinct from a CLI that ran and failed.
 		return Result{Status: StatusUnknown, Reason: ReasonStartFailed}
 	}
-	for _, marker := range noLoginMarkers {
-		if strings.Contains(out.String(), marker) {
-			return Result{Status: StatusNoLogin, Reason: ReasonNoLogin}
-		}
-	}
-	return Result{Status: StatusUnknown, Reason: ReasonUnrecognised}
+	return ClassifyExit(exitErr.ExitCode(), out.String())
 }
 
 // configDirEnv is the variable that selects the CLI's account.

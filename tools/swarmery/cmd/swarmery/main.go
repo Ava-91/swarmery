@@ -58,6 +58,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/routines"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runtruth"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/settingsoverlay"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
@@ -1378,8 +1379,16 @@ func cmdServe(args []string) error {
 	}
 	api.AttachPlaybooks(playbookReg)
 
+	// Run-truth (account-connect phase 4): every dispatched/verification run
+	// already executes `claude` under its account's config dir, so an exit that
+	// demands a login is a free authoritative probe. The recorder persists such
+	// verdicts with source='run' under runtruth's write rules (negative-only,
+	// no-login→ready recovery, debounced).
+	runTruth := runtruth.NewRecorder(db)
+
 	dispatchSvc := dispatch.NewService(
-		db, dispatch.ConfigFromEnv(), dispatch.ClaudeRunner{}, wtMgr,
+		db, dispatch.ConfigFromEnv(),
+		dispatch.ClaudeRunner{AccountVerdict: runTruth.Record}, wtMgr,
 	)
 	dispatchSvc.Playbooks = playbookReg
 	if err := dispatchSvc.HealStale(); err != nil {
@@ -1412,7 +1421,8 @@ func cmdServe(args []string) error {
 	// interrupted runs (crash left them 'running') to error+inconclusive, then
 	// attach — to the api layer AND, as the dispatcher's Verifier seam, to the
 	// dispatcher so a no-sentinel exit pokes verification while the worktree lives.
-	verifySvc := verify.NewService(db, verify.ConfigFromEnv(), verify.ClaudeRunner{}, wtMgr)
+	verifySvc := verify.NewService(db, verify.ConfigFromEnv(),
+		verify.ClaudeRunner{AccountVerdict: runTruth.Record}, wtMgr)
 	// fusion phase 13: resolve each task's verify strictness knob (strict|normal|
 	// off) from its playbook via the shared registry — off skips the run, strict
 	// tightens the prompt bar. The seam keeps verify decoupled from the playbook

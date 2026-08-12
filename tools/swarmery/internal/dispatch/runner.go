@@ -11,6 +11,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 )
 
@@ -80,7 +81,18 @@ const defaultModel = "claude-sonnet-5"
 // same pattern as improve.ClaudeRunner and internal/toolproc (the daemon's
 // launchd/service PATH must contain the claude binary). The prompt is passed as
 // an argument (not stdin) so --session-id positioning is unambiguous.
-type ClaudeRunner struct{}
+type ClaudeRunner struct {
+	// AccountVerdict, when set, is called after a run finishes with the account
+	// the run used ("" = the default account, spec.Account's own convention) and
+	// how its exit reads as a readiness verdict — a dispatched run already runs
+	// `claude` under the account's config dir, so its death demanding a login is
+	// a free authoritative probe. Optional: a nil hook leaves run behaviour
+	// byte-identical to before this existed (in particular, the child's stdout
+	// stays discarded — the bounded tail below is captured only to classify).
+	// Not called on a timeout or a failed start: neither is an exit, so neither
+	// says anything about the account.
+	AccountVerdict func(account string, r claudeprobe.Result)
+}
 
 // agentPrompt is the ONE place a dispatched run's agent mention is applied. A
 // board task carrying tasks.agent runs AS that registry agent, and the mention
@@ -145,7 +157,7 @@ func permissionArgs(playbookMode string) []string {
 	}
 }
 
-func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
+func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	// --setting-sources project,local: skip user-level settings (global plugin
 	// stack) — headless runs don't need them; project plugins and OAuth are
 	// unaffected.
@@ -177,7 +189,16 @@ func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	procgroup.Isolate(cmd, 0)
 	// stdout is the assistant text; we do NOT parse it here — the run's transcript
 	// is ingested independently and the dispatcher reads the linked session's
-	// last assistant turn from the DB for sentinels. Discard it.
+	// last assistant turn from the DB for sentinels. Discard it — unless an
+	// AccountVerdict hook wants the exit classified, in which case a bounded
+	// tail is kept for the matcher only (the CLI's no-login line prints on
+	// stdout — docs/claude-cli-credential-behaviour.md §1) and never lands on
+	// the Run, in a log, or in the store.
+	var stdoutTail *tailBuffer
+	if r.AccountVerdict != nil {
+		stdoutTail = &tailBuffer{max: stderrTailBytes}
+		cmd.Stdout = stdoutTail
+	}
 	err := cmd.Run()
 	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
 
@@ -195,11 +216,12 @@ func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	if ctx.Err() == context.DeadlineExceeded {
 		run.TimedOut = true
 		run.ExitCode = -1
-		return run, nil // a timeout is an outcome, not a Start error
+		return run, nil // a timeout is an outcome, not a Start error — and not an exit, so no verdict
 	}
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			run.ExitCode = ee.ExitCode()
+			r.reportVerdict(spec, run.ExitCode, stdoutTail, run.Stderr)
 			return run, nil // nonzero exit is an outcome the dispatcher routes
 		}
 		// The process could not be started/observed at all (PATH miss, fork
@@ -209,7 +231,42 @@ func (ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 		return run, err
 	}
 	run.ExitCode = 0
+	r.reportVerdict(spec, 0, stdoutTail, run.Stderr)
 	return run, nil
+}
+
+// reportVerdict feeds one finished run's exit through the probe's shared
+// classifier and into the AccountVerdict hook. The combined tail exists only
+// for the duration of this call — matched, never stored.
+func (r ClaudeRunner) reportVerdict(spec RunSpec, exitCode int, stdoutTail *tailBuffer, stderrTail string) {
+	if r.AccountVerdict == nil {
+		return
+	}
+	r.AccountVerdict(spec.Account, claudeprobe.ClassifyExit(exitCode, stdoutTail.String()+"\n"+stderrTail))
+}
+
+// tailBuffer is an io.Writer keeping only the last max bytes written — enough
+// for the classifier's fixed markers (a no-login run dies after one short
+// line) without buffering a whole session transcript.
+type tailBuffer struct {
+	max int
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+	}
+	return len(p), nil
+}
+
+// String tolerates the nil buffer of a hook-less run.
+func (t *tailBuffer) String() string {
+	if t == nil {
+		return ""
+	}
+	return string(t.buf)
 }
 
 // tail returns the last <= n bytes of s, trimmed.
