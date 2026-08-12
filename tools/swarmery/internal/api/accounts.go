@@ -457,6 +457,15 @@ type accountProbeResponse struct {
 	RunnableCheckedAt string `json:"runnableCheckedAt,omitempty"`
 }
 
+// Verdict sources the probe endpoint may persist. 'probe' is the plain
+// re-check; 'pty-login' marks a verdict taken right after an interactive PTY
+// login, so its provenance stays legible in the store ('run' is written by the
+// run-truth path, never through this endpoint).
+const (
+	probeSourceProbe    = "probe"
+	probeSourcePTYLogin = "pty-login"
+)
+
 // probeFlights single-flights the probe per account key: a second concurrent
 // POST for the same account waits for and returns the in-flight result rather
 // than spawning a second CLI. Package-scoped state would bleed between test
@@ -495,19 +504,53 @@ func (p *probeFlights) do(key string, fn func() (store.AccountRunnable, error)) 
 	return f.verdict, f.err
 }
 
-// probeAccountHandler handles POST /api/accounts/{account}/probe — the
-// explicit operator re-check, and the ONLY route that runs the probe. The
-// verdict is persisted with source='probe' and returned; the list endpoint
-// then serves the stored row.
+// runAccountProbe runs the single-flighted readiness probe for one account and
+// persists the verdict with the given source. Shared by the explicit probe
+// endpoint and the connect flow's post-handoff verification — the two must
+// never diverge on how a verdict is taken or stored.
 //
-// The probe's ctx is deliberately NOT the request's: a client that gives up
+// The probe's ctx is deliberately NOT a request's: a client that gives up
 // and disconnects must not abort a probe a second waiter is blocked on
 // (single-flight hands one result to everyone).
+func (h *Handler) runAccountProbe(key, dir, source string) (store.AccountRunnable, error) {
+	return h.probes.do(key, func() (store.AccountRunnable, error) {
+		res := probeAccount(context.Background(), dir)
+		row := store.AccountRunnable{
+			Status:    string(res.Status),
+			Reason:    res.Reason,
+			CheckedAt: time.Now().UTC(),
+			Source:    source,
+		}
+		if err := store.PutAccountRunnable(h.DB, key, row.Status, row.Reason, row.Source, row.CheckedAt); err != nil {
+			return store.AccountRunnable{}, err
+		}
+		return row, nil
+	})
+}
+
+// probeAccountHandler handles POST /api/accounts/{account}/probe — the
+// explicit operator re-check. The verdict is persisted and returned; the list
+// endpoint then serves the stored row.
+//
+// `?source=pty-login` records that the verdict follows an interactive PTY
+// login (the connect flow's fallback re-probes through here when the terminal
+// session ends). Anything outside the fixed set is refused: the source column
+// is provenance, not a free-text field.
 func (h *Handler) probeAccountHandler(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.PathValue("account"))
 	acct, ok := findAccount(key)
 	if !ok {
 		writeClientErr(w, http.StatusNotFound, "unknown account")
+		return
+	}
+	source := probeSourceProbe
+	switch s := r.URL.Query().Get("source"); s {
+	case "", probeSourceProbe:
+	case probeSourcePTYLogin:
+		source = probeSourcePTYLogin
+	default:
+		writeClientErr(w, http.StatusBadRequest,
+			"invalid probe source — allowed: probe, pty-login")
 		return
 	}
 	// The DEFAULT account is probed with an EMPTY configDir — absence of
@@ -518,24 +561,12 @@ func (h *Handler) probeAccountHandler(w http.ResponseWriter, r *http.Request) {
 		dir = acct.ConfigDir
 	}
 
-	verdict, err := h.probes.do(acct.Key, func() (store.AccountRunnable, error) {
-		res := probeAccount(context.Background(), dir)
-		row := store.AccountRunnable{
-			Status:    string(res.Status),
-			Reason:    res.Reason,
-			CheckedAt: time.Now().UTC(),
-			Source:    "probe",
-		}
-		if err := store.PutAccountRunnable(h.DB, acct.Key, row.Status, row.Reason, row.Source, row.CheckedAt); err != nil {
-			return store.AccountRunnable{}, err
-		}
-		return row, nil
-	})
+	verdict, err := h.runAccountProbe(acct.Key, dir, source)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	log.Printf("account probe: account=%s status=%s source=probe", acct.Key, verdict.Status)
+	log.Printf("account probe: account=%s status=%s source=%s", acct.Key, verdict.Status, source)
 	var resp accountProbeResponse
 	resp.Runnable, resp.RunnableReason, resp.RunnableCheckedAt = runnableDTOFields(verdict)
 	writeJSON(w, resp, nil)

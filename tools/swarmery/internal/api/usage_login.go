@@ -9,7 +9,7 @@ package api
 // endpoints let the operator authorize swarmery itself, once, from the browser:
 //
 //	POST   /api/usage/accounts/{account}/login/start     → {authorizeUrl}
-//	POST   /api/usage/accounts/{account}/login/complete  → {ok:true}
+//	POST   /api/usage/accounts/{account}/login/complete  → completeResponse
 //	       body {"code": "<code>#<state>"}
 //	DELETE /api/usage/accounts/{account}/login           → {ok:true}
 //
@@ -17,6 +17,19 @@ package api
 // control: start mints the PKCE verifier and CSRF state and hands back only the
 // URL, the operator authorizes and pastes back the "code#state" value the
 // callback page shows, complete exchanges it and persists the credential.
+//
+// # Complete is a three-step, honestly-reported transaction
+//
+// After the exchange succeeds, complete also (1) hands the credential over to
+// the account's config dir (usage.HandoffToConfigDir — write-once; skipped for
+// the default account, and an already-present file is the CLI's, not a
+// failure) and (2) runs the authoritative readiness probe, persisting the
+// verdict with source='probe'. The response reports all three outcomes so the
+// UI never has to guess. FAILURE DISCIPLINE: a failed handoff or an unready
+// probe does NOT fail the request and does NOT roll back the stored credential
+// — the quota connection genuinely succeeded; the response says
+// nextStep:"pty-login" and the UI offers the interactive login instead. Only a
+// failed CompleteLogin is a 4xx/5xx.
 //
 // The DELETE is that credential's removal — swarmery's own store file for this
 // account, and strictly nothing else (usage.Client.Disconnect).
@@ -44,10 +57,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
 )
 
@@ -114,6 +129,44 @@ func resetPendingLogins() {
 	pendingLoginsMu.Unlock()
 }
 
+// completeResponse — what one Connect click produced, step by step. Every
+// field is a fixed vocabulary value or a fixed phrase (claudeprobe's Reason
+// constants); nothing here may ever carry credential material or raw CLI
+// output — TestUsageLoginResponsesCarryNoSecrets covers these fields too.
+type completeResponse struct {
+	// Connected is the quota half: the credential is in swarmery's store.
+	Connected bool `json:"connected"`
+	// Handoff is 'written' | 'already-present' | 'skipped-default' | 'failed'.
+	Handoff string `json:"handoff"`
+	// Runnable is the probe verdict: 'ready' | 'no-login' | 'unknown'.
+	Runnable string `json:"runnable"`
+	// Reason is a short fixed phrase when Runnable is not 'ready', "" otherwise.
+	Reason string `json:"reason,omitempty"`
+	// NextStep is what the UI should offer: "" when ready, 'pty-login' otherwise.
+	NextStep string `json:"nextStep,omitempty"`
+}
+
+// completeResponse.Handoff values.
+const (
+	handoffOutcomeWritten        = "written"
+	handoffOutcomeAlreadyPresent = "already-present"
+	handoffOutcomeSkippedDefault = "skipped-default"
+	handoffOutcomeFailed         = "failed"
+)
+
+// nextStepPTYLogin tells the UI to offer the interactive PTY login in place.
+const nextStepPTYLogin = "pty-login"
+
+// reasonVerdictNotStored is the fixed phrase for a probe whose verdict could
+// not be persisted — the one complete-path failure that is neither the CLI's
+// answer nor a handoff outcome. Fixed, like every claudeprobe reason.
+const reasonVerdictNotStored = "the readiness check could not be recorded"
+
+// handoffCredential is usage.HandoffToConfigDir behind a seam, so tests can
+// force the one outcome ('failed') that has no deterministic filesystem
+// trigger of its own. Production never reassigns it.
+var handoffCredential = usage.HandoffToConfigDir
+
 // knownUsageAccount resolves {account} against the accounts the daemon actually
 // polls. Returning the SOURCE (not just a bool) is the point: the client the
 // login runs on must be the very client the usage fan-out will later use, or the
@@ -154,7 +207,8 @@ func (h *Handler) usageLoginStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/usage/accounts/{account}/login/complete — finish an authorization
-// with the "code#state" value the callback page displayed.
+// with the "code#state" value the callback page displayed, then hand the
+// credential over and verify (see the file header's three-step contract).
 //
 // On success the account's credential is in swarmery's own store and the shared
 // usage cache is dropped, so the next poll reflects the new connection instead
@@ -187,7 +241,7 @@ func (h *Handler) usageLoginComplete(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		resetUsageCache()
-		writeJSON(w, map[string]bool{"ok": true}, nil)
+		writeJSON(w, h.completeLoginOutcome(account, src), nil)
 	case errors.Is(err, usage.ErrDisabled):
 		writeClientErr(w, http.StatusConflict, "live usage is switched off (SWARMERY_USAGE_OAUTH=0)")
 	case errors.Is(err, usage.ErrLoginCodeFormat):
@@ -203,6 +257,55 @@ func (h *Handler) usageLoginComplete(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusBadRequest,
 			"the authorization could not be completed — start the connection again")
 	}
+}
+
+// completeLoginOutcome runs steps 2 and 3 of the complete transaction —
+// handoff, then probe — and reports every outcome. It never fails: the stored
+// credential (step 1) is already a fact, and nothing that happens here may
+// roll it back or turn the response into an error. See the file header.
+func (h *Handler) completeLoginOutcome(account string, src usage.Source) completeResponse {
+	resp := completeResponse{Connected: true}
+
+	// Step 2: handoff. The default account is skipped entirely — ~/.claude is
+	// the CLI's own, there is nothing to hand over (its src.ConfigDir is empty
+	// by the accountsFromRoots contract). ErrHandoffExists is NOT a failure:
+	// the CLI already owns a credential there; verification decides the rest.
+	switch {
+	case src.ConfigDir == "":
+		resp.Handoff = handoffOutcomeSkippedDefault
+	default:
+		switch err := handoffCredential(account, src.ConfigDir); {
+		case err == nil:
+			resp.Handoff = handoffOutcomeWritten
+		case errors.Is(err, usage.ErrHandoffExists):
+			resp.Handoff = handoffOutcomeAlreadyPresent
+		case errors.Is(err, usage.ErrHandoffDefaultAccount):
+			resp.Handoff = handoffOutcomeSkippedDefault
+		default:
+			resp.Handoff = handoffOutcomeFailed
+		}
+	}
+
+	// Step 3: the authoritative probe, persisted exactly like the explicit
+	// probe endpoint (same helper, same single-flight, source='probe'). The
+	// default account's empty dir is claudeprobe.Probe's contract for "the
+	// default account", so src.ConfigDir passes through unmapped.
+	verdict, err := h.runAccountProbe(account, src.ConfigDir, probeSourceProbe)
+	if err != nil {
+		resp.Runnable = string(claudeprobe.StatusUnknown)
+		resp.Reason = reasonVerdictNotStored
+		resp.NextStep = nextStepPTYLogin
+	} else {
+		resp.Runnable = verdict.Status
+		resp.Reason = verdict.Reason
+		if claudeprobe.Status(verdict.Status) != claudeprobe.StatusReady {
+			resp.NextStep = nextStepPTYLogin
+		}
+	}
+	// Fixed vocabulary values only — never an error's text, which could carry
+	// a path (the same discipline as usage's handoffFailed logging).
+	log.Printf("connect: account=%s handoff=%s runnable=%s", account, resp.Handoff, resp.Runnable)
+	return resp
 }
 
 // DELETE /api/usage/accounts/{account}/login — disconnect an account.

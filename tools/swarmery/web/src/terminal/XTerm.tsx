@@ -12,7 +12,7 @@ import { useEffect, useImperativeHandle, useRef, forwardRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { resizeFrame, termWsUrl } from './termSocket';
+import { resizeFrame, termWsUrl, termWsUrlForAccount } from './termSocket';
 
 export type TermStatus = 'connecting' | 'open' | 'closed';
 
@@ -33,8 +33,18 @@ const THEME = {
   brightBlack: '#5b6472',
 } as const;
 
-export const XTerm = forwardRef<XTermHandle, { cwd: string; fontSize: number; onStatus?: (s: TermStatus) => void }>(
-  function XTerm({ cwd, fontSize, onStatus }, ref): JSX.Element {
+export const XTerm = forwardRef<
+  XTermHandle,
+  {
+    /** Working directory for a project/worktree PTY. Ignored when `account` is set. */
+    cwd?: string;
+    /** Account key for an ACCOUNT-scoped PTY (the connect flow's login fallback). */
+    account?: string;
+    fontSize: number;
+    onStatus?: (s: TermStatus) => void;
+  }
+>(
+  function XTerm({ cwd, account, fontSize, onStatus }, ref): JSX.Element {
     const hostRef = useRef<HTMLDivElement>(null);
     const termRef = useRef<Terminal | null>(null);
     const fitRef = useRef<FitAddon | null>(null);
@@ -70,7 +80,7 @@ export const XTerm = forwardRef<XTermHandle, { cwd: string; fontSize: number; on
       fitRef.current = fit;
 
       statusRef.current?.('connecting');
-      const ws = new WebSocket(termWsUrl(cwd));
+      const ws = new WebSocket(account !== undefined ? termWsUrlForAccount(account) : termWsUrl(cwd ?? ''));
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
@@ -128,9 +138,9 @@ export const XTerm = forwardRef<XTermHandle, { cwd: string; fontSize: number; on
         fitRef.current = null;
         wsRef.current = null;
       };
-      // cwd identifies the PTY; fontSize is applied live via the effect below.
+      // cwd/account identify the PTY; fontSize is applied live via the effect below.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [cwd]);
+    }, [cwd, account]);
 
     // Apply a font-size change without recreating the PTY, then refit.
     useEffect(() => {

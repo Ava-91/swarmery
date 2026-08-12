@@ -246,10 +246,14 @@ func (c *Client) CompleteLogin(ctx context.Context, flow *LoginFlow, pasted stri
 // # What it deliberately does not touch
 //
 // The `claude` CLI's credential file and the macOS keychain item are the CLI's.
-// This package never writes to them (the provenance rule in types.go), and a
+// This package never maintains them (the provenance rule in types.go), and a
 // disconnect that reached into them would log the operator out of their terminal
-// from a dashboard button. After a disconnect the account simply falls back
-// through the rest of the resolution chain — usually to its "Connect" card.
+// from a dashboard button. That holds AFTER a credential handoff too: the file
+// HandoffToConfigDir wrote becomes the CLI's the moment it lands (on macOS the
+// CLI consumes it into the Keychain and deletes it), so disconnecting stops
+// swarmery reading quota — it does not log the CLI out. After a disconnect the
+// account simply falls back through the rest of the resolution chain — usually
+// to its "Connect" card.
 //
 // # It does not revoke anything upstream
 //

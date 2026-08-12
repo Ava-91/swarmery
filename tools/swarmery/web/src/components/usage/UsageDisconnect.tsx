@@ -7,9 +7,12 @@
 // the operator's terminal login would be a trap. A CLI-backed card therefore has
 // no disconnect at all — there is nothing here that is ours to remove.
 //
-// What it does NOT do, and the copy says so: it does not revoke anything at
-// Anthropic. The tokens stay valid upstream until they expire; what ends is this
-// daemon's use of them.
+// What it does NOT do, and the copy says so: it does not log the CLI out and it
+// does not revoke anything at Anthropic. That holds after a credential handoff
+// too — the file the connect flow wrote into the config dir became the CLI's the
+// moment it landed (on macOS the CLI consumed it into the Keychain), so it is
+// not ours to remove. Disconnecting stops swarmery reading quota; the tokens
+// stay valid upstream until they expire, and the terminal login stays intact.
 //
 // The confirm is a two-step INLINE step, never window.confirm: a native dialog
 // blocks the whole tab, cannot be styled or dismissed by the app, and is

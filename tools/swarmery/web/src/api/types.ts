@@ -854,6 +854,26 @@ export interface UsageLoginStart {
   authorizeUrl: string;
 }
 
+/**
+ * Go: completeResponse (internal/api/usage_login.go) — what one Connect click
+ * produced, step by step. Complete is a three-step transaction: authorize
+ * (connected), credential handoff into the account's config dir (handoff), and
+ * the authoritative CLI-readiness probe (runnable). A failed handoff or an
+ * unready probe does NOT fail the request — the quota connection genuinely
+ * succeeded; nextStep tells the UI to offer the interactive PTY login instead.
+ */
+export interface UsageLoginComplete {
+  /** The quota half: the credential is in swarmery's store. */
+  connected: boolean;
+  handoff: 'written' | 'already-present' | 'skipped-default' | 'failed';
+  /** The probe verdict — the authoritative "can the CLI run" answer. */
+  runnable: 'ready' | 'no-login' | 'unknown';
+  /** Short fixed phrase when runnable is not 'ready' — never raw CLI output. */
+  reason?: string;
+  /** Absent when ready; 'pty-login' when the UI should offer the terminal. */
+  nextStep?: 'pty-login';
+}
+
 // --- Retro loop (GET /api/retro/{agents,friction}) ---------------------------
 
 /** Same aggregates over the preceding window of equal length. */

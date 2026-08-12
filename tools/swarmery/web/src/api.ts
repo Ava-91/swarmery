@@ -38,8 +38,10 @@ import type {
   OnboardConfig,
   PlaybookRollup,
   ProductivityResp,
+  UsageLoginComplete,
   UsageLoginStart,
   UsageResp,
+  AccountProbeResponse,
   OnboardRequest,
   OnboardResponse,
   Playbook,
@@ -631,10 +633,12 @@ export async function startUsageLogin(account: string): Promise<UsageLoginStart>
 
 /**
  * POST /api/usage/accounts/{account}/login/complete — finish the connection with
- * the "code#state" value the callback page shows. The daemon exchanges it and
- * stores the credential; nothing is echoed back.
+ * the "code#state" value the callback page shows. The daemon exchanges it, stores
+ * the credential, hands it over to the account's config dir, and runs the
+ * readiness probe — the response reports all three outcomes (no token material
+ * ever crosses back).
  */
-export async function completeUsageLogin(account: string, code: string): Promise<void> {
+export async function completeUsageLogin(account: string, code: string): Promise<UsageLoginComplete> {
   if (MOCK) throw new Error('connecting an account is not available in mock mode');
   const res = await fetch(`/api/usage/accounts/${encodeURIComponent(account)}/login/complete`, {
     method: 'POST',
@@ -642,6 +646,22 @@ export async function completeUsageLogin(account: string, code: string): Promise
     body: JSON.stringify({ code }),
   });
   if (!res.ok) throw new Error(await errBody(res, 'could not complete the connection'));
+  return (await res.json()) as UsageLoginComplete;
+}
+
+/**
+ * POST /api/accounts/{key}/probe — re-run the authoritative CLI-readiness probe
+ * for one account. source='pty-login' records that the verdict follows an
+ * interactive terminal login, keeping the stored verdict's provenance legible.
+ */
+export async function probeAccount(key: string, source?: 'pty-login'): Promise<AccountProbeResponse> {
+  if (MOCK) throw new Error('probing an account is not available in mock mode');
+  const qs = source !== undefined ? `?source=${source}` : '';
+  const res = await fetch(`/api/accounts/${encodeURIComponent(key)}/probe${qs}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await errBody(res, 'could not re-check the account'));
+  return (await res.json()) as AccountProbeResponse;
 }
 
 /**
