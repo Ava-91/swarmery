@@ -12,6 +12,15 @@
 // sees a token, and the code it does handle is single-use and useless without
 // the verifier that never left the daemon.
 //
+// One Connect now does the WHOLE job: the daemon completes the exchange, hands
+// the credential over to the account's config dir, and verifies with the
+// authoritative CLI probe — the complete response reports all three outcomes.
+// When verification fails (nextStep:"pty-login"), a third step renders in this
+// same card: an ACCOUNT-scoped terminal (the PTY runs under the account's
+// CLAUDE_CONFIG_DIR) where the operator runs `claude` and logs in interactively.
+// When that session ends — or on the explicit re-check — the account is
+// re-probed with source='pty-login' and the card collapses once it is ready.
+//
 // Rendered ONLY on a card that is waiting on a login, so a healthy connected
 // account — the single-account default on every OS — is pixel-identical to what
 // it was before this existed.
@@ -23,11 +32,15 @@
 // from, and this is the only remedy that replaces it. The steps are identical;
 // only the wording changes, because the operator's situation differs.
 
-import { useState } from 'react';
-import { completeUsageLogin, startUsageLogin } from '../../api';
+import { Suspense, lazy, useState } from 'react';
+import { completeUsageLogin, probeAccount, startUsageLogin } from '../../api';
 import { useUsage } from '../../lib/usageData';
 
-type Phase = 'idle' | 'starting' | 'awaiting-code' | 'submitting';
+// The heavy xterm bundle stays in its own chunk (same trick as the dock):
+// fetched only if a connect actually falls back to the interactive login.
+const XTerm = lazy(() => import('../../terminal/XTerm').then((m) => ({ default: m.XTerm })));
+
+type Phase = 'idle' | 'starting' | 'awaiting-code' | 'submitting' | 'pty-login';
 
 /** `connect` = never connected; `reconnect` = ours, and currently broken. */
 export type ConnectVariant = 'connect' | 'reconnect';
@@ -49,15 +62,27 @@ const btn =
 export function UsageConnect({
   account,
   variant = 'connect',
+  onResolved,
 }: {
   account: string;
   variant?: ConnectVariant;
+  /** Fires when the account came out of the flow CLI-READY (probe verdict
+   * ready, directly or via the pty-login step) — the hosts that embed this
+   * flow outside the Usage modal (readiness banner, create-account modal) use
+   * it to re-read the account list and show their own resolved state. NOT
+   * called on `later`: a deferred pty login is connected, not resolved. */
+  onResolved?: () => void;
 }): JSX.Element {
   const { refresh } = useUsage();
   const [phase, setPhase] = useState<Phase>('idle');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
+  // pty-login step state: the fixed-phrase reason the daemon reported, whether
+  // the terminal pane is open, and whether a re-probe is in flight.
+  const [reason, setReason] = useState<string | null>(null);
+  const [termOpen, setTermOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   const busy = phase === 'starting' || phase === 'submitting';
 
@@ -82,13 +107,22 @@ export function UsageConnect({
     setPhase('submitting');
     setError(null);
     try {
-      await completeUsageLogin(account, code.trim());
+      const outcome = await completeUsageLogin(account, code.trim());
       // Clear the code from component state the moment it is spent: it is
       // single-use, and there is no reason to keep it around.
       setCode('');
       setAuthorizeUrl(null);
+      if (outcome.nextStep === 'pty-login') {
+        // The quota half succeeded but the CLI is not ready — take over in the
+        // same card. Deliberately NO refresh yet: a refresh would flip the
+        // card to "connected" and unmount this component mid-step.
+        setReason(outcome.reason ?? 'Claude login required for this account');
+        setPhase('pty-login');
+        return;
+      }
       setPhase('idle');
       await refresh(true);
+      if (outcome.runnable === 'ready') onResolved?.();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
       // Stay in the paste step: the usual cause is a partially copied value,
@@ -97,8 +131,46 @@ export function UsageConnect({
     }
   };
 
+  // Re-probe after the interactive login — the verdict's source is
+  // 'pty-login', so the store says where it came from. Ready collapses the
+  // whole card back to connected; anything else re-renders with the verdict's
+  // own fixed-phrase reason.
+  const recheck = async (): Promise<void> => {
+    setChecking(true);
+    setError(null);
+    try {
+      const verdict = await probeAccount(account, 'pty-login');
+      if (verdict.runnable === true) {
+        setTermOpen(false);
+        setReason(null);
+        setPhase('idle');
+        await refresh(true);
+        onResolved?.();
+        return;
+      }
+      setReason(verdict.runnableReason ?? 'Claude login required for this account');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const dismissPty = async (): Promise<void> => {
+    setTermOpen(false);
+    setReason(null);
+    setPhase('idle');
+    // The quota half IS connected — the card may now re-render as such.
+    await refresh(true);
+  };
+
   return (
-    <div className="mt-2 border-t border-line pt-2" data-connect={account} data-variant={variant}>
+    <div
+      className="mt-2 border-t border-line pt-2"
+      data-connect={account}
+      data-variant={variant}
+      data-step={phase}
+    >
       {phase === 'idle' || phase === 'starting' ? (
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -112,6 +184,60 @@ export function UsageConnect({
           <span className="font-mono text-[9.5px] leading-relaxed text-ink-faint">
             {copy[variant].blurb}
           </span>
+        </div>
+      ) : phase === 'pty-login' ? (
+        <div className="flex flex-col gap-1.5">
+          <p className="font-mono text-[10px] leading-relaxed text-ink-dim">
+            <span className="text-ink-faint">3 — </span>
+            Quota connected, but the CLI still needs a login:{' '}
+            <span className="text-ink-2">{reason}</span>
+          </p>
+          {termOpen ? (
+            <>
+              <p className="font-mono text-[9.5px] leading-relaxed text-ink-faint">
+                This terminal runs under <span className="text-ink-2">{account}</span>&apos;s config
+                dir. Run <code className="px-1 text-ink-2">claude</code> and complete the login —
+                when you exit the shell, the account is re-checked automatically.
+              </p>
+              <div className="h-64 overflow-hidden rounded-lg border border-line bg-[#0b0d10] p-1.5">
+                <Suspense
+                  fallback={
+                    <div className="p-3 font-mono text-[11px] text-ink-faint">loading terminal…</div>
+                  }
+                >
+                  <XTerm
+                    account={account}
+                    fontSize={12}
+                    onStatus={(s) => {
+                      if (s === 'closed') void recheck();
+                    }}
+                  />
+                </Suspense>
+              </div>
+            </>
+          ) : (
+            <p className="font-mono text-[9.5px] leading-relaxed text-ink-faint">
+              Finish it here: open a terminal already scoped to this account and log the CLI in.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {!termOpen && (
+              <button type="button" onClick={() => setTermOpen(true)} className={btn}>
+                open login terminal
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void recheck()}
+              disabled={checking}
+              className={btn}
+            >
+              {checking ? 'checking…' : 're-check now'}
+            </button>
+            <button type="button" onClick={() => void dismissPty()} disabled={checking} className={btn}>
+              later
+            </button>
+          </div>
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">

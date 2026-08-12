@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 )
 
 // unsetMarker is what the fake claude prints when CLAUDE_CONFIG_DIR is not in
@@ -109,6 +110,104 @@ func TestSpawnAppliesAccountWhenCwdHasNoProjectSettings(t *testing.T) {
 	got := childConfigDir(t, RunSpec{Prompt: "p", SessionUUID: "acct-worktree", Account: "nabu-org"}, worktree)
 	if want := filepath.Join(home, ".claude-nabu-org"); got != want {
 		t.Errorf("worktree run CLAUDE_CONFIG_DIR = %q, want %q — the account was resolved from cwd, not from the spec", got, want)
+	}
+}
+
+// startWithVerdictHook runs one spec through the REAL ClaudeRunner.Start with
+// an AccountVerdict hook recording what it was called with. Returns the run
+// plus the hook's observations (calls == 0 → account/result are zero values).
+func startWithVerdictHook(t *testing.T, spec RunSpec) (run *Run, calls int, account string, result claudeprobe.Result) {
+	t.Helper()
+	r := ClaudeRunner{AccountVerdict: func(a string, res claudeprobe.Result) {
+		calls++
+		account, result = a, res
+	}}
+	spec.Cwd = t.TempDir()
+	run, err := r.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	return run, calls, account, result
+}
+
+// SC-8, dispatch half: a run whose `claude` dies demanding a login (the
+// recorded plain-run line on STDOUT — the stream this runner otherwise
+// discards) reaches the hook as no-login for the run's account, with no extra
+// claude invocation (the fake would have logged a second run into cwd).
+func TestAccountVerdictHookNoLoginExit(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaude(t, `echo 'Not logged in · Please run /login'; exit 1`)
+	run, calls, account, result := startWithVerdictHook(t,
+		RunSpec{Prompt: "p", SessionUUID: "verdict-nl", Account: "nabu-org"})
+	if run.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", run.ExitCode)
+	}
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+	if account != "nabu-org" {
+		t.Errorf("hook account = %q, want nabu-org", account)
+	}
+	if result.Status != claudeprobe.StatusNoLogin {
+		t.Errorf("hook status = %q, want %q", result.Status, claudeprobe.StatusNoLogin)
+	}
+}
+
+// An ordinary task failure classifies unknown — a status the store adapter
+// drops, so a broken task can never demote a working account.
+func TestAccountVerdictHookOrdinaryFailure(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaude(t, `echo "task blew up" 1>&2; exit 3`)
+	_, calls, _, result := startWithVerdictHook(t,
+		RunSpec{Prompt: "p", SessionUUID: "verdict-fail", Account: "nabu-org"})
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+	if result.Status != claudeprobe.StatusUnknown {
+		t.Errorf("hook status = %q, want %q", result.Status, claudeprobe.StatusUnknown)
+	}
+}
+
+// A clean exit classifies ready (the adapter decides whether that clears a
+// stored no-login).
+func TestAccountVerdictHookCleanExit(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaude(t, `exit 0`)
+	_, calls, account, result := startWithVerdictHook(t,
+		RunSpec{Prompt: "p", SessionUUID: "verdict-ok", Account: "nabu-org"})
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+	if account != "nabu-org" {
+		t.Errorf("hook account = %q, want nabu-org", account)
+	}
+	if result.Status != claudeprobe.StatusReady {
+		t.Errorf("hook status = %q, want %q", result.Status, claudeprobe.StatusReady)
+	}
+}
+
+// A nil AccountVerdict hook leaves run behaviour byte-identical: the same
+// failing spec produces the same Run whether the hook exists or not (Duration
+// aside — it is wall clock), and the hook-less path never observes stdout.
+func TestNilAccountVerdictHookLeavesRunUnchanged(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaude(t, `echo 'Not logged in · Please run /login'; echo "boom" 1>&2; exit 1`)
+	spec := RunSpec{Prompt: "p", SessionUUID: "verdict-nil", Account: "nabu-org"}
+
+	spec.Cwd = t.TempDir()
+	bare, err := ClaudeRunner{}.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Start (nil hook): %v", err)
+	}
+	hooked, _, _, _ := startWithVerdictHook(t, spec)
+
+	bare.Duration, hooked.Duration = 0, 0
+	if *bare != *hooked {
+		t.Errorf("nil-hook run %+v differs from hooked run %+v", *bare, *hooked)
 	}
 }
 

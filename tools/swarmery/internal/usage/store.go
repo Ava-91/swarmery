@@ -148,22 +148,13 @@ func storedCreds(account string) *Creds {
 	return c
 }
 
-// writeStoredCreds persists one account's credential ATOMICALLY: a temp file in
-// the same directory (so the rename cannot cross a filesystem boundary), fsync'd
-// so the bytes are durable before the rename publishes them, then renamed over
-// the destination. A crash at any point leaves either the previous credential or
-// the new one — never a truncated file, and never a file whose refresh token has
-// already been rotated away upstream (R2).
-func writeStoredCreds(account string, c *Creds) error {
-	path := storePath(account)
-	if path == "" {
-		return errNoStore
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, storeDirMode); err != nil {
-		return err
-	}
-	body, err := json.MarshalIndent(storedCred{ClaudeAiOauth: rawCreds{
+// storedBody serializes a credential in the exact {"claudeAiOauth": {...}}
+// shape the `claude` CLI writes and parseCreds reads. Shared by the store's
+// own writer and the one-time handoff (handoff.go), so the two file shapes
+// cannot drift. swarmery's per-account `disabled` flag is deliberately never
+// serialized here — it is store-local state, not part of the credential.
+func storedBody(c *Creds) ([]byte, error) {
+	return json.MarshalIndent(storedCred{ClaudeAiOauth: rawCreds{
 		AccessToken:      c.AccessToken,
 		RefreshToken:     c.RefreshToken,
 		ExpiresAt:        c.ExpiresAt,
@@ -171,21 +162,23 @@ func writeStoredCreds(account string, c *Creds) error {
 		SubscriptionType: c.SubscriptionType,
 		RateLimitTier:    c.RateLimitTier,
 	}}, "", "  ")
-	if err != nil {
-		return err
-	}
+}
 
+// storeWriteTemp writes body into a same-directory temp file — mode 0600,
+// fsync'd, closed — and returns its name, ready for an atomic publish (rename
+// or link) by the caller. Same-directory matters: the publish step must not
+// cross a filesystem boundary. Any failure removes the temp file, so a
+// directory can never accumulate half-written credentials.
+func storeWriteTemp(dir string, body []byte) (string, error) {
 	tmp, err := storeCreateTemp(dir, storeTempPattern)
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpName := tmp.Name()
-	// Any failure from here on removes the temp file, so a store directory can
-	// never accumulate half-written credentials.
-	cleanup := func(e error) error {
+	cleanup := func(e error) (string, error) {
 		tmp.Close()
 		os.Remove(tmpName)
-		return e
+		return "", e
 	}
 	// Chmod before the content lands: CreateTemp makes 0600 already, but on a
 	// permissive umask an implementation change must not silently widen it.
@@ -200,6 +193,32 @@ func writeStoredCreds(account string, c *Creds) error {
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
+		return "", err
+	}
+	return tmpName, nil
+}
+
+// writeStoredCreds persists one account's credential ATOMICALLY: a temp file in
+// the same directory, fsync'd so the bytes are durable before the rename
+// publishes them, then renamed over the destination. A crash at any point
+// leaves either the previous credential or the new one — never a truncated
+// file, and never a file whose refresh token has already been rotated away
+// upstream (R2).
+func writeStoredCreds(account string, c *Creds) error {
+	path := storePath(account)
+	if path == "" {
+		return errNoStore
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, storeDirMode); err != nil {
+		return err
+	}
+	body, err := storedBody(c)
+	if err != nil {
+		return err
+	}
+	tmpName, err := storeWriteTemp(dir, body)
+	if err != nil {
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {

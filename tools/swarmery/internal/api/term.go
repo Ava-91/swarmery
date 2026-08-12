@@ -1,7 +1,9 @@
 // Embedded terminal (fusion phase 15): GET /api/term/ws upgrades to a WebSocket
-// bridged to an interactive PTY (internal/term). One PTY infra serves two
-// surfaces — the workspace bottom dock (cwd = project path) and a task's
-// worktree terminal (cwd = worktree_path).
+// bridged to an interactive PTY (internal/term). One PTY infra serves three
+// surfaces — the workspace bottom dock (?cwd = project path), a task's
+// worktree terminal (?cwd = worktree_path), and the connect flow's interactive
+// login fallback (?account = account key: the PTY runs under that account's
+// CLAUDE_CONFIG_DIR, in the operator's home).
 //
 // Security contract (normative, phase-15 spec):
 //   - The endpoint is browser-originated, so the origin gate is STRICTER than
@@ -9,6 +11,9 @@
 //     Origin passes). This closes DNS-rebinding on a raw ws:// dial.
 //   - cwd MUST EvalSymlinks to either a registered project path or a live task
 //     worktree_path — anything else (e.g. /etc, a symlink escape) is 403.
+//   - account MUST be a well-formed key (claudeacct.ValidKey) naming an account
+//     the registry actually reports; it is NEVER used as a path, and it is
+//     mutually exclusive with cwd. All of it runs BEFORE the upgrade.
 //   - The PTY runs in its own process group; the bridge Closes the Session on
 //     disconnect, which SIGHUPs (then SIGKILLs) the whole group — no orphans.
 //
@@ -24,7 +29,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -47,8 +54,9 @@ const (
 	termReadLimit = 1 << 20
 )
 
-// term handles GET /api/term/ws?cwd=<abs path>. Security gates run BEFORE the
-// upgrade so a rejected request gets a plain JSON status, not a half-open socket.
+// term handles GET /api/term/ws?cwd=<abs path> and GET /api/term/ws?account=<key>.
+// Security gates run BEFORE the upgrade so a rejected request gets a plain JSON
+// status, not a half-open socket.
 func (h *Handler) term(w http.ResponseWriter, r *http.Request) {
 	if termMgr == nil {
 		writeJSONStatus(w, http.StatusServiceUnavailable,
@@ -62,11 +70,41 @@ func (h *Handler) term(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reqCwd := r.URL.Query().Get("cwd")
-	cwd, projectPath, ok := h.resolveTermCwd(reqCwd)
-	if !ok {
-		writeJSONStatus(w, http.StatusForbidden,
-			map[string]string{"error": "cwd is not a registered project or live worktree path"})
+	reqAccount := strings.TrimSpace(r.URL.Query().Get("account"))
+
+	var cwd string
+	var env []string
+	switch {
+	case reqAccount != "" && reqCwd != "":
+		// Two targets is no target: the caller must say which surface it wants.
+		writeJSONStatus(w, http.StatusBadRequest,
+			map[string]string{"error": "account and cwd are mutually exclusive"})
 		return
+	case reqAccount != "":
+		var ok bool
+		cwd, env, ok = resolveTermAccount(reqAccount)
+		if !ok {
+			writeJSONStatus(w, http.StatusNotFound,
+				map[string]string{"error": "unknown account"})
+			return
+		}
+	default:
+		var projectPath string
+		var ok bool
+		cwd, projectPath, ok = h.resolveTermCwd(reqCwd)
+		if !ok {
+			writeJSONStatus(w, http.StatusForbidden,
+				map[string]string{"error": "cwd is not a registered project or live worktree path"})
+			return
+		}
+		// Run the dock shell under the project's Claude account. The account is
+		// resolved from projectPath, NEVER from cwd: a task worktree_path carries no
+		// .claude/settings.local.json of its own (that file lives at the PROJECT
+		// root), so resolving from cwd would silently fall back to the default
+		// account for every worktree terminal — the same A3 trap dispatch/verify
+		// guard against by resolving from the project instead of the spawn cwd. cwd
+		// still chdirs the PTY into the worktree; only the account lookup moves.
+		env = termAccountEnv(projectPath)
 	}
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -81,14 +119,7 @@ func (h *Handler) term(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(termReadLimit)
 	defer c.Close(websocket.StatusInternalError, "server error")
 
-	// Run the dock shell under the project's Claude account. The account is
-	// resolved from projectPath, NEVER from cwd: a task worktree_path carries no
-	// .claude/settings.local.json of its own (that file lives at the PROJECT
-	// root), so resolving from cwd would silently fall back to the default
-	// account for every worktree terminal — the same A3 trap dispatch/verify
-	// guard against by resolving from the project instead of the spawn cwd. cwd
-	// still chdirs the PTY into the worktree; only the account lookup moves.
-	sess, err := termMgr.Start(cwd, termAccountEnv(projectPath), 0, 0)
+	sess, err := termMgr.Start(cwd, env, 0, 0)
 	if err != nil {
 		if errors.Is(err, term.ErrTooManySessions) {
 			// 1013 Try Again Later — the browser surfaces a "too many terminals".
@@ -252,6 +283,34 @@ func (h *Handler) termWorktreeRoots() []termAllowedRoot {
 		out = append(out, termAllowedRoot{path: worktreePath, projectPath: projectPath.String})
 	}
 	return out
+}
+
+// resolveTermAccount validates an ACCOUNT-scoped terminal request — the
+// connect flow's interactive login fallback. The key must be well-formed
+// (claudeacct.ValidKey) AND name an account the registry actually reports
+// (findAccount) — the same allow-list the account routes enforce, so the
+// query cannot aim a PTY env at an arbitrary name; the key is never used as
+// a path. The env delta comes from claudeacct.EnvForAccount — the very call
+// dispatch and verify spawn with — which yields nil for the default account
+// (absence of CLAUDE_CONFIG_DIR selects the default, by contract).
+//
+// The PTY starts in the operator's HOME: an account terminal belongs to no
+// project, and home is the one cwd that is safe, always present, and carries
+// no .claude/settings.local.json trap of its own (a binding is only read from
+// a PROJECT path, and home is not one).
+func resolveTermAccount(key string) (cwd string, env []string, ok bool) {
+	if !claudeacct.ValidKey(key) {
+		return "", nil, false
+	}
+	acct, found := findAccount(key)
+	if !found {
+		return "", nil, false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", nil, false
+	}
+	return home, claudeacct.EnvForAccount(acct.Key), true
 }
 
 // termAccountEnv resolves the CLAUDE_CONFIG_DIR env delta for a terminal

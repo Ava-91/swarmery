@@ -42,6 +42,14 @@ same atomic write, *Disconnect* removes it, and a card fed by it is marked
 `connectedVia: "swarmery"` in the payload — which is how the modal knows which cards those two
 actions belong on.
 
+For a **non-default** account, connect additionally performs a **one-time credential
+handoff**: the stored credential is copied once into `<configDir>/.credentials.json`
+(mode `0600`, same `claudeAiOauth` shape) so the `claude` CLI can adopt it as that
+account's login. The handoff is **write-once** — swarmery never refreshes that file, never
+overwrites an existing one, and never touches the default account's `~/.claude`; token
+rotation continues to happen only in swarmery's own store. Evidence and rationale:
+`docs/claude-cli-credential-behaviour.md` (measured 2026-08-12).
+
 After the store, resolution depends on the account:
 
 - A **named account** (non-default) reads `<configDir>/.credentials.json` **exclusively** —
@@ -195,20 +203,22 @@ The bearer token is the whole reason this surface needs a security section. The 
 - **Never served.** No daemon HTTP response carries credential material. Upstream error
   bodies are scrubbed of bearer and `sk-…` material *before* truncation — so a token cannot
   survive as a partial suffix — and capped at 120 characters.
-- **Refreshed tokens are memory-only.** A refresh (attempted once on 401/403, and up front
-  when the stored token is inside its 60-second expiry grace) is cached in the daemon
-  process for its lifetime and **never written back** to the credential file or the
-  keychain. The CLI's own stored credential is left untouched: this daemon reads
-  credentials, it does not mutate them.
+- **Refreshed tokens never reach a CLI source.** A refresh (attempted once on 401/403, and
+  up front when the stored token is inside its 60-second expiry grace) is persisted only
+  into swarmery's **own** store for a store-owned credential, and is memory-only for a
+  credential read from a CLI source — **never written back** to `<configDir>/.credentials.json`
+  or the keychain. The single exception to "the daemon does not write CLI files" is the
+  **one-time connect handoff** above, which writes a fresh `<configDir>/.credentials.json`
+  at most once and never updates it afterwards.
 - **`SWARMERY_USAGE_OAUTH=0` is a real off switch.** It short-circuits before any source is
   touched — no file read, no `security` invocation, no keychain prompt — and the card reads
   `usage OAuth disabled (SWARMERY_USAGE_OAUTH=0)`. It covers the write half too: connecting,
   reconnecting and disconnecting all answer `409` while it is set.
 - **Disconnect deletes one file, ours.** The card's `disconnect` removes
   `~/.swarmery/credentials/<account>.json` and nothing else. It never touches
-  `<configDir>/.credentials.json` or the macOS keychain item — those are the `claude` CLI's,
-  the daemon does not write to them, and a dashboard button that could end your terminal
-  login would be a trap. The account simply falls back through the rest of the resolution
+  `<configDir>/.credentials.json` or the macOS keychain item — once handed over (or written
+  by a CLI login) those are the `claude` CLI's, and a dashboard button that could end your
+  terminal login would be a trap. The account simply falls back through the rest of the resolution
   chain, usually to its `Connect` card. It is idempotent: disconnecting an account that is
   already disconnected succeeds. The in-memory refreshed bearer is dropped with the file, so
   the connection cannot outlive it until the next daemon restart.
@@ -424,3 +434,24 @@ curl -s localhost:7777/api/usage | jq                    # cached (≤30s old)
 curl -s 'localhost:7777/api/usage?fresh=1' | jq          # live upstream call
 SWARMERY_USAGE_OAUTH=0 ./swarmery serve                  # verify the opt-out path
 ```
+
+## 9. Why `/usage` in my terminal shows a different account
+
+The project → account binding governs what swarmery **dispatches**: runs started from the
+dashboard, and the dashboard's embedded terminal. A `claude` you start by hand in your own
+shell knows nothing about it — without `CLAUDE_CONFIG_DIR` set in that shell, the CLI reads
+`~/.claude`, i.e. the machine's **default** account. So `/usage` in a hand-opened terminal
+can honestly disagree with the account the dashboard says this project runs under; neither
+is lying, they are answering different questions.
+
+To run a hand-started CLI under the project's account, from the project root:
+
+```bash
+swarmery account which            # which account this project runs under, and why
+swarmery account exec -- claude   # run one command under that account
+eval "$(swarmery account env)"    # or export CLAUDE_CONFIG_DIR into this shell
+```
+
+`which|use|clear|env|exec` never contact the daemon, so they keep working with swarmery
+stopped. The accounts pack's `/account setup-shell` installs a shell wrapper that applies
+the binding automatically per directory.

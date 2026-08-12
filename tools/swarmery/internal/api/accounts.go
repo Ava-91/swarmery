@@ -7,25 +7,34 @@ package api
 //	GET    /api/accounts                  → every account with its live state
 //	POST   /api/accounts                  → {key}     provision a config dir
 //	DELETE /api/accounts/{account}        →           remove a config dir
+//	POST   /api/accounts/{account}/probe  →           re-check CLI readiness
 //	GET    /api/projects/{id}/account     → {account, effective, source, configDir}
 //	PUT    /api/projects/{id}/account     → {account} bind, or "" to unbind
 //
-// # Delegated login (the phase-1 spike verdict)
+// # Write-once credential handoff, delegated login as the manual path
 //
-// swarmery writes NO CLI credential material — not here, not anywhere. The
-// 2026-08-06 spike on CLI 2.1.220 measured that a non-empty CLAUDE_CONFIG_DIR
-// with no credential of its own fails authentication outright and does NOT fall
-// back to the default account, and that the CLI's own store deletes
-// <dir>/.credentials.json after a successful Keychain write. A credential
-// materialised by swarmery would therefore last until the CLI's next refresh at
-// most, with two writers chasing one token.
+// The connect flow performs a WRITE-ONCE handoff of the account's
+// swarmery-owned credential into its config dir (usage.HandoffToConfigDir),
+// verified by the authoritative probe (internal/claudeprobe), with the
+// interactive PTY login as the fallback. The evidence is
+// docs/claude-cli-credential-behaviour.md (measured 2026-08-12, re-running the
+// 2026-08-06 spike on CLI 2.1.220): a non-empty CLAUDE_CONFIG_DIR with no
+// credential of its own fails authentication outright and does NOT fall back
+// to the default account — so the handed-over file is both necessary and
+// sufficient — and the CLI's own store deletes <dir>/.credentials.json after a
+// successful Keychain write, so the file is consumed, not co-owned.
 //
-// So POST hands back a loginCommand instead of performing a login: the exact
-// `CLAUDE_CONFIG_DIR=<dir> claude` invocation the operator runs, in the embedded
-// terminal or their own. The existing PKCE flow (usage_login.go) is untouched —
-// it authorizes SWARMERY against Anthropic for quota reads, which is a different
-// credential for a different consumer, and conflating the two is what the spike
-// ruled out.
+// What stays forbidden is REFRESHING that file. Token rotation lives
+// exclusively in swarmery's own store (internal/usage/store.go), so swarmery
+// and the CLI are never two writers over one rotating refresh token — the
+// failure mode the original spike ruled out, and the reason the handoff is
+// write-once by contract, not by accident.
+//
+// POST still hands back a loginCommand — the exact `CLAUDE_CONFIG_DIR=<dir>
+// claude` invocation the operator runs, in the embedded terminal or their own
+// — as the manual path. The existing PKCE flow (usage_login.go) authorizes
+// SWARMERY against Anthropic for quota reads; the handoff is what turns that
+// same stored credential into a CLI login.
 //
 // # Two honesty properties this file exists to preserve
 //
@@ -47,12 +56,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
 )
 
@@ -72,6 +86,11 @@ const (
 // here depend on whether the machine running the test happens to be logged in.
 // Production is the real thing — see the honesty note in the file header.
 var accountCreds = usage.LoadCredsFor
+
+// probeAccount runs the authoritative CLI-readiness probe. A package var for
+// the same reason as accountCreds — and so tests can assert the READ paths
+// never touch it: GET /api/accounts must never spawn a process.
+var probeAccount = claudeprobe.Probe
 
 // accountDTO is one installed account and everything the dashboard needs to
 // decide what to offer for it.
@@ -94,6 +113,20 @@ type accountDTO struct {
 	// usage.inferPlan, and a second, subtly different derivation of "the
 	// operator's plan" living here is how the two start disagreeing on screen.
 	Plan string `json:"plan"`
+	// Runnable is the authoritative "the CLI can run under this account"
+	// verdict, tri-state for the same reason Connected is: null = never probed
+	// (or the last probe could not determine an answer). It is a DIFFERENT
+	// question from Connected (which means "swarmery can read this account's
+	// quota") and the two legitimately disagree — that disagreement is exactly
+	// the bug this field exists to expose. Populated from the stored verdict
+	// (store.AllAccountRunnable) ONLY: listing accounts never runs a probe.
+	Runnable *bool `json:"runnable"`
+	// RunnableReason is a short fixed phrase (internal/claudeprobe constants)
+	// explaining a false or undetermined verdict, "" otherwise.
+	RunnableReason string `json:"runnableReason,omitempty"`
+	// RunnableCheckedAt is when the verdict was taken (RFC3339), "" when never
+	// probed.
+	RunnableCheckedAt string `json:"runnableCheckedAt,omitempty"`
 	// Ingested is whether the daemon is watching this account's transcripts —
 	// see the file header. False for an account provisioned after startup.
 	Ingested bool `json:"ingested"`
@@ -193,8 +226,10 @@ func (h *Handler) bindingsByAccount() (map[string][]string, error) {
 	return out, rows.Err()
 }
 
-// accountRow builds one account's DTO.
-func accountRow(ctx context.Context, a claudeacct.Account, roots map[string]bool, bound map[string][]string) accountDTO {
+// accountRow builds one account's DTO. runnable is the STORED verdict map
+// (store.AllAccountRunnable) — this function must stay a pure read; the probe
+// itself runs only from the explicit POST …/probe endpoint.
+func accountRow(ctx context.Context, a claudeacct.Account, roots map[string]bool, bound map[string][]string, runnable map[string]store.AccountRunnable) accountDTO {
 	row := accountDTO{
 		Key:       a.Key,
 		ConfigDir: a.ConfigDir,
@@ -204,6 +239,9 @@ func accountRow(ctx context.Context, a claudeacct.Account, roots map[string]bool
 	}
 	if row.Projects == nil {
 		row.Projects = []string{}
+	}
+	if verdict, ok := runnable[a.Key]; ok {
+		row.Runnable, row.RunnableReason, row.RunnableCheckedAt = runnableDTOFields(verdict)
 	}
 
 	// The DEFAULT account is asked for with an EMPTY ConfigDir on purpose: that
@@ -231,6 +269,26 @@ func accountRow(ctx context.Context, a claudeacct.Account, roots map[string]bool
 		row.Plan = strings.TrimSpace(creds.RateLimitTier)
 	}
 	return row
+}
+
+// runnableDTOFields maps one stored verdict to the DTO's three fields. Ready
+// and no-login are answered questions (true / false); a stored 'unknown' —
+// timeout, missing binary — renders as null exactly like "never probed",
+// because "we could not determine it" must never be shown as "not ready", only
+// with its reason and timestamp still attached so the operator can see a
+// re-check happened.
+func runnableDTOFields(v store.AccountRunnable) (*bool, string, string) {
+	checkedAt := v.CheckedAt.UTC().Format(time.RFC3339)
+	switch claudeprobe.Status(v.Status) {
+	case claudeprobe.StatusReady:
+		yes := true
+		return &yes, "", checkedAt
+	case claudeprobe.StatusNoLogin:
+		no := false
+		return &no, v.Reason, checkedAt
+	default:
+		return nil, v.Reason, checkedAt
+	}
 }
 
 // loginCommandFor is the command the OPERATOR runs to finish an account's login.
@@ -292,11 +350,16 @@ func (h *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	runnable, err := store.AllAccountRunnable(h.DB)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	roots := ingestedRoots()
 	accounts := claudeacct.DiscoverWithDefault()
 	rows := make([]accountDTO, 0, len(accounts))
 	for _, a := range accounts {
-		rows = append(rows, accountRow(r.Context(), a, roots, bound))
+		rows = append(rows, accountRow(r.Context(), a, roots, bound, runnable))
 	}
 	writeJSON(w, accountsResponse{Accounts: rows}, nil)
 }
@@ -337,7 +400,12 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	row := accountRow(r.Context(), acct, ingestedRoots(), bound)
+	runnable, err := store.AllAccountRunnable(h.DB)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	row := accountRow(r.Context(), acct, ingestedRoots(), bound, runnable)
 	resp := provisionResponse{Account: row, LoginCommand: loginCommandFor(acct.ConfigDir)}
 	if !row.Ingested {
 		resp.Hint = "the daemon resolves its ingest roots at startup, so this account's " +
@@ -379,6 +447,129 @@ func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, removeAccountResponse{OK: true, DanglingBindings: bound[key]}, nil)
+}
+
+// accountProbeResponse is the POST /api/accounts/{account}/probe body — the same
+// three fields the account row carries, so a client can patch its row in place.
+type accountProbeResponse struct {
+	Runnable          *bool  `json:"runnable"`
+	RunnableReason    string `json:"runnableReason,omitempty"`
+	RunnableCheckedAt string `json:"runnableCheckedAt,omitempty"`
+}
+
+// Verdict sources the probe endpoint may persist. 'probe' is the plain
+// re-check; 'pty-login' marks a verdict taken right after an interactive PTY
+// login, so its provenance stays legible in the store ('run' is written by the
+// run-truth path, never through this endpoint).
+const (
+	probeSourceProbe    = "probe"
+	probeSourcePTYLogin = "pty-login"
+)
+
+// probeFlights single-flights the probe per account key: a second concurrent
+// POST for the same account waits for and returns the in-flight result rather
+// than spawning a second CLI. Package-scoped state would bleed between test
+// servers, so it lives on the Handler.
+type probeFlights struct {
+	mu     sync.Mutex
+	flight map[string]*probeFlight
+}
+
+type probeFlight struct {
+	done    chan struct{}
+	verdict store.AccountRunnable
+	err     error
+}
+
+// do runs fn once per key at a time; latecomers block on the leader's result.
+func (p *probeFlights) do(key string, fn func() (store.AccountRunnable, error)) (store.AccountRunnable, error) {
+	p.mu.Lock()
+	if p.flight == nil {
+		p.flight = map[string]*probeFlight{}
+	}
+	if f, ok := p.flight[key]; ok {
+		p.mu.Unlock()
+		<-f.done
+		return f.verdict, f.err
+	}
+	f := &probeFlight{done: make(chan struct{})}
+	p.flight[key] = f
+	p.mu.Unlock()
+
+	f.verdict, f.err = fn()
+	p.mu.Lock()
+	delete(p.flight, key)
+	p.mu.Unlock()
+	close(f.done)
+	return f.verdict, f.err
+}
+
+// runAccountProbe runs the single-flighted readiness probe for one account and
+// persists the verdict with the given source. Shared by the explicit probe
+// endpoint and the connect flow's post-handoff verification — the two must
+// never diverge on how a verdict is taken or stored.
+//
+// The probe's ctx is deliberately NOT a request's: a client that gives up
+// and disconnects must not abort a probe a second waiter is blocked on
+// (single-flight hands one result to everyone).
+func (h *Handler) runAccountProbe(key, dir, source string) (store.AccountRunnable, error) {
+	return h.probes.do(key, func() (store.AccountRunnable, error) {
+		res := probeAccount(context.Background(), dir)
+		row := store.AccountRunnable{
+			Status:    string(res.Status),
+			Reason:    res.Reason,
+			CheckedAt: time.Now().UTC(),
+			Source:    source,
+		}
+		if err := store.PutAccountRunnable(h.DB, key, row.Status, row.Reason, row.Source, row.CheckedAt); err != nil {
+			return store.AccountRunnable{}, err
+		}
+		return row, nil
+	})
+}
+
+// probeAccountHandler handles POST /api/accounts/{account}/probe — the
+// explicit operator re-check. The verdict is persisted and returned; the list
+// endpoint then serves the stored row.
+//
+// `?source=pty-login` records that the verdict follows an interactive PTY
+// login (the connect flow's fallback re-probes through here when the terminal
+// session ends). Anything outside the fixed set is refused: the source column
+// is provenance, not a free-text field.
+func (h *Handler) probeAccountHandler(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(r.PathValue("account"))
+	acct, ok := findAccount(key)
+	if !ok {
+		writeClientErr(w, http.StatusNotFound, "unknown account")
+		return
+	}
+	source := probeSourceProbe
+	switch s := r.URL.Query().Get("source"); s {
+	case "", probeSourceProbe:
+	case probeSourcePTYLogin:
+		source = probeSourcePTYLogin
+	default:
+		writeClientErr(w, http.StatusBadRequest,
+			"invalid probe source — allowed: probe, pty-login")
+		return
+	}
+	// The DEFAULT account is probed with an EMPTY configDir — absence of
+	// CLAUDE_CONFIG_DIR, not its dir spelled out, is what selects the default
+	// (claudeprobe.Probe's contract, same as claudeacct.EnvForAccount).
+	dir := ""
+	if !acct.IsDefault {
+		dir = acct.ConfigDir
+	}
+
+	verdict, err := h.runAccountProbe(acct.Key, dir, source)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	log.Printf("account probe: account=%s status=%s source=%s", acct.Key, verdict.Status, source)
+	var resp accountProbeResponse
+	resp.Runnable, resp.RunnableReason, resp.RunnableCheckedAt = runnableDTOFields(verdict)
+	writeJSON(w, resp, nil)
 }
 
 // projectAccount handles GET /api/projects/{id}/account.

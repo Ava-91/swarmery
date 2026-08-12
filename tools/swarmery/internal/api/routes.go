@@ -393,6 +393,11 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/accounts", h.listAccounts)
 	mux.HandleFunc("POST /api/accounts", requireLocalOrigin(h.createAccount))
 	mux.HandleFunc("DELETE /api/accounts/{account}", requireLocalOrigin(h.deleteAccount))
+	// The explicit operator re-check: the ONLY route that runs the readiness
+	// probe (accounts.go — the list endpoint serves the stored verdict and
+	// never spawns a process). Single-flight per account; same D4 origin
+	// hardening because it spends a CLI invocation and writes the verdict row.
+	mux.HandleFunc("POST /api/accounts/{account}/probe", requireLocalOrigin(h.probeAccountHandler))
 	mux.HandleFunc("GET /api/projects/{id}/account", h.projectAccount)
 	mux.HandleFunc("PUT /api/projects/{id}/account", requireLocalOrigin(h.putProjectAccount))
 

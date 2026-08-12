@@ -15,8 +15,10 @@
 // Switching the config dir is sufficient to switch the account: a measurement on
 // CLI 2.1.220 confirmed that a non-default CLAUDE_CONFIG_DIR does NOT fall back
 // to the default credential and that the CLI namespaces its keychain item per
-// config dir. swarmery therefore never writes CLI credential files — it only
-// ever points a process at a dir the operator logged into themselves.
+// config dir. swarmery therefore only ever points a process at a dir that holds
+// a login — one the operator made with the CLI, or the write-once credential
+// handoff the connect flow performs (usage.HandoffToConfigDir, never refreshed;
+// see internal/usage/handoff.go and docs/claude-cli-credential-behaviour.md).
 package claudeacct
 
 import (

@@ -13,6 +13,7 @@ package api
 // never fetched, because in production the operator's browser opens it.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/usage"
 )
@@ -89,8 +91,15 @@ func loginUpstream(t *testing.T, status int) *usageStub {
 // installLoginClient points ONE account's client at the upstream stub, with the
 // real credential resolution left in place (no LoadCreds seam): the login path
 // must exercise the actual store read/write, which is the behaviour under test.
+//
+// It also stubs the readiness probe to a fixed 'ready': complete runs the
+// probe since the three-step transaction landed, and the default seam value
+// would exec the REAL `claude` CLI — sub-second and token-free, but a process
+// spawn whose answer depends on the machine running the test. Tests that need
+// another verdict override the seam again after this.
 func installLoginClient(t *testing.T, src usage.Source, up *usageStub) {
 	t.Helper()
+	useProbeResult(t, claudeprobe.Result{Status: claudeprobe.StatusReady}, nil)
 	c := &usage.Client{
 		HTTP:     up.srv.Client(),
 		Now:      func() time.Time { return usageStubNow },
@@ -123,6 +132,21 @@ func installLoginClient(t *testing.T, src usage.Source, up *usageStub) {
 		resetUsageCache()
 		resetPendingLogins()
 	})
+}
+
+// useProbeResult installs a probe stub answering res for every account. When
+// probed is non-nil, each probed config dir is appended to it — how a test
+// asserts the probe really ran, and against which dir.
+func useProbeResult(t *testing.T, res claudeprobe.Result, probed *[]string) {
+	t.Helper()
+	prev := probeAccount
+	probeAccount = func(_ context.Context, dir string) claudeprobe.Result {
+		if probed != nil {
+			*probed = append(*probed, dir)
+		}
+		return res
+	}
+	t.Cleanup(func() { probeAccount = prev })
 }
 
 // postLogin issues a POST with an optional JSON body and returns status + body.
@@ -190,8 +214,8 @@ func TestUsageLoginStartAndComplete(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("complete status = %d, want 200\n%s", status, body)
 	}
-	if !strings.Contains(body, `"ok":true`) {
-		t.Errorf("complete body = %s, want {\"ok\":true}", body)
+	if !strings.Contains(body, `"connected":true`) {
+		t.Errorf("complete body = %s, want it to report connected:true", body)
 	}
 
 	// The credential landed where the daemon will read it back.
@@ -416,6 +440,18 @@ func TestUsageLoginResponsesCarryNoSecrets(t *testing.T) {
 	}
 	if verifierProof == "" {
 		t.Fatal("no PKCE challenge was issued; the flow under test did not happen")
+	}
+
+	// The three-step outcome fields are present — otherwise the scan below
+	// would not be covering the new response shape at all.
+	var completed struct {
+		Connected bool   `json:"connected"`
+		Handoff   string `json:"handoff"`
+		Runnable  string `json:"runnable"`
+	}
+	if err := json.Unmarshal([]byte(completeBody), &completed); err != nil ||
+		!completed.Connected || completed.Handoff == "" || completed.Runnable == "" {
+		t.Fatalf("complete body does not carry the three-step outcome the scan must cover: %s", completeBody)
 	}
 
 	for _, banned := range []string{

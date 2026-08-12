@@ -17,8 +17,10 @@
 // the operator hasn't acknowledged it.
 
 import { useEffect, useState } from 'react';
-import { deleteAccount, fetchAccounts } from '../api';
-import type { Account } from '../api/types';
+import { deleteAccount, fetchAccounts, probeAccount } from '../api';
+import type { Account, AccountProbeResponse } from '../api/types';
+import { applyVerdict, patchReadiness } from '../lib/accountReadiness';
+import { fmtAgo } from '../lib/format';
 import { CreateAccountModal } from './CreateAccountModal';
 import { ConfirmDialog, Empty, ErrorBox, Loading } from './ui';
 
@@ -69,16 +71,45 @@ function ConnectedBadge({ connected }: { connected: boolean | null }): JSX.Eleme
   );
 }
 
+/**
+ * The READINESS dimension, separate from `connected`: whether `claude` can
+ * actually run under this account (the stored probe verdict). Same rule as
+ * the badge above — a coloured dot is never the only signal, every rendered
+ * state carries its own text. `null` (never probed) renders NOTHING: the
+ * question was not answered, and an unknown is not a failure.
+ */
+function ReadyBadge({ a }: { a: Account }): JSX.Element | null {
+  if (a.runnable === null) return null;
+  const tip =
+    a.runnableCheckedAt !== undefined ? `checked ${fmtAgo(a.runnableCheckedAt)}` : undefined;
+  return (
+    <span className="flex shrink-0 items-center gap-1" data-tip={tip}>
+      <span
+        aria-hidden="true"
+        className={`inline-block h-[7px] w-[7px] rounded-full ${a.runnable ? 'bg-green' : 'bg-amber'}`}
+      />
+      <span className={`font-mono text-[9.5px] ${a.runnable ? 'text-ink-dim' : 'text-amber'}`}>
+        {a.runnable ? 'ready' : (a.runnableReason ?? 'CLI login required')}
+      </span>
+    </span>
+  );
+}
+
 function AccountRow({
   a,
+  probing,
+  onProbe,
   onRequestDelete,
 }: {
   a: Account;
+  probing: boolean;
+  onProbe: (key: string) => void;
   onRequestDelete: (key: string) => void;
 }): JSX.Element {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3.5 py-2.5">
       <ConnectedBadge connected={a.connected} />
+      <ReadyBadge a={a} />
 
       <span className="min-w-0 truncate font-mono text-[12px] text-ink" title={a.key}>
         {a.key}
@@ -94,11 +125,23 @@ function AccountRow({
         {a.configDir}
       </span>
 
+      {/* Re-run the CLI-readiness probe — the only way a never-probed account
+          gets a verdict without a dispatch, and the honest refresh after a
+          terminal login the daemon did not witness. */}
+      <button
+        type="button"
+        onClick={() => onProbe(a.key)}
+        disabled={probing}
+        className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:bg-surface2 disabled:opacity-50"
+      >
+        {probing ? 'checking…' : 'check now'}
+      </button>
+
       {!a.isDefault && (
         <button
           type="button"
           onClick={() => onRequestDelete(a.key)}
-          className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:border-red/40 hover:text-red"
+          className="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-ink-dim transition-colors hover:border-red/40 hover:text-red"
         >
           remove
         </button>
@@ -114,6 +157,8 @@ export function AccountsSection(): JSX.Element {
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [probingKey, setProbingKey] = useState<string | null>(null);
+  const [probeError, setProbeError] = useState<string | null>(null);
   // Dangling-bindings banner is intentionally decoupled from `state`/`retry`:
   // a refetch after deletion must not make it vanish before the operator
   // dismisses it themselves.
@@ -143,6 +188,28 @@ export function AccountsSection(): JSX.Element {
   function requestDelete(key: string): void {
     setDeleteError(null);
     setConfirmKey(key);
+  }
+
+  async function probe(key: string): Promise<void> {
+    setProbingKey(key);
+    setProbeError(null);
+    try {
+      const verdict: AccountProbeResponse = await probeAccount(key);
+      setState((s) =>
+        s.kind === 'ready'
+          ? {
+              kind: 'ready',
+              accounts: s.accounts.map((a) => (a.key === key ? applyVerdict(a, verdict) : a)),
+            }
+          : s,
+      );
+      // Keep the header surfaces (banner, chip) in step with the new verdict.
+      patchReadiness(key, verdict);
+    } catch (e) {
+      setProbeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbingKey(null);
+    }
   }
 
   async function confirmDelete(): Promise<void> {
@@ -213,10 +280,22 @@ export function AccountsSection(): JSX.Element {
         <Empty>no accounts configured</Empty>
       )}
 
+      {state.kind === 'ready' && probeError !== null && (
+        <div className="mb-2 font-mono text-[11px] break-words text-red" role="alert">
+          readiness check failed: {probeError}
+        </div>
+      )}
+
       {state.kind === 'ready' && state.accounts.length > 0 && (
         <div className="divide-y divide-line rounded-xl border border-line bg-surface">
           {state.accounts.map((a) => (
-            <AccountRow key={a.key} a={a} onRequestDelete={requestDelete} />
+            <AccountRow
+              key={a.key}
+              a={a}
+              probing={probingKey === a.key}
+              onProbe={(key) => void probe(key)}
+              onRequestDelete={requestDelete}
+            />
           ))}
         </div>
       )}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
 )
 
 // unsetMarker is what the fake claude prints when CLAUDE_CONFIG_DIR is not in
@@ -99,6 +100,83 @@ func TestVerifySpawnAppliesAccountWhenCwdHasNoProjectSettings(t *testing.T) {
 	got := childConfigDir(t, RunSpec{Prompt: "p", SessionUUID: "acct-worktree", Account: "nabu-org"}, worktree)
 	if want := filepath.Join(home, ".claude-nabu-org"); got != want {
 		t.Errorf("worktree run CLAUDE_CONFIG_DIR = %q, want %q — the account was resolved from cwd, not from the spec", got, want)
+	}
+}
+
+// runWithVerdictHook runs one spec through the REAL ClaudeRunner.Run with an
+// AccountVerdict hook recording what it was called with.
+func runWithVerdictHook(t *testing.T, spec RunSpec) (run *Run, calls int, account string, result claudeprobe.Result) {
+	t.Helper()
+	r := ClaudeRunner{Timeout: 30 * time.Second, AccountVerdict: func(a string, res claudeprobe.Result) {
+		calls++
+		account, result = a, res
+	}}
+	spec.Cwd = t.TempDir()
+	run, err := r.Run(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return run, calls, account, result
+}
+
+// SC-8, verify half: a verifier whose `claude` dies demanding a login reaches
+// the hook as no-login for the run's account — no extra claude invocation, the
+// verdict is read off the run this service was going to make anyway.
+func TestVerifyAccountVerdictHookNoLoginExit(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaudeRunner(t, `echo 'Not logged in · Please run /login'; exit 1`)
+	run, calls, account, result := runWithVerdictHook(t,
+		RunSpec{Prompt: "p", SessionUUID: "verdict-nl", Account: "nabu-org"})
+	if run.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", run.ExitCode)
+	}
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+	if account != "nabu-org" {
+		t.Errorf("hook account = %q, want nabu-org", account)
+	}
+	if result.Status != claudeprobe.StatusNoLogin {
+		t.Errorf("hook status = %q, want %q", result.Status, claudeprobe.StatusNoLogin)
+	}
+}
+
+// An ordinary verifier failure classifies unknown — a status the store adapter
+// drops, so a failed verification can never demote a working account.
+func TestVerifyAccountVerdictHookOrdinaryFailure(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaudeRunner(t, `echo "verifier blew up" 1>&2; exit 3`)
+	_, calls, _, result := runWithVerdictHook(t,
+		RunSpec{Prompt: "p", SessionUUID: "verdict-fail", Account: "nabu-org"})
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+	if result.Status != claudeprobe.StatusUnknown {
+		t.Errorf("hook status = %q, want %q", result.Status, claudeprobe.StatusUnknown)
+	}
+}
+
+// A nil AccountVerdict hook leaves run behaviour byte-identical: the same
+// failing spec produces the same Run whether the hook exists or not (Duration
+// aside — it is wall clock).
+func TestVerifyNilAccountVerdictHookLeavesRunUnchanged(t *testing.T) {
+	unsetConfigDir(t)
+	t.Setenv("HOME", t.TempDir())
+	fakeClaudeRunner(t, `echo 'Not logged in · Please run /login'; echo "boom" 1>&2; exit 1`)
+	spec := RunSpec{Prompt: "p", SessionUUID: "verdict-nil", Account: "nabu-org"}
+
+	spec.Cwd = t.TempDir()
+	bare, err := ClaudeRunner{Timeout: 30 * time.Second}.Run(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Run (nil hook): %v", err)
+	}
+	hooked, _, _, _ := runWithVerdictHook(t, spec)
+
+	bare.Duration, hooked.Duration = 0, 0
+	if *bare != *hooked {
+		t.Errorf("nil-hook run %+v differs from hooked run %+v", *bare, *hooked)
 	}
 }
 
