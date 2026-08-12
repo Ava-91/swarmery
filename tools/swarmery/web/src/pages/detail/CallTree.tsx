@@ -327,6 +327,8 @@ function Nodes({ nodes }: { nodes: CallNode[] }): JSX.Element {
             return <AgentRow key={`a-${String(node.id)}`} node={node} />;
           case 'agent-group':
             return <AgentGroupRow key={`g-${node.type}-${String(i)}`} node={node} />;
+          default:
+            return null;
         }
       })}
     </>

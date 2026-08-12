@@ -32,3 +32,6 @@ architecture-out/
 
 # Playwright MCP run artifacts (console logs, page snapshots)
 .playwright-mcp/
+
+# design-pack working artifacts (sources, token inventories, diffs) — large, regenerable
+.design-verify/

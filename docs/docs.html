@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>swarmery — docs</title>
+<meta name="description" content="swarmery documentation: concepts, usage, file formats and wire protocols for the agent framework and its control plane.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#101312;
+    --bg-raise:#161a18;
+    --bg-inset:#0b0d0c;
+    --ink:#c9cec7;
+    --ink-dim:#8a918a;
+    --ink-faint:#565d57;
+    --amber:#e8a33d;
+    --amber-dim:#9a6f2e;
+    --phos:#7fd08a;
+    --phos-dim:#4a7a52;
+    --rule:#262b28;
+    --rule-soft:#1d211f;
+    --red:#d97662;
+    --mono:"JetBrains Mono",monospace;
+    --disp:"Futura","Avenir Next Condensed","Trebuchet MS",sans-serif;
+    --body:"Avenir Next","Avenir","Seravek","Gill Sans",system-ui,sans-serif;
+  }
+  /* Box model is content-box throughout, as the design is measured: container
+     max-widths below are content widths, paddings sit outside them. */
+  *{margin:0;padding:0}
+  html{scroll-behavior:smooth;scroll-padding-top:90px}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--body);
+    font-size:16.5px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* drafting-table grid atmosphere */
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      repeating-linear-gradient(0deg,transparent 0 31px,rgba(127,208,138,.028) 31px 32px),
+      repeating-linear-gradient(90deg,transparent 0 31px,rgba(127,208,138,.028) 31px 32px);
+  }
+  .page{position:relative;z-index:1;min-height:100vh}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+  a{color:var(--phos);text-decoration:none;border-bottom:1px solid var(--phos-dim)}
+  a:hover{color:#a8e8b1}
+  ::selection{background:var(--amber);color:#161311}
+
+  /* ── sticky header bar ── */
+  .bar{position:sticky;top:0;z-index:10;background:rgba(16,19,18,.92);backdrop-filter:blur(6px);border-bottom:1px solid var(--rule)}
+  .bar-in{height:58px;display:flex;align-items:center;gap:26px}
+  .wordmark{font-family:var(--disp);font-weight:700;font-size:21px;letter-spacing:-.015em;color:#eef1ec}
+  .wordmark .tick{color:var(--amber)}
+  .badge{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--phos)}
+  .topnav{margin-left:auto;display:flex;align-items:center;gap:22px;font-family:var(--mono);font-size:11.5px}
+  .topnav a{color:var(--ink-dim);border-bottom:none}
+  .topnav a:hover{color:var(--amber)}
+  .topnav a.ghost{border:1px solid var(--phos-dim);border-radius:2px;padding:5px 12px;color:var(--phos)}
+  .topnav a.ghost:hover{border-color:var(--phos);color:#a8e8b1}
+
+  /* ── layout: sticky toc + content ── */
+  .cols{display:grid;grid-template-columns:236px minmax(0,1fr);gap:56px;align-items:start}
+  .toc{position:sticky;top:58px;height:calc(100vh - 58px);overflow-y:auto;padding:38px 0 44px;border-right:1px solid var(--rule-soft)}
+  .filter{
+    width:calc(100% - 18px);box-sizing:border-box;background:var(--bg-inset);
+    border:1px solid var(--rule);border-radius:2px;padding:7px 10px;
+    font-family:var(--mono);font-size:11px;color:var(--ink);outline:none;margin-bottom:10px;
+  }
+  .filter:focus{border-color:var(--amber-dim)}
+  .toc-cap{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--ink-faint);text-transform:uppercase;margin:22px 0 8px}
+  .toc-item{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;cursor:pointer;
+    padding:5px 14px 5px 12px;border-left:2px solid transparent;color:var(--ink-dim);transition:color .15s;
+  }
+  .toc-item:hover{color:var(--amber)}
+  .toc-item.on{border-left-color:var(--phos);color:var(--phos)}
+  .toc-item .num{color:var(--ink-faint);margin-right:.6em}
+  .toc-subs{margin:2px 0 6px 3px;border-left:1px solid var(--rule)}
+  .toc-sub{padding:3px 0 3px 20px;font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;color:var(--ink-faint);cursor:pointer}
+  .toc-sub:hover{color:#a8e8b1}
+  .toc-empty{font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+
+  main{padding:44px 0 120px;min-width:0}
+
+  /* ── doc head ── */
+  .stamp{font-family:var(--mono);font-size:11px;letter-spacing:.28em;color:var(--phos);text-transform:uppercase;display:flex;gap:14px;align-items:center}
+  .stamp::before{content:"";width:34px;height:1px;background:var(--phos-dim)}
+  h1{font-family:var(--disp);font-weight:600;font-size:clamp(34px,4.6vw,46px);letter-spacing:-.01em;line-height:1.05;margin:16px 0 8px;color:#eef1ec}
+  .path{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);margin-bottom:36px}
+  .path span{color:var(--ink-dim)}
+
+  /* ── doc blocks ── */
+  .sec{display:flex;align-items:baseline;gap:14px;margin:44px 0 14px;padding-top:26px;border-top:1px solid var(--rule-soft)}
+  .sec-num{font-family:var(--mono);font-size:12px;color:var(--amber);letter-spacing:.1em}
+  .sec-t{font-family:var(--disp);font-weight:600;font-size:23px;letter-spacing:.01em;color:#e8ebe6}
+  main>p{margin:0 0 16px;max-width:74ch}
+  .code{
+    position:relative;background:var(--bg-inset);border:1px solid var(--rule);border-radius:4px;
+    padding:18px 20px;margin:0 0 22px;max-width:74ch;overflow-x:auto;
+    font-family:var(--mono);font-size:13px;line-height:1.7;color:#c4cdc2;white-space:pre;
+  }
+  .code .lab{
+    position:absolute;top:0;right:0;font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+    color:var(--ink-faint);background:var(--bg-raise);padding:3px 10px;
+    border-left:1px solid var(--rule);border-bottom:1px solid var(--rule);
+    border-radius:0 4px 0 4px;text-transform:uppercase;
+  }
+  .callout{border:1px solid var(--rule);border-left:3px solid var(--amber);background:var(--bg-raise);padding:16px 20px;margin:0 0 22px;border-radius:0 4px 4px 0;max-width:74ch}
+  .callout.warn{border-left-color:var(--red)}
+  .callout .cap{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:6px;color:var(--amber)}
+  .callout.warn .cap{color:var(--red)}
+  .callout p{margin:0;font-size:15px}
+
+  /* ── pager + footer ── */
+  .pager{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);display:flex;justify-content:space-between;gap:20px}
+  .pager .step{cursor:pointer}
+  .pager .step:hover{opacity:.8}
+  .pager .next{margin-left:auto;text-align:right}
+  .pager .cap{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-faint)}
+  .pager .t{margin-top:4px;font-family:var(--disp);font-weight:600;font-size:17px;color:var(--phos)}
+  footer{margin-top:70px;color:var(--ink-faint);font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+
+  /* ── narrow: single column, no toc (landing convention; derived, not authored) ── */
+  @media(max-width:940px){
+    .cols{grid-template-columns:1fr}
+    .toc{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="bar">
+    <div class="wrap bar-in">
+      <span class="wordmark">swarmery<span class="tick">_</span></span>
+      <span class="badge">docs</span>
+      <nav class="topnav">
+        <a href="index.html#s01">Why</a>
+        <a href="index.html#s02">How it works</a>
+        <a href="index.html#s03">Control plane</a>
+        <a href="index.html#s04">Plugins</a>
+        <a class="ghost" href="https://github.com/atretyak1985/swarmery">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap cols">
+
+    <nav class="toc">
+      <input class="filter" id="filter" placeholder="filter…" autocomplete="off" spellcheck="false">
+      <div id="toc-list"></div>
+    </nav>
+
+    <main id="main">
+      <div class="stamp"><span id="stamp-group"></span> · rev 1.0.0</div>
+      <h1 id="doc-title"></h1>
+      <div class="path">swarmery/docs/<span id="doc-file"></span></div>
+      <div class="pager" id="pager"></div>
+      <footer>
+        <span>© 2026 swarmery · PolyForm Noncommercial 1.0.0</span>
+        <span>github.com/atretyak1985/swarmery</span>
+      </footer>
+    </main>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── content ─────────────────────────────────────────────────────────────── */
+
+  var DOCS = {
+    concepts:   { title: 'Concepts',            file: 'concepts.md',              group: 'Guides' },
+    usage:      { title: 'Usage',               file: 'usage.md',                 group: 'Guides' },
+    retrodoc:   { title: 'Retro',               file: 'retro.md',                 group: 'Guides' },
+    hooksfmt:   { title: 'Hooks format',        file: 'hooks-format.md',          group: 'Formats' },
+    jsonl:      { title: 'Session log (JSONL)', file: 'jsonl-format.md',          group: 'Formats' },
+    syscfg:     { title: 'System config',       file: 'system-config-format.md',  group: 'Formats' },
+    sysdocs:    { title: 'System docs',         file: 'system-docs-format.md',    group: 'Formats' },
+    projcfg:    { title: 'Project config',      file: 'api-project-config.md',    group: 'Formats' },
+    hooksproto: { title: 'Hooks protocol',      file: 'hooks-protocol.md',        group: 'Protocols' },
+    wsproto:    { title: 'WS protocol',         file: 'ws-protocol.md',           group: 'Protocols' }
+  };
+
+  var B = {
+    concepts: [
+      ['p', 'One global agent system, a thin native overlay per project. The daemon watches every registered project’s .claude/ and serves the control plane on :7777 — one binary, one SQLite file, loopback only.'],
+      ['h2', 'Sessions & tasks'],
+      ['p', 'A session is one agent run over a JSONL transcript. Tasks group the sessions spawned from a plan: a controller dispatches phases in dependency order and merges results back.'],
+      ['h2', 'Plans'],
+      ['p', 'A plan is a directory of markdown docs — a README plus one doc per phase, each with an acceptance-criteria table the runner ticks as work lands.'],
+      ['h2', 'Packs'],
+      ['p', 'Reusable domain layers (web-pack, iot-pack, infra-pack…) between the global core and a project’s own .claude/. On a name collision the project-local component wins.']
+    ],
+    usage: [
+      ['h2', 'Start the daemon'],
+      ['code', 'cd tools/swarmery && make build\n./swarmery serve --port 7777', 'sh'],
+      ['p', 'Every registered project appears in the sidebar picker; system-wide screens stay in the bottom rail.'],
+      ['h2', 'Register a project'],
+      ['code', 'swarmery register ~/code/my-shop', 'sh'],
+      ['h2', 'Run a plan'],
+      ['p', 'From a plan page, Run plan hands the whole document to a controller agent. Per-phase Run buttons stand down while the run owns the docs.']
+    ],
+    retrodoc: [
+      ['p', 'Retro mines finished sessions for recurring friction and emits recommendations with evidence links back to the sessions that triggered them.'],
+      ['h2', 'Rules'],
+      ['p', 'R1–R6 cover context exhaustion, error loops, cost spikes, stale skills, approval stalls, and orphaned worktrees.'],
+      ['h2', 'Cadence'],
+      ['p', 'Analysis runs nightly over the selected window; Analyze now forces a pass.']
+    ],
+    hooksfmt: [
+      ['p', 'Hooks are declared per component in hooks.json; the daemon merges core, pack, and project layers, project-local winning on collision.'],
+      ['h2', 'Shape'],
+      ['code', '{ "event":      "PreToolUse",\n  "matcher":    "Bash",\n  "command":    "scripts/guard.sh",\n  "timeout_ms": 4000 }', 'json'],
+      ['h2', 'Layering'],
+      ['p', 'Core ships defaults, packs add domain guards, a project’s .claude/hooks.json overrides both.']
+    ],
+    jsonl: [
+      ['p', 'Every session is one append-only .jsonl transcript: one event per line, never rewritten.'],
+      ['h2', 'Event kinds'],
+      ['p', 'message · tool_use · tool_result · usage · lifecycle. Unknown kinds are preserved verbatim so older daemons never drop data.'],
+      ['h2', 'Costing'],
+      ['p', 'usage events carry token counts; config/pricing.json turns them into the dollar figures on Analytics.']
+    ],
+    syscfg: [
+      ['p', 'Defines the registry the System screen renders: agents, skills, commands, hooks — each with its source layer and version.'],
+      ['h2', 'Precedence'],
+      ['p', 'project > pack > core. The UI badges an item whose project copy shadows a pack or core definition.']
+    ],
+    sysdocs: [
+      ['p', 'Any registry item may ship a “# How to use” guide; this contract defines its status flags.'],
+      ['h2', 'Status'],
+      ['p', 'generated — written by the docs generator, unreviewed. reviewed — a human signed off.'],
+      ['callout', 'The item changed after this guide was written: docs.source_sha no longer matches the body. Regenerate or re-review before trusting it.', 'stale', 'warn']
+    ],
+    projcfg: [
+      ['p', 'Each consumer keeps its flavor in .claude/project.json — brand tokens, environments, pack list. Plugins read it at runtime; nothing project-specific lives in plugins/**.'],
+      ['h2', 'Fields'],
+      ['code', '{ "slug":  "my-shop",\n  "packs": ["web-pack"],\n  "env":   { "staging": "…" } }', 'json']
+    ],
+    hooksproto: [
+      ['p', 'The wire protocol between the daemon and hook processes: JSON on stdin in, exit code plus JSON on stdout out.'],
+      ['h2', 'Verdicts'],
+      ['p', 'allow · deny · ask. deny aborts the tool call; ask surfaces an approval card with the frozen default window.'],
+      ['callout', 'A hook that misses its timeout_ms counts as allow and is flagged on the session detail.', 'timeouts', '']
+    ],
+    wsproto: [
+      ['p', 'The UI keeps one WebSocket to the daemon. REST is the source of truth; the stream is the low-latency hint in between.'],
+      ['h2', 'Frames'],
+      ['code', '{ "kind": "session_updated", "id": "…" }\n{ "kind": "plan_updated", "taskId": "…" }', 'ws'],
+      ['h2', 'Reconnect'],
+      ['p', 'On drop the client backs off, refetches the affected lists, then resubscribes — no frame is ever authoritative.']
+    ]
+  };
+
+  var ORDER = Object.keys(DOCS);
+  var GROUPS = ['Guides', 'Formats', 'Protocols'];
+
+  /* ── state + dom ─────────────────────────────────────────────────────────── */
+
+  var state = { doc: 'concepts', q: '' };
+
+  var main = document.getElementById('main');
+  var tocList = document.getElementById('toc-list');
+  var filter = document.getElementById('filter');
+  var stampGroup = document.getElementById('stamp-group');
+  var docTitle = document.getElementById('doc-title');
+  var docFile = document.getElementById('doc-file');
+  var pager = document.getElementById('pager');
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function num(i) {
+    return (i + 1 < 10 ? '0' : '') + (i + 1);
+  }
+
+  function scrollTop() {
+    window.scrollTo(0, 0);
+  }
+
+  function goto(id) {
+    state.doc = id;
+    render();
+    scrollTop();
+  }
+
+  function scrollToH2(i) {
+    var target = document.querySelectorAll('[data-h2="1"]')[i];
+    if (target) window.scrollTo(0, target.getBoundingClientRect().top + window.scrollY - 78);
+  }
+
+  /* ── sidebar ─────────────────────────────────────────────────────────────── */
+
+  function renderToc() {
+    var q = state.q.trim().toLowerCase();
+    tocList.textContent = '';
+    var shown = 0;
+
+    GROUPS.forEach(function (group) {
+      var ids = ORDER.filter(function (id) {
+        var d = DOCS[id];
+        return d.group === group &&
+          (q === '' || d.title.toLowerCase().indexOf(q) !== -1 || d.file.indexOf(q) !== -1);
+      });
+      if (!ids.length) return;
+      shown += ids.length;
+
+      tocList.appendChild(el('div', 'toc-cap', group));
+
+      ids.forEach(function (id) {
+        var active = id === state.doc;
+        var item = el('div', 'toc-item' + (active ? ' on' : ''));
+        item.appendChild(el('span', 'num', num(ORDER.indexOf(id))));
+        item.appendChild(document.createTextNode(DOCS[id].title));
+        item.addEventListener('click', function () { goto(id); });
+        tocList.appendChild(item);
+
+        if (!active) return;
+        var subs = B[id].filter(function (b) { return b[0] === 'h2'; });
+        if (!subs.length) return;
+        var box = el('div', 'toc-subs');
+        subs.forEach(function (b, i) {
+          var sub = el('div', 'toc-sub', b[1]);
+          sub.addEventListener('click', function () { scrollToH2(i); });
+          box.appendChild(sub);
+        });
+        tocList.appendChild(box);
+      });
+    });
+
+    if (!shown) tocList.appendChild(el('div', 'toc-empty', 'no match'));
+  }
+
+  /* ── document body ───────────────────────────────────────────────────────── */
+
+  function blockNode(b, heading) {
+    if (b[0] === 'h2') {
+      var sec = el('div', 'sec');
+      sec.setAttribute('data-h2', '1');
+      sec.appendChild(el('span', 'sec-num', '§ ' + num(heading)));
+      sec.appendChild(el('span', 'sec-t', b[1]));
+      return sec;
+    }
+    if (b[0] === 'code') {
+      var code = el('div', 'code', b[1]);
+      code.appendChild(el('span', 'lab', b[2]));
+      return code;
+    }
+    if (b[0] === 'callout') {
+      var callout = el('div', 'callout' + (b[3] ? ' ' + b[3] : ''));
+      callout.appendChild(el('div', 'cap', b[2]));
+      callout.appendChild(el('p', null, b[1]));
+      return callout;
+    }
+    return el('p', null, b[1]);
+  }
+
+  function renderBlocks() {
+    Array.prototype.forEach.call(main.querySelectorAll('[data-blk]'), function (node) {
+      node.parentNode.removeChild(node);
+    });
+    var heading = 0;
+    (B[state.doc] || []).forEach(function (b) {
+      var node = blockNode(b, b[0] === 'h2' ? heading++ : heading);
+      node.setAttribute('data-blk', '1');
+      main.insertBefore(node, pager);
+    });
+  }
+
+  /* ── pager ───────────────────────────────────────────────────────────────── */
+
+  function pagerStep(id, cls, cap) {
+    var step = el('div', 'step ' + cls);
+    step.appendChild(el('div', 'cap', cap));
+    step.appendChild(el('div', 't', DOCS[id].title));
+    step.addEventListener('click', function () { goto(id); });
+    return step;
+  }
+
+  function renderPager() {
+    pager.textContent = '';
+    var i = ORDER.indexOf(state.doc);
+    if (ORDER[i - 1]) pager.appendChild(pagerStep(ORDER[i - 1], 'prev', '← prev'));
+    if (ORDER[i + 1]) pager.appendChild(pagerStep(ORDER[i + 1], 'next', 'next →'));
+  }
+
+  /* ── render ──────────────────────────────────────────────────────────────── */
+
+  function render() {
+    var doc = DOCS[state.doc];
+    stampGroup.textContent = doc.group;
+    docTitle.textContent = doc.title;
+    docFile.textContent = doc.file;
+    renderToc();
+    renderBlocks();
+    renderPager();
+  }
+
+  filter.addEventListener('input', function (e) {
+    state.q = e.target.value;
+    renderToc();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

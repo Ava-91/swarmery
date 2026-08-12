@@ -958,7 +958,7 @@ function MatrixPanel({
 }): JSX.Element {
   const chart = useChartTokens();
   const isCost = data.metric === 'cost';
-  const valueOf = (c: MatrixResp['cells'][number]): number => (isCost ? (c.cost ?? 0) : c.runs);
+  const cellValue = (c: MatrixResp['cells'][number]): number => (isCost ? (c.cost ?? 0) : c.runs);
   const rowMembers = transposed ? data.cols : data.rows;
   const colMembers = transposed ? data.rows : data.cols;
   const lookup = useMemo(() => {
@@ -966,12 +966,12 @@ function MatrixPanel({
     for (const c of data.cells) {
       const rk = transposed ? c.col : c.row;
       const ck = transposed ? c.row : c.col;
-      m.set(`${rk} ${ck}`, valueOf(c));
+      m.set(`${rk} ${ck}`, cellValue(c));
     }
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.cells, transposed, isCost]);
-  const max = data.cells.reduce((m, c) => Math.max(m, valueOf(c)), 0);
+  const max = data.cells.reduce((m, c) => Math.max(m, cellValue(c)), 0);
   const fmtCell = (n: number): string => (isCost ? fmtCost(n) : String(n));
 
   if (rowMembers.length === 0 || colMembers.length === 0) {
