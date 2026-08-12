@@ -640,11 +640,11 @@ func TestSystemHubSummary_ProjectScope(t *testing.T) {
 	var fleet map[string]any
 	getJSON(t, srv.URL+"/api/system/hub/summary", &fleet)
 	for field, want := range map[string]float64{
-		"agents":   7, // 7 non-deleted agents across all projects + both packs
-		"skills":   4,
-		"commands": 3,
-		"hooks":    5,
-		"templates": 2, // core built-ins (fleet lists built-ins only)
+		"agents":       7, // 7 non-deleted agents across all projects + both packs
+		"skills":       4,
+		"commands":     3,
+		"hooks":        5,
+		"templates":    2, // core built-ins (fleet lists built-ins only)
 		"lintFindings": 1,
 	} {
 		if got, _ := fleet[field].(float64); got != want {
@@ -659,11 +659,11 @@ func TestSystemHubSummary_ProjectScope(t *testing.T) {
 	for field, want := range map[string]float64{
 		// 2 global-local + 2 own + the enabled pack's row; the deleted row, beta's
 		// row and the DISABLED pack's row are all excluded.
-		"agents":   5,
-		"skills":   4, // 1 global-local + 3 own
-		"commands": 3, // 2 global-local + 1 own
-		"hooks":    5, // 3 global + 2 own (hooks are never pack-shipped)
-		"templates": 2, // the project override (adr) + the inherited pr built-in
+		"agents":       5,
+		"skills":       4, // 1 global-local + 3 own
+		"commands":     3, // 2 global-local + 1 own
+		"hooks":        5, // 3 global + 2 own (hooks are never pack-shipped)
+		"templates":    2, // the project override (adr) + the inherited pr built-in
 		"lintFindings": 1, // GLOBAL — the config-lint inbox is machine-wide
 	} {
 		if got, _ := scoped[field].(float64); got != want {

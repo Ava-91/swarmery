@@ -29,10 +29,10 @@ import (
 
 // Preset values (mirrors the CHECK in migration 0029).
 const (
-	PresetUnrestricted      = "unrestricted"
-	PresetApprovalRequired  = "approval-required"
-	PresetLockedDown        = "locked-down"
-	DefaultPreset           = PresetApprovalRequired // fail-closed default
+	PresetUnrestricted     = "unrestricted"
+	PresetApprovalRequired = "approval-required"
+	PresetLockedDown       = "locked-down"
+	DefaultPreset          = PresetApprovalRequired // fail-closed default
 )
 
 // Per-category override policy. Two states only — "block" is out of scope (the
@@ -195,6 +195,7 @@ func EffectivePolicy(db *sql.DB, projectID int64) (PolicyView, error) {
 // non-empty means the write is privileged and requires explicit confirm (R13):
 //   - switching TO unrestricted, and/or
 //   - promoting command_exec / git_push to allow.
+//
 // Deterministically ordered for a stable UI payload.
 func Escalations(preset string, overrides map[string]string) []string {
 	var out []string

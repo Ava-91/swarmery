@@ -38,8 +38,8 @@ func TestLangExtOf(t *testing.T) {
 		"Makefile":                  "other", // no extension
 		".gitignore":                "other", // dotfile, not an extension
 		"README":                    "other",
-		"a/b/c/deep.PY":             "py",       // lowercased
-		"archive.tar.gz":            "gz",       // outermost
+		"a/b/c/deep.PY":             "py", // lowercased
+		"archive.tar.gz":            "gz", // outermost
 		"weird.name.with.many.dots": "dots",
 		"trailing.":                 "other", // trailing dot → empty ext
 	}
@@ -62,12 +62,12 @@ func TestNearestRankPercentile(t *testing.T) {
 			t.Errorf("p=%v: got %v, want %v", p, *got, want)
 		}
 	}
-	check(0.5, 50)  // ceil(5.0)=5 → xs[4]=50
-	check(0.9, 90)  // ceil(9.0)=9 → xs[8]=90
+	check(0.5, 50)   // ceil(5.0)=5 → xs[4]=50
+	check(0.9, 90)   // ceil(9.0)=9 → xs[8]=90
 	check(0.95, 100) // ceil(9.5)=10 → xs[9]=100
-	check(0.1, 10)  // ceil(1.0)=1 → xs[0]=10
-	check(0.0, 10)  // clamp low
-	check(1.0, 100) // clamp high
+	check(0.1, 10)   // ceil(1.0)=1 → xs[0]=10
+	check(0.0, 10)   // clamp low
+	check(1.0, 100)  // clamp high
 
 	// Single element: every percentile is that element.
 	one := []float64{7}

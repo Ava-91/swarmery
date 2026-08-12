@@ -11,7 +11,7 @@ import (
 // TestAccountForDerivesTheConfigDirKey covers the documented rule end to end:
 // strip ".claude" off the config dir's basename, trim leading '-'/'.', and
 // fall back to DefaultAccount when nothing is left. An unknown root stays ""
-// so the column keeps its '' default (see AccountFor's doc comment).
+// so the column keeps its ” default (see AccountFor's doc comment).
 func TestAccountForDerivesTheConfigDirKey(t *testing.T) {
 	for _, tc := range []struct {
 		name, root, want string
@@ -134,7 +134,7 @@ func TestIngestStampsTheAccountOfItsRoot(t *testing.T) {
 
 // TestIngestLeavesTheAccountEmptyWithoutARoot: File() (the single-file
 // `swarmery ingest` subcommand) has no projects root, so its sessions keep the
-// '' default and a later multi-root pass can still stamp them.
+// ” default and a later multi-root pass can still stamp them.
 func TestIngestLeavesTheAccountEmptyWithoutARoot(t *testing.T) {
 	db := testDB(t)
 	if _, err := File(db, filepath.Join(fixtures, "simple-session.jsonl")); err != nil {

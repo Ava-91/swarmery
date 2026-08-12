@@ -101,7 +101,7 @@ type Registry struct {
 }
 
 type projectScan struct {
-	mtime time.Time
+	mtime  time.Time
 	byName map[string]Playbook
 }
 

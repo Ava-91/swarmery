@@ -236,4 +236,3 @@ func TestSearchEndpoint(t *testing.T) {
 		}
 	})
 }
-

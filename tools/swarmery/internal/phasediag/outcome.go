@@ -18,6 +18,17 @@ const (
 	OutcomeFailed    = "failed"
 )
 
+// CriteriaMet is THE phase-done derivation: a phase counts as done when it has
+// acceptance criteria and every one of them is ticked. Exported because three
+// surfaces need the same answer about the same row — the Plans API's lifecycle
+// rollup (internal/api.planStatus), the completed-outcome branch below, and the
+// revise wizard's immutable-doc list (internal/planning.BuildEvidence) — and a
+// second copy of `total > 0 && done >= total` is exactly the kind of drift that
+// would let them disagree.
+func CriteriaMet(done, total int) bool {
+	return total > 0 && done >= total
+}
+
 // Outcome derives what a run achieved from the closed interval [before, after].
 // It is the pure primitive: both edges are already resolved, so it admits no NULLs
 // and holds no policy about what an unmeasured run means.
@@ -32,7 +43,7 @@ func Outcome(runState string, total, before, after int) string {
 		return OutcomeFailed
 	case "done":
 		switch {
-		case total > 0 && after >= total:
+		case CriteriaMet(after, total):
 			return OutcomeCompleted
 		case after > before:
 			return OutcomePartial

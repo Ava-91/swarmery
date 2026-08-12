@@ -52,8 +52,19 @@ const (
 	StatusCancelled  = "cancelled"
 )
 
-// planSavedMarker is the PHASE B completion sentinel the prompt mandates.
+// Wizard modes — the closed set persisted in planning_sessions.mode. A 'plan'
+// wizard mints a new plan dir; a 'revise' wizard stages a proposal against an
+// existing one and must never write a plan itself.
+const (
+	ModePlan   = "plan"
+	ModeRevise = "revise"
+)
+
+// planSavedMarker is the PHASE B completion sentinel the plan prompt mandates.
 const planSavedMarker = "PLAN SAVED:"
+
+// revisionStagedMarker is the PHASE B completion sentinel of a revise session.
+const revisionStagedMarker = "REVISION STAGED:"
 
 // staleWindow is the reconcile window for a 'generating' or 'proceeding' row
 // with no live process: the api resume timeout (15 min) + 1 min grace, so a
@@ -91,13 +102,16 @@ type WizardTurn struct {
 }
 
 // WizardStatus is the extended DTO for GET /api/projects/{id}/planning.
-// Field names are FROZEN — phase 3 mirrors them verbatim in TypeScript.
+// Field names are FROZEN — phase 3 mirrors them verbatim in TypeScript
+// (Mode/ReviseTaskId: plan-revision phase 4 does the same).
 type WizardStatus struct {
 	Active          bool              `json:"active"`
 	SessionUUID     string            `json:"sessionUuid"`
 	SessionID       *int64            `json:"sessionId"`
 	StartedAt       *string           `json:"startedAt"`
 	Status          string            `json:"status"` // "" when no wizard row (legacy idle)
+	Mode            string            `json:"mode"`   // plan|revise; "" when no wizard row
+	ReviseTaskId    *int64            `json:"reviseTaskId"`
 	CurrentQuestion *PlanningQuestion `json:"currentQuestion"`
 	RunningPlan     *PlanningSummary  `json:"runningPlan"`
 	RawReply        *string           `json:"rawReply"`
@@ -117,14 +131,17 @@ type wizardRow struct {
 	planDir         sql.NullString
 	createdAt       string
 	updatedAt       string
+	mode            string
+	reviseTaskID    sql.NullInt64
 }
 
-const wizardCols = `id, project_id, session_uuid, status, running_plan, current_question, raw_reply, plan_dir, created_at, updated_at`
+const wizardCols = `id, project_id, session_uuid, status, running_plan, current_question, raw_reply, plan_dir, created_at, updated_at, mode, revise_task_id`
 
 func scanWizard(scan func(...any) error) (*wizardRow, error) {
 	var r wizardRow
 	err := scan(&r.id, &r.projectID, &r.uuid, &r.status, &r.runningPlan,
-		&r.currentQuestion, &r.rawReply, &r.planDir, &r.createdAt, &r.updatedAt)
+		&r.currentQuestion, &r.rawReply, &r.planDir, &r.createdAt, &r.updatedAt,
+		&r.mode, &r.reviseTaskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -201,11 +218,20 @@ func (s *Service) lastAssistantText(uuid string) string {
 
 // extractPlanDir pulls the absolute path off the LAST "PLAN SAVED:" line.
 func extractPlanDir(text string) string {
-	idx := strings.LastIndex(text, planSavedMarker)
+	return extractMarkerPath(text, planSavedMarker)
+}
+
+// extractStagedDir pulls the scratch dir off the LAST "REVISION STAGED:" line.
+func extractStagedDir(text string) string {
+	return extractMarkerPath(text, revisionStagedMarker)
+}
+
+func extractMarkerPath(text, marker string) string {
+	idx := strings.LastIndex(text, marker)
 	if idx < 0 {
 		return ""
 	}
-	rest := text[idx+len(planSavedMarker):]
+	rest := text[idx+len(marker):]
 	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
 		rest = rest[:nl]
 	}
@@ -248,6 +274,14 @@ func (s *Service) OnSessionTurns(sessionUUID string) {
 	text := s.lastAssistantText(sessionUUID)
 	if text == "" {
 		return // transcript not (yet) ingested
+	}
+
+	// Mode branch BEFORE the PLAN SAVED check: a revise session has its own
+	// sentinel and must never be completed by (or write) a new plan dir.
+	// mode='plan' keeps the pre-revision behaviour below byte-for-byte.
+	if row.mode == ModeRevise {
+		s.onReviseTurn(row, text)
+		return
 	}
 
 	// PHASE B completion sentinel. Tolerated while 'generating' too — the model
@@ -631,7 +665,12 @@ func (s *Service) WizardSnapshot(projectID int64) (WizardStatus, error) {
 		SessionUUID: row.uuid,
 		StartedAt:   &startedAt,
 		Status:      row.status,
+		Mode:        row.mode,
 		History:     []WizardTurn{},
+	}
+	if row.reviseTaskID.Valid {
+		v := row.reviseTaskID.Int64
+		st.ReviseTaskId = &v
 	}
 	var sid int64
 	if err := s.DB.QueryRow(`SELECT id FROM sessions WHERE session_uuid = ?`, row.uuid).Scan(&sid); err == nil {

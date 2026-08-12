@@ -328,6 +328,15 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// the service.
 	mux.HandleFunc("POST /api/epics/{taskId}/run", requireLocalOrigin(h.runPlan))
 	mux.HandleFunc("POST /api/epics/{taskId}/run/cancel", requireLocalOrigin(h.cancelPlanRun))
+	// plan-revision phase 3: staged plan revisions — start a revise wizard,
+	// list a task's revision history, render one revision's live diffs, and
+	// decide it (apply/reject). Writes carry the same D4 origin hardening;
+	// everything serves 503 until AttachPlanning wires the service.
+	mux.HandleFunc("POST /api/epics/{taskId}/revisions", requireLocalOrigin(h.startRevision))
+	mux.HandleFunc("GET /api/epics/{taskId}/revisions", h.listRevisions)
+	mux.HandleFunc("GET /api/revisions/{revisionId}", h.getRevision)
+	mux.HandleFunc("POST /api/revisions/{revisionId}/apply", requireLocalOrigin(h.applyRevision))
+	mux.HandleFunc("POST /api/revisions/{revisionId}/reject", requireLocalOrigin(h.rejectRevision))
 	// The escape hatch for the branch-dirty 409 POST /run returns — the plan-level
 	// twin of the phase branch delete above.
 	mux.HandleFunc("DELETE /api/epics/{taskId}/branch", requireLocalOrigin(h.deletePlanRunBranch))

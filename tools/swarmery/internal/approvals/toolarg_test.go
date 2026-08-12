@@ -20,9 +20,9 @@ func TestArgOf(t *testing.T) {
 		{"Glob", `{"pattern":"**/*.ts"}`, "**/*.ts", true},
 		{"Grep", `{"pattern":"TODO"}`, "TODO", true},
 		{"Bash", `{"description":"no command"}`, "", false}, // field absent
-		{"Bash", ``, "", false},                             // empty input
-		{"Bash", `not json`, "", false},                     // malformed
-		{"Task", `{"prompt":"x"}`, "", false},               // unmapped tool → deny-by-default
+		{"Bash", ``, "", false},               // empty input
+		{"Bash", `not json`, "", false},       // malformed
+		{"Task", `{"prompt":"x"}`, "", false}, // unmapped tool → deny-by-default
 	}
 	for _, c := range cases {
 		got, ok := argOf(c.tool, json.RawMessage(c.input))

@@ -32,11 +32,11 @@ type RunSpec struct {
 // verification READS the model's stdout — the verdict lives in the transcript —
 // so Output carries the captured stdout for the parser.
 type Run struct {
-	Output      string        // captured stdout (the verifier's reasoning + VERDICT line)
-	ExitCode    int           // process exit status (0 = clean; -1 = never started / timeout)
-	TimedOut    bool          // true if the hard timeout fired (ctx deadline)
-	Stderr      string        // tail of stderr, for the detail on an error
-	Duration    time.Duration // wall-clock spawn→exit
+	Output   string        // captured stdout (the verifier's reasoning + VERDICT line)
+	ExitCode int           // process exit status (0 = clean; -1 = never started / timeout)
+	TimedOut bool          // true if the hard timeout fired (ctx deadline)
+	Stderr   string        // tail of stderr, for the detail on an error
+	Duration time.Duration // wall-clock spawn→exit
 }
 
 // Runner is the headless-claude boundary for verification. ClaudeRunner is

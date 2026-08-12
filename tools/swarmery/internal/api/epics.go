@@ -187,7 +187,7 @@ func planStatus(archived bool, taskStatus string, done, total int) string {
 		return "archived"
 	case taskStatus == "paused":
 		return "paused"
-	case total > 0 && done == total:
+	case phasediag.CriteriaMet(done, total):
 		return "done"
 	default:
 		return "active"

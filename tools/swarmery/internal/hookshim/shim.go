@@ -36,10 +36,10 @@ const (
 	// the permission-request connection open so the dashboard can answer it.
 	// MUST match approvals.DefaultTimeout (daemon side). Override via
 	// SWARMERY_APPROVAL_TIMEOUT (read in cmdHook).
-	DefaultPollTimeout = 10 * time.Minute
-	stopTimeout        = 5 * time.Second
-	sessionStartTimeout   = 2 * time.Second
-	maxStdin              = 4 << 20
+	DefaultPollTimeout  = 10 * time.Minute
+	stopTimeout         = 5 * time.Second
+	sessionStartTimeout = 2 * time.Second
+	maxStdin            = 4 << 20
 )
 
 // Config wires the shim; zero values fall back to the frozen defaults.

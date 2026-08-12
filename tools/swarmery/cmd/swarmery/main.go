@@ -1073,6 +1073,14 @@ func cmdServe(args []string) error {
 				log.Printf("error: wsingest scanner stopped: %v", err)
 			}
 		}()
+		// plan-revision phase 3: a revision Apply pokes the SAME scanner pass
+		// that converges plan-doc writes — once, after all writes and renames —
+		// so the Plans page never renders a half-applied plan.
+		api.AttachRevisionRescan(func(string) {
+			if _, err := scanner.Scan(); err != nil {
+				log.Printf("error: wsingest rescan after revision apply: %v", err)
+			}
+		})
 		log.Printf("swarmery workspace scanner watching %s (rescan %s)", wsCfg.WorkspaceRoot, wsingest.DefaultRescanInterval)
 
 		// phase 4: system registry — read-only scanner of the agent-system
@@ -1450,7 +1458,37 @@ func cmdServe(args []string) error {
 	// startup: in-flight planning is in-memory only, so a restart simply forgets
 	// any orphaned run (the plan it wrote is still picked up by wsingest).
 	planningSvc := planning.NewService(db, planning.ClaudeRunner{})
+	// Revise sessions stage proposed plan files here (one subdir per session)
+	// until the daemon validates them into plan_revisions rows.
+	planningSvc.ScratchRoot = filepath.Join(filepath.Dir(*dbPath), "revisions")
+	// plan-revision phase 5: a revise session that died before its sentinel
+	// leaves its scratch dir behind — sweep dirs whose session can no longer
+	// stage (no wizard row, or the wizard is terminal) once, on start.
+	if removed, err := planning.SweepScratchOrphans(db, planningSvc.ScratchRoot); err != nil {
+		log.Printf("warning: revision scratch sweep: %v", err)
+	} else if len(removed) > 0 {
+		log.Printf("revision scratch sweep: removed %d orphaned dir(s)", len(removed))
+	}
 	api.AttachPlanning(planningSvc)
+
+	// plan-revision phase 5: revision retention, daily alongside the other
+	// maintenance tickers — staged proposals nobody decided go superseded
+	// after 14 days; decided revisions' document bodies are nulled after 90.
+	go func() {
+		tick := func() {
+			if st, err := prune.PruneRevisions(db, time.Now()); err != nil {
+				log.Printf("error: revision prune: %v", err)
+			} else if st.Superseded > 0 || st.ContentNulled > 0 {
+				log.Printf("revision prune: superseded=%d content_nulled=%d", st.Superseded, st.ContentNulled)
+			}
+		}
+		tick()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			tick()
+		}
+	}()
 
 	// interactive planning v2 phase 5: phase runs — execute ONE plan phase
 	// headlessly in an isolated worktree straight from its phase doc (state on

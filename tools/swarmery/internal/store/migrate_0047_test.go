@@ -19,7 +19,7 @@ func TestMigrate0047FreshDB(t *testing.T) {
 }
 
 // TestMigrate0047OnPopulatedDB: the column lands on a database already holding
-// pre-0047 sessions, and every one of them reads '' — the "unknown / stock
+// pre-0047 sessions, and every one of them reads ” — the "unknown / stock
 // account" value the ingest fill-only-when-empty rule keys off. NOT NULL with a
 // DEFAULT means no reader ever has to handle a NULL account.
 func TestMigrate0047OnPopulatedDB(t *testing.T) {

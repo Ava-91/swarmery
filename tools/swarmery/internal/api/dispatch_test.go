@@ -110,7 +110,7 @@ func TestPauseDispatchValidation(t *testing.T) {
 		code int
 	}{
 		{`{"scope":"bogus","paused":true}`, http.StatusBadRequest},
-		{`{"scope":"project","paused":true}`, http.StatusBadRequest},        // missing projectId
+		{`{"scope":"project","paused":true}`, http.StatusBadRequest},                 // missing projectId
 		{`{"scope":"project","projectId":999,"paused":true}`, http.StatusBadRequest}, // unknown project
 		{`not json`, http.StatusBadRequest},
 	}

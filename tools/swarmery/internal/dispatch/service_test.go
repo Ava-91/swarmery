@@ -113,7 +113,7 @@ func (w *stubWt) acquiredIDs() []string {
 	defer w.mu.Unlock()
 	return append([]string(nil), w.acquired...)
 }
-func (w *stubWt) removedCount() int  { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
+func (w *stubWt) removedCount() int { w.mu.Lock(); defer w.mu.Unlock(); return len(w.removed) }
 
 // ── harness ──
 

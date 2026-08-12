@@ -6,19 +6,14 @@ import (
 	"text/template"
 )
 
-// promptTemplate is the Interactive Planning v2 wizard prompt.  It instructs
-// the agent to research the repo first, then run PHASE A (structured interview
-// — one JSON question per turn) until it receives the PROCEED instruction,
-// and only then write the plan to the private workspace (PHASE B).
+// phaseAProtocol is the shared PHASE A interview protocol — one constant used
+// verbatim by BOTH wizard templates (plan and revise), so the interview loop
+// (question format, options contract, running plan) can never drift between the
+// two modes.
 //
 // The inner ```json fence is part of the prompt text and is preserved using
 // backtick-concatenation so the outer Go raw-string literal is not broken.
-//
-// text/template so {{.Idea}} interpolates without any prompt-side format bug.
-var promptTemplate = template.Must(template.New("planner").Parse(
-	`You are the swarmery planning assistant, running headlessly to turn a rough idea into a structured, executable plan for THIS project (your current working directory is the project repo).
-
-You are NOT in an interactive terminal: never call the AskUserQuestion tool. The dashboard drives this conversation instead; follow the protocol below EXACTLY.
+const phaseAProtocol = `You are NOT in an interactive terminal: never call the AskUserQuestion tool. The dashboard drives this conversation instead; follow the protocol below EXACTLY.
 
 PHASE A — INTERVIEW (every turn until you receive the PROCEED instruction):
 1. Research first. Before your first question, inspect the repository (read-only: list files, read code/docs, git log) so every question is grounded in what actually exists. Cite concrete findings (paths, current behavior) in the question description.
@@ -30,7 +25,18 @@ PHASE A — INTERVIEW (every turn until you receive the PROCEED instruction):
 {"type":"question","data":{"id":"kebab-unique-id","type":"single_select","question":"…","description":"…","options":[{"id":"opt-a","label":"…","description":"…","pros":["…"],"cons":["…"]},{"id":"other","label":"Other","isOther":true}],"runningPlan":{"title":"…","description":"…","proposedChanges":["specific change"],"acceptanceCriteria":["observable outcome"],"suggestedSize":"S"}}}
 ` + "```" + `
 
-   Use "multi_select" when choices are not mutually exclusive. Keep runningPlan present and current on every turn. Text before the block is your visible analysis — keep it brief and concrete. Match the operator's language (the idea below) in question/option prose.
+   Use "multi_select" when choices are not mutually exclusive. Keep runningPlan present and current on every turn. Text before the block is your visible analysis — keep it brief and concrete. Match the operator's language (the idea below) in question/option prose.`
+
+// promptTemplate is the Interactive Planning v2 wizard prompt.  It instructs
+// the agent to research the repo first, then run PHASE A (structured interview
+// — one JSON question per turn) until it receives the PROCEED instruction,
+// and only then write the plan to the private workspace (PHASE B).
+//
+// text/template so {{.Idea}} interpolates without any prompt-side format bug.
+var promptTemplate = template.Must(template.New("planner").Parse(
+	`You are the swarmery planning assistant, running headlessly to turn a rough idea into a structured, executable plan for THIS project (your current working directory is the project repo).
+
+` + phaseAProtocol + `
 
 PHASE B — PLAN (only after the operator sends the PROCEED instruction):
 - Stop asking questions. Choose the planning agent that fits the scope: @task-planner approach for < ~1 week / <=3 phases, @implementation-planner for larger multi-phase work.
@@ -47,12 +53,88 @@ PHASE B — PLAN (only after the operator sends the PROCEED instruction):
 The user's idea:
 {{.Idea}}`))
 
+// SeedDoc is one existing plan document interpolated into the revise prompt
+// seed (name + full current content).
+type SeedDoc struct {
+	Name    string
+	Content string
+}
+
+// ReviseInput is everything the revise prompt interpolates.
+type ReviseInput struct {
+	Reason     string    // operator's note on why the plan needs revising
+	PlanDir    string    // absolute plan/ dir being revised
+	ScratchDir string    // where proposed files must be written
+	PlanTitle  string    // the workspace task's title
+	Evidence   string    // rendered phase table: seq, doc, checkboxes, run_state, outcome, run_error
+	DoneDocs   []string  // phase docs that are fully ticked — immutable
+	Readme     string    // full current README.md
+	Docs       []SeedDoc // every current phase doc, whole
+}
+
+// revisePromptTemplate is the revise-mode wizard prompt: the SAME PHASE A
+// interview protocol, but a PHASE B that stages a revision proposal into a
+// scratch dir instead of writing a new plan — the plan dir on disk is never
+// touched by the agent; the daemon validates and stores the proposal.
+var revisePromptTemplate = template.Must(template.New("reviser").Parse(
+	`You are the swarmery planning assistant, running headlessly to REVISE an existing plan of THIS project (your current working directory is the project repo).
+
+` + phaseAProtocol + `
+
+PHASE B — STAGE THE REVISION (only after the operator sends the PROCEED instruction):
+- You are revising an EXISTING plan at {{.PlanDir}}. Do NOT create a new task dir, do NOT write
+  anywhere under {{.PlanDir}}, and never emit a "PLAN SAVED:" line — this is a revision, not a new plan.
+- Write the FULL proposed content of every doc you are changing or creating into the scratch dir
+  {{.ScratchDir}}, using the doc's plan-dir-relative name (e.g. {{.ScratchDir}}/phase-3-api.md,
+  {{.ScratchDir}}/README.md). Partial fragments are not accepted — each file is written whole.
+- These phase docs are already complete and MUST NOT be changed, renamed, or deleted:{{if .DoneDocs}}{{range .DoneDocs}}
+  - {{.}}{{end}}{{else}} (none){{end}}
+- Every phase doc you write must keep its ` + "`## Completion Report`" + ` section as the LAST section (empty for a
+  phase not yet executed, preserved verbatim for one that has run).
+- If you change the phase set, update the README phase-sequencing table in the same revision: every Doc cell
+  must name a file that will exist after the revision, and every "Depends on" entry must name a phase number
+  present in the table.
+- Also write {{.ScratchDir}}/revision.json:
+  {"reason":"…","summary":{…the final runningPlan…},"files":[{"path":"phase-3-api.md","action":"update"},
+   {"path":"phase-6-rollback.md","action":"create"},{"path":"phase-4-new.md","action":"rename","renameFrom":"phase-4-old.md"},
+   {"path":"phase-7-dropped.md","action":"delete"}]}
+  Actions: create | update | rename | delete. A file with action delete has no content file in the scratch dir.
+- Do NOT implement anything, do NOT create git branches, do NOT edit the code repo.
+- Finish your FINAL message with this exact line on its own:
+  REVISION STAGED: {{.ScratchDir}}
+
+The plan being revised: {{.PlanTitle}}
+
+The operator's reason for revising:
+{{.Reason}}
+
+Current README.md of the plan:
+
+--- README.md ---
+{{.Readme}}
+{{range .Docs}}
+--- {{.Name}} ---
+{{.Content}}
+{{end}}
+Execution evidence (what each phase actually achieved so far):
+
+{{.Evidence}}`))
+
 // BuildPrompt renders the planner prompt for one idea.  The idea is trimmed
 // and interpolated verbatim; template execution on a fixed template with
 // string data cannot fail, so the (unreachable) error is ignored.
 func BuildPrompt(idea string) string {
 	var b strings.Builder
 	_ = promptTemplate.Execute(&b, struct{ Idea string }{Idea: strings.TrimSpace(idea)})
+	return b.String()
+}
+
+// BuildRevisePrompt renders the revise-mode planner prompt.  Same
+// cannot-fail reasoning as BuildPrompt: fixed template, string/slice data.
+func BuildRevisePrompt(in ReviseInput) string {
+	in.Reason = strings.TrimSpace(in.Reason)
+	var b strings.Builder
+	_ = revisePromptTemplate.Execute(&b, in)
 	return b.String()
 }
 

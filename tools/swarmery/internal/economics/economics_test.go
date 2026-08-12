@@ -175,7 +175,7 @@ func TestComputeSample(t *testing.T) {
 	// 12 turns over 8 sessions: 9 priced, 2 unpriced (usage but unknown model),
 	// 1 user turn with no usage at all — which is neither.
 	checks := []struct {
-		name     string
+		name      string
 		got, want int
 	}{
 		{"sessions", s.Sessions, 8},

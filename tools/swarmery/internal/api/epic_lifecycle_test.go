@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrev"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
@@ -370,5 +371,71 @@ func TestWSPlanUpdatedShape(t *testing.T) {
 	}
 	if p.TaskID != taskID || p.ProjectID == 0 {
 		t.Errorf("plan_updated payload = %+v, want task %d with its project", p, taskID)
+	}
+}
+
+// TestLifecycleRewritesRevisionPlanDir stages a revision, drives archive →
+// restore over HTTP, and asserts plan_revisions.plan_dir follows the zone move
+// both ways — and that the revision still APPLIES afterwards (the content
+// moved with the dir, so the base hashes still match).
+func TestLifecycleRewritesRevisionPlanDir(t *testing.T) {
+	srv, db, taskID, wsDir := lifecycleFixture(t)
+	workingPlan := filepath.Join(wsDir, "working", "2026", "07", "20", "demo", "plan")
+	archivePlan := filepath.Join(wsDir, "archive", "2026", "07", "20", "demo", "plan")
+
+	live, err := os.ReadFile(filepath.Join(workingPlan, "phase-1-demo.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposed := "# Phase 1 — Demo\n\n## Acceptance criteria\n- [x] a\n- [x] b\n\n## Completion Report\n"
+	revID, err := planrev.Insert(db, planrev.Revision{
+		WorkspaceTaskID: taskID,
+		PlanDir:         workingPlan,
+		Reason:          "tick b",
+		CreatedAt:       "2026-08-11T00:00:00Z",
+	}, []planrev.File{{
+		DocPath:  "phase-1-demo.md",
+		Action:   planrev.ActionUpdate,
+		BaseHash: planrev.Sha256Hex(live),
+		Proposed: proposed,
+	}})
+	if err != nil {
+		t.Fatalf("stage revision: %v", err)
+	}
+
+	revisionPlanDir := func() string {
+		t.Helper()
+		var dir string
+		if err := db.QueryRow(`SELECT plan_dir FROM plan_revisions WHERE id = ?`, revID).Scan(&dir); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	if code, _ := postLifecycle(t, srv.URL, taskID, "archive"); code != http.StatusOK {
+		t.Fatalf("archive: %d", code)
+	}
+	if got := revisionPlanDir(); got != archivePlan {
+		t.Fatalf("after archive plan_dir = %q, want %q", got, archivePlan)
+	}
+
+	if code, _ := postLifecycle(t, srv.URL, taskID, "restore"); code != http.StatusOK {
+		t.Fatalf("restore: %d", code)
+	}
+	if got := revisionPlanDir(); got != workingPlan {
+		t.Fatalf("after restore plan_dir = %q, want %q", got, workingPlan)
+	}
+
+	// The round-tripped revision is still applyable: the dir moved back, the
+	// bytes never changed, so the base hash still pins the live file.
+	if n, err := planrev.Apply(db, revID, time.Now, nil); err != nil || n != 1 {
+		t.Fatalf("apply after round trip: n=%d err=%v", n, err)
+	}
+	got, err := os.ReadFile(filepath.Join(workingPlan, "phase-1-demo.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != proposed {
+		t.Fatalf("applied doc:\n%s", got)
 	}
 }

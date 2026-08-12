@@ -15,10 +15,32 @@
 //     (Delete branch / Retry run) stand down.
 
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import type { PhaseDiagnosis, PhaseRunOutcome } from '../api/types';
-import { deleteOrphanBranch, deletePhaseRunBranch, fetchPhaseDiagnosis } from '../api';
+import {
+  deleteOrphanBranch,
+  deletePhaseRunBranch,
+  fetchPhaseDiagnosis,
+  startRevision,
+  type RevisionStartError,
+} from '../api';
 import { fmtElapsed } from '../lib/format';
+import { useProjectWorkspace } from '../workspace/ProjectContext';
+
+/** The reason a revise wizard starts from: the diagnosis itself, restated as
+ * prose the planner can act on. Composed from what the daemon PROVED (outcome,
+ * criteria delta, blockers) plus the executor's own last word. */
+function diagnosisReason(diag: PhaseDiagnosis): string {
+  const lines = [
+    `Phase ${String(diag.seq)} "${diag.name}" run ended ${diag.runOutcome}: ${String(diag.criteriaAfter)}/${String(diag.criteriaTotal)} acceptance criteria ticked.`,
+    ...diag.blockers.map((b) => `Blocker: ${b.summary}`),
+  ];
+  if (diag.runError !== null) lines.push(`Run error: ${diag.runError}`);
+  if (diag.agentMessage !== null)
+    lines.push(`Executor said: ${diag.agentMessage.text}${diag.agentMessage.truncated ? '…' : ''}`);
+  lines.push('Revise the plan so this phase (and its dependents) can succeed.');
+  return lines.join('\n');
+}
 
 type Phase =
   | { kind: 'loading' }
@@ -69,6 +91,7 @@ export function RunOutcomeModal({
   writesDisabledReason,
   onClose,
   onRetry,
+  onOpenRevisions,
 }: {
   taskId: number;
   phaseId: number;
@@ -78,11 +101,24 @@ export function RunOutcomeModal({
   onClose: () => void;
   /** Fires the caller's own phase-run handler (Plans.tsx owns the busy state). */
   onRetry: () => void;
+  /** Jump to the plan's Revisions tab (the "revision already open" 409 path). */
+  onOpenRevisions: () => void;
 }): JSX.Element {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [busy, setBusy] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [actionErr, setActionErr] = useState<string | null>(null);
+
+  // Revise-plan flow (plan-revision phase 4): the diagnosis is exactly the
+  // moment the operator knows the PLAN is wrong, so the modal can hand it to a
+  // revise wizard with the reason prefilled from what it just showed.
+  const navigate = useNavigate();
+  const { slug } = useProjectWorkspace();
+  const [revising, setRevising] = useState(false);
+  const [reviseReason, setReviseReason] = useState('');
+  const [reviseBusy, setReviseBusy] = useState(false);
+  const [reviseErr, setReviseErr] = useState<string | null>(null);
+  const [reviseOpenRevId, setReviseOpenRevId] = useState<number | null>(null);
 
   // One fetch path for both the mount load and the post-delete refetch: the
   // `alive` box lets the effect drop a response that lands after unmount.
@@ -115,16 +151,41 @@ export function RunOutcomeModal({
   // survived.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape' || busy) return;
+      if (e.key !== 'Escape' || busy || reviseBusy) return;
       if (confirmingDelete) {
         setConfirmingDelete(false);
+        return;
+      }
+      // Same back-out ladder as the armed delete: Esc collapses the revise
+      // panel (typed reason kept) before it closes the whole modal.
+      if (revising) {
+        setRevising(false);
         return;
       }
       onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [busy, confirmingDelete, onClose]);
+  }, [busy, reviseBusy, confirmingDelete, revising, onClose]);
+
+  const startRevise = (): void => {
+    const reason = reviseReason.trim();
+    if (reason === '') return;
+    setReviseBusy(true);
+    setReviseErr(null);
+    setReviseOpenRevId(null);
+    startRevision(taskId, reason, phaseId)
+      .then(() => {
+        // The revise wizard lives on the planning page; the modal's job is done.
+        navigate(`/p/${slug}/planning`);
+      })
+      .catch((e: unknown) => {
+        setReviseErr(e instanceof Error ? e.message : String(e));
+        const openId = (e as RevisionStartError).revisionId;
+        if (typeof openId === 'number') setReviseOpenRevId(openId);
+      })
+      .finally(() => setReviseBusy(false));
+  };
 
   const diag = phase.kind === 'ready' ? phase.diag : null;
   const chip = OUTCOME_CHIP[diag?.runOutcome ?? 'idle'];
@@ -337,11 +398,94 @@ export function RunOutcomeModal({
                 </Link>
               </div>
             )}
+
+            {revising && (
+              <div className="rounded-lg border border-brand/30 bg-brand/5 px-3 py-2.5">
+                <div className="mb-1 font-mono text-[10px] tracking-[0.16em] text-ink-faint uppercase">
+                  revise the plan
+                </div>
+                <p className="mb-2 text-[11.5px] leading-relaxed text-ink-dim">
+                  A revise wizard interviews you against this plan and stages its changes as a
+                  diff — nothing is written until you approve it. The reason below is prefilled
+                  from this diagnosis; edit it before starting.
+                </p>
+                {reviseErr !== null && (
+                  <div
+                    role="alert"
+                    className="mb-2 rounded-lg border border-red/25 bg-red/5 px-2.5 py-2 font-mono text-[10.5px] text-red"
+                  >
+                    {reviseErr}
+                    {reviseOpenRevId !== null && (
+                      <button
+                        type="button"
+                        onClick={onOpenRevisions}
+                        className="mt-1 block font-mono text-[10.5px] text-brand underline-offset-2 hover:underline"
+                      >
+                        review the open revision →
+                      </button>
+                    )}
+                  </div>
+                )}
+                <textarea
+                  value={reviseReason}
+                  onChange={(e) => setReviseReason(e.target.value)}
+                  rows={5}
+                  disabled={reviseBusy}
+                  aria-label="why the plan must change"
+                  className="w-full resize-y rounded-lg border border-line bg-field px-2.5 py-2 text-[12px] leading-relaxed text-ink transition-colors outline-none placeholder:text-ink-faint focus:border-brand/50 disabled:opacity-50"
+                />
+                <div className="mt-2 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={reviseBusy}
+                    onClick={() => setRevising(false)}
+                    className="rounded-lg border border-line px-3 py-1.5 font-mono text-[11px] text-ink-dim transition-colors hover:bg-surface2 hover:text-ink disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={reviseBusy || reviseReason.trim() === ''}
+                    onClick={startRevise}
+                    className="rounded-lg border border-brand/45 bg-brand/12 px-3 py-1.5 font-mono text-[11px] font-semibold text-brand transition-colors hover:bg-brand/20 disabled:opacity-50"
+                  >
+                    {reviseBusy ? 'starting…' : 'Start revision'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
           {deleteSlot}
+          {/* The plan-change escape hatch, offered exactly where "this didn't
+              work" is being read. Only for runs that ended without completing
+              the phase — a completed phase needs no plan surgery. */}
+          {diag !== null &&
+            (diag.runOutcome === 'failed' ||
+              diag.runOutcome === 'noop' ||
+              diag.runOutcome === 'partial') &&
+            !revising && (
+              <button
+                type="button"
+                disabled={busy || reviseBusy || writesDisabled}
+                data-tip={
+                  writesDisabled
+                    ? writesDisabledReason
+                    : 'change the plan — interview + staged diff, applied only on your approval'
+                }
+                onClick={() => {
+                  setReviseErr(null);
+                  setReviseOpenRevId(null);
+                  if (reviseReason.trim() === '') setReviseReason(diagnosisReason(diag));
+                  setRevising(true);
+                }}
+                className="rounded-lg border border-brand/40 bg-brand/5 px-3.5 py-1.5 font-mono text-[11.5px] text-brand transition-colors hover:bg-brand/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Revise plan
+              </button>
+            )}
           <button
             type="button"
             disabled={busy || writesDisabled}
