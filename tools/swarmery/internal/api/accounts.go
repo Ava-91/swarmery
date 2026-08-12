@@ -11,22 +11,30 @@ package api
 //	GET    /api/projects/{id}/account     → {account, effective, source, configDir}
 //	PUT    /api/projects/{id}/account     → {account} bind, or "" to unbind
 //
-// # Delegated login (the phase-1 spike verdict)
+// # Write-once credential handoff, delegated login as the manual path
 //
-// swarmery writes NO CLI credential material — not here, not anywhere. The
-// 2026-08-06 spike on CLI 2.1.220 measured that a non-empty CLAUDE_CONFIG_DIR
-// with no credential of its own fails authentication outright and does NOT fall
-// back to the default account, and that the CLI's own store deletes
-// <dir>/.credentials.json after a successful Keychain write. A credential
-// materialised by swarmery would therefore last until the CLI's next refresh at
-// most, with two writers chasing one token.
+// The connect flow performs a WRITE-ONCE handoff of the account's
+// swarmery-owned credential into its config dir (usage.HandoffToConfigDir),
+// verified by the authoritative probe (internal/claudeprobe), with the
+// interactive PTY login as the fallback. The evidence is
+// docs/claude-cli-credential-behaviour.md (measured 2026-08-12, re-running the
+// 2026-08-06 spike on CLI 2.1.220): a non-empty CLAUDE_CONFIG_DIR with no
+// credential of its own fails authentication outright and does NOT fall back
+// to the default account — so the handed-over file is both necessary and
+// sufficient — and the CLI's own store deletes <dir>/.credentials.json after a
+// successful Keychain write, so the file is consumed, not co-owned.
 //
-// So POST hands back a loginCommand instead of performing a login: the exact
-// `CLAUDE_CONFIG_DIR=<dir> claude` invocation the operator runs, in the embedded
-// terminal or their own. The existing PKCE flow (usage_login.go) is untouched —
-// it authorizes SWARMERY against Anthropic for quota reads, which is a different
-// credential for a different consumer, and conflating the two is what the spike
-// ruled out.
+// What stays forbidden is REFRESHING that file. Token rotation lives
+// exclusively in swarmery's own store (internal/usage/store.go), so swarmery
+// and the CLI are never two writers over one rotating refresh token — the
+// failure mode the original spike ruled out, and the reason the handoff is
+// write-once by contract, not by accident.
+//
+// POST still hands back a loginCommand — the exact `CLAUDE_CONFIG_DIR=<dir>
+// claude` invocation the operator runs, in the embedded terminal or their own
+// — as the manual path. The existing PKCE flow (usage_login.go) authorizes
+// SWARMERY against Anthropic for quota reads; the handoff is what turns that
+// same stored credential into a CLI login.
 //
 // # Two honesty properties this file exists to preserve
 //

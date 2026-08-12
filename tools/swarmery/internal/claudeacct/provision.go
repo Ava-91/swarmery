@@ -5,25 +5,29 @@ package claudeacct
 //
 // # What provisioning deliberately is not
 //
-// It is not a login. swarmery creates the directory and stops; the `claude` CLI
-// performs the account's own OAuth login into it, under its own
-// CLAUDE_CONFIG_DIR. That split is not a simplification, it is the finding of
-// the 2026-08-06 credential-source spike on CLI 2.1.220:
+// It is not a login. swarmery creates the directory and stops; a credential
+// arrives in the dir in one of exactly two ways, neither of them here:
 //
-//   - a non-empty CLAUDE_CONFIG_DIR with no credential of its own fails
-//     authentication outright ("Not logged in · Please run /login", exit 1) and
-//     does NOT fall back to the default account — so a config dir really is the
-//     whole account boundary, and pointing a process at one is sufficient;
-//   - the CLI keeps that credential in the login Keychain under a name derived
-//     from the config dir, and its store DELETES <dir>/.credentials.json after a
-//     successful Keychain write. A credential file materialised by swarmery
-//     would therefore survive at most until the CLI's next refresh — two writers
-//     chasing one token.
+//   - the `claude` CLI performs the account's own OAuth login into it, under
+//     its own CLAUDE_CONFIG_DIR — the manual path;
+//   - the connect flow performs a ONE-TIME handoff of the account's
+//     swarmery-owned credential into <dir>/.credentials.json
+//     (usage.HandoffToConfigDir): written at most once per connect, NEVER
+//     refreshed, and adopted — consumed — by the CLI from then on.
 //
-// So nothing here writes, reads or removes credential material of any kind.
-// Provision creates directories; Remove deletes a directory tree. The only
-// credential-shaped thing in this file is the 0700 mode, which exists precisely
-// BECAUSE the CLI may later put a token in there.
+// The measured facts behind that split are in
+// docs/claude-cli-credential-behaviour.md (2026-08-12, re-run of the
+// 2026-08-06 spike on CLI 2.1.220): a config dir with no credential of its own
+// fails authentication outright and does NOT fall back to the default account
+// — so a config dir really is the whole account boundary — and the CLI's store
+// deletes <dir>/.credentials.json after a successful Keychain write. That is
+// what makes a write-once handoff safe and a REFRESHING writer unsafe: token
+// rotation stays exclusively in swarmery's own store (internal/usage/store.go).
+//
+// This package still touches no credential itself: Provision creates
+// directories; Remove deletes a directory tree. The only credential-shaped
+// thing in this file is the 0700 mode, which exists precisely BECAUSE a token
+// may later land in the dir — via the CLI's plaintext fallback or the handoff.
 
 import (
 	"errors"
