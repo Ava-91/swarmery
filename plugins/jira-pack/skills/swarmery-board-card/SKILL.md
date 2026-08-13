@@ -84,7 +84,7 @@ Request body:
   "title": "<KEY>: <summary from getJiraIssue>",
   "prompt": "<ticket link>\n\nTriage verdict: <...>\nWorking repo: <resolved repo root>\nJira provider: <pinned MCP tool prefix>",
   "priority": "normal",
-  "agent": "jira-task-runner",
+  "agent": "jira-pack:jira-task-runner",
   "labels": ["jira-ticket"],
   "boardColumn": "triage"
 }
@@ -108,11 +108,12 @@ Field notes, verified against `createBoardTask` (`tasks_board.go:499-622`):
 - `boardColumn: "triage"` is also `createBoardTask`'s own default when the field is omitted
   (`tasks_board.go:524-527`), but this skill sets it explicitly so the intent reads unambiguously
   in the request body itself.
-- `agent: "jira-task-runner"` must resolve in the agent registry for this project
-  (`resolveAgentName`, `tasks_board.go:332-366`) — that is the agent Phase 6 registers. If this
-  card-creation step runs against a project where that agent isn't registered yet, the POST 400s
-  with `"unknown agent: jira-task-runner"`; treat that the same as "daemon unavailable" (§5) rather
-  than retrying with a different agent name.
+- `agent: "jira-pack:jira-task-runner"` must resolve in the agent registry for this project
+  (`resolveAgentName`, `tasks_board.go:332-366`). The registry scanner stores plugin agents under
+  their pack-qualified name (`<pack>:<agent>`), so the bare `jira-task-runner` does NOT resolve —
+  always send the full name. If this card-creation step runs against a project where the agent
+  isn't registered yet, the POST 400s with `"unknown agent: ..."`; treat that the same as "daemon
+  unavailable" (§5) rather than retrying with a different agent name.
 
 The response is `201` with the full `boardTaskDTO` (`tasks_board.go:218-257`). Keep both `id` and
 `externalId` (shaped `T-xxxxxx`) for every subsequent PATCH and for the run's final report.
