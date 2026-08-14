@@ -53,11 +53,19 @@ func sessionRow(t *testing.T, db *sql.DB, uuid string) (projectPath, cwd, starte
 	return projectPath, cwd, startedAt, b.String, source
 }
 
-// TestTailHealsHeaderOnlyStub reproduces the live bug end-to-end: the first
-// tail batch contains only header records (no cwd/timestamp) and mints an
-// '(unknown)' stub; the next batch carries envelope records and must heal
-// project/cwd/started_at/git_branch in place.
-func TestTailHealsHeaderOnlyStub(t *testing.T) {
+// TestTailDefersHeaderOnlyBatch: the first tail batch contains only header
+// records (last-prompt / mode / permission-mode — no cwd, no timestamp).
+// Such a batch is NOT evidence that a session ran, so it mints nothing and
+// leaves the offset where it was; the next batch carries envelope records and
+// the session is created once, fully attributed.
+//
+// This used to mint an '(unknown)' stub that a later batch healed in place.
+// Minting was dropped because the same code path turned every timestamp-less
+// transcript (Claude Code writes ai-title-only files) into a session frozen
+// in 'active' forever — see ErrNoSessionEvidence and phantom_session_test.go.
+// Stub healing itself still matters for hook-created rows and is covered by
+// TestHealStubSessions.
+func TestTailDefersHeaderOnlyBatch(t *testing.T) {
 	db := testDB(t)
 	dir := t.TempDir()
 	path, header, rest := splitFixture(t, dir)
@@ -65,13 +73,15 @@ func TestTailHealsHeaderOnlyStub(t *testing.T) {
 	if err := os.WriteFile(path, []byte(header), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := TailFile(db, path, "", DefaultThresholds()); err != nil {
+	res, err := TailFile(db, path, "", DefaultThresholds())
+	if err != nil {
 		t.Fatalf("tail header batch: %v", err)
 	}
-	projectPath, cwd, startedAt, _, _ := sessionRow(t, db, simpleUUID)
-	if projectPath != UnknownProjectPath || cwd != UnknownProjectPath || startedAt != "" {
-		t.Fatalf("stub precondition failed: project=%q cwd=%q started_at=%q",
-			projectPath, cwd, startedAt)
+	if res.NextOffset != 0 {
+		t.Errorf("NextOffset = %d, want 0 — the header batch must stay re-readable", res.NextOffset)
+	}
+	if got := count(t, db, `SELECT COUNT(*) FROM sessions`); got != 0 {
+		t.Fatalf("sessions after header-only batch = %d, want 0", got)
 	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
@@ -86,15 +96,15 @@ func TestTailHealsHeaderOnlyStub(t *testing.T) {
 		t.Fatalf("tail rest batch: %v", err)
 	}
 
-	projectPath, cwd, startedAt, _, _ = sessionRow(t, db, simpleUUID)
+	projectPath, cwd, startedAt, _, _ := sessionRow(t, db, simpleUUID)
 	if projectPath != simpleCWD {
-		t.Errorf("project = %q, want %q (healed from envelope cwd)", projectPath, simpleCWD)
+		t.Errorf("project = %q, want %q (from envelope cwd)", projectPath, simpleCWD)
 	}
 	if cwd != simpleCWD {
 		t.Errorf("cwd = %q, want %q", cwd, simpleCWD)
 	}
 	if startedAt == "" {
-		t.Error("started_at still empty after heal")
+		t.Error("started_at empty — the deferred header batch must be re-read with the rest")
 	}
 	var slug, name string
 	if err := db.QueryRow(

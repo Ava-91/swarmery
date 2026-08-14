@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -37,12 +38,26 @@ const (
 )
 
 // UnknownProjectPath is the placeholder projects.path used when a session's
-// cwd is not (yet) known: a hook POST that beats the JSONL tail, or a first
-// tail batch that only contains header records (last-prompt / mode /
-// permission-mode carry no cwd). Sessions attached to it are stubs — the
-// ingest upsert and HealStubSessions re-attribute them as soon as the real
-// cwd is learned.
+// cwd is not (yet) known: a hook POST that beats the JSONL tail, or a tail
+// batch that carries timestamps but no cwd. Sessions attached to it are
+// stubs — the ingest upsert and HealStubSessions re-attribute them as soon as
+// the real cwd is learned. A batch with no timestamp AT ALL never gets this
+// far: it mints nothing (see ErrNoSessionEvidence).
 const UnknownProjectPath = "(unknown)"
+
+// ErrNoSessionEvidence is returned by upsertProjectAndSession when a batch
+// would have to MINT a session row but carries no record timestamp at all —
+// i.e. nothing that says a session ever ran. Claude Code writes such files:
+// a transcript whose only line is {"type":"ai-title",…}, no envelope, no
+// cwd, no clock. Minting a row from one produced a session with started_at
+// '' on the '(unknown)' project, permanently stuck in whatever status the
+// mtime heuristic guessed at insert time.
+//
+// Callers treat it as "skip this batch and do NOT advance the offset": the
+// file is re-read next scan, so if real records ever arrive the session is
+// created from the full transcript with its title intact. A batch that only
+// UPDATES an existing session is unaffected — the guard is on creation.
+var ErrNoSessionEvidence = errors.New("ingest: batch carries no session evidence")
 
 // File ingests one main transcript .jsonl and any sidechain transcripts under
 // its companion dir (<file-without-ext>/subagents/agent-*.jsonl, §1/§7).
@@ -80,6 +95,11 @@ func fileFrom(db *sql.DB, path, originRoot string) (Stats, error) {
 
 	ing := &ingester{tx: tx, stats: &stats, thresholds: DefaultThresholds(), originRoot: originRoot}
 	if err := ing.upsertProjectAndSession(recs, fi.ModTime(), false); err != nil {
+		if errors.Is(err, ErrNoSessionEvidence) {
+			// Nothing to attach records to, and no offset recorded — the file
+			// is re-read next scan and ingested in full once it has content.
+			return stats, nil
+		}
 		return stats, err
 	}
 	if err := ing.processRecords(recs, absPath, false, "", 0, ""); err != nil {
@@ -300,6 +320,14 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 		sessionUUID).Scan(&in.sessionID, &in.projectID)
 	switch {
 	case err == sql.ErrNoRows:
+		// No timestamp anywhere in the batch means there is no evidence a
+		// session ran — refuse to mint one (see ErrNoSessionEvidence). Note
+		// this is the CREATE path only: an existing session is still updated
+		// by timestamp-less batches below, so a title-only tail of a real
+		// session keeps working.
+		if firstTS == "" && lastTS == "" {
+			return ErrNoSessionEvidence
+		}
 		// Project keyed by cwd path; slug derived as '/' → '-' (§1); display
 		// name is the path base — filled only while NULL so a future rename
 		// UI always wins over the derived default.
@@ -331,7 +359,7 @@ func (in *ingester) upsertProjectAndSession(recs []record, mtime time.Time, side
 		return err
 	default:
 		// Stub heal: a session row minted before its cwd was known (a hook POST
-		// that beat the JSONL tail, or a header-records-only first tail batch)
+		// that beat the JSONL tail, or a batch with timestamps but no envelope)
 		// sits on the '(unknown)' project with empty cwd/started_at. As soon as
 		// a batch knows better, backfill — never overwrite good values.
 		if cwd != "" {
