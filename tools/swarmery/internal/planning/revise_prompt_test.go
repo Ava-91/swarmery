@@ -1,27 +1,65 @@
 package planning
 
 import (
-	"crypto/sha256"
-	"fmt"
+	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/textdiff"
 )
 
 // ---------------------------------------------------------------------------
 // Prompt split regression + BuildRevisePrompt
 // ---------------------------------------------------------------------------
 
-// TestBuildPromptUnchangedByPromptSplit pins BuildPrompt's output to the exact
-// bytes it produced BEFORE the PHASE A protocol was factored into the shared
-// phaseAProtocol constant (hash captured on the pre-split tree). A drift here
-// means the plan-mode prompt changed as a side effect of the revise work.
-func TestBuildPromptUnchangedByPromptSplit(t *testing.T) {
-	p := BuildPrompt("fixed regression idea")
-	const wantSHA = "85930618f166f906f89d3c6fc20f4769c9e57cc904c9fb2442ad5587b95a2848"
-	const wantLen = 3725
-	if got := fmt.Sprintf("%x", sha256.Sum256([]byte(p))); got != wantSHA || len(p) != wantLen {
-		t.Fatalf("BuildPrompt output drifted from the pre-split baseline:\n  sha=%s len=%d\n  want %s len=%d",
-			got, len(p), wantSHA, wantLen)
+// goldenPlanPrompt is the recorded output of BuildPrompt. It exists so that a
+// change to the plan-mode prompt — whether deliberate or a side effect of
+// editing the shared phaseAProtocol constant — shows up as a reviewable diff
+// in the PR that causes it.
+const goldenPlanPrompt = "testdata/plan_prompt.golden"
+
+// updateGolden rewrites the recorded prompt: `go test ./internal/planning
+// -run TestBuildPromptMatchesGolden -update`. Commit the result together with
+// the prompt change so reviewers see both halves.
+var updateGolden = flag.Bool("update", false, "rewrite the recorded plan prompt")
+
+// TestBuildPromptMatchesGolden guards the plan-mode prompt against unintended
+// edits. It replaces a frozen sha256 baseline that pinned the bytes BuildPrompt
+// produced before the PHASE A protocol was factored into phaseAProtocol: that
+// hash was captured on a branch cut before the spec-driven planning change
+// (315be57) landed, so it never matched main afterwards and reported an
+// INTENTIONAL two-line addition as an opaque "drift" — main's CI was red on it
+// from 2026-08-12 to 2026-08-14 while nothing was actually broken.
+//
+// A golden file keeps the tripwire and makes the failure readable: the diff
+// below says exactly which prompt lines moved, so the reviewer can tell a
+// deliberate change from an accident. The prompt's semantic contract (the
+// instructions that MUST be present) is asserted separately and independently
+// by TestBuildPrompt.
+func TestBuildPromptMatchesGolden(t *testing.T) {
+	got := BuildPrompt("fixed regression idea")
+
+	if *updateGolden {
+		if err := os.MkdirAll(filepath.Dir(goldenPlanPrompt), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(goldenPlanPrompt, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("rewrote %s (%d bytes)", goldenPlanPrompt, len(got))
+		return
+	}
+
+	want, err := os.ReadFile(goldenPlanPrompt)
+	if err != nil {
+		t.Fatalf("read golden: %v — regenerate with `go test ./internal/planning -run TestBuildPromptMatchesGolden -update`", err)
+	}
+	if got != string(want) {
+		t.Fatalf("plan-mode prompt changed (%d bytes, golden has %d):\n%s\n"+
+			"If the change is deliberate, rerun with -update and commit the golden file alongside it.",
+			len(got), len(want), textdiff.UnifiedDiff(goldenPlanPrompt, "BuildPrompt()", string(want), got))
 	}
 }
 
