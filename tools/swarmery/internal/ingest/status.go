@@ -72,6 +72,10 @@ type StatusChange struct {
 // live-but-quiet session stops reporting "Done". Sessions with no liveness
 // signal (proc_state NULL/dead/unknown) keep the pure time-based fallback;
 // procwatch itself already flips genuinely dead ones to "completed".
+//
+// A row with no parseable timestamp at all is closed rather than skipped —
+// see the branch below. This is the backstop that makes "stuck in active
+// forever" unreachable no matter which channel minted the row.
 func RecomputeStatuses(db *sql.DB, t Thresholds, now time.Time) ([]StatusChange, error) {
 	rows, err := db.Query(
 		`SELECT id, status, COALESCE(ended_at, started_at), proc_state FROM sessions
@@ -88,13 +92,29 @@ func RecomputeStatuses(db *sql.DB, t Thresholds, now time.Time) ([]StatusChange,
 			rows.Close()
 			return nil, err
 		}
-		last := parseTS(lastTS)
-		if last.IsZero() {
-			continue // unparseable timestamp — leave the session as-is
-		}
-		want := StatusFor(last, now, t)
-		if want == "completed" && procAlive(procState.String) {
-			want = "idle" // alive but quiet — don't claim it finished
+		var want string
+		if last := parseTS(lastTS); last.IsZero() {
+			// No parseable timestamp on either end (a row minted from a
+			// transcript batch that carried no record timestamps). Such a row
+			// can NEVER age out on the time-based path — it used to be skipped
+			// here and stayed 'active' for the life of the database, which is
+			// how the Sessions page ended up reporting dozens of live agents
+			// that had no process behind them. A row with no clock is by
+			// definition not recent, so close it; the liveness override still
+			// applies, so anything procwatch believes is alive caps at 'idle'.
+			//
+			// StatusFor is deliberately NOT reused here: now.Sub(zero time)
+			// overflows time.Duration (int64 ns caps at ~292 years) and would
+			// wrap to a small — even negative — age, i.e. back to 'active'.
+			want = "completed"
+			if procAlive(procState.String) {
+				want = "idle"
+			}
+		} else {
+			want = StatusFor(last, now, t)
+			if want == "completed" && procAlive(procState.String) {
+				want = "idle" // alive but quiet — don't claim it finished
+			}
 		}
 		if want != status {
 			changes = append(changes, StatusChange{ID: id, Status: want})

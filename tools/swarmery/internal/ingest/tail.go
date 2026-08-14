@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -115,6 +116,12 @@ func TailFile(db *sql.DB, path, originRoot string, th Thresholds) (TailResult, e
 	if len(recs) > 0 {
 		sidechain, scope, parentEventID, agentType := sidechainContext(tx, absPath, recs)
 		if err := ing.upsertProjectAndSession(recs, fi.ModTime(), sidechain); err != nil {
+			if errors.Is(err, ErrNoSessionEvidence) {
+				// res.NextOffset is still the start offset, so the batch is
+				// re-read next tick — nothing is lost if the file grows real
+				// records later, and no phantom session is minted if it never does.
+				return res, nil
+			}
 			return res, err
 		}
 		agentName := ""

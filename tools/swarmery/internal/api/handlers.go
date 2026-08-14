@@ -495,13 +495,20 @@ func encodeSessionCursor(startedAt string, id int64) string {
 
 // decodeSessionCursor is the inverse of encodeSessionCursor. Any malformed
 // token is a client error (400), never a 500.
+//
+// An EMPTY started_at is a legal position, not a malformed token: sessions.
+// started_at is NOT NULL but may be '' (a row minted before any record
+// carried a timestamp), and '' sorts last under `ORDER BY started_at DESC`,
+// so it is exactly the position a last-page cursor lands on. Rejecting it
+// here turned "load more" into a hard 400 whenever such a row fell on a page
+// boundary — the cursor must round-trip every value the ORDER BY can produce.
 func decodeSessionCursor(cursor string) (startedAt string, id int64, err error) {
 	raw, err := base64.URLEncoding.DecodeString(cursor)
 	if err != nil {
 		return "", 0, fmt.Errorf("invalid cursor")
 	}
 	startedAt, idStr, ok := strings.Cut(string(raw), "|")
-	if !ok || startedAt == "" {
+	if !ok {
 		return "", 0, fmt.Errorf("invalid cursor")
 	}
 	id, err = strconv.ParseInt(idStr, 10, 64)

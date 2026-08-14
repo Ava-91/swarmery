@@ -2,9 +2,11 @@ package ingest
 
 // Startup data heal for stub sessions (HealProjectNames precedent): sessions
 // minted before their cwd was known — a hook POST that beat the JSONL tail,
-// or a first tail batch of only header records — sit on the '(unknown)'
-// project with empty cwd/started_at forever, because unchanged transcripts
-// are offset no-ops and the per-batch heal never runs again for them.
+// or a tail batch with timestamps but no envelope record — sit on the
+// '(unknown)' project with empty cwd/started_at forever, because unchanged
+// transcripts are offset no-ops and the per-batch heal never runs again for
+// them. (A batch with no timestamp at all mints nothing to heal: see
+// ErrNoSessionEvidence.)
 //
 // HealStubSessions re-reads each stub's transcript (located by session uuid
 // under the projects root) and backfills project attribution, cwd,
