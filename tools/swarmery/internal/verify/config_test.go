@@ -79,19 +79,5 @@ func TestNewService_DefaultsClamp(t *testing.T) {
 	}
 }
 
-func TestNewUUID_ShapeAndUniqueness(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 100; i++ {
-		u := newUUID()
-		if len(u) != 36 {
-			t.Fatalf("uuid %q len = %d, want 36", u, len(u))
-		}
-		if u[14] != '4' {
-			t.Fatalf("uuid %q not version 4 (char 14 = %c)", u, u[14])
-		}
-		if seen[u] {
-			t.Fatalf("duplicate uuid %q", u)
-		}
-		seen[u] = true
-	}
-}
+// newUUID now lives in internal/runcore (one copy for all five engines); its
+// test moved with it to internal/runcore/spawner_test.go.

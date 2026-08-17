@@ -40,10 +40,14 @@ func TestClaudeRunnerArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read args: %v", err)
 	}
-	got := string(out)
-	for _, want := range []string{"-p", "hello", "--session-id", "u1", "--model", "opus", "--setting-sources", "project,local"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("args %q missing %q", got, want)
-		}
+	// Exact argv, not a contains-check per flag: since the extraction to
+	// internal/runcore the ORDER comes from a builder five engines share, and
+	// `claude` is order-insensitive, so an accidental reordering here would be
+	// invisible to everything except an assertion like this one. Mirrors the
+	// verify/model case in internal/runcore/spawner_test.go.
+	got := strings.TrimSpace(string(out))
+	want := "-p hello --session-id u1 --setting-sources project,local --model opus"
+	if got != want {
+		t.Errorf("argv = %q, want %q", got, want)
 	}
 }

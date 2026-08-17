@@ -1,17 +1,11 @@
 package verify
 
 import (
-	"bytes"
 	"context"
-	"log"
-	"os"
-	"os/exec"
-	"strings"
 	"time"
 
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // RunSpec is one bounded read-only verifier run.
@@ -56,12 +50,6 @@ type Runner interface {
 // layer; ClaudeRunner uses this constant when the spec carries no ctx deadline.
 const claudeTimeout = 15 * time.Minute
 
-// drainGrace bounds the post-exit wait for the run's process group to empty out.
-const drainGrace = 5 * time.Second
-
-// stderrTailBytes caps captured stderr landing in verify_detail on an error.
-const stderrTailBytes = 4096
-
 // defaultModel pins verifier runs whose task carries no model override: an
 // unset --model inherits the account default (Fable-5 here — 2× the Opus
 // price). Full ID, not an alias — aliases re-resolve over time.
@@ -93,70 +81,59 @@ type ClaudeRunner struct {
 	AccountVerdict func(account string, r claudeprobe.Result)
 }
 
+// Run maps this engine's RunSpec onto runcore.Spec and its Result back onto Run.
+// Everything shared — the argv, the account env merge, the process group, the
+// drain, the exit ladder — lives in internal/runcore; what stays here is
+// verification's own policy: its 15-minute wall clock, --setting-sources, the
+// stdout capture the verdict is parsed out of, and the account-readiness verdict
+// a finished run reports for free.
+//
+// The method is named Run, not Start, and stays that way: it is the Runner
+// interface the service depends on and the name every test stub implements.
 func (r ClaudeRunner) Run(ctx context.Context, spec RunSpec) (*Run, error) {
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = claudeTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	// --setting-sources project,local: skip user-level settings (global plugin
-	// stack) — headless runs don't need them; project plugins and OAuth are
-	// unaffected.
-	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID,
-		"--setting-sources", "project,local"}
-	if m := strings.TrimSpace(spec.Model); m != "" {
-		args = append(args, "--model", m)
-	}
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = spec.Cwd
-	// Account comes from the SPEC, not from cmd.Dir: cmd.Dir is the task's
-	// worktree, which has no .claude/settings.local.json of its own, so
-	// claudeacct.EnvFor(cmd.Dir) here would resolve nothing and silently verify
-	// under the default account (plan A3). The service resolves the binding from
-	// the project path and puts the key in spec.Account.
-	// EnvForAccount("") returns nil, so an unbound project's cmd.Env is a
-	// byte-identical copy of os.Environ() — behaviour unchanged from before.
-	cmd.Env = append(os.Environ(), claudeacct.EnvForAccount(spec.Account)...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	// Own process group: the hard timeout must take the verifier's whole tree, and
-	// Wait must not block on a pipe a surviving descendant still holds — which for
-	// this runner would also mean stdout never closing, i.e. no verdict at all.
-	procgroup.Isolate(cmd, 0)
-	err := cmd.Run()
-	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
-
-	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
-		log.Printf("warning: verify: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
-	}
+	res, err := runcore.ClaudeRunner{Engine: "verify"}.Start(ctx, runcore.Spec{
+		Prompt:      spec.Prompt,
+		SessionUUID: spec.SessionUUID,
+		Cwd:         spec.Cwd,
+		Model:       spec.Model,
+		// --setting-sources project,local: skip user-level settings (global plugin
+		// stack) — headless runs don't need them; project plugins and OAuth are
+		// unaffected.
+		SettingSources: "project,local",
+		// The account comes from the SPEC, not from Cwd: Cwd is the task's worktree,
+		// which has no .claude/settings.local.json of its own, so resolving it there
+		// would silently verify under the default account (plan A3). The service
+		// resolves the binding from the project path. "" produces no env delta.
+		Account: spec.Account,
+		Timeout: timeout,
+		// Unlike the dispatcher, verification READS stdout — the verdict lives in
+		// the transcript, so the parser needs all of it.
+		CaptureStdout: true,
+	})
 
 	run := &Run{
-		Output:   stdout.String(),
-		Stderr:   tail(stderr.String(), stderrTailBytes),
-		Duration: elapsed,
+		Output:   res.Output,
+		Stderr:   res.Stderr,
+		Duration: res.Duration,
+		ExitCode: res.ExitCode,
+		TimedOut: res.TimedOut,
 	}
-	if ctx.Err() == context.DeadlineExceeded {
-		run.TimedOut = true
-		run.ExitCode = -1
-		return run, nil // a timeout is an outcome (→ INCONCLUSIVE), not a Start error — and not an exit, so no verdict
+	if res.TimedOut {
+		return run, nil // an outcome (→ INCONCLUSIVE), not an error — and not an exit, so no verdict
 	}
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			run.ExitCode = ee.ExitCode()
-			r.reportVerdict(spec, run.ExitCode, run.Output, run.Stderr)
-			return run, nil // nonzero exit is an outcome the service routes (still parse stdout)
-		}
 		// The process could not be started/observed at all (PATH miss, fork
 		// failure). That IS an error — the service maps it to INCONCLUSIVE.
-		run.ExitCode = -1
 		return run, err
 	}
-	run.ExitCode = 0
-	r.reportVerdict(spec, 0, run.Output, run.Stderr)
+	// Both a clean and a nonzero exit are outcomes the service routes (it still
+	// parses stdout on a nonzero exit), and both say something about the account.
+	r.reportVerdict(spec, run.ExitCode, run.Output, run.Stderr)
 	return run, nil
 }
 
@@ -168,13 +145,4 @@ func (r ClaudeRunner) reportVerdict(spec RunSpec, exitCode int, stdout, stderrTa
 		return
 	}
 	r.AccountVerdict(spec.Account, claudeprobe.ClassifyExit(exitCode, stdout+"\n"+stderrTail))
-}
-
-// tail returns the last <= n bytes of s, trimmed.
-func tail(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		s = s[len(s)-n:]
-	}
-	return s
 }
