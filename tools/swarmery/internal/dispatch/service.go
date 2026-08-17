@@ -8,7 +8,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -100,10 +99,15 @@ type Service struct {
 	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 
-	scheduling atomic.Bool // re-entrance guard: overlapping Schedule passes skip
+	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
+	// same-task single-flight gate, the input to MaxConcurrent, and — new — one
+	// pool shared with phase and plan runs, so the three engines can no longer
+	// each spawn up to their own cap against a total none of them could see.
+	// NewService gives every Service its own pool (hermetic unit tests); the
+	// daemon replaces it with the one instance all three engines hold.
+	Slots *runcore.Slots
 
-	mu     sync.Mutex         // guards active
-	active map[int64]struct{} // task ids with a live run (MaxConcurrent + same-task single-flight)
+	scheduling atomic.Bool // re-entrance guard: overlapping Schedule passes skip
 }
 
 // NewService builds a dispatcher. The caller wires DB, Cfg, Run (ClaudeRunner),
@@ -111,9 +115,9 @@ type Service struct {
 func NewService(db *sql.DB, cfg Config, r Runner, wt WorktreeManager) *Service {
 	return &Service{
 		DB: db, Cfg: cfg, Run: r, Wt: wt,
-		UUID:   runcore.NewUUID,
-		now:    time.Now,
-		active: make(map[int64]struct{}),
+		UUID:  runcore.NewUUID,
+		now:   time.Now,
+		Slots: runcore.NewSlots(0),
 	}
 }
 
@@ -152,23 +156,30 @@ func (s *Service) notify(id int64) {
 
 // ── active-run tracking (in-memory; durable truth is board_column) ──
 
-func (s *Service) markActive(id int64) {
-	s.mu.Lock()
-	s.active[id] = struct{}{}
-	s.mu.Unlock()
+// Engine names dispatch in the shared slot registry: board runs are keyed
+// "dispatch:<taskID>", so a board task and a phase that happen to share a numeric
+// id are different runs.
+const Engine = "dispatch"
+
+func (s *Service) slotKey(id int64) string { return runcore.SlotKey(Engine, id) }
+
+// markActive claims the task's run slot: the same-task single-flight gate AND a
+// draw on the daemon-wide budget. Unlike the setter it replaces it can FAIL, and
+// that is the point — a full pool must refuse an admission rather than over-spawn.
+// runcore.ErrBusy means this task is already running (a duplicate); ErrNoSlot
+// means the pool is full and the candidate should be retried next pass. Neither
+// is a terminal state for the row.
+func (s *Service) markActive(id int64) error {
+	_, err := s.Slots.TryAcquire(s.slotKey(id), "", nil)
+	return err
 }
 
 func (s *Service) clearActive(id int64) {
-	s.mu.Lock()
-	delete(s.active, id)
-	s.mu.Unlock()
+	s.Slots.Release(s.slotKey(id))
 }
 
 func (s *Service) isActive(id int64) bool {
-	s.mu.Lock()
-	_, ok := s.active[id]
-	s.mu.Unlock()
-	return ok
+	return s.Slots.IsActive(s.slotKey(id))
 }
 
 // IsActive is isActive for callers outside this package — the board's review
@@ -178,11 +189,11 @@ func (s *Service) isActive(id int64) bool {
 // precisely when a user staring at a card that "looks finished" clicks Re-run.
 func (s *Service) IsActive(id int64) bool { return s.isActive(id) }
 
+// activeCount counts DISPATCH's runs only: MaxConcurrent is the board's own cap
+// and must keep meaning "board runs in flight", not "runs in flight anywhere".
+// The daemon-wide total is s.Slots.Count().
 func (s *Service) activeCount() int {
-	s.mu.Lock()
-	n := len(s.active)
-	s.mu.Unlock()
-	return n
+	return s.Slots.CountEngine(Engine)
 }
 
 // ── public API ──
@@ -274,9 +285,17 @@ func (s *Service) Schedule() {
 		if s.isPaused(ProjectScope(c.ProjectID)) {
 			continue
 		}
-		// Gate: concurrency cap.
+		// Gate: concurrency cap — the BOARD's own cap, over board runs only.
 		if s.activeCount() >= s.Cfg.MaxConcurrent {
 			break // no point scanning further this pass
+		}
+		// Gate: the daemon-wide run budget, shared with phase and plan runs. A board
+		// run is bounded by min(MaxConcurrent, free slots): with a free pool this is
+		// exactly the old behaviour, and while a plan run holds the machine the board
+		// waits instead of piling on. Advisory — the TryAcquire inside admit is the
+		// race-free authority — so winning this check cannot admit past the budget.
+		if s.Slots.Count() >= s.Slots.Max() {
+			break
 		}
 		// Gate: same-task single-flight (Acquire is idempotent for a live task,
 		// so WE must reject a re-dispatch — DESIGN handoff).
@@ -607,10 +626,18 @@ func (s *Service) liveWorktreeCount() (int, error) {
 // idempotent and the next pass retries or a human intervenes).
 func (s *Service) admit(c candidate) bool {
 	// CAS FIRST is not possible before we have branch/worktree — but we must not
-	// double-spawn. Mark active up-front (in-memory) so a concurrent pass in the
-	// same process can't also pick this task; the guarded UPDATE below is the
-	// durable CAS. If admission fails we clear active.
-	s.markActive(c.ID)
+	// double-spawn. Claim the run slot up-front (in-memory) so a concurrent pass in
+	// the same process cannot also pick this task; the guarded UPDATE below is the
+	// durable CAS. If admission fails we release the slot.
+	//
+	// This is also where the daemon-wide budget is actually enforced — the gate in
+	// Schedule is advisory, this claim is atomic. A refusal is NOT an error on the
+	// row: the task stays a Todo candidate and the next pass retries, the same
+	// posture as the file-scope and worktree gates.
+	if err := s.markActive(c.ID); err != nil {
+		log.Printf("dispatch: task=%d not admitted: %v", c.ID, err)
+		return false
+	}
 
 	acq, err := s.Wt.Acquire(c.ProjectPath, c.ProjectSlug, c.ExternalID)
 	if err != nil {

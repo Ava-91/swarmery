@@ -100,17 +100,23 @@ func (s *Service) adoptSurvivors() ([]int64, error) {
 // scheduler is poked: procwatch will have written proc_state='dead', which is
 // exactly the evidence HealDeadProcess needs to requeue the task properly.
 func (s *Service) adopt(taskID int64, pid int, uuid string) {
-	if s.isActive(taskID) {
+	// Slots.Adopt, not the admission path: the executor is ALREADY running, so a
+	// full pool must not stop us tracking it. Refusing would leave the slot free
+	// and let the scheduler dispatch over the cap into the same worktree — the
+	// very thing this function exists to prevent. The pool stays over-subscribed
+	// until the orphan exits, and new admissions are refused meanwhile, which is
+	// the honest reading of the machine's state after a restart.
+	release, ok := s.Slots.Adopt(s.slotKey(taskID), uuid, nil)
+	if !ok {
 		return // already tracked — never adopt the same run twice
 	}
-	s.markActive(taskID)
 	log.Printf("dispatch: adopted running task=%d uuid=%s pid=%d (survived a daemon restart)", taskID, uuid, pid)
 	s.spawn(func() {
 		for s.procAlive(pid) {
 			time.Sleep(s.pollInterval())
 		}
 		log.Printf("dispatch: adopted run task=%d pid=%d ended — releasing its slot", taskID, pid)
-		s.clearActive(taskID)
+		release()
 		s.Poke()
 	})
 }
