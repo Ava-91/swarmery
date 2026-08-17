@@ -28,6 +28,7 @@ var boardTaskKeys = []string{
 	"dispatchError", "startPoint", "retryCount", "verifyRetryCount",
 	"verifyVerdict", "verifyDetail", "resultNote",
 	"agent", "origin", "originSessionId",
+	"planExternalId",
 	"columnMovedAt", "createdAt",
 }
 

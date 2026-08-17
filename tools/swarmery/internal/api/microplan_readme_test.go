@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,5 +51,65 @@ func TestMintedCardReadmeSatisfiesTheLifecycleContract(t *testing.T) {
 	// And back again, so the round trip is stable.
 	if resumed := upsertCardStatus(paused, "active"); !strings.Contains(resumed, "- **Status**: active") {
 		t.Errorf("resume did not take:\n%s", resumed)
+	}
+}
+
+// TestMicroPlanChipsResolveBothWays: the card and its micro-plan are one unit of
+// work seen from two pages, so each side has to be able to name the other. Without
+// both ids in the DTOs the relationship exists only in a path column nobody renders.
+func TestMicroPlanChipsResolveBothWays(t *testing.T) {
+	srv, db, taskID, planDir := epicFixture(t)
+
+	// A board card that materialized THIS plan dir at dispatch.
+	mustExecEpics(t, db, `INSERT INTO tasks (project_id, title, prompt, status, created_at,
+		source, external_id, board_column, workspace_dir)
+		VALUES (1,'the card','p','queued','2026-07-24T00:00:00Z','queue','T-42','todo',?)`,
+		filepath.Dir(planDir))
+
+	// Plans side: the epic names the card.
+	e := firstEpic(t, srv)
+	if e.CardExternalID == nil || *e.CardExternalID != "T-42" {
+		t.Errorf("epic.cardExternalId = %v, want T-42", e.CardExternalID)
+	}
+
+	// Board side: the card names the plan.
+	resp, err := http.Get(srv.URL + "/api/board/tasks?projectId=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var board []struct {
+		ExternalID     string  `json:"externalId"`
+		PlanExternalID *string `json:"planExternalId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&board); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, tk := range board {
+		if tk.ExternalID != "T-42" {
+			continue
+		}
+		found = true
+		if tk.PlanExternalID == nil || *tk.PlanExternalID != "2026-07-24-my-epic" {
+			t.Errorf("card.planExternalId = %v, want the epic's external id", tk.PlanExternalID)
+		}
+	}
+	if !found {
+		t.Fatal("the card is not on the board")
+	}
+	_ = taskID
+}
+
+// A hand-written plan has no card, and a card with no micro-plan has no plan: both
+// sides must render nothing rather than something wrong.
+func TestMicroPlanChipsAbsentWithoutAMicroPlan(t *testing.T) {
+	srv, db, _, _ := epicFixture(t)
+	mustExecEpics(t, db, `INSERT INTO tasks (project_id, title, prompt, status, created_at,
+		source, external_id, board_column)
+		VALUES (1,'a plain card','p','queued','2026-07-24T00:00:00Z','queue','T-99','todo')`)
+
+	if got := firstEpic(t, srv).CardExternalID; got != nil {
+		t.Errorf("epic.cardExternalId = %v, want null for a hand-written plan", *got)
 	}
 }

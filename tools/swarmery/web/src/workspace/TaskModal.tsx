@@ -272,6 +272,18 @@ export function TaskModal({
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <span className="font-mono text-[10.5px] text-ink-faint">{task.externalId}</span>
+          {/* This card materialized a micro-plan at dispatch: the same unit of work with
+              the plans-flow honesty contract (ticked criteria + a Completion Report in a
+              doc). The chip is the way to that record — a card that ran has a plan page. */}
+          {task.planExternalId !== null && (
+            <Link
+              to="/plans"
+              data-tip={`plan ${task.planExternalId} — acceptance criteria and completion report`}
+              className="rounded border border-line px-1 py-px font-mono text-[9px] text-ink-dim transition-colors hover:border-line-strong hover:text-ink"
+            >
+              plan
+            </Link>
+          )}
           {task.verifyVerdict !== null && (
             <span className="font-mono text-[10px] text-ink-dim uppercase">· {task.verifyVerdict}</span>
           )}

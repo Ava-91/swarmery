@@ -1294,6 +1294,7 @@ function boardTask(p: Partial<BoardTask> & Pick<BoardTask, 'id' | 'externalId' |
     agent: null,
     origin: 'manual',
     originSessionId: null,
+    planExternalId: null,
     columnMovedAt: iso(30 * MIN),
     createdAt: iso(60 * MIN),
     ...p,
@@ -1306,6 +1307,7 @@ let mockBoard: BoardTask[] = [
   boardTask({ id: 9102, externalId: 'T-d4e5f6', title: 'Wire status bar to /api/dispatch', boardColumn: 'triage' }),
   boardTask({
     id: 9103, externalId: 'T-g7h8i9', title: 'Optimistic column moves with revert', boardColumn: 'todo',
+    planExternalId: '2026-07-18-plan-doc-lifecycle',
     priority: 'urgent', model: 'sonnet', fileScope: ['web/src/pages/Board.tsx', 'web/src/workspace/'],
     labels: ['jira-ticket'],
   }),
@@ -1464,6 +1466,7 @@ const mockEpics: Epic[] = [
       }),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
+    cardExternalId: null,
     // The union the sessions panel renders: a daemon run the ?planTask= grouping also
     // finds, and an operator's own session that ONLY the inferred link can surface.
     linkedSessions: [
@@ -1536,6 +1539,9 @@ const mockEpics: Epic[] = [
       }),
     ],
     rollup: { done: 10, total: 10, pct: 100 },
+    // A micro-plan: this "plan" is a dispatched board card, so the list row wears a
+    // `card` chip and the card's own modal wears a `plan` one.
+    cardExternalId: 'T-g7h8i9',
     // A finished plan: its whole-plan run, plus the interactive session that wrote the
     // plan docs in the first place — the row that used to be invisible.
     linkedSessions: [
