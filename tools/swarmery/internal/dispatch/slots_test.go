@@ -120,3 +120,78 @@ func TestAdopt_HoldsSlotEvenWhenPoolIsFull(t *testing.T) {
 	alive.Store(false)
 	waitFor(t, func() bool { return !s.isActive(42) })
 }
+
+// TestSchedule_WorktreeCapCountsPhaseAndPlanRuns is the third defect from the
+// plan's evidence section. MaxWorktrees was enforced against `tasks` rows alone, so
+// a machine already running phases and a plan reported ZERO worktrees to the cap
+// that exists to bound them: the cap was real, the total it measured was not.
+func TestSchedule_WorktreeCapCountsPhaseAndPlanRuns(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{}
+	s := newTestService(t, db, r, &stubWt{})
+	s.Cfg.MaxWorktrees = 2
+	s.Slots = runcore.NewSlots(8) // the RUN budget must not be what refuses here
+
+	// One phase run and one plan run of a workspace plan are in flight. Neither is a
+	// `tasks` queue row, so before runcore.WorktreeCount both were invisible.
+	res, err := db.Exec(`INSERT INTO tasks (project_id, title, prompt, status, created_at,
+		source, external_id) VALUES (1,'epic','goal','running','2026-08-01T00:00:00Z','workspace','2026-08-01-epic')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planTask, _ := res.LastInsertId()
+	if _, err := db.Exec(`INSERT INTO epic_phases
+		(workspace_task_id, seq, name, doc_path, depends_on, run_state)
+		VALUES (?, 1, 'P1', '/ws/plan/phase-1.md', '[]', 'running')`, planTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO plan_runs (workspace_task_id, run_state)
+		VALUES (?, 'running')`, planTask); err != nil {
+		t.Fatal(err)
+	}
+
+	insertTask(t, db, "T-capped", taskOpts{})
+	s.Schedule()
+
+	if r.count() != 0 {
+		t.Errorf("runner spawned %d times, want 0 — two worktrees are already live", r.count())
+	}
+	if n, err := s.liveWorktreeCount(); err != nil || n != 2 {
+		t.Errorf("liveWorktreeCount = %d, %v; want 2 (one phase run + one plan run)", n, err)
+	}
+}
+
+// The collision gate is keyed on the BRANCH now, so it can finally compare runs
+// across engines: a phase run holding swarm/phase-N and a board card whose external
+// id happens to be phase-N would resolve to one directory on one branch.
+func TestSchedule_BranchCollisionAcrossEngines(t *testing.T) {
+	db := testDB(t)
+	r := &stubRunner{}
+	s := newTestService(t, db, r, &stubWt{})
+
+	res, err := db.Exec(`INSERT INTO tasks (project_id, title, prompt, status, created_at,
+		source, external_id) VALUES (1,'epic','goal','running','2026-08-01T00:00:00Z','workspace','2026-08-01-epic')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planTask, _ := res.LastInsertId()
+	pres, err := db.Exec(`INSERT INTO epic_phases
+		(workspace_task_id, seq, name, doc_path, depends_on, run_state)
+		VALUES (?, 1, 'P1', '/ws/plan/phase-1.md', '[]', 'running')`, planTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phaseID, _ := pres.LastInsertId()
+
+	// A board card whose external id resolves to the SAME checkout the phase run is
+	// using.
+	id := insertTask(t, db, runcore.PhaseTaskName(phaseID), taskOpts{})
+	s.Schedule()
+
+	if r.count() != 0 {
+		t.Errorf("runner spawned %d times, want 0 — that checkout is taken by a phase run", r.count())
+	}
+	if got := column(t, db, id); got != "todo" {
+		t.Errorf("column = %q, want todo — the loser defers, it does not fail", got)
+	}
+}

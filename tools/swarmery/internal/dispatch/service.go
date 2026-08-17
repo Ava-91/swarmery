@@ -308,7 +308,7 @@ func (s *Service) Schedule() {
 		// id — verify's fix task and its root — could put two headless agents in one
 		// directory on one branch. Skipping only defers: the loser is still a Todo
 		// candidate on the next pass, by which time the checkout is free.
-		if c.ExternalID != "" && heldWorktrees[worktreeKey{c.ProjectID, c.ExternalID}] {
+		if c.ExternalID != "" && heldWorktrees[runcore.WorktreeKey{ProjectID: c.ProjectID, Branch: runcore.TaskBranch(c.ExternalID)}] {
 			continue
 		}
 		// Gate: worktree cap.
@@ -335,7 +335,7 @@ func (s *Service) Schedule() {
 		activeScopes = append(activeScopes, activeScope{ProjectID: c.ProjectID, Scope: c.FileScope})
 		liveWorktrees++
 		if c.ExternalID != "" {
-			heldWorktrees[worktreeKey{c.ProjectID, c.ExternalID}] = true
+			heldWorktrees[runcore.WorktreeKey{ProjectID: c.ProjectID, Branch: runcore.TaskBranch(c.ExternalID)}] = true
 		}
 	}
 }
@@ -547,74 +547,40 @@ func scopeConflicts(c candidate, active []activeScope) bool {
 	return false
 }
 
-// worktreeKey identifies the CHECKOUT a candidate will land in, which is not the
-// same thing as the task. worktree.Manager derives both the path and the branch
-// from (projectSlug, externalID) — `<root>/<slug>/<extID>` on `swarm/<extID>` —
-// so two board rows sharing an external id resolve to ONE directory on ONE
-// branch.
-type worktreeKey struct {
-	projectID  int64
-	externalID string
-}
-
-// liveWorktreeKeys returns the checkout identity of every queue task currently
-// holding one — the set a candidate must not collide with.
+// liveWorktreeKeys returns the checkout identity of every run currently holding
+// one — the set a candidate must not collide with. Delegated to runcore, which
+// counts ALL THREE run surfaces (board, phase, plan); this used to read `tasks`
+// alone, so a phase run's checkout was invisible to the gate that exists to
+// arbitrate checkouts.
 //
-// This exists because the same-task gate (isActive) keys on the task ID while
-// the resource is keyed on the external id, and Acquire will NOT arbitrate the
+// The gate is needed because the same-task gate (isActive) keys on the task ID
+// while the resource is keyed on the branch, and Acquire will NOT arbitrate the
 // difference: a path whose branch already matches is warm-REUSED as-is
-// (worktree.go invariant 4), deliberately, so a crashed run can be resumed
-// rather than destroyed. Idempotent-for-a-live-task is exactly why admission has
-// to do the rejecting — the comment on the isActive gate says so; this is the
-// same argument applied to the id the worktree is actually keyed on.
+// (worktree.go invariant 4), deliberately, so a crashed run can be resumed rather
+// than destroyed. Idempotent-for-a-live-run is exactly why admission has to do the
+// rejecting.
 //
-// One shipped flow puts two rows on one external id: verify's fix task carries
+// One shipped flow puts two board rows on one checkout: verify's fix task carries
 // external_id=<root external id> so its own failure charges the root
-// (verify/service.go createFixTask). Sharing the root's branch is the POINT
-// there — the fix continues the work it is fixing — so the answer is not to
-// split the key but to keep the two runs strictly sequential.
+// (verify/service.go createFixTask). Sharing the root's branch is the POINT there —
+// the fix continues the work it is fixing — so the answer is not to split the key
+// but to keep the two runs strictly sequential.
 //
-// The file-scope gate happens to cover today's instance (a fix task inherits the
-// root's scope, and identical scopes always overlap — as does an undeclared one,
-// which pathsOverlap treats as global). That is incidental: it holds only while
-// the two rows agree on file_scope, which an operator can patch apart via
-// PATCH /api/board/tasks/{id}. This gate is keyed on the resource itself, so it
-// does not depend on that coincidence.
-//
-// Mirrors activeScopes: read from the DB rather than the in-memory active map,
-// so it also sees a run this daemon did not start. Rows with no external id are
-// skipped — they cannot collide on a key they do not have.
-func (s *Service) liveWorktreeKeys() (map[worktreeKey]bool, error) {
-	rows, err := s.DB.Query(`
-		SELECT project_id, external_id FROM tasks
-		 WHERE source='queue' AND board_column='in_progress'
-		   AND worktree_path IS NOT NULL
-		   AND external_id IS NOT NULL AND external_id <> ''`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	held := make(map[worktreeKey]bool)
-	for rows.Next() {
-		var k worktreeKey
-		if err := rows.Scan(&k.projectID, &k.externalID); err != nil {
-			return nil, err
-		}
-		held[k] = true
-	}
-	return held, rows.Err()
+// The file-scope gate happens to cover that instance (a fix task inherits the
+// root's scope, and identical scopes always overlap). That is incidental: it holds
+// only while the two rows agree on file_scope, which an operator can patch apart
+// via PATCH /api/board/tasks/{id}. This gate is keyed on the resource itself, so it
+// does not depend on the coincidence.
+func (s *Service) liveWorktreeKeys() (map[runcore.WorktreeKey]bool, error) {
+	return runcore.WorktreeKeys(s.DB)
 }
 
-// liveWorktreeCount counts queue tasks holding a worktree (worktree_path set,
-// still in_progress — the states that keep a worktree live before verification
-// releases it on done/archived).
+// liveWorktreeCount counts every live worktree the daemon holds, across board,
+// phase and plan runs (runcore.WorktreeCount). MaxWorktrees used to be enforced
+// against queue tasks alone: a machine running four phases and a plan reported ZERO
+// worktrees to the cap that exists to bound them.
 func (s *Service) liveWorktreeCount() (int, error) {
-	var n int
-	err := s.DB.QueryRow(
-		`SELECT COUNT(*) FROM tasks
-		  WHERE source='queue' AND worktree_path IS NOT NULL
-		    AND board_column='in_progress'`).Scan(&n)
-	return n, err
+	return runcore.WorktreeCount(s.DB)
 }
 
 // ── admission ──
