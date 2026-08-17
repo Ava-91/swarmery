@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSlotKey(t *testing.T) {
@@ -289,5 +290,53 @@ func TestSlots_ConcurrentAcquireRespectsTheBudget(t *testing.T) {
 	}
 	if s.Count() != 4 {
 		t.Errorf("Count = %d, want 4", s.Count())
+	}
+}
+
+// Go is what keeps a panicking run goroutine from taking the daemon with it — the
+// one behaviour five engines each had their own copy of.
+func TestGo_RecoversAPanicAndUsesTheSpawnSeam(t *testing.T) {
+	ran := false
+	Go("test", func(fn func()) { fn() }, func() { ran = true })
+	if !ran {
+		t.Error("fn did not run through the spawn seam")
+	}
+
+	// A panic must be contained, not propagated: this call returning at all IS the
+	// assertion (an escaping panic fails the test binary, not just this test).
+	Go("test", func(fn func()) { fn() }, func() { panic("boom") })
+
+	// With no seam wired it really is a goroutine, so wait for the effect.
+	done := make(chan struct{})
+	Go("test", nil, func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Go(nil seam) never ran fn")
+	}
+}
+
+// A malformed key must degrade rather than fail: the key is an internal
+// convention, and losing the numeric id in a status snapshot must never break an
+// admission.
+func TestSlots_MalformedKeyStillAdmits(t *testing.T) {
+	s := NewSlots(2)
+	if _, err := s.TryAcquire("no-colon", "u", nil); err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	if _, err := s.TryAcquire("phaserun:not-a-number", "u", nil); err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	snap := s.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("Snapshot = %+v, want both slots", snap)
+	}
+	for _, si := range snap {
+		if si.Engine == "" {
+			t.Errorf("slot %q lost its engine label entirely: %+v", si.Key, si)
+		}
+		if si.ID != 0 {
+			t.Errorf("slot %q parsed an id it does not have: %+v", si.Key, si)
+		}
 	}
 }
