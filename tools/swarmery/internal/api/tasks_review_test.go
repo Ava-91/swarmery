@@ -14,11 +14,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskdir"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -604,5 +607,101 @@ func TestFirstURL(t *testing.T) {
 		if got := firstURL(in); got != want {
 			t.Errorf("firstURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestDiscardArchivesTheMicroPlanDir: throwing away a card must also retire the
+// micro-plan it materialized, or the Plans page keeps showing an active plan for
+// work that was explicitly abandoned — a zombie whose phase will never be ticked
+// by anyone.
+//
+// Files only, deliberately: wsingest re-derives a workspace task's status and
+// archived_at from the ZONE its dir sits in, so the move IS the state change and
+// writing the rows here too would make two writers of one projection.
+func TestDiscardArchivesTheMicroPlanDir(t *testing.T) {
+	const branch = "swarm/T-micro1"
+	repo, base := reviewRepo(t, branch)
+	srv, db := reviewServer(t, repo)
+	attachReviewDispatch(t, db, &reviewStubWt{existed: true})
+	id := seedReviewCard(t, db, "T-micro1", reviewCard{
+		Branch: branch, StartPoint: base, Worktree: "/tmp/wt/T-micro1",
+	})
+
+	// The micro-plan dispatch would have minted, in a real workspace tree.
+	wsRoot := t.TempDir()
+	dir, err := taskdir.MintMicroPlan(wsRoot, "p", taskdir.Card{
+		ExternalID: "T-micro1", Title: "review me", Prompt: "do the thing",
+	}, time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET workspace_dir=? WHERE id=?`, dir, id); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body := postReview(t, srv.URL, id, "discard", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %v)", resp.StatusCode, body)
+	}
+
+	// working/ is empty of it, archive/ holds it at the mirrored path.
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the micro-plan is still in working/: %v", err)
+	}
+	archived := strings.Replace(dir, string(os.PathSeparator)+"working"+string(os.PathSeparator),
+		string(os.PathSeparator)+"archive"+string(os.PathSeparator), 1)
+	if _, err := os.Stat(filepath.Join(archived, "plan", taskdir.PhaseDocName)); err != nil {
+		t.Fatalf("the micro-plan was not archived to %s: %v", archived, err)
+	}
+	// The join follows the dir, so a later reader does not point at a path that
+	// no longer exists.
+	if got := taskRow(t, db, id, "workspace_dir"); got != archived {
+		t.Errorf("workspace_dir = %q, want %q", got, archived)
+	}
+	// The README says done, the way the plan lifecycle's own archive action says it.
+	raw, err := os.ReadFile(filepath.Join(archived, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "- **Status**: done") {
+		t.Errorf("archived README is still active:\n%s", raw)
+	}
+}
+
+// A card with no micro-plan discards exactly as it always did — the hook must be
+// invisible when there is nothing to archive.
+func TestDiscardWithoutAMicroPlanIsUnchanged(t *testing.T) {
+	const branch = "swarm/T-micro2"
+	repo, base := reviewRepo(t, branch)
+	srv, db := reviewServer(t, repo)
+	attachReviewDispatch(t, db, &reviewStubWt{existed: true})
+	id := seedReviewCard(t, db, "T-micro2", reviewCard{Branch: branch, StartPoint: base})
+
+	resp, body := postReview(t, srv.URL, id, "discard", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %v)", resp.StatusCode, body)
+	}
+	if col := taskRow(t, db, id, "board_column"); col != "archived" {
+		t.Errorf("column = %s, want archived", col)
+	}
+}
+
+// A workspace_dir pointing at a path that is gone (hand-cleaned workspace, restored
+// snapshot) must not break the discard: the card is already archived by then, and a
+// failed cleanup that 500s would leave the user retrying a completed action.
+func TestDiscardToleratesAMissingMicroPlanDir(t *testing.T) {
+	const branch = "swarm/T-micro3"
+	repo, base := reviewRepo(t, branch)
+	srv, db := reviewServer(t, repo)
+	attachReviewDispatch(t, db, &reviewStubWt{existed: true})
+	id := seedReviewCard(t, db, "T-micro3", reviewCard{Branch: branch, StartPoint: base})
+	if _, err := db.Exec(`UPDATE tasks SET workspace_dir=? WHERE id=?`,
+		filepath.Join(t.TempDir(), "gone", "working", "2026", "08", "17", "card-t-micro3"), id); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body := postReview(t, srv.URL, id, "discard", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %v)", resp.StatusCode, body)
 	}
 }

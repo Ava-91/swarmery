@@ -22,13 +22,19 @@ You are running unattended inside a dedicated git worktree on branch {{.Branch}}
 - If you are genuinely blocked, end with: BLOCKED: <reason>. Never fake completion by skipping the remaining work.
 - Installed dependencies (node_modules, .venv, …) are LENT from the project's main checkout as symlinks, because git only materializes committed files in a worktree: build and test commands work as-is. Do NOT run a package-install command (npm ci / npm install / pip install) — it would mutate the main checkout's shared tree.
 - Do not push, do not create PRs, do not switch branches.
---- END CONTRACT ---`))
+{{if .TaskDoc}}- THIS CARD HAS A PLAN DOCUMENT at {{.TaskDoc}} — edit it in place (it is outside the repo; use the absolute path). Tick its acceptance checkboxes (- [ ] → - [x]) as you satisfy them, and fill its ` + "`## Completion Report`" + ` section before you finish: what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this card — a report left in your reply or in a scratchpad file is invisible there. Write it on the blocked path too, describing how far you got and what stopped you.
+{{end}}--- END CONTRACT ---`))
 
 // contractData is the template payload.
 type contractData struct {
 	Branch    string
 	TaskID    string
 	FileScope string
+	// TaskDoc is the absolute path of this card's micro-plan phase doc, or "" when
+	// it has none. Empty omits the whole paragraph rather than rendering an
+	// instruction about a file that does not exist — which is what makes a mint
+	// failure genuinely non-fatal instead of merely non-crashing.
+	TaskDoc string
 }
 
 // scopeText renders a file-scope list for the contract line. Empty ⇒ the
@@ -50,6 +56,15 @@ func scopeText(scope []string) string {
 // stage body IS the task's own prompt, so this reproduces the pre-playbook
 // prompt exactly.
 func BuildStagePrompt(stageBody, branch, taskID string, fileScope []string) string {
+	return BuildStagePromptDoc(stageBody, branch, taskID, "", fileScope)
+}
+
+// BuildStagePromptDoc is BuildStagePrompt with the card's micro-plan phase doc.
+// A non-empty taskDoc adds the tick-and-report paragraph — the same contract
+// internal/phaserun states for a plan phase, in the same words, because it is the
+// same promise: the doc is where the record of the work lives, and a summary left
+// anywhere else is invisible to the dashboard.
+func BuildStagePromptDoc(stageBody, branch, taskID, taskDoc string, fileScope []string) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(stageBody, "\n"))
 	b.WriteString("\n\n")
@@ -61,6 +76,7 @@ func BuildStagePrompt(stageBody, branch, taskID string, fileScope []string) stri
 		Branch:    branch,
 		TaskID:    taskID,
 		FileScope: scopeText(fileScope),
+		TaskDoc:   taskDoc,
 	})
 	return b.String()
 }

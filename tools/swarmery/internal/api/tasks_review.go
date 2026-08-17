@@ -23,10 +23,13 @@ package api
 // tasks_diff.go, so `git push` and `gh pr create` are fakeable in tests.
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -189,6 +192,13 @@ func (h *Handler) discardBoardTask(w http.ResponseWriter, r *http.Request) {
 	// the RemoveWorktreeFor above, which had to run BEFORE the branch delete. A
 	// second call would be a no-op (worktree_path is already NULL) but would
 	// misstate the ordering this handler depends on.
+	// A discarded card must not leave its micro-plan sitting in working/ as an
+	// active plan. Files only, and best-effort: the card is already archived, so a
+	// failure here must not turn a completed discard into an error the user has to
+	// retry — and wsingest re-derives the plan's rows from the zone on its next pass,
+	// which is what makes moving the dir sufficient.
+	h.archiveMicroPlanDir(id)
+
 	d, err := h.boardTaskByID(id)
 	if err != nil {
 		writeErr(w, err)
@@ -197,6 +207,46 @@ func (h *Handler) discardBoardTask(w http.ResponseWriter, r *http.Request) {
 	publishTaskUpdated(id)
 	pokeDispatch()
 	writeJSON(w, map[string]any{"deleted": deleted, "branch": tgt.Branch, "task": d}, nil)
+}
+
+// archiveMicroPlanDir moves a discarded card's micro-plan from working/ to
+// archive/, stamping its README the way the plan lifecycle's own archive action
+// does (status done + completion date), so the Plans page stops showing it as
+// active work nobody is doing.
+//
+// Deliberately file-level only: wsingest owns workspace task ROWS and re-derives
+// status and archived_at from the zone the dir sits in, so moving the dir IS the
+// state change. Writing the rows here as well would make two writers of the same
+// projection.
+func (h *Handler) archiveMicroPlanDir(cardID int64) {
+	var dir sql.NullString
+	if err := h.DB.QueryRow(`SELECT workspace_dir FROM tasks WHERE id = ?`, cardID).Scan(&dir); err != nil {
+		log.Printf("warning: discard: read workspace_dir (card %d): %v", cardID, err)
+		return
+	}
+	if !dir.Valid || dir.String == "" {
+		return // no micro-plan (dispatched before the feature, or minting disabled)
+	}
+	if fi, err := os.Stat(dir.String); err != nil || !fi.IsDir() {
+		return // already moved, or never made it to disk
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	if err := rewriteCardReadme(dir.String, func(text string) string {
+		text = upsertCardStatus(text, "done")
+		return doneDateEmptyRe.ReplaceAllString(text, "${1}"+today)
+	}); err != nil {
+		log.Printf("warning: discard: stamp micro-plan README (card %d): %v", cardID, err)
+	}
+	moved, err := moveTaskZone(dir.String, "working", "archive")
+	if err != nil {
+		log.Printf("warning: discard: archive micro-plan dir (card %d): %v", cardID, err)
+		return
+	}
+	// Keep the join pointing at where the dir actually is now.
+	if _, err := h.DB.Exec(`UPDATE tasks SET workspace_dir = ? WHERE id = ?`, moved, cardID); err != nil {
+		log.Printf("warning: discard: repoint workspace_dir (card %d): %v", cardID, err)
+	}
 }
 
 // landBoardTask handles POST /api/board/tasks/{id}/land {"draft": false}: push

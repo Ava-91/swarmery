@@ -1,0 +1,24 @@
+-- The micro-plan a dispatched board card materialized (execution-engine
+-- unification, phase 4).
+--
+-- A dispatched card writes a single-phase plan into the workspace so board work
+-- carries the same honesty contract a plan does: acceptance checkboxes and a
+-- `## Completion Report` in a doc, observed by wsingest, rendered by the Plans
+-- page. The card and that micro-plan are two views of ONE unit of work, and this
+-- column is the join.
+--
+-- The absolute task-dir path, not a foreign key, deliberately:
+--
+--   * the workspace task ROW does not exist yet when the card is dispatched —
+--     wsingest discovers the dir on its next pass, and wsingest stays the only
+--     writer of those rows;
+--   * the dir is the durable identity. Its row can be deleted and re-created
+--     (epic_phases identity is doc_path, tasks identity is the derived
+--     external_id), while the path survives archive/restore moves as long as the
+--     zone segment is re-resolved — which is why readers that need the row look it
+--     up by path rather than caching an id.
+--
+-- NULL means the card has no micro-plan: dispatched before this shipped, or
+-- SWARMERY_MICRO_PLANS=0, or a mint that failed (non-fatal by design — the run
+-- proceeds docless rather than not at all).
+ALTER TABLE tasks ADD COLUMN workspace_dir TEXT;

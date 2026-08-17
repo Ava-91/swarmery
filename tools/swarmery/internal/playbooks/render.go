@@ -12,6 +12,11 @@ type Vars struct {
 	TaskID              string // external card id (T-xxxxxx)
 	FileScope           string // human-rendered file scope line
 	PreviousStageOutput string // last assistant text of the prior stage ("" for stage 1)
+	// TaskDoc is the absolute path of this card's micro-plan phase doc — the file
+	// the executor ticks and writes its Completion Report into. "" when the card
+	// has no micro-plan (the feature is off, or minting failed and the run
+	// proceeded docless), and rendering an empty value is a valid substitution.
+	TaskDoc string
 }
 
 // varMap turns Vars into the placeholder→value table. Kept as a method so the
@@ -25,6 +30,7 @@ func (v Vars) varMap() map[string]string {
 		"task_id":               v.TaskID,
 		"file_scope":            v.FileScope,
 		"previous_stage_output": v.PreviousStageOutput,
+		"task_doc":              v.TaskDoc,
 	}
 }
 

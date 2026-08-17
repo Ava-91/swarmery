@@ -1401,6 +1401,11 @@ func cmdServe(args []string) error {
 		dispatch.ClaudeRunner{AccountVerdict: runTruth.Record}, wtMgr,
 	)
 	dispatchSvc.Slots = runSlots
+	// The workspace tree dispatched cards materialize their micro-plans into — the
+	// SAME value the scanner below is configured with, wired from one place so the
+	// writer and the reader can never disagree about paths (execution-engine
+	// unification phase 4). SWARMERY_MICRO_PLANS=0 disables minting.
+	dispatchSvc.WorkspaceRoot = wsCfg.WorkspaceRoot
 	dispatchSvc.Playbooks = playbookReg
 	if err := dispatchSvc.HealStale(); err != nil {
 		log.Printf("warning: dispatch heal on startup: %v", err)
