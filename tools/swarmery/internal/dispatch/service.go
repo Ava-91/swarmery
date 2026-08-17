@@ -15,6 +15,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
@@ -110,7 +111,7 @@ type Service struct {
 func NewService(db *sql.DB, cfg Config, r Runner, wt WorktreeManager) *Service {
 	return &Service{
 		DB: db, Cfg: cfg, Run: r, Wt: wt,
-		UUID:   newUUID,
+		UUID:   runcore.NewUUID,
 		now:    time.Now,
 		active: make(map[int64]struct{}),
 	}

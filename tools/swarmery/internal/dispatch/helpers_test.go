@@ -1,25 +1,11 @@
 package dispatch
 
 import (
-	"regexp"
 	"testing"
 )
 
-var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-
-func TestNewUUIDFormatAndUniqueness(t *testing.T) {
-	seen := make(map[string]bool)
-	for i := 0; i < 1000; i++ {
-		u := newUUID()
-		if !uuidRE.MatchString(u) {
-			t.Fatalf("newUUID() = %q, not a v4 UUID", u)
-		}
-		if seen[u] {
-			t.Fatalf("newUUID() collision on %q", u)
-		}
-		seen[u] = true
-	}
-}
+// newUUID now lives in internal/runcore (one copy for all five engines); its
+// test moved with it to internal/runcore/spawner_test.go, regexp and all.
 
 func TestDecodeStringList(t *testing.T) {
 	cases := []struct {

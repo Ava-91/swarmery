@@ -61,7 +61,7 @@ type RunSpec struct {
 	// resolving the account from Cwd here would silently fall back to the
 	// default account — plan A3, extended from dispatch/verify to this spawn
 	// site. "" (no known project path) means no account resolution at all;
-	// see accountEnvFor's guard.
+	// see runcore.AccountFor's guard.
 	ProjectPath string
 }
 

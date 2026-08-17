@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -404,11 +405,15 @@ func TestTail(t *testing.T) {
 	}
 }
 
+// uuidRE is the full RFC-4122 v4 shape, version nibble and variant bits included
+// — the strictest of the five per-engine assertions this replaces.
+var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 func TestNewUUID(t *testing.T) {
 	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 1000; i++ {
 		u := NewUUID()
-		if len(u) != 36 || u[14] != '4' || strings.Count(u, "-") != 4 {
+		if !uuidRE.MatchString(u) {
 			t.Fatalf("NewUUID() = %q, not a v4 UUID", u)
 		}
 		if seen[u] {
