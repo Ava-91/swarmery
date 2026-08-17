@@ -85,12 +85,19 @@ var validModes = map[string]string{
 // SWARMERY_PHASERUN_PERMISSION_MODE) and wins over ModeEnv, which wins over
 // DefaultMode. An empty siteEnv means "this site has no knob of its own".
 func PermissionModeArgs(siteEnv string) []string {
-	mode := resolveMode(siteEnv)
+	mode := Mode(siteEnv)
 	if mode == "" {
 		return nil
 	}
 	return []string{"--permission-mode", mode}
 }
+
+// Mode is PermissionModeArgs' resolution without the flag pair: the canonical
+// mode for this spawn site, or "" when the flag must be omitted. Spawn sites that
+// build argv through internal/runcore want the VALUE (Spec.PermissionMode), not a
+// pre-assembled pair — this keeps the precedence and the validation in one place
+// for both shapes.
+func Mode(siteEnv string) string { return resolveMode(siteEnv) }
 
 // resolveMode applies the precedence and validates. "" means omit the flag.
 func resolveMode(siteEnv string) string {

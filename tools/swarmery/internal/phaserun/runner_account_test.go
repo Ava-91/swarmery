@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // unsetMarker is what the fake claude prints when CLAUDE_CONFIG_DIR is not in
@@ -159,8 +160,10 @@ func TestStartEmptyProjectPathGuardsAccountResolution(t *testing.T) {
 		t.Fatalf("precondition: EnvFor(\"\") = nil — the relative-path trap this test guards is gone")
 	}
 
-	if got := accountEnvFor(""); got != nil {
-		t.Errorf("accountEnvFor(\"\") = %v, want nil — it must never reach EnvFor with an empty project path", got)
+	// The guard now lives in runcore.AccountFor (one copy for the phase and plan
+	// spawn sites); the env delta it feeds must still be nil for an empty path.
+	if got := claudeacct.EnvForAccount(runcore.AccountFor("")); got != nil {
+		t.Errorf("EnvForAccount(AccountFor(\"\")) = %v, want nil — an empty project path must never reach Binding", got)
 	}
 
 	got := childConfigDir(t, RunSpec{Cwd: t.TempDir(), ProjectPath: ""})
@@ -175,7 +178,7 @@ func TestStartEmptyProjectPathGuardsAccountResolution(t *testing.T) {
 // PWD/SHLVL/_ of its own, so the full environment can only be compared here.
 func TestUnboundSpawnEnvIsByteIdenticalToOsEnviron(t *testing.T) {
 	base := os.Environ()
-	got := append(os.Environ(), accountEnvFor(t.TempDir())...) // the spawn line, verbatim; an unbound project adds nothing
+	got := append(os.Environ(), claudeacct.EnvForAccount(runcore.AccountFor(t.TempDir()))...) // the spawn line, verbatim; an unbound project adds nothing
 	if len(got) != len(base) {
 		t.Fatalf("env length %d, want %d (an unbound spawn must add nothing)", len(got), len(base))
 	}

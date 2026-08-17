@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -215,14 +216,8 @@ func TestClaudeRunner_Start_BinMissing(t *testing.T) {
 	}
 }
 
-func TestTail(t *testing.T) {
-	if got := tail("  hello world  ", 5); got != "world" {
-		t.Errorf("tail = %q, want world", got)
-	}
-	if got := tail("short", 100); got != "short" {
-		t.Errorf("tail = %q, want short", got)
-	}
-}
+// tail now lives in internal/runcore (one copy for all five engines); its test
+// moved with it to internal/runcore/spawner_test.go.
 
 // The site knob must reach the CLI, and its escape hatch must drop the flag
 // entirely — an operator debugging a permission question needs both.
@@ -255,3 +250,36 @@ func TestClaudeRunner_Start_PermissionModeKnob(t *testing.T) {
 // r0 is the runner shape every test here uses (a short timeout so a hung fake
 // cannot wedge the suite).
 func r0() ClaudeRunner { return ClaudeRunner{Timeout: 30 * time.Second} }
+
+// TestClaudeRunner_Start_FullArgvPin is the adapter-side half of the runcore argv
+// pin (internal/runcore/spawner_test.go, case phaserun/full): every flag this
+// engine can emit, in the order it emits them. The knob-by-knob tests above each
+// cover one flag; this is the only assertion that pins --settings' position, and
+// position is exactly what a shared builder can silently change.
+func TestClaudeRunner_Start_FullArgvPin(t *testing.T) {
+	argFile := filepath.Join(t.TempDir(), "args")
+	fakeClaude(t, argFile, "", 0)
+	t.Setenv(claudeflags.ModeEnv, "")
+	t.Setenv(permEnv, "acceptEdits")
+	t.Setenv(modelEnv, "claude-opus-5")
+	settings := filepath.Join(t.TempDir(), "settings.json")
+
+	if _, err := r0().Start(context.Background(), RunSpec{
+		Prompt: "execute phase", SessionUUID: "u-full", Cwd: t.TempDir(), SettingsFile: settings,
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	raw, err := os.ReadFile(argFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	want := []string{
+		"-p", "execute phase", "--session-id", "u-full",
+		"--permission-mode", "acceptEdits", "--model", "claude-opus-5", "--settings", settings,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+}
