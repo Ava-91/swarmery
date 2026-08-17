@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"database/sql"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -109,16 +110,30 @@ func TestAdopt_HoldsSlotEvenWhenPoolIsFull(t *testing.T) {
 	if _, err := s.Slots.TryAcquire(runcore.SlotKey("planrun", 5), "u-plan", nil); err != nil {
 		t.Fatal(err)
 	}
-	s.adopt(42, 4242, "u-adopted")
+	// Drive adoption the way startup does: an in_progress row with a matched pid.
+	id := insertTask(t, db, "T-adopted", taskOpts{column: "in_progress", worktreePath: "/wt/p/T-adopted"})
+	mustSetDispatchUUID(t, db, id, "u-adopted")
+	s.FindRun = func(uuid string) (int, bool) { return 4242, uuid == "u-adopted" }
+	if _, err := s.adoptSurvivors(); err != nil {
+		t.Fatal(err)
+	}
 
-	if !s.isActive(42) {
+	if !s.isActive(id) {
 		t.Fatal("adopted run is not holding a slot — a rival could now be dispatched into its worktree")
 	}
 	if got := s.Slots.Count(); got != 2 {
 		t.Errorf("Slots.Count = %d, want 2 — adoption over-subscribes deliberately", got)
 	}
 	alive.Store(false)
-	waitFor(t, func() bool { return !s.isActive(42) })
+	waitFor(t, func() bool { return !s.isActive(id) })
+}
+
+// mustSetDispatchUUID gives a row the session uuid adoption matches a process by.
+func mustSetDispatchUUID(t *testing.T, db *sql.DB, id int64, uuid string) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE tasks SET dispatch_session_uuid=? WHERE id=?`, uuid, id); err != nil {
+		t.Fatalf("set dispatch uuid: %v", err)
+	}
 }
 
 // TestSchedule_WorktreeCapCountsPhaseAndPlanRuns is the third defect from the

@@ -96,7 +96,7 @@ type Service struct {
 	FindRun func(sessionUUID string) (int, bool)
 	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
 	ProcAlive func(pid int) bool
-	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	// adoptPoll overrides runcore.AdoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 
 	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
@@ -1153,25 +1153,18 @@ func (s *Service) HealStale() error {
 	// the healed set exactly liveWorktreeCount's live set. It is the mirror of the
 	// `worktree_path IS NULL` guard capture uses for the same disjointness.
 	//
-	// NOT IN () is invalid SQL and `x NOT IN (NULL)` is never true, so the
-	// exclusion clause exists only when there is something to exclude.
-	q := `UPDATE tasks
+	// The survivors are excluded by runcore.HealExcluding, which owns the one rule
+	// three engines each re-derived: `NOT IN ()` is invalid SQL and `x NOT IN (NULL)`
+	// is never true, so the clause may only exist when there is something to exclude.
+	n, err := runcore.HealExcluding(s.DB, `UPDATE tasks
 		   SET board_column='todo', status='queued', dispatch_error='daemon restart',
 		       column_moved_at=?
 		 WHERE source='queue' AND board_column='in_progress'
-		   AND worktree_path IS NOT NULL`
-	args := []any{s.ts()}
-	if len(adopted) > 0 {
-		q += ` AND id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
-		for _, id := range adopted {
-			args = append(args, id)
-		}
-	}
-	res, err := s.DB.Exec(q, args...)
+		   AND worktree_path IS NOT NULL`, "id", adopted, s.ts())
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	if n > 0 {
 		log.Printf("swarmery dispatch: healed %d stuck in_progress task(s) to todo", n)
 	}
 	return nil

@@ -151,7 +151,7 @@ type Service struct {
 	// all. NewService gives every Service its own pool (hermetic unit tests); the
 	// daemon replaces it with the one instance dispatch and phaserun also hold.
 	Slots *runcore.Slots
-	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	// adoptPoll overrides runcore.AdoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 }
 
@@ -590,22 +590,16 @@ func (s *Service) HealStale() error {
 		// Best-effort: a failed probe must not leave rows stuck 'running' for ever.
 		log.Printf("error: swarmery planrun: adoption probe: %v", err)
 	}
-	// NOT IN () is invalid SQL and `x NOT IN (NULL)` is never true, so the
-	// exclusion clause exists only when there is something to exclude.
-	q := `UPDATE plan_runs SET run_state='failed', run_error='daemon restart'
-		 WHERE run_state='running'`
-	var args []any
-	if len(adopted) > 0 {
-		q += ` AND workspace_task_id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
-		for _, id := range adopted {
-			args = append(args, id)
-		}
-	}
-	res, err := s.DB.Exec(q, args...)
+	// The survivors are excluded by runcore.HealExcluding, which owns the one rule
+	// three engines each re-derived: `NOT IN ()` is invalid SQL and `x NOT IN (NULL)`
+	// is never true, so the clause may only exist when there is something to exclude.
+	n, err := runcore.HealExcluding(s.DB,
+		`UPDATE plan_runs SET run_state='failed', run_error='daemon restart'
+		 WHERE run_state='running'`, "workspace_task_id", adopted)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	if n > 0 {
 		log.Printf("swarmery planrun: healed %d orphaned running plan(s) to failed", n)
 	}
 	return nil

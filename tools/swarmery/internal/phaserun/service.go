@@ -140,7 +140,7 @@ type Service struct {
 	// (hermetic unit tests); the daemon replaces it with the one instance dispatch
 	// and planrun also hold.
 	Slots *runcore.Slots
-	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	// adoptPoll overrides runcore.AdoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 }
 
@@ -610,29 +610,16 @@ func (s *Service) HealStale() error {
 		// 'running' forever, so fall through to the heal below.
 		log.Printf("error: swarmery phaserun: adoption probe: %v", err)
 	}
-	// NOT IN () is not valid SQL, and `id NOT IN (NULL)` is never true — so the
-	// exclusion clause is built only when there is something to exclude.
-	q := `UPDATE epic_phases
+	// The survivors are excluded by runcore.HealExcluding, which owns the one rule
+	// three engines each re-derived: `NOT IN ()` is invalid SQL and `id NOT IN
+	// (NULL)` is never true, so the clause may only exist when there is something to
+	// exclude.
+	n, err := runcore.HealExcluding(s.DB, `UPDATE epic_phases
 		   SET run_state='failed', run_error='daemon restart', run_ended_at=?,
 		       run_checkboxes_after=checkboxes_done
-		 WHERE run_state='running'`
-	args := []any{s.ts()}
-	if len(adopted) > 0 {
-		q += ` AND id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
-		for _, id := range adopted {
-			args = append(args, id)
-		}
-	}
-	res, err := s.DB.Exec(q, args...)
+		 WHERE run_state='running'`, "id", adopted, s.ts())
 	if err != nil {
 		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		// Not fatal — the heal itself succeeded — but the count is the only signal
-		// that orphans existed at all, so its loss must not be silent.
-		log.Printf("error: swarmery phaserun: heal rows affected unavailable: %v", err)
-		return nil
 	}
 	if n > 0 {
 		log.Printf("swarmery phaserun: healed %d orphaned running phase(s) to failed", n)
