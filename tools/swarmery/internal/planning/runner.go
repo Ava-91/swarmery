@@ -1,17 +1,12 @@
 package planning
 
 import (
-	"bytes"
 	"context"
-	"log"
-	"os"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // Runner is the headless-claude boundary for a planner run. ClaudeRunner is
@@ -44,12 +39,6 @@ type Run struct {
 // dir, which is longer than a mechanical run but must not wedge a slot forever).
 const planTimeout = 20 * time.Minute
 
-// drainGrace bounds the post-exit wait for the run's process group to empty out.
-const drainGrace = 5 * time.Second
-
-// stderrTailBytes caps captured stderr landing in the run error.
-const stderrTailBytes = 4096
-
 // defaultModel pins planner runs: without --model the CLI inherits the account
 // default (Fable-5 here — 2× the Opus price). Full ID, not an alias — aliases
 // re-resolve over time.
@@ -68,73 +57,46 @@ type ClaudeRunner struct {
 	Model string
 }
 
+// Start maps this engine's RunSpec onto runcore.Spec and its Result back onto
+// Run. Everything shared — the argv, the account env merge, the process group,
+// the drain, the exit ladder — lives in internal/runcore; what stays here is the
+// planner's own policy: its timeout, its model default, and resolving the account
+// from cwd.
 func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = planTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	bin, err := ClaudeBin()
-	if err != nil {
-		return &Run{SessionUUID: spec.SessionUUID, ExitCode: -1}, err
-	}
-
-	start := time.Now()
 	model := r.Model
 	if model == "" {
 		model = defaultModel
 	}
-	cmd := exec.CommandContext(ctx, bin, "-p", spec.Prompt, "--session-id", spec.SessionUUID, "--model", model)
-	cmd.Dir = spec.Cwd
-	// Resolving the account from cwd is correct HERE — and only here and in
-	// provision. A planner run's Cwd is the PROJECT path (see RunSpec.Cwd), so it
-	// carries the project's .claude/settings.local.json. dispatch and verify look
-	// the same but are not: their Cwd is a worktree with no settings file, which
-	// is why they take the key from the caller instead (plan A3).
-	// EnvFor returns nil for an unbound project, so cmd.Env is then a
-	// byte-identical copy of os.Environ() — behaviour unchanged from before.
-	cmd.Env = append(os.Environ(), claudeacct.EnvFor(spec.Cwd)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	// Own process group — survive daemon restarts (same rationale as the session
-	// resume spawn in api/session_message.go). procgroup adds the half a bare
-	// Setpgid was missing: cancellation and the plan timeout now reach the whole
-	// tree instead of the leader alone, and Wait cannot hang on a pipe an orphan
-	// still holds.
-	procgroup.Isolate(cmd, 0)
-	// stdout is the assistant text; we do NOT parse it — the planner's transcript
-	// is ingested independently and the page reads the linked session's turns from
-	// the DB. Discard it.
-	runErr := cmd.Run()
-	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
 
-	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
-		log.Printf("warning: planning: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
-	}
-
-	run := &Run{
+	res, err := runcore.ClaudeRunner{Engine: "planning"}.Start(ctx, runcore.Spec{
+		Prompt:      spec.Prompt,
 		SessionUUID: spec.SessionUUID,
-		Stderr:      tail(stderr.String(), stderrTailBytes),
-		Duration:    elapsed,
-	}
-	if ctx.Err() == context.DeadlineExceeded {
-		run.TimedOut = true
-		run.ExitCode = -1
-		return run, nil // a timeout is an outcome, not a Start error
-	}
-	if runErr != nil {
-		if ee, ok := runErr.(*exec.ExitError); ok {
-			run.ExitCode = ee.ExitCode()
-			return run, nil // a nonzero exit is an outcome the service logs
-		}
-		// The process could not be started/observed at all (fork failure).
-		run.ExitCode = -1
-		return run, runErr
-	}
-	run.ExitCode = 0
-	return run, nil
+		Cwd:         spec.Cwd,
+		Model:       model,
+		// Resolving the account from cwd is correct HERE — and only here and in
+		// provision. A planner run's Cwd is the PROJECT path (see RunSpec.Cwd), so it
+		// carries the project's .claude/settings.local.json. dispatch and verify look
+		// the same but are not: their Cwd is a worktree with no settings file, which
+		// is why they take the key from the caller instead (plan A3).
+		// An unbound project resolves to "" and produces no env delta, so cmd.Env is
+		// then a byte-identical copy of os.Environ().
+		Account: claudeacct.Binding(spec.Cwd),
+		Timeout: timeout,
+		// launchd starts the daemon with a minimal PATH that omits npm/homebrew, so a
+		// bare PATH lookup can miss — ClaudeBin probes the install locations too.
+		Bin: ClaudeBin,
+	})
+	return &Run{
+		SessionUUID: res.SessionUUID,
+		ExitCode:    res.ExitCode,
+		TimedOut:    res.TimedOut,
+		Stderr:      res.Stderr,
+		Duration:    res.Duration,
+	}, err
 }
 
 // ClaudeBin resolves the Claude Code executable so the planner spawn works
@@ -144,12 +106,3 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 // spawning. The logic lives in internal/claudebin, shared with the API layer's
 // resume spawn and mcpcfg's `claude mcp …` shell-out.
 func ClaudeBin() (string, error) { return claudebin.Resolve() }
-
-// tail returns the last <= n bytes of s, trimmed.
-func tail(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		s = s[len(s)-n:]
-	}
-	return s
-}

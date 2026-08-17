@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,22 +130,49 @@ func TestClaudeRunner_Start_BinMissing(t *testing.T) {
 	}
 }
 
-func TestNewUUID(t *testing.T) {
-	a, b := newUUID(), newUUID()
-	if a == b {
-		t.Error("newUUID returned identical values")
-	}
-	// RFC-4122 v4 shape: 8-4-4-4-12 hex, version nibble 4.
-	if len(a) != 36 || a[14] != '4' {
-		t.Errorf("newUUID = %q, not a v4 uuid", a)
-	}
-}
+// newUUID and tail now live in internal/runcore (one copy for all five engines);
+// their tests moved with them to internal/runcore/spawner_test.go.
 
-func TestTail(t *testing.T) {
-	if got := tail("  hello world  ", 5); got != "world" {
-		t.Errorf("tail = %q, want world", got)
+// TestClaudeRunner_Start_ArgvPin is the adapter-side half of the runcore argv
+// pin: internal/runcore/spawner_test.go asserts the builder turns a Spec into
+// this argv, and this asserts the planner builds THAT Spec — including its model
+// default, which is the flag that stops the run inheriting the account default
+// (Fable-5 here, several times the price of the pinned tier).
+func TestClaudeRunner_Start_ArgvPin(t *testing.T) {
+	argFile := filepath.Join(t.TempDir(), "args")
+	script := filepath.Join(t.TempDir(), "fakeclaude.sh")
+	body := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argFile + "; done\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got := tail("short", 100); got != "short" {
-		t.Errorf("tail = %q, want short", got)
+	t.Setenv("SWARMERY_CLAUDE_BIN", script)
+
+	for _, tc := range []struct {
+		name  string
+		model string
+		want  []string
+	}{
+		{"default model", "", []string{"-p", "plan it", "--session-id", "u-argv", "--model", defaultModel}},
+		{"model override", "claude-sonnet-5", []string{"-p", "plan it", "--session-id", "u-argv", "--model", "claude-sonnet-5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(argFile); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			r := ClaudeRunner{Timeout: 30 * time.Second, Model: tc.model}
+			if _, err := r.Start(context.Background(), RunSpec{
+				Prompt: "plan it", SessionUUID: "u-argv", Cwd: t.TempDir(),
+			}); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			raw, err := os.ReadFile(argFile)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			got := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("argv = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

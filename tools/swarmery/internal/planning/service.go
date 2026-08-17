@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrev"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // Sentinel errors mapped to HTTP statuses by the api layer.
@@ -65,7 +66,7 @@ type run struct {
 type Service struct {
 	DB   *sql.DB
 	Run  Runner
-	UUID func() string    // session-uuid generator (test seam; default newUUID)
+	UUID func() string    // session-uuid generator (test seam; default runcore.NewUUID)
 	now  func() time.Time // clock (test seam; default time.Now)
 	Go   func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors improveGo
 	// Notify emits a session_updated for a project's in-flight change. The api
@@ -103,7 +104,7 @@ func NewService(db *sql.DB, r Runner) *Service {
 	return &Service{
 		DB:     db,
 		Run:    r,
-		UUID:   newUUID,
+		UUID:   runcore.NewUUID,
 		now:    time.Now,
 		active: make(map[int64]run),
 	}
