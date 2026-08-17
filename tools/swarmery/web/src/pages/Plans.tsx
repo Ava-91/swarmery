@@ -1195,19 +1195,32 @@ function PlanSessions({
     [sessions],
   );
 
+  // The union's second half: sessions task_sessions links to this plan that the
+  // ?planTask= grouping cannot see. That grouping resolves sessions from the stamped
+  // run branch / worktree cwd, so it finds daemon-spawned runs and their subagents —
+  // and misses the operator's own session entirely, which is the path that does most
+  // of the work on most plans. Deduped by uuid, so a run that BOTH grouping rules
+  // find appears once, in its plan-ordered position.
+  const linkedOnly = useMemo(() => {
+    const seen = new Set((sessions ?? []).map((s) => s.sessionUuid));
+    return epic.linkedSessions
+      .filter((l) => !seen.has(l.sessionUuid))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  }, [sessions, epic.linkedSessions]);
+
+  const total = ordered.length + linkedOnly.length;
+
   return (
     <aside className="hidden w-[264px] shrink-0 flex-col lg:flex" aria-label="plan sessions">
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-dim">sessions</span>
-        {sessions !== null && (
-          <span className="font-mono text-[10px] text-ink-faint">{sessions.length}</span>
-        )}
+        {sessions !== null && <span className="font-mono text-[10px] text-ink-faint">{total}</span>}
       </div>
       {err !== null ? (
         <ErrorBox message={err} />
       ) : sessions === null ? (
         <Loading />
-      ) : ordered.length === 0 ? (
+      ) : total === 0 ? (
         <Empty>no sessions ran this plan</Empty>
       ) : (
         <ol className="space-y-1">
@@ -1251,6 +1264,38 @@ function PlanSessions({
               </li>
             );
           })}
+          {linkedOnly.map((l) => (
+            <li key={l.sessionUuid}>
+              <Link
+                to={sessionHref(l.sessionUuid)}
+                data-tip={
+                  l.linkSource === 'heuristic'
+                    ? 'inferred from files this session edited under plan/'
+                    : 'linked to this plan by the daemon'
+                }
+                className="block rounded-lg border border-line border-dashed bg-surface/40 px-2 py-1.5 transition-colors hover:border-line-strong"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-ink-faint" />
+                  <span
+                    className={`shrink-0 rounded border px-1 py-px font-mono text-[9px] ${
+                      l.linkSource === 'heuristic'
+                        ? 'border-line text-ink-faint'
+                        : 'border-line text-ink-dim'
+                    }`}
+                  >
+                    {l.linkSource === 'heuristic' ? 'inferred' : 'linked'}
+                  </span>
+                  <span className="truncate text-[11.5px] text-ink">{l.sessionUuid.slice(0, 8)}</span>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[9.5px] text-ink-faint">
+                  {fmtDateTime(l.startedAt)}
+                  {l.endedAt === null ? ' · live' : ''}
+                  {l.costUsd != null ? ` · ${fmtCost(l.costUsd)}` : ''}
+                </div>
+              </Link>
+            </li>
+          ))}
         </ol>
       )}
     </aside>

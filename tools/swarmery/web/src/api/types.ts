@@ -2914,6 +2914,31 @@ export interface Epic {
    * run-plan skill). Null until the plan has ever been run. Distinct from the
    * per-phase EpicPhase.runState — a plan run never stamps individual phases. */
   planRun: PlanRun | null;
+  /** Every session task_sessions attaches to this plan: the daemon's own runs
+   * (explicit) and the interactive sessions inferred from the plan files they
+   * edited (heuristic). Never null — [] means nothing has worked on this plan,
+   * which is a different claim from "we don't know". */
+  linkedSessions: LinkedSession[];
+}
+
+/** One task_sessions row joined to its session — mirrors linkedSessionDTO.
+ *
+ * This is the THIRD execution path made visible: an operator's own session, or a
+ * /run-plan session, is not daemon-spawned and carries no run branch, so the
+ * ?planTask= grouping (which resolves sessions from the stamped branch / worktree
+ * cwd) cannot see it. Its link is the only evidence it worked on the plan. */
+export interface LinkedSession {
+  sessionUuid: string;
+  /** `explicit` = the daemon spawned this session for this task; `heuristic` =
+   * inferred from evidence (edited plan files, cwd overlap). */
+  linkSource: 'explicit' | 'heuristic';
+  /** 0..1 for heuristic links; 1.0 for explicit ones. Null for links written
+   * before the column was populated. */
+  confidence: number | null;
+  /** SUM of the session's priced turns; null while none is priced. */
+  costUsd: number | null;
+  startedAt: string;
+  endedAt: string | null;
 }
 
 /** How a plan run executes its phases. `auto` leaves the run-plan skill's own

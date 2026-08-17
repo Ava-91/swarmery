@@ -141,6 +141,28 @@ type epicDTO struct {
 	// run. Distinct from the per-phase RunState above: this is ONE agent handed
 	// the whole plan, so it never stamps individual phases.
 	PlanRun *planRunDTO `json:"planRun"`
+	// LinkedSessions is every session task_sessions attaches to this plan — the
+	// daemon's own runs (explicit) AND the interactive sessions inferred from the
+	// files they edited (heuristic). Never null; an empty list means nothing has
+	// worked on this plan yet, which is a different statement from "we don't know",
+	// and until phase 3 the panel could only make the second one.
+	LinkedSessions []linkedSessionDTO `json:"linkedSessions"`
+}
+
+// linkedSessionDTO is one task_sessions row joined to its session, as the Plans
+// page's sessions panel renders it.
+//
+// LinkSource is the DB's own two-valued vocabulary; the UI shows a third badge
+// ("run") for the sessions a phase or plan run stamped on its own row, which it
+// can tell apart without another column because those uuids are already in the
+// phase/planRun DTOs.
+type linkedSessionDTO struct {
+	SessionUUID string   `json:"sessionUuid"`
+	LinkSource  string   `json:"linkSource"` // explicit | heuristic
+	Confidence  *float64 `json:"confidence"` // null for links written without one
+	CostUSD     *float64 `json:"costUsd"`    // null while no turn of the session is priced
+	StartedAt   string   `json:"startedAt"`
+	EndedAt     *string  `json:"endedAt"`
 }
 
 // planRunDTO is the plan_runs row for one epic.
@@ -258,6 +280,13 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// And for the linked sessions. Same reason again: one query, materialized
+	// before the loop, never a per-epic lookup inside it.
+	linkedSessions, err := h.linkedSessionsByTask()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	for i := range out {
 		out[i].PlanRun = planRuns[out[i].TaskID]
@@ -269,6 +298,10 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		out[i].Phases = phases
 		out[i].Rollup = rollup
 		out[i].Spec = buildEpicSpec(specCriteria[out[i].TaskID], covers)
+		out[i].LinkedSessions = linkedSessions[out[i].TaskID]
+		if out[i].LinkedSessions == nil {
+			out[i].LinkedSessions = []linkedSessionDTO{} // [] not null: the UI maps over it
+		}
 		if out[i].PlanDir != "" {
 			if fi, err := os.Stat(filepath.Join(out[i].PlanDir, "SUMMARY.md")); err == nil && !fi.IsDir() {
 				out[i].HasSummary = true
@@ -282,6 +315,57 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
 	}
 	writeJSON(w, out, nil)
+}
+
+// linkedSessionsByTask loads every workspace task's linked sessions, keyed by task
+// id, newest first.
+//
+// Restricted to source='workspace' rows so a board card's dispatch links never
+// arrive here — the board has its own surface for those, and the join is otherwise
+// over every link in the database.
+//
+// Cost comes from the session's turns (SUM(cost_usd), null while nothing is priced),
+// the same expression the sessions list uses, so a session's cost reads identically
+// in both places.
+func (h *Handler) linkedSessionsByTask() (map[int64][]linkedSessionDTO, error) {
+	rows, err := h.DB.Query(`
+		SELECT ts.task_id, se.session_uuid, ts.link_source, ts.confidence,
+		       (SELECT SUM(t.cost_usd) FROM turns t WHERE t.session_id = se.id),
+		       se.started_at, se.ended_at
+		  FROM task_sessions ts
+		  JOIN sessions se ON se.id = ts.session_id
+		  JOIN tasks tk ON tk.id = ts.task_id
+		 WHERE tk.source = 'workspace'
+		 ORDER BY ts.task_id, se.started_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]linkedSessionDTO{}
+	for rows.Next() {
+		var (
+			taskID int64
+			d      linkedSessionDTO
+			conf   sql.NullFloat64
+			cost   sql.NullFloat64
+			ended  sql.NullString
+		)
+		if err := rows.Scan(&taskID, &d.SessionUUID, &d.LinkSource, &conf, &cost,
+			&d.StartedAt, &ended); err != nil {
+			return nil, err
+		}
+		if conf.Valid {
+			d.Confidence = &conf.Float64
+		}
+		if cost.Valid {
+			d.CostUSD = &cost.Float64
+		}
+		if ended.Valid {
+			d.EndedAt = &ended.String
+		}
+		out[taskID] = append(out[taskID], d)
+	}
+	return out, rows.Err()
 }
 
 // planRunsByTask loads every plan_runs row keyed by workspace task id. Plan
