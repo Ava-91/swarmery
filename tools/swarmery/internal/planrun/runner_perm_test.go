@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -56,5 +57,43 @@ func TestClaudeRunner_Start_PermissionModeOffOmitsFlag(t *testing.T) {
 	raw, _ := os.ReadFile(argFile)
 	if got := strings.TrimSpace(string(raw)); strings.Contains(got, "--permission-mode") {
 		t.Errorf("args carry --permission-mode although %s=off:\n%s", permEnv, got)
+	}
+}
+
+// TestClaudeRunner_Start_FullArgvPin is the adapter-side half of the runcore argv
+// pin (internal/runcore/spawner_test.go, case planrun/full): every flag this
+// engine can emit, in the order it emits them. --agent MUST land before
+// --settings, because the settings file is what enables the plugin the agent
+// ships in; nothing but this assertion would catch a reordering, since `claude`
+// itself is order-insensitive.
+func TestClaudeRunner_Start_FullArgvPin(t *testing.T) {
+	t.Setenv(claudeflags.ModeEnv, "")
+	t.Setenv(permEnv, "")
+	t.Setenv(modelEnv, "claude-opus-5")
+
+	argFile := filepath.Join(t.TempDir(), "args")
+	fakeClaudeArgs(t, argFile)
+	settings := filepath.Join(t.TempDir(), "settings.json")
+
+	r := ClaudeRunner{Timeout: 30 * time.Second}
+	if _, err := r.Start(context.Background(), RunSpec{
+		Prompt: "run plan", SessionUUID: "u-full", Cwd: t.TempDir(),
+		Agent: "tech-lead", SettingsFile: settings,
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	raw, err := os.ReadFile(argFile)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	want := []string{
+		"-p", "run plan", "--session-id", "u-full",
+		"--permission-mode", claudeflags.DefaultMode, "--agent", "tech-lead",
+		"--model", "claude-opus-5", "--settings", settings,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv = %q, want %q", got, want)
 	}
 }
