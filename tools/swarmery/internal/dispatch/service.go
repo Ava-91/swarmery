@@ -1386,9 +1386,19 @@ type Status struct {
 	GlobalPaused  bool     `json:"globalPaused"` // durable global pause flag
 	MaxConcurrent int      `json:"maxConcurrent"`
 	MaxWorktrees  int      `json:"maxWorktrees"`
-	ActiveRuns    int      `json:"activeRuns"`   // live runs in this process
+	ActiveRuns    int      `json:"activeRuns"`   // live BOARD runs in this process
 	FreeSlots     int      `json:"freeSlots"`    // maxConcurrent - activeRuns (>=0)
 	PausedScopes  []string `json:"pausedScopes"` // every currently-paused scope
+
+	// MaxRuns/RunsInFlight/RunSlots describe the DAEMON-WIDE budget
+	// (SWARMERY_MAX_RUNS), which board, phase and plan runs share. Without them the
+	// board's own numbers explain nothing when admission stalls: activeRuns 0 and
+	// freeSlots 2 while nothing starts is exactly what a machine full of phase runs
+	// looks like from here. RunSlots lists every holder so the answer is visible
+	// rather than inferable.
+	MaxRuns      int                `json:"maxRuns"`
+	RunsInFlight int                `json:"runsInFlight"`
+	RunSlots     []runcore.SlotInfo `json:"runSlots"`
 }
 
 // Snapshot builds the status DTO.
@@ -1406,6 +1416,9 @@ func (s *Service) Snapshot() (Status, error) {
 		ActiveRuns:    active,
 		FreeSlots:     free,
 		PausedScopes:  []string{},
+		MaxRuns:       s.Slots.Max(),
+		RunsInFlight:  s.Slots.Count(),
+		RunSlots:      s.Slots.Snapshot(),
 	}
 	rows, err := s.DB.Query(`SELECT scope FROM dispatch_pause WHERE paused=1 ORDER BY scope`)
 	if err != nil {

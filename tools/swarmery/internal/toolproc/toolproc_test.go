@@ -98,7 +98,12 @@ func TestStartParsesDashboardURL(t *testing.T) {
 	if err := m.Start(1, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 3*time.Second, "state=running via stdout parse", func() bool {
+	// 20s, not 3s: the stub is a fresh /bin/sh, and spawning one costs ~300 ms on
+	// macOS — under `go test ./...`, with dozens of package binaries competing, a 3s
+	// budget was the only thing in the module that failed a full local run. waitFor
+	// polls every 10 ms and returns the instant the condition holds, so a larger
+	// budget costs nothing when the machine is idle.
+	waitFor(t, 20*time.Second, "state=running via stdout parse", func() bool {
 		return m.Status(1).State == StateRunning
 	})
 	st := m.Status(1)
@@ -121,7 +126,7 @@ func TestStartParsesDashboardURLHostname(t *testing.T) {
 	if err := m.Start(1, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 3*time.Second, "state=running via localhost URL parse", func() bool {
+	waitFor(t, 20*time.Second, "state=running via localhost URL parse", func() bool { // see the budget note above
 		return m.Status(1).State == StateRunning
 	})
 	if got := m.Status(1).DashboardURL; got != want {
