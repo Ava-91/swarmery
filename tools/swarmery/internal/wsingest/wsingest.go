@@ -629,6 +629,23 @@ func (s *Scanner) Scan() (Stats, error) {
 		}
 	}
 
+	// Convergence arm for daemon-spawned runs: a phase/plan run links its own session
+	// at start and at exit, but both calls can miss (ingest is a separate pipeline
+	// with its own lag, and at start the transcript does not exist yet). The uuid is
+	// on the run row either way, so this pass finishes the job — which is what makes
+	// "the sessions panel lists every run of this plan" true rather than racy.
+	s.linkRunSessions(warn)
+
+	// Inferred links for the THIRD execution path: interactive sessions. /run-plan, a
+	// tech-lead session, an ad-hoc chat — none of them is daemon-spawned, so nothing
+	// registers them anywhere, and their cost and outcome used to attach to no plan at
+	// all. A session that EDITED FILES under a task's plan/ dir was working on that
+	// plan; that is evidence, not registration (decision D3: read-only inference, no
+	// slot accounting, no changes to how those sessions run).
+	for _, tc := range cards {
+		s.linkPlanDirEditors(tc.taskID, tc.card.dir, warn)
+	}
+
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE source = 'workspace'`).Scan(&stats.Tasks); err != nil {
 		return stats, err
 	}
@@ -805,6 +822,113 @@ func (s *Scanner) upsertTask(ws *workspace, c card, now time.Time) (int64, error
 	err = s.db.QueryRow(`SELECT id FROM tasks WHERE workspace_id = ? AND external_id = ?`,
 		ws.id, c.externalID).Scan(&id)
 	return id, err
+}
+
+// linkRunSessions links every phase/plan run's session to its workspace task, for
+// the runs whose own link attempt happened before ingest caught up. Explicit,
+// because the daemon spawned the session with that very uuid — this is a reconcile
+// of a known fact, not a guess.
+//
+// Bounded by the number of runs that have ever happened, and every write is a no-op
+// after the first, so it is cheap enough for the same pass as everything else.
+func (s *Scanner) linkRunSessions(warn func(string, ...any)) {
+	type pair struct{ taskID, sessionID int64 }
+	// COLLECT, then write. The store runs on a single connection
+	// (store.SetMaxOpenConns(1)), so an Exec issued while a Rows cursor from the same
+	// connection is still open deadlocks: the write waits for the connection the read
+	// holds. Every other scan in this file has the same shape for the same reason.
+	var pairs []pair
+	rows, err := s.db.Query(`
+		SELECT p.workspace_task_id, se.id
+		  FROM epic_phases p JOIN sessions se ON se.session_uuid = p.run_session_uuid
+		 WHERE p.run_session_uuid IS NOT NULL AND p.run_session_uuid <> ''
+		UNION
+		SELECT r.workspace_task_id, se.id
+		  FROM plan_runs r JOIN sessions se ON se.session_uuid = r.run_session_uuid
+		 WHERE r.run_session_uuid IS NOT NULL AND r.run_session_uuid <> ''`)
+	if err != nil {
+		warn("run-session links: %v", err)
+		return
+	}
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.taskID, &p.sessionID); err != nil {
+			rows.Close()
+			warn("run-session links: %v", err)
+			return
+		}
+		pairs = append(pairs, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		warn("run-session links: %v", err)
+		return
+	}
+
+	one := 1.0
+	for _, p := range pairs {
+		if err := s.upsertLink(p.taskID, p.sessionID, "explicit", &one); err != nil {
+			warn("run-session link task#%d→session#%d: %v", p.taskID, p.sessionID, err)
+		}
+	}
+}
+
+// planDirLinkConfidence is the confidence of a link inferred from edited paths. High
+// but not certain: editing a plan doc is strong evidence the session served that
+// plan, and it is still weaker than the daemon saying "I spawned this session for
+// this task" — which is exactly what the explicit/heuristic distinction encodes, so
+// upsertLink can never let this overwrite one.
+const planDirLinkConfidence = 0.9
+
+// linkPlanDirEditors links sessions that edited files under <taskDir>/plan/ to that
+// task. Both zones are covered because the caller iterates every card, working and
+// archive alike — a session may well keep editing a plan after it was archived.
+func (s *Scanner) linkPlanDirEditors(taskID int64, taskDir string, warn func(string, ...any)) {
+	if taskDir == "" {
+		return
+	}
+	// LIKE, not GLOB: the prefix is a filesystem path that may contain % or _, both
+	// of which are LIKE wildcards, so they are escaped rather than left to match
+	// anything. A slug with an underscore matching a sibling slug would be a wrong
+	// link, not a missing one, which is the worse failure.
+	prefix := escapeLike(filepath.Join(taskDir, "plan")) + string(filepath.Separator) + "%"
+	// Collect before writing — single connection, see linkRunSessions.
+	var sessionIDs []int64
+	rows, err := s.db.Query(`
+		SELECT DISTINCT session_id FROM file_changes
+		 WHERE file_path LIKE ? ESCAPE '\'`, prefix)
+	if err != nil {
+		warn("plan-dir links task#%d: %v", taskID, err)
+		return
+	}
+	for rows.Next() {
+		var sessionID int64
+		if err := rows.Scan(&sessionID); err != nil {
+			rows.Close()
+			warn("plan-dir links task#%d: %v", taskID, err)
+			return
+		}
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		warn("plan-dir links task#%d: %v", taskID, err)
+		return
+	}
+
+	conf := planDirLinkConfidence
+	for _, sessionID := range sessionIDs {
+		if err := s.upsertLink(taskID, sessionID, "heuristic", &conf); err != nil {
+			warn("plan-dir link task#%d→session#%d: %v", taskID, sessionID, err)
+		}
+	}
+}
+
+// escapeLike neutralises LIKE's wildcards in a literal prefix.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	return strings.ReplaceAll(s, "_", `\_`)
 }
 
 // upsertLink writes one task↔session link, with the never-downgrade rule that now
