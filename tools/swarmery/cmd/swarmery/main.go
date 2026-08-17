@@ -58,6 +58,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/prune"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/routines"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runtruth"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/settingsoverlay"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
@@ -1386,10 +1387,20 @@ func cmdServe(args []string) error {
 	// no-login→ready recovery, debounced).
 	runTruth := runtruth.NewRecorder(db)
 
+	// ONE run budget for the whole daemon (SWARMERY_MAX_RUNS, default 4). Every
+	// engine below is handed this same registry: board, phase and plan runs draw
+	// from one pool, which is what stops three engines each spawning up to their own
+	// cap against a total none of them could see. NewService gives each Service its
+	// own pool by default (so unit tests stay hermetic) — these three assignments
+	// are what make the budget global, so they must travel with the services they
+	// belong to.
+	runSlots := runcore.NewSlots(0)
+
 	dispatchSvc := dispatch.NewService(
 		db, dispatch.ConfigFromEnv(),
 		dispatch.ClaudeRunner{AccountVerdict: runTruth.Record}, wtMgr,
 	)
+	dispatchSvc.Slots = runSlots
 	dispatchSvc.Playbooks = playbookReg
 	if err := dispatchSvc.HealStale(); err != nil {
 		log.Printf("warning: dispatch heal on startup: %v", err)
@@ -1506,6 +1517,7 @@ func cmdServe(args []string) error {
 	// verify so all three agree on the worktree root and git boundary. Heal any
 	// 'running' rows a crashed daemon left behind to failed before serving.
 	phaserunSvc := phaserun.NewService(db, phaserun.ClaudeRunner{}, wtMgr)
+	phaserunSvc.Slots = runSlots // the one daemon-wide budget (see runSlots above)
 	// Read-only git seam, through the same boundary the worktree manager uses: it
 	// NAMES the base a dirty-branch refusal counted commits against. NewService
 	// does not set it, so without this line BranchDirtyError.Base is always "" in
@@ -1524,6 +1536,7 @@ func cmdServe(args []string) error {
 	// worktree, driving core's run-plan skill (state on plan_runs). Same
 	// worktree.Manager as dispatch/verify/phaserun; same startup heal posture.
 	planrunSvc := planrun.NewService(db, planrun.ClaudeRunner{}, wtMgr)
+	planrunSvc.Slots = runSlots // the one daemon-wide budget (see runSlots above)
 	// Read-only git seam, through the same boundary the worktree manager uses: it
 	// NAMES the base a dirty-branch refusal counted commits against, and answers
 	// whether a run branch existed before DeleteRunBranch removed it. Without it

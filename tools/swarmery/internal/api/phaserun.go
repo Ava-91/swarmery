@@ -30,6 +30,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -117,6 +118,7 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 	uuid, err := phaserunSvc.Start(phaseID)
 	var depsErr *phaserun.DepsUnmetError
 	var dirtyErr *phaserun.BranchDirtyError
+	var noSlot *runcore.NoSlotError
 	// Start wraps the reclaim/acquire failures (fmt.Errorf("reclaim run branch:
 	// %w", …)), so errors.Is still matches through the wrap. Resolved BEFORE the
 	// switch and placed above the generic arm — an arm below `case err != nil` is
@@ -127,6 +129,15 @@ func (h *Handler) runPhase(w http.ResponseWriter, r *http.Request) {
 		writeClientErr(w, http.StatusNotFound, "phase not found")
 	case errors.Is(err, phaserun.ErrRunning):
 		writeConflict(w, codeAlreadyRunning, "a run is already active for this phase")
+	// The mirror of runPlan's phase-running arm: a whole-plan run is driving these
+	// same docs from its own worktree, so a phase run started now would fight it.
+	case errors.Is(err, phaserun.ErrPlanRunning):
+		writeConflict(w, codePlanRunning,
+			"a plan run is active for this plan — cancel it before running one phase")
+	// The daemon-wide run budget is full. Purely transient and nothing was stamped,
+	// so the body names the holders instead of blaming the phase.
+	case errors.As(err, &noSlot):
+		writeNoRunSlot(w, noSlot)
 	case errors.As(err, &depsErr):
 		writeConflictFields(w, codeDepsUnmet, depsErr.Error(), map[string]any{
 			"unmetDeps": depsErr.Unmet,

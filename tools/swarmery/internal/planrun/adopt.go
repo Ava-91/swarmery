@@ -100,21 +100,19 @@ func (s *Service) adoptSurvivors() ([]int64, error) {
 // deterministic path.
 func (s *Service) adopt(taskID int64, pid int, uuid string) {
 	cancelled := &atomic.Bool{}
-	s.mu.Lock()
-	if _, busy := s.active[taskID]; busy {
-		s.mu.Unlock()
+	// Slots.Adopt, not the admission path: the orchestrator is ALREADY running, so
+	// a full pool must not stop us tracking it — refusing would leave the slot free
+	// for a rival Start in the same worktree, the exact failure this file exists to
+	// prevent. The pool stays over-subscribed until the orphan exits.
+	_, ok := s.Slots.Adopt(s.slotKey(taskID), uuid, func() {
+		cancelled.Store(true)
+		if err := procgroup.Kill(pid); err != nil {
+			log.Printf("warning: planrun: kill adopted run plan=%d pid=%d: %v", taskID, pid, err)
+		}
+	})
+	if !ok {
 		return // already tracked — never adopt twice
 	}
-	s.active[taskID] = run{
-		uuid: uuid,
-		cancel: func() {
-			cancelled.Store(true)
-			if err := procgroup.Kill(pid); err != nil {
-				log.Printf("warning: planrun: kill adopted run plan=%d pid=%d: %v", taskID, pid, err)
-			}
-		},
-	}
-	s.mu.Unlock()
 
 	log.Printf("planrun: adopted running plan=%d uuid=%s pid=%d (survived a daemon restart)", taskID, uuid, pid)
 	s.notify(taskID)
@@ -129,11 +127,10 @@ func (s *Service) watchAdopted(taskID int64, pid int, cancelled *atomic.Bool) {
 		time.Sleep(s.pollInterval())
 	}
 
-	s.mu.Lock()
-	_, tracked := s.active[taskID]
-	delete(s.active, taskID)
-	s.mu.Unlock()
-	if !tracked {
+	// Release-by-key, deliberately: what this watcher needs to know is whether the
+	// run was STILL tracked when the pid vanished. Something else closing it out
+	// first means the terminal write below would stamp over a recorded outcome.
+	if !s.Slots.Release(s.slotKey(taskID)) {
 		return // someone else already closed this run out
 	}
 

@@ -26,7 +26,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
@@ -117,13 +116,6 @@ func (e *PlanSpansReposError) Error() string {
 
 func (e *PlanSpansReposError) Is(target error) bool { return target == ErrPlanSpansRepos }
 
-// run is one in-flight plan run: its cancel (aborts the child claude) and the
-// pre-generated session uuid.
-type run struct {
-	cancel context.CancelFunc
-	uuid   string
-}
-
 // Service owns the plan-run lifecycle: gate checks, worktree acquisition,
 // spawn, exit stamping, and startup heal. Notify (wired to the api layer's
 // plan_updated publisher) is keyed by the workspace task id so the Plans page
@@ -152,8 +144,13 @@ type Service struct {
 	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
 	ProcAlive func(pid int) bool
 
-	mu     sync.Mutex
-	active map[int64]run // workspace task id → in-flight run
+	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
+	// per-plan single-flight gate AND — new — a bound this engine never had. A plan
+	// run is the most expensive thing the daemon starts (an orchestrator that
+	// spawns its own sub-agents for hours) and it used to draw against no budget at
+	// all. NewService gives every Service its own pool (hermetic unit tests); the
+	// daemon replaces it with the one instance dispatch and phaserun also hold.
+	Slots *runcore.Slots
 	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 }
@@ -163,14 +160,19 @@ type Service struct {
 // production impls.
 func NewService(db *sql.DB, r Runner, wt dispatch.WorktreeManager) *Service {
 	return &Service{
-		DB:     db,
-		Run:    r,
-		Wt:     wt,
-		UUID:   runcore.NewUUID,
-		now:    time.Now,
-		active: make(map[int64]run),
+		DB:    db,
+		Run:   r,
+		Wt:    wt,
+		UUID:  runcore.NewUUID,
+		now:   time.Now,
+		Slots: runcore.NewSlots(0),
 	}
 }
+
+// Engine names plan runs in the shared slot registry: "planrun:<workspace task id>".
+const Engine = "planrun"
+
+func (s *Service) slotKey(taskID int64) string { return runcore.SlotKey(Engine, taskID) }
 
 func (s *Service) clock() time.Time {
 	if s.now != nil {
@@ -181,23 +183,7 @@ func (s *Service) clock() time.Time {
 
 func (s *Service) ts() string { return s.clock().UTC().Format(time.RFC3339) }
 
-func (s *Service) spawn(fn func()) {
-	wrapped := func() {
-		// A panic in a run goroutine must never take the daemon down — recover +
-		// log (mirrors phaserun.spawn / dispatch.spawn).
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("error: planrun: goroutine panic recovered: %v", r)
-			}
-		}()
-		fn()
-	}
-	if s.Go != nil {
-		s.Go(wrapped)
-		return
-	}
-	go wrapped()
-}
+func (s *Service) spawn(fn func()) { runcore.Go(Engine, s.Go, fn) }
 
 func (s *Service) notify(taskID int64) {
 	if s.Notify != nil {
@@ -354,23 +340,28 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	}
 	runMode := ValidMode(mode)
 
-	// Single-flight slot BEFORE the (slow, git-touching) Acquire so a concurrent
-	// Start cannot double-spawn; released on any admission failure below.
-	s.mu.Lock()
-	if _, running := s.active[taskID]; running {
-		s.mu.Unlock()
-		return "", ErrRunning
-	}
+	// Run slot BEFORE the (slow, git-touching) Acquire so a concurrent Start cannot
+	// double-spawn; released on any admission failure below. The slot is now
+	// daemon-wide (runcore.Slots): a plan run is the most expensive thing the daemon
+	// starts, and it used to draw against no budget at all.
 	uuid := s.UUID()
 	ctx, cancel := context.WithCancel(context.Background())
-	s.active[taskID] = run{cancel: cancel, uuid: uuid}
-	s.mu.Unlock()
+	releaseSlot, err := s.Slots.TryAcquire(s.slotKey(taskID), uuid, cancel)
+	if err != nil {
+		cancel()
+		// ErrBusy is this plan already running — the sentinel the API renders as
+		// "already-running". ErrNoSlot is a FULL POOL, a different answer that
+		// travels as itself (it names its holders) and must never be reported as a
+		// failed run: nothing was stamped, and the caller may simply retry.
+		if errors.Is(err, runcore.ErrBusy) {
+			return "", ErrRunning
+		}
+		return "", err
+	}
 
 	release := func() {
 		cancel()
-		s.mu.Lock()
-		delete(s.active, taskID)
-		s.mu.Unlock()
+		releaseSlot()
 	}
 
 	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
@@ -424,7 +415,7 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 		log.Printf("planrun: plan=%d inheriting project settings %s (worktree is a checkout of %s)",
 			taskID, spec.SettingsFile, info.RepoRoot)
 	}
-	s.spawn(func() { s.runAndHandle(ctx, cancel, info, acq, spec) })
+	s.spawn(func() { s.runAndHandle(ctx, cancel, releaseSlot, info, acq, spec) })
 	return uuid, nil
 }
 
@@ -440,7 +431,7 @@ func allComplete(phases []Phase) bool {
 
 // runAndHandle executes the run to completion, stamps the exit state, removes
 // the worktree (branch kept), and always releases the slot.
-func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, info planInfo, acq worktree.Acquired, spec RunSpec) {
+func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, releaseSlot func(), info planInfo, acq worktree.Acquired, spec RunSpec) {
 	defer func() {
 		cancel()
 		// Worktree FIRST, slot LAST. stamp() has already moved the row off
@@ -450,9 +441,7 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, i
 		// invariant-4 reuse) and this defer then rips the new run's worktree out
 		// from under it.
 		s.removeWorktree(info.RepoRoot, acq)
-		s.mu.Lock()
-		delete(s.active, info.TaskID)
-		s.mu.Unlock()
+		releaseSlot()
 		s.notify(info.TaskID)
 	}()
 
@@ -541,13 +530,10 @@ func (s *Service) removeWorktree(repoRoot string, acq worktree.Acquired) {
 // and the run goroutine's exit path stamps failed/cancelled. Returns whether a
 // run was actually in flight.
 func (s *Service) Cancel(taskID int64) bool {
-	s.mu.Lock()
-	r, ok := s.active[taskID]
-	s.mu.Unlock()
-	if ok {
-		r.cancel()
-	}
-	return ok
+	// Slots.Cancel invokes the run's cancel and leaves the slot held: the run
+	// goroutine's own exit path releases it, so a Retry cannot get in before the
+	// dying run has let go of its worktree.
+	return s.Slots.Cancel(s.slotKey(taskID))
 }
 
 // DeleteRunBranch force-deletes a plan's run branch, INCLUDING one that holds
@@ -571,10 +557,7 @@ func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, er
 		return "", false, ErrNoPath
 	}
 	// A live run owns the branch; deleting it underneath would strand its commits.
-	s.mu.Lock()
-	_, busy := s.active[taskID]
-	s.mu.Unlock()
-	if busy {
+	if s.Slots.IsActive(s.slotKey(taskID)) {
 		return "", false, ErrRunning
 	}
 	// The branch lives in the repository the run resolved to, not at the project
