@@ -370,6 +370,14 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		return "", err
 	}
 
+	// Attach this run's session to the PLAN it serves (epic_phases.workspace_task_id
+	// — the epic's own tasks row). Almost always a no-op here: the process has not
+	// started, so its transcript cannot be ingested yet. The call belongs at the
+	// start anyway, because a daemon that dies mid-run leaves the link to wsingest's
+	// reconcile pass, and that pass reads the same run_session_uuid this write has
+	// already stamped. runAndHandle links again at exit.
+	runcore.LinkSession(s.DB, Engine, info.WorkspaceTaskID, uuid)
+
 	log.Printf("phaserun: start phase=%d task=%d uuid=%s worktree=%q", phaseID, info.WorkspaceTaskID, uuid, acq.Path)
 	s.notify(info.WorkspaceTaskID)
 
@@ -402,6 +410,10 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, r
 		// from under it.
 		s.removeWorktree(info.RepoRoot, acq)
 		releaseSlot()
+		// The reconcile arm: by now the transcript exists, so this is where the link
+		// usually actually lands. Still not guaranteed — ingest is a separate pipeline
+		// with its own lag — which is why wsingest converges the rest.
+		runcore.LinkSession(s.DB, Engine, info.WorkspaceTaskID, spec.SessionUUID)
 		s.notify(info.WorkspaceTaskID)
 	}()
 

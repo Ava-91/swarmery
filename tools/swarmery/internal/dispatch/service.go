@@ -1032,31 +1032,21 @@ func (s *Service) RemoveWorktreeFor(taskID int64) {
 // ── session link + sentinel read ──
 
 // linkSession reconciles the explicit task↔session link: once the dispatched
-// session's transcript is ingested (sessions row with our uuid exists), insert
-// task_sessions(link_source='explicit'). Idempotent (INSERT OR IGNORE). If the
-// row is not yet ingested this is a no-op; the next exit/heal pass or a
-// verification run can re-link. Best-effort — a missing link never blocks state.
+// session's transcript is ingested (a sessions row with our uuid exists), write
+// task_sessions('explicit') and stamp tasks.session_id. Idempotent. If the row is
+// not yet ingested this is a no-op; the next exit/heal pass or a verification run
+// re-links. Best-effort — a missing link never blocks state.
+//
+// The mechanics are runcore's now, shared with phase and plan runs, which had no
+// linking at all before. Two things that were local to dispatch stay dispatch's:
+// stamping tasks.session_id (a board card has ONE session; an epic row does not),
+// and calling this from the exit path at all.
 func (s *Service) linkSession(taskID int64, uuid string) {
-	var sid int64
-	err := s.DB.QueryRow(`SELECT id FROM sessions WHERE session_uuid=?`, uuid).Scan(&sid)
-	if errors.Is(err, sql.ErrNoRows) {
+	sid, linked := runcore.LinkSession(s.DB, Engine, taskID, uuid)
+	if !linked {
 		return
 	}
-	if err != nil {
-		log.Printf("error: dispatch: resolve session for link (task %d): %v", taskID, err)
-		return
-	}
-	if _, err := s.DB.Exec(
-		`INSERT OR IGNORE INTO task_sessions(task_id, session_id, link_source, confidence)
-		 VALUES(?,?, 'explicit', 1.0)`, taskID, sid); err != nil {
-		log.Printf("error: dispatch: insert task_session link (task %d): %v", taskID, err)
-		return
-	}
-	// Also stamp tasks.session_id (the primary FK) if unset.
-	if _, err := s.DB.Exec(
-		`UPDATE tasks SET session_id=COALESCE(session_id, ?) WHERE id=?`, sid, taskID); err != nil {
-		log.Printf("error: dispatch: set task.session_id (task %d): %v", taskID, err)
-	}
+	runcore.StampPrimarySession(s.DB, Engine, taskID, sid)
 }
 
 // classifyLastTurn fetches the linked session's last assistant turn text (by

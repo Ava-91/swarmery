@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // DefaultRescanInterval is the fallback periodic rescan cadence. Workspace
@@ -805,20 +807,12 @@ func (s *Scanner) upsertTask(ws *workspace, c card, now time.Time) (int64, error
 	return id, err
 }
 
-// upsertLink writes one task↔session link. Explicit always wins: a heuristic
-// upsert never downgrades an existing explicit row, while an explicit upsert
-// upgrades a heuristic one.
+// upsertLink writes one task↔session link, with the never-downgrade rule that now
+// lives in internal/runcore — the run engines write explicit links through the same
+// statement, and two copies of "explicit always wins" is one copy too many for a
+// rule whose whole job is to be consistent across writers.
 func (s *Scanner) upsertLink(taskID, sessionID int64, source string, confidence *float64) error {
-	_, err := s.db.Exec(`
-		INSERT INTO task_sessions (task_id, session_id, link_source, confidence)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(task_id, session_id) DO UPDATE SET
-			link_source = CASE WHEN task_sessions.link_source = 'explicit'
-			                   THEN 'explicit' ELSE excluded.link_source END,
-			confidence  = CASE WHEN task_sessions.link_source = 'explicit'
-			                   THEN task_sessions.confidence ELSE excluded.confidence END`,
-		taskID, sessionID, source, confidence)
-	return err
+	return runcore.UpsertLink(s.db, taskID, sessionID, source, confidence)
 }
 
 func nullStr(s string) any {

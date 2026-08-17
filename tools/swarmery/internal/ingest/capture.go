@@ -389,7 +389,7 @@ func (in *ingester) computeCaptureSkip() bool {
 	if isSystemProjectPath(path) {
 		return true
 	}
-	return hasExplicitDispatchLink(in.tx, in.sessionUUID, in.sessionID)
+	return isEngineRun(in.tx, in.sessionUUID, in.sessionID)
 }
 
 // isSystemProjectPath reports whether a project row is the deliberate System
@@ -401,29 +401,50 @@ func isSystemProjectPath(path string) bool {
 	return sys != "" && path == sys
 }
 
-// hasExplicitDispatchLink reports whether this session IS a dispatched run of a
-// board task — either the uuid the dispatcher parked on tasks.dispatch_session_uuid
-// before spawning, or a task_sessions row it reconciled afterwards with
-// link_source='explicit' (the heuristic links are guesses and deliberately do
-// not count). Such a session's work already has a card; capturing its todos
-// would mint children of the card that spawned it.
+// isEngineRun reports whether this session IS a run the daemon spawned — a board
+// dispatch, a phase run, or a whole-plan run. Such a session's work already has a
+// card or a phase doc, so capturing its TodoWrite items would mint children of the
+// unit of work that spawned it.
 //
-// Returns true on a query error too: an unclassifiable session must not reach
-// the board.
-func hasExplicitDispatchLink(q dbtx, sessionUUID string, sessionID int64) bool {
+// Four signals, and all four are needed:
+//
+//   - tasks.dispatch_session_uuid — the uuid the dispatcher parked before spawning.
+//   - epic_phases.run_session_uuid — the same for a phase run.
+//   - plan_runs.run_session_uuid — the same for a whole-plan run.
+//   - task_sessions with link_source='explicit' — a link reconciled afterwards
+//     (heuristic links are guesses and deliberately do not count).
+//
+// The two run_session_uuid arms are the fix for a live defect: this predicate used
+// to check the dispatch arms ONLY, so a phase-run or plan-run session matched
+// neither branch and MINTED CAPTURED BOARD CARDS FROM ITS OWN WORK — the executor's
+// own todo list, arriving on the board as new cards, while the phase it belongs to
+// was still running.
+//
+// The columns are kept alongside the task_sessions arm rather than replaced by it
+// (phase 3 now writes those explicit links) because the columns are authoritative
+// the moment the run starts, while a link can be missing for as long as ingest lags.
+// A predicate that guards the board must not depend on a race.
+//
+// Returns true on a query error too: an unclassifiable session must not reach the
+// board.
+func isEngineRun(q dbtx, sessionUUID string, sessionID int64) bool {
 	var one int
 	err := q.QueryRow(`
 		SELECT 1 FROM tasks WHERE dispatch_session_uuid = ?
 		UNION ALL
+		SELECT 1 FROM epic_phases WHERE run_session_uuid = ?
+		UNION ALL
+		SELECT 1 FROM plan_runs WHERE run_session_uuid = ?
+		UNION ALL
 		SELECT 1 FROM task_sessions WHERE session_id = ? AND link_source = 'explicit'
-		LIMIT 1`, sessionUUID, sessionID).Scan(&one)
+		LIMIT 1`, sessionUUID, sessionUUID, sessionUUID, sessionID).Scan(&one)
 	switch {
 	case err == nil:
 		return true
 	case errors.Is(err, sql.ErrNoRows):
 		return false
 	default:
-		log.Printf("debug: ingest: capture dispatch-link check (session %d): %v", sessionID, err)
+		log.Printf("debug: ingest: capture engine-run check (session %d): %v", sessionID, err)
 		return true
 	}
 }
@@ -458,8 +479,8 @@ func CaptureSkipReason(db *sql.DB, sessionID int64) (string, bool) {
 	if isSystemProjectPath(path) {
 		return "System-project sessions are the daemon's own bookkeeping", true
 	}
-	if hasExplicitDispatchLink(db, sessionUUID, sessionID) {
-		return "this session is a dispatched run of a board task", true
+	if isEngineRun(db, sessionUUID, sessionID) {
+		return "this session is a run the daemon spawned (board task, phase, or plan)", true
 	}
 	return "", false
 }
@@ -557,7 +578,7 @@ func CaptureSessionCard(db *sql.DB, sessionID int64) (int64, bool) {
 	if sessionUUID == "" || projectID == 0 {
 		return 0, false
 	}
-	if isSystemProjectPath(path) || hasExplicitDispatchLink(db, sessionUUID, sessionID) {
+	if isSystemProjectPath(path) || isEngineRun(db, sessionUUID, sessionID) {
 		return 0, false
 	}
 	// Todos already captured → the session's work is on the board in detail and
