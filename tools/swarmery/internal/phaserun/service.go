@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
@@ -50,6 +49,13 @@ var (
 	// the deterministic branch name cannot be reclaimed automatically. Returned as
 	// a *BranchDirtyError, which errors.Is-matches this sentinel.
 	ErrBranchDirty = errors.New("run branch has unmerged commits")
+	// ErrPlanRunning: a run of the WHOLE plan this phase belongs to is in flight
+	// (409). The mirror of planrun.ErrPhaseRunning, and the reason it exists is the
+	// same in both directions: a plan run and a phase run of the same plan edit the
+	// same docs from two different worktrees, so whichever starts second is
+	// overwriting the first's work. Only planrun checked before this; the asymmetry
+	// meant a phase started DURING a live plan run put two orchestrators on one plan.
+	ErrPlanRunning = errors.New("a plan run is active for this plan")
 	// ErrNoRunBranch: the phase has no recorded run_branch (0043), so there is no
 	// branch this service is willing to name — either it never ran, or it ran before
 	// the column existed and the backfill did not reach it. Deliberately NOT a
@@ -98,13 +104,6 @@ func (e *DepsUnmetError) Error() string {
 
 func (e *DepsUnmetError) Is(target error) bool { return target == ErrDepsUnmet }
 
-// run is one in-flight phase run: its cancel (aborts the child claude) and the
-// pre-generated session uuid.
-type run struct {
-	cancel context.CancelFunc
-	uuid   string
-}
-
 // Service owns the phase-run lifecycle: gate checks, worktree acquisition,
 // spawn, exit stamping, and startup heal. Notify (wired to the api layer's
 // plan_updated publisher) is keyed by the WORKSPACE task id so the Plans page
@@ -134,8 +133,13 @@ type Service struct {
 	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
 	ProcAlive func(pid int) bool
 
-	mu     sync.Mutex
-	active map[int64]run // epic_phases.id → in-flight run
+	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
+	// per-phase single-flight gate AND — new — a bound this engine never had. A
+	// phase run used to be limited by nothing at all: ten phases started from the
+	// UI were ten `claude` processes. NewService gives every Service its own pool
+	// (hermetic unit tests); the daemon replaces it with the one instance dispatch
+	// and planrun also hold.
+	Slots *runcore.Slots
 	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 }
@@ -145,14 +149,19 @@ type Service struct {
 // production impls.
 func NewService(db *sql.DB, r Runner, wt dispatch.WorktreeManager) *Service {
 	return &Service{
-		DB:     db,
-		Run:    r,
-		Wt:     wt,
-		UUID:   runcore.NewUUID,
-		now:    time.Now,
-		active: make(map[int64]run),
+		DB:    db,
+		Run:   r,
+		Wt:    wt,
+		UUID:  runcore.NewUUID,
+		now:   time.Now,
+		Slots: runcore.NewSlots(0),
 	}
 }
+
+// Engine names phase runs in the shared slot registry: "phaserun:<epic_phases.id>".
+const Engine = "phaserun"
+
+func (s *Service) slotKey(phaseID int64) string { return runcore.SlotKey(Engine, phaseID) }
 
 func (s *Service) clock() time.Time {
 	if s.now != nil {
@@ -163,23 +172,7 @@ func (s *Service) clock() time.Time {
 
 func (s *Service) ts() string { return s.clock().UTC().Format(time.RFC3339) }
 
-func (s *Service) spawn(fn func()) {
-	wrapped := func() {
-		// A panic in a run goroutine must never take the daemon down — recover +
-		// log (mirrors planning.spawn / dispatch.spawn).
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("error: phaserun: goroutine panic recovered: %v", r)
-			}
-		}()
-		fn()
-	}
-	if s.Go != nil {
-		s.Go(wrapped)
-		return
-	}
-	go wrapped()
-}
+func (s *Service) spawn(fn func()) { runcore.Go(Engine, s.Go, fn) }
 
 func (s *Service) notify(taskID int64) {
 	if s.Notify != nil {
@@ -252,6 +245,15 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	if info.RunState == "running" {
 		return "", ErrRunning
 	}
+	// The mirror of planrun's phaseRunActive gate: refuse while the whole plan is
+	// being run. Both directions are needed — one of them alone is not "mostly
+	// safe", it is a gate that only closes if the operator happens to press the
+	// buttons in one particular order.
+	if busy, err := s.planRunActive(info.WorkspaceTaskID); err != nil {
+		return "", err
+	} else if busy {
+		return "", ErrPlanRunning
+	}
 	if info.ProjectPath == "" {
 		return "", ErrNoPath
 	}
@@ -275,23 +277,29 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		return "", err
 	}
 
-	// Single-flight slot BEFORE the (slow, git-touching) Acquire so a concurrent
-	// Start cannot double-spawn; released on any admission failure below.
-	s.mu.Lock()
-	if _, busy := s.active[phaseID]; busy {
-		s.mu.Unlock()
-		return "", ErrRunning
-	}
+	// Run slot BEFORE the (slow, git-touching) Acquire so a concurrent Start cannot
+	// double-spawn; released on any admission failure below. The slot is now
+	// daemon-wide (runcore.Slots), so this is also where a phase run finally
+	// respects a budget: it used to be bounded by nothing, and ten phases started
+	// from the UI were ten `claude` processes on one machine.
 	uuid := s.UUID()
 	ctx, cancel := context.WithCancel(context.Background())
-	s.active[phaseID] = run{cancel: cancel, uuid: uuid}
-	s.mu.Unlock()
+	releaseSlot, err := s.Slots.TryAcquire(s.slotKey(phaseID), uuid, cancel)
+	if err != nil {
+		cancel()
+		// ErrBusy is this phase already running — the sentinel the API already
+		// renders as "already-running". ErrNoSlot is a FULL POOL, a different answer
+		// that travels as itself (it names its holders) and must never be reported as
+		// a failed run: nothing was stamped, and the caller may simply retry.
+		if errors.Is(err, runcore.ErrBusy) {
+			return "", ErrRunning
+		}
+		return "", err
+	}
 
 	release := func() {
 		cancel()
-		s.mu.Lock()
-		delete(s.active, phaseID)
-		s.mu.Unlock()
+		releaseSlot()
 	}
 
 	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
@@ -377,13 +385,13 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		log.Printf("phaserun: phase=%d inheriting project settings %s (worktree is a checkout of %s)",
 			phaseID, spec.SettingsFile, info.RepoRoot)
 	}
-	s.spawn(func() { s.runAndHandle(ctx, cancel, phaseID, info, acq, spec) })
+	s.spawn(func() { s.runAndHandle(ctx, cancel, releaseSlot, phaseID, info, acq, spec) })
 	return uuid, nil
 }
 
 // runAndHandle executes the run to completion, stamps the exit state, removes
 // the worktree (branch kept), and always releases the slot.
-func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, phaseID int64, info phaseInfo, acq worktree.Acquired, spec RunSpec) {
+func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, releaseSlot func(), phaseID int64, info phaseInfo, acq worktree.Acquired, spec RunSpec) {
 	defer func() {
 		cancel()
 		// Worktree FIRST, slot LAST. stamp() has already moved the row off
@@ -393,9 +401,7 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, p
 		// invariant-4 reuse) and this defer then rips the new run's worktree out
 		// from under it.
 		s.removeWorktree(info.RepoRoot, acq)
-		s.mu.Lock()
-		delete(s.active, phaseID)
-		s.mu.Unlock()
+		releaseSlot()
 		s.notify(info.WorkspaceTaskID)
 	}()
 
@@ -526,13 +532,10 @@ func (s *Service) removeWorktree(repoRoot string, acq worktree.Acquired) {
 // and the run goroutine's exit path stamps failed/cancelled. Returns whether a
 // run was actually in flight.
 func (s *Service) Cancel(phaseID int64) bool {
-	s.mu.Lock()
-	r, ok := s.active[phaseID]
-	s.mu.Unlock()
-	if ok {
-		r.cancel()
-	}
-	return ok
+	// Slots.Cancel invokes the run's cancel and leaves the slot held: the run
+	// goroutine's own exit path releases it, so a Retry cannot get in before the
+	// dying run has let go of its worktree.
+	return s.Slots.Cancel(s.slotKey(phaseID))
 }
 
 // DeleteRunBranch force-deletes a phase's run branch, INCLUDING one that holds
@@ -553,10 +556,7 @@ func (s *Service) DeleteRunBranch(phaseID int64) (branch string, existed bool, e
 		return "", false, ErrNoPath
 	}
 	// A live run owns the branch; deleting it underneath would strand its commits.
-	s.mu.Lock()
-	_, busy := s.active[phaseID]
-	s.mu.Unlock()
-	if busy {
+	if s.Slots.IsActive(s.slotKey(phaseID)) {
 		return "", false, ErrRunning
 	}
 	// The branch STAMPED at spawn (0043) — never re-derived from the row id. Deriving
@@ -638,6 +638,19 @@ func (s *Service) HealStale() error {
 		log.Printf("swarmery phaserun: healed %d orphaned running phase(s) to failed", n)
 	}
 	return nil
+}
+
+// planRunActive reports whether the plan this phase belongs to has a whole-plan
+// run in flight — the exact mirror of planrun.phaseRunActive, reading the other
+// table. DB, not the slot registry: a plan run started by a PREVIOUS daemon and
+// adopted after a restart is 'running' in plan_runs, and the honest answer to
+// "is something already driving this plan" must include it.
+func (s *Service) planRunActive(workspaceTaskID int64) (bool, error) {
+	var n int
+	err := s.DB.QueryRow(
+		`SELECT COUNT(*) FROM plan_runs WHERE workspace_task_id = ? AND run_state = 'running'`,
+		workspaceTaskID).Scan(&n)
+	return n > 0, err
 }
 
 // loadPhase reads the phase + its epic task + project for admission.

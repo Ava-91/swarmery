@@ -540,9 +540,7 @@ func TestRunTeardown_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 	)
 	wt.onRemove = func() {
 		hookCalled = true
-		s.mu.Lock()
-		_, slotHeld = s.active[p1]
-		s.mu.Unlock()
+		slotHeld = s.Slots.IsActive(s.slotKey(p1))
 	}
 	s = newTestService(db, &stubRunner{}, wt)
 
@@ -556,7 +554,7 @@ func TestRunTeardown_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 		t.Error("single-flight slot was already released when the worktree was removed — " +
 			"a concurrent re-Start could reuse and then lose that worktree")
 	}
-	if _, busy := s.active[p1]; busy {
+	if s.Slots.IsActive(s.slotKey(p1)) {
 		t.Error("slot still held after the run finished")
 	}
 }
@@ -949,9 +947,7 @@ func TestStart_DBFailure_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 	)
 	wt.onRemove = func() {
 		hookCalled = true
-		s.mu.Lock()
-		_, slotHeld = s.active[p1]
-		s.mu.Unlock()
+		slotHeld = s.Slots.IsActive(s.slotKey(p1))
 	}
 	s = newTestService(db, &stubRunner{}, wt)
 
@@ -965,7 +961,7 @@ func TestStart_DBFailure_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 		t.Error("single-flight slot was already released when the worktree was removed — " +
 			"a concurrent Start could warm-reuse the path this teardown then deletes")
 	}
-	if _, busy := s.active[p1]; busy {
+	if s.Slots.IsActive(s.slotKey(p1)) {
 		t.Error("slot still held after the failed admission")
 	}
 }
@@ -1080,7 +1076,7 @@ func TestStart_BranchDirty_RefusesAndReleasesSlot(t *testing.T) {
 	if wt.acquiredCount() != 0 {
 		t.Errorf("acquired = %v, want no acquisition after a dirty-branch refusal", wt.acquired)
 	}
-	if _, busy := s.active[p1]; busy {
+	if s.Slots.IsActive(s.slotKey(p1)) {
 		t.Error("single-flight slot still held after a dirty-branch refusal")
 	}
 	// The refusal is not sticky: once the branch is resolved, a retry is admitted

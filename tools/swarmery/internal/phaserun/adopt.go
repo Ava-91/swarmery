@@ -128,23 +128,21 @@ func (s *Service) adoptSurvivors() ([]int64, error) {
 // path is warm-reused by the next Start anyway.
 func (s *Service) adopt(phaseID int64, info phaseInfo, pid int, uuid string) {
 	cancelled := &atomic.Bool{}
-	s.mu.Lock()
-	if _, busy := s.active[phaseID]; busy {
-		s.mu.Unlock()
+	// Slots.Adopt, not the admission path: the run is ALREADY executing, so a full
+	// pool must not stop us tracking it — refusing would leave the slot free for a
+	// rival Start in the same worktree, the exact failure this file exists to
+	// prevent. The pool stays over-subscribed until the orphan exits.
+	_, ok := s.Slots.Adopt(s.slotKey(phaseID), uuid, func() {
+		cancelled.Store(true)
+		// The run leads its own group (procgroup.Isolate at spawn), so this reaches
+		// its children too — the same kill a cancel of our own child does.
+		if err := procgroup.Kill(pid); err != nil {
+			log.Printf("warning: phaserun: kill adopted run phase=%d pid=%d: %v", phaseID, pid, err)
+		}
+	})
+	if !ok {
 		return // already tracked — never adopt the same run twice
 	}
-	s.active[phaseID] = run{
-		uuid: uuid,
-		cancel: func() {
-			cancelled.Store(true)
-			// The run leads its own group (procgroup.Isolate at spawn), so this
-			// reaches its children too — the same kill a cancel of our own child does.
-			if err := procgroup.Kill(pid); err != nil {
-				log.Printf("warning: phaserun: kill adopted run phase=%d pid=%d: %v", phaseID, pid, err)
-			}
-		},
-	}
-	s.mu.Unlock()
 
 	log.Printf("phaserun: adopted running phase=%d uuid=%s pid=%d (survived a daemon restart)", phaseID, uuid, pid)
 	s.notify(info.WorkspaceTaskID)
@@ -159,11 +157,11 @@ func (s *Service) watchAdopted(phaseID int64, info phaseInfo, pid int, cancelled
 		time.Sleep(s.pollInterval())
 	}
 
-	s.mu.Lock()
-	_, tracked := s.active[phaseID]
-	delete(s.active, phaseID)
-	s.mu.Unlock()
-	if !tracked {
+	// Release-by-key, deliberately: what this watcher needs to know is whether the
+	// run was STILL tracked when the pid vanished. Something else closing it out
+	// first (a Stop that stamped, a rescan) means the terminal write below would
+	// stamp over an outcome that is already recorded.
+	if !s.Slots.Release(s.slotKey(phaseID)) {
 		return // something else already closed this run out; don't stamp over it
 	}
 
