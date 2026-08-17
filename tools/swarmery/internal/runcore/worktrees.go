@@ -16,6 +16,17 @@ import (
 // looks at a branch no run ever used.
 const branchPrefix = "swarm/"
 
+// BranchPrefix, PhaseBranchPrefix and PlanBranchPrefix are for CONSUMERS — code
+// that lists or parses branch names (a `branch --list` glob, a TrimPrefix) rather
+// than minting one. They are exported separately from the helpers above because the
+// two directions fail differently: a minting drift produces a branch nobody can
+// find, a parsing drift produces a branch nobody recognises as ours.
+const (
+	BranchPrefix      = branchPrefix
+	PhaseBranchPrefix = branchPrefix + "phase-"
+	PlanBranchPrefix  = branchPrefix + "plan-"
+)
+
 // TaskBranch is a board task's branch: the external id IS the taskName Acquire
 // receives (dispatch/service.go admit).
 func TaskBranch(externalID string) string { return branchPrefix + externalID }
@@ -99,9 +110,11 @@ func WorktreeCount(db *sql.DB) (int, error) {
 func WorktreeKeys(db *sql.DB) (map[WorktreeKey]bool, error) {
 	held := make(map[WorktreeKey]bool)
 
-	// Board runs: worktree.Acquire was handed the external id as its taskName.
+	// Board runs: worktree.Acquire was handed the external id as its taskName. The
+	// prefixes are interpolated from the same constants the Go helpers use, so a
+	// rename cannot leave these queries naming branches nothing mints.
 	if err := scanKeys(db, held, `
-		SELECT project_id, 'swarm/' || external_id FROM tasks
+		SELECT project_id, '`+BranchPrefix+`' || external_id FROM tasks
 		 WHERE source='queue' AND board_column='in_progress'
 		   AND worktree_path IS NOT NULL
 		   AND external_id IS NOT NULL AND external_id <> ''`); err != nil {
@@ -114,7 +127,7 @@ func WorktreeKeys(db *sql.DB) (map[WorktreeKey]bool, error) {
 	// derived name is the fallback for rows the backfill never reached.
 	if err := scanKeys(db, held, `
 		SELECT t.project_id,
-		       COALESCE(NULLIF(p.run_branch,''), 'swarm/phase-' || p.id)
+		       COALESCE(NULLIF(p.run_branch,''), '`+PhaseBranchPrefix+`' || p.id)
 		  FROM epic_phases p
 		  JOIN tasks t ON t.id = p.workspace_task_id
 		 WHERE p.run_state='running'`); err != nil {
@@ -124,7 +137,7 @@ func WorktreeKeys(db *sql.DB) (map[WorktreeKey]bool, error) {
 	// Plan runs: the deterministic plan-<taskID> name, which is what Start reclaims
 	// and Acquire derives.
 	if err := scanKeys(db, held, `
-		SELECT t.project_id, 'swarm/plan-' || r.workspace_task_id
+		SELECT t.project_id, '`+PlanBranchPrefix+`' || r.workspace_task_id
 		  FROM plan_runs r
 		  JOIN tasks t ON t.id = r.workspace_task_id
 		 WHERE r.run_state='running'`); err != nil {

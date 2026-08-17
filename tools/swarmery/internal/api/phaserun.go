@@ -22,7 +22,6 @@ package api
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -339,7 +338,7 @@ func (h *Handler) deleteOrphanBranch(w http.ResponseWriter, r *http.Request) {
 	// flags the forwarded form, and the flag is a fair reading of the shape even
 	// though the pattern already excluded leading dashes). The pattern's canonical
 	// [1-9][0-9]* id makes this an identity: branch == requested, always.
-	branch := fmt.Sprintf("swarm/phase-%d", branchID)
+	branch := runcore.PhaseBranch(branchID)
 
 	var one int
 	switch err := h.DB.QueryRow(

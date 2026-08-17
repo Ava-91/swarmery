@@ -22,48 +22,21 @@ import (
 // tsFormat matches the millisecond-Z style the api package writes.
 const tsFormat = "2006-01-02T15:04:05.000Z"
 
-// WorktreeManager is the subset of *worktree.Manager the dispatcher uses. An
-// interface so the service can be unit-tested with a stub (the real Manager is
-// itself Git-mockable, but stubbing at this level keeps dispatch tests focused
-// on scheduling logic, not git-list parsing). *worktree.Manager satisfies it.
-// keepBranch is always true for dispatched runs — a task's swarm/<id> branch
-// carries its Swarm-Task-Id commits, which verification (Phase 6) and the user
-// need reachable after the worktree directory is reclaimed.
-type WorktreeManager interface {
-	Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error)
-	Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error
-	// ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead
-	// of the base, so a re-run can re-acquire the deterministic swarm/<taskID>
-	// name instead of dying on ErrBranchExists — the leftover is a name nothing has
-	// checked out, not a live conflict (every Remove above keeps the branch, so it
-	// always survives). Returns the commits-ahead count when the
-	// branch HAS work — the branch is then left untouched and the caller must not
-	// destroy it; 0 means deleted or never existed. Errors when the repo has no
-	// checked-out branch to measure against (worktree.ErrDetachedHead): a guessed
-	// base is the one input a `branch -D` must never run on.
-	ReclaimEmptyBranch(repoRoot, branch string) (int, error)
-	// DeleteBranch force-deletes branch INCLUDING its commits, refusing while it
-	// is checked out or is the repo's HEAD branch. Only for an explicit user
-	// decision — never call it to make room for a re-run. The bool reports
-	// whether a branch was actually there: deleting is idempotent, so a nil error
-	// alone would let a no-op be reported to the user as a deletion.
-	DeleteBranch(repoRoot, branch string) (existed bool, err error)
-	// CommitsForTask returns the SHAs of commits carrying this task's
-	// Swarm-Task-Id trailer. It is the dispatcher's only progress signal: the
-	// count is what distinguishes a re-dispatch that advanced something from one
-	// that did not. An error must never be read as zero commits — see
-	// observedProgress, which keeps the two apart deliberately.
-	CommitsForTask(repoRoot, taskID string) ([]string, error)
-}
-
-// Verifier is the auto-verification trigger seam (fusion phase 6). Declared HERE
-// (in dispatch) and satisfied by *verify.Service, so `verify` can depend on
-// dispatch's data deps (worktree/store) WITHOUT dispatch importing verify — no
-// import cycle. Poke is non-blocking (verify spawns its own goroutine). Attached
-// via the Service.Verifier field; nil ⇒ auto-verification not wired (guarded).
-type Verifier interface {
-	Poke(taskID int64)
-}
+// WorktreeManager and Verifier are runcore's, re-exported here as ALIASES.
+//
+// Both were declared in this package because dispatch was the first engine to need
+// them; phaserun and planrun then imported dispatch for nothing else, and verify
+// satisfied a dispatch-declared interface. They now live in internal/runcore, which
+// every engine already depends on, so those import edges are gone.
+//
+// Aliases rather than new names: `dispatch.WorktreeManager` appears in
+// cmd/swarmery's wiring, in internal/api's reach-throughs and in several test
+// stubs, and an alias keeps every one of them compiling against the same type
+// instead of trading one coupling for a rename.
+type (
+	WorktreeManager = runcore.WorktreeManager
+	Verifier        = runcore.Verifier
+)
 
 // Service owns the dispatch loop: candidate selection, admission gates, spawn,
 // exit/sentinel handling, event-driven Poke + poll fallback, and startup heal.

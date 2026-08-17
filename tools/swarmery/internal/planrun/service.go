@@ -24,11 +24,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
@@ -122,7 +120,7 @@ func (e *PlanSpansReposError) Is(target error) bool { return target == ErrPlanSp
 // refetches on run edges.
 type Service struct {
 	DB  *sql.DB
-	Wt  dispatch.WorktreeManager // shared worktree mechanics (dispatch's seam)
+	Wt  runcore.WorktreeManager // shared worktree mechanics (runcore's seam)
 	Run Runner
 	// Git is an OPTIONAL read-only seam, used for one thing: naming the branch a
 	// commits-ahead count was measured against (BranchDirtyError.Base). nil ⇒ the
@@ -158,7 +156,7 @@ type Service struct {
 // NewService builds a plan-run service. The caller wires DB + Run
 // (ClaudeRunner) + Wt (the shared worktree.Manager); UUID/now/Go default to
 // production impls.
-func NewService(db *sql.DB, r Runner, wt dispatch.WorktreeManager) *Service {
+func NewService(db *sql.DB, r Runner, wt runcore.WorktreeManager) *Service {
 	return &Service{
 		DB:    db,
 		Run:   r,
@@ -368,10 +366,10 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 	// run's swarm/plan-<taskID> is still there and Acquire would fail ErrBranchExists
 	// — the dead end that made a plan's SECOND run fail for ever. Reclaim it first
 	// when it is empty; refuse loudly when it holds work. The literal below must
-	// match worktree.branchName ("swarm/" + taskID) — the same deterministic name
+	// come from runcore, which owns the derivation worktree.Acquire performs
 	// Acquire derives from the taskName passed just after.
-	taskName := "plan-" + strconv.FormatInt(taskID, 10)
-	branch := "swarm/" + taskName
+	taskName := runcore.PlanTaskName(taskID)
+	branch := runcore.PlanBranch(taskID)
 	ahead, err := s.Wt.ReclaimEmptyBranch(info.RepoRoot, branch)
 	if err != nil {
 		release()
@@ -567,8 +565,8 @@ func (s *Service) DeleteRunBranch(taskID int64) (branch string, existed bool, er
 	if err != nil {
 		return "", false, err
 	}
-	// Same deterministic name Start reclaims and Acquire derives (worktree.branchName).
-	branch = "swarm/plan-" + strconv.FormatInt(taskID, 10)
+	// Same deterministic name Start reclaims and Acquire derives (runcore mints it).
+	branch = runcore.PlanBranch(taskID)
 	existed, err = s.Wt.DeleteBranch(root, branch)
 	if err != nil {
 		return "", false, err

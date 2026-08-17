@@ -21,11 +21,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
@@ -110,7 +108,7 @@ func (e *DepsUnmetError) Is(target error) bool { return target == ErrDepsUnmet }
 // refetches on run edges.
 type Service struct {
 	DB  *sql.DB
-	Wt  dispatch.WorktreeManager // shared worktree mechanics (dispatch's seam)
+	Wt  runcore.WorktreeManager // shared worktree mechanics (runcore's seam)
 	Run Runner
 	// Git is an OPTIONAL read-only seam, used for one thing: naming the branch a
 	// commits-ahead count was measured against (BranchDirtyError.Base). nil ⇒ the
@@ -147,7 +145,7 @@ type Service struct {
 // NewService builds a phase-run service. The caller wires DB + Run
 // (ClaudeRunner) + Wt (the shared worktree.Manager); UUID/now/Go default to
 // production impls.
-func NewService(db *sql.DB, r Runner, wt dispatch.WorktreeManager) *Service {
+func NewService(db *sql.DB, r Runner, wt runcore.WorktreeManager) *Service {
 	return &Service{
 		DB:    db,
 		Run:   r,
@@ -304,11 +302,13 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 
 	// Every teardown removes the worktree with keepBranch=true, so the PREVIOUS
 	// run's swarm/phase-<id> is still there and Acquire would fail ErrBranchExists.
-	// Reclaim it first when it is empty; refuse loudly when it holds work. The
-	// literal below must match worktree.branchName ("swarm/" + taskID) — it is the
-	// same deterministic name Acquire derives from the taskID passed just after.
-	taskName := "phase-" + strconv.FormatInt(phaseID, 10)
-	branch := "swarm/" + taskName
+	// Reclaim it first when it is empty; refuse loudly when it holds work.
+	//
+	// The name comes from runcore, which owns the one derivation worktree.Acquire
+	// performs (taskName ⇒ swarm/<taskName>): the pair below must agree, and when the
+	// literals were spelled out here that agreement was a comment rather than code.
+	taskName := runcore.PhaseTaskName(phaseID)
+	branch := runcore.PhaseBranch(phaseID)
 	ahead, err := s.Wt.ReclaimEmptyBranch(info.RepoRoot, branch)
 	if err != nil {
 		release()
