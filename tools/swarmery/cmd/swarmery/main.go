@@ -1487,6 +1487,9 @@ func cmdServe(args []string) error {
 	// Revise sessions stage proposed plan files here (one subdir per session)
 	// until the daemon validates them into plan_revisions rows.
 	planningSvc.ScratchRoot = filepath.Join(filepath.Dir(*dbPath), "revisions")
+	// The planner must write where the scanner reads: same root, one value, so a
+	// moved workspace cannot leave plans in a tree nothing indexes.
+	planningSvc.WorkspaceRoot = wsCfg.WorkspaceRoot
 	// plan-revision phase 5: a revise session that died before its sentinel
 	// leaves its scratch dir behind — sweep dirs whose session can no longer
 	// stage (no wizard row, or the wizard is terminal) once, on start.

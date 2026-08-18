@@ -10,7 +10,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("  add a dark mode toggle  ")
+	p := BuildPrompt("  add a dark mode toggle  ", "")
 
 	// Idea is interpolated verbatim (trimmed).
 	if want := "The user's idea:\nadd a dark mode toggle"; !strings.Contains(p, want) {
@@ -40,9 +40,31 @@ func TestBuildPrompt(t *testing.T) {
 }
 
 func TestBuildPromptEmptyIdea(t *testing.T) {
-	p := BuildPrompt("")
+	p := BuildPrompt("", "")
 	if !strings.Contains(p, "The user's idea:") {
 		t.Fatalf("empty idea dropped the frame:\n%s", p)
+	}
+}
+
+// A planner told only the SHAPE of the plan path has to infer the root, and the
+// documented default (~/swarmery-workspace) is wrong on any machine whose
+// workspace was moved — the plan is then written successfully into a tree the
+// scanner never walks. So the resolved root must reach the prompt verbatim.
+func TestBuildPromptInterpolatesWorkspaceRoot(t *testing.T) {
+	p := BuildPrompt("idea", "/Volumes/Work/ws")
+	if want := "/Volumes/Work/ws/<project>/workspace/working/"; !strings.Contains(p, want) {
+		t.Errorf("prompt missing resolved plan path %q", want)
+	}
+	if strings.Contains(p, rootPlaceholder) {
+		t.Errorf("prompt still carries %s although a root was passed", rootPlaceholder)
+	}
+}
+
+// "" is the bare-unit-test shape: keep the placeholder rather than emitting a
+// bogus absolute path the planner would use verbatim.
+func TestBuildPromptWithoutRootKeepsPlaceholder(t *testing.T) {
+	if p := BuildPrompt("idea", "  "); !strings.Contains(p, rootPlaceholder+"/<project>/workspace/working/") {
+		t.Errorf("prompt lost the root placeholder:\n%s", tailStr(p, 200))
 	}
 }
 

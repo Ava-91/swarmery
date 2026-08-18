@@ -41,8 +41,8 @@ var promptTemplate = template.Must(template.New("planner").Parse(
 PHASE B — PLAN (only after the operator sends the PROCEED instruction):
 - Stop asking questions. Choose the planning agent that fits the scope: @task-planner approach for < ~1 week / <=3 phases, @implementation-planner for larger multi-phase work.
 - Write the plan to the PRIVATE WORKSPACE, never into a code repo. The task dir MUST match this exact shape — the dashboard's epic scanner walks ONLY workspace/{working,archive}/<YYYY>/<MM>/<DD>/<slug>/, so a plan saved anywhere else silently never appears on the Plans page:
-  <workspace root>/<project>/workspace/working/<YYYY>/<MM>/<DD>/<slug>/plan/README.md
-  where <YYYY>/<MM>/<DD> is today's date as three separate directories and <slug> is a lowercase kebab slug WITHOUT a date prefix. NEVER save under workspace/plans/ — that tree is frozen history, even if the directory exists on disk.
+  {{.WorkspaceRoot}}/<project>/workspace/working/<YYYY>/<MM>/<DD>/<slug>/plan/README.md
+  where the root above is the one THIS daemon scans — use it verbatim, never a path you inferred from documentation or $HOME — <project> is the workspace dir for this repo (list the root to confirm which one), <YYYY>/<MM>/<DD> is today's date as three separate directories, and <slug> is a lowercase kebab slug WITHOUT a date prefix. NEVER save under workspace/plans/ — that tree is frozen history, even if the directory exists on disk.
 - Plan contents per the workspace convention (CLAUDE.md section 11 / core pack): plan/README.md (objective, real file paths, phase sequencing table, risks, Definition of Done) plus phase-N docs, each with a self-contained copy-paste agent prompt, measurable acceptance criteria, and — as the doc's LAST section — an empty ` + "`## Completion Report`" + ` stub for the executor to fill at phase end (the dashboard renders exactly that section as the phase's summary, so a doc without the stub leaves the operator with "no summary of the work written"). Honor every decision and the final running plan from the interview.
 - Before the phase docs, write plan/spec.md — the WHAT/WHY: a short problem statement, user stories, and an "## Acceptance criteria" section whose items are checkboxes shaped exactly ` + "`- [ ] **SC-1** — <criterion>`" + ` (stable SC-n ids, one behavior each).
 - Every phase doc's header block must carry a ` + "`**Covers:** SC-…`" + ` line naming the spec criteria that phase delivers; every SC id must be covered by at least one phase, and no phase may cover an id the spec does not declare.
@@ -120,12 +120,31 @@ Execution evidence (what each phase actually achieved so far):
 
 {{.Evidence}}`))
 
-// BuildPrompt renders the planner prompt for one idea.  The idea is trimmed
-// and interpolated verbatim; template execution on a fixed template with
-// string data cannot fail, so the (unreachable) error is ignored.
-func BuildPrompt(idea string) string {
+// rootPlaceholder is what the prompt says when the caller passes no workspace
+// root: the shape only, which is what the planner has to guess from. Guessing
+// is how a plan lands in ~/swarmery-workspace on a machine whose root is
+// elsewhere — written successfully, and invisible to the scanner forever.
+const rootPlaceholder = "<workspace root>"
+
+// BuildPrompt renders the planner prompt for one idea. The idea is trimmed and
+// interpolated verbatim; template execution on a fixed template with string
+// data cannot fail, so the (unreachable) error is ignored.
+//
+// workspaceRoot is the root the SCANNER walks (cmd/swarmery hands the service
+// the same value it gives wsingest). Passing it is what stops the planner
+// guessing: the documented default is ~/swarmery-workspace, but an operator who
+// moved the workspace has every plan written to a tree nothing reads. "" keeps
+// the placeholder, for bare unit tests.
+func BuildPrompt(idea, workspaceRoot string) string {
+	root := strings.TrimSpace(workspaceRoot)
+	if root == "" {
+		root = rootPlaceholder
+	}
 	var b strings.Builder
-	_ = promptTemplate.Execute(&b, struct{ Idea string }{Idea: strings.TrimSpace(idea)})
+	_ = promptTemplate.Execute(&b, struct{ Idea, WorkspaceRoot string }{
+		Idea:          strings.TrimSpace(idea),
+		WorkspaceRoot: root,
+	})
 	return b.String()
 }
 
