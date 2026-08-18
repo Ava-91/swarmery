@@ -28,6 +28,7 @@ import { NewProjectButton } from './components/NewProjectButton';
 import { ProjectApprovalsSection } from './components/ProjectApprovalsSection';
 import { ThemeToggle } from './components/ThemeToggle';
 import { UsageChip } from './components/usage/UsageChip';
+import { useFillRoute } from './lib/fillRoute';
 import { isoDay } from './lib/format';
 import { useHealth, versionLabel, versionTitle } from './lib/health';
 import { PluginDriftBadge } from './components/PluginDriftBadge';
@@ -83,6 +84,9 @@ function AppShell(): JSX.Element {
   useBrowserNotifications(notifyPrefs);
   const { health, unreachable } = useHealth();
   const { scope, scopeProject } = useScope();
+  // Does the active route own its vertical scroll? Declared on the route itself
+  // (main.tsx `handle: { fill: true }`), never matched on the pathname here.
+  const fill = useFillRoute();
 
   // Tool dashboards (Serena / Graphify / Architecture) are project-scoped and
   // live in the project-mode sidebar — the session sidebar no longer carries a
@@ -362,7 +366,26 @@ function AppShell(): JSX.Element {
           </div>
         </nav>
 
-        <main className="min-w-0 flex-1 overflow-y-auto pb-[72px] [-webkit-overflow-scrolling:touch] desk:pb-0">
+        {/* Fill routes (lib/fillRoute.ts) own their own scroll: this container
+            hands it over — overflow-hidden plus the flex/min-h-0 chain the page
+            needs to size itself against the leftover height. Every other route
+            keeps the byte-identical scroller it has always had. The mobile
+            bottom-nav inset (pb-[72px]) applies in both modes.
+            [-webkit-overflow-scrolling:touch] belongs to whatever scrolls, so it
+            drops here and moves onto the page's own pane in the page phases. */}
+        <main
+          // Marks the container whose overflow the fill flag flips, in BOTH
+          // modes. The two shells hand off scroll at different depths (here it is
+          // <main>, in the workspace shell it is a div inside it), so the
+          // screenshot harness needs one selector that finds the right node in
+          // either — see assertShellHandsOffScroll in scripts/screenshot.mjs.
+          data-shell-scroller=""
+          className={
+            fill
+              ? 'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pb-[72px] desk:pb-0'
+              : 'min-w-0 flex-1 overflow-y-auto pb-[72px] [-webkit-overflow-scrolling:touch] desk:pb-0'
+          }
+        >
           <Outlet />
         </main>
       </div>
