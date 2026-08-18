@@ -97,12 +97,22 @@ async function assertShellScroll(page, path, want) {
   console.log(`✓ shell ${what} on ${path} (overflow-y=${overflowY})`);
 }
 
+// `fill: true` marks a route that declared `handle: { fill: true }` in
+// src/main.tsx, and asserts BOTH halves of that contract at the viewport the
+// call runs in: the shell hands the scroll over, and nothing between the
+// document and the page's own pane scrolls as a result. Riding on shot() rather
+// than living in a separate pass is deliberate — a fill route that gains a
+// screenshot gains its invariant automatically, so the two cannot drift apart.
 async function shot(page, path, name, opts = {}) {
   await page.goto(base + path);
   await settle(page);
   if (opts.waitMs) await page.waitForTimeout(opts.waitMs);
   await page.screenshot({ path: join(outDir, name), fullPage: opts.fullPage ?? false });
   await assertNoHorizontalScroll(page, path);
+  if (opts.fill === true) {
+    await assertShellScroll(page, path, 'hidden');
+    await assertNoNestedVerticalScroll(page, path);
+  }
   console.log(`✓ ${name}`);
 }
 
@@ -124,7 +134,10 @@ const mobile = await browser.newPage({
   deviceScaleFactor: 2,
 });
 await shot(mobile, '/', 'overview.png');
-await shot(mobile, '/docs', 'docs-mobile.png');
+// Fill mode has to hold at the owner's viewport too, not just on desktop: the
+// shells switch layout at `desk` and the mobile branch is the one a desktop-only
+// assertion would never cover.
+await shot(mobile, '/docs', 'docs-mobile.png', { fill: true });
 await shot(mobile, '/sessions', 'sessions.png');
 // Approvals (phase 2): pending cards + history, incl. the WS-injected request.
 await shot(mobile, '/approvals', 'approvals.png', { waitMs: APPROVALS_WAIT_MS });
@@ -151,14 +164,30 @@ await scrollTabPanel(desktop, 600);
 await desktop.screenshot({ path: join(outDir, 'session-detail-desktop.png') });
 await assertNoHorizontalScroll(desktop, '/sessions/1?tab=timeline');
 console.log('✓ session-detail-desktop.png');
-await shot(desktop, '/docs/neutrality', 'docs.png');
-// Fill-route invariant, one route for now. /docs at this viewport is the only
-// fill route where it already holds: the shell hands over the scroll and the
-// docs INDEX happens to fit 1440×900 — the page is not structurally fill-ready
-// yet (its own scroller lands in the Docs phase), and the embedded map/graph
-// pages get theirs in their own phases. Extending this call to every fill route
-// is the sweep phase's job; until then it guards the shell contract on the one
-// route that can prove it.
+await shot(desktop, '/docs/neutrality', 'docs.png', { fill: true });
+// The embedded pages. In mock mode their iframes point at `/api/...` paths the
+// mock layer does not serve, so the frame stays blank and each page may fall
+// back to its "nothing to embed" hint — that is fine and expected here. What is
+// under test is GEOMETRY, not content: fill mode is declared on the route
+// (src/main.tsx), so the shell hands the scroll over either way, and a page that
+// went back to viewport math would fail these assertions with an empty frame
+// just as loudly as with a loaded one.
+await shot(desktop, '/architecture', 'architecture-desktop.png', { fill: true });
+await shot(desktop, '/graphify', 'graphify-desktop.png', { fill: true });
+await shot(desktop, '/serena', 'serena-desktop.png', { fill: true });
+// The SAME page in the project shell. Every assertion above runs in the global
+// shell, where the scroll-handoff container is <main> itself; the workspace
+// shell hands off one level deeper (a div inside a <main> that is always
+// overflow-hidden) and carries the TerminalDock and StatusBar in the same
+// column. Without this call a broken min-h-0 chain in ProjectWorkspaceLayout
+// would leave the whole harness green while both project-scoped embedded pages
+// grew a second scrollbar.
+await shot(desktop, '/p/orders-api/architecture', 'architecture-project-desktop.png', {
+  fill: true,
+});
+// The docs INDEX, the one fill route with no screenshot of its own at this
+// viewport (/docs/<slug> above is the article view). Asserted without one so
+// the index cannot regress unwatched.
 await desktop.goto(`${base}/docs`);
 await settle(desktop);
 await assertShellScroll(desktop, '/docs', 'hidden');

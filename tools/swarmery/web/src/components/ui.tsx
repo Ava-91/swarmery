@@ -260,19 +260,24 @@ export function ExpandButton({
   onClick,
   label = 'expand',
   expanded,
+  className = EXPAND_BUTTON_CLASS,
 }: {
   onClick: () => void;
   /** Overrides the word after the glyph (the accessible name follows it). */
   label?: string;
   /** Drives aria-expanded, like every other disclosure trigger in the app. */
   expanded?: boolean;
+  /** Re-skins the trigger for a page whose header buttons are lighter than a
+   * toolbar control (planning). The SEMANTICS — decorative glyph, accessible
+   * name, aria-expanded — stay here so a re-skin cannot drift away from them. */
+  className?: string;
 }): JSX.Element {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-expanded={expanded}
-      className={EXPAND_BUTTON_CLASS}
+      className={className}
     >
       {/* The glyph is decoration — hiding it keeps the accessible name equal to
           the visible word instead of "⛶ expand". */}
@@ -471,6 +476,35 @@ export function ExpandableSection({
       if (opener !== null && opener !== document.body) opener.focus();
     };
   }, [expanded]);
+
+  // Reset the OWNER's flag when an expanded section stops being rendered.
+  //
+  // Every consumer gates this section on the pane still existing — a serena
+  // project that is running, a graphify project that has a viz, an architecture
+  // map that built. When that condition flips while expanded (the project
+  // stops, the map is deleted), the section unmounts: the effect above cleans
+  // up correctly, so scroll unlocks and the listeners go. But `expanded` lives
+  // in the PAGE, and nothing has told it — so the flag stays true, the trigger
+  // that comes back still reads aria-expanded="true", and the next time the
+  // pane renders the section mounts straight into fullscreen over a pane the
+  // user never asked to expand.
+  //
+  // Fixing it here rather than in each page is the point: the invariant is
+  // "collapsed is the only state this can be resurrected in", and it belongs to
+  // the primitive that owns the state machine. An empty dep list is what makes
+  // this possible — its cleanup runs on unmount ONLY, the one case the
+  // [expanded] effect above cannot tell apart from an ordinary collapse (both
+  // run the same cleanup).
+  const expandedRef = useRef(expanded);
+  useEffect(() => {
+    expandedRef.current = expanded;
+  });
+  useEffect(
+    () => () => {
+      if (expandedRef.current) toggleRef.current(false);
+    },
+    [],
+  );
 
   const collapsedClass =
     className === undefined

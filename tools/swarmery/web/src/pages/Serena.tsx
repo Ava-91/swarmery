@@ -226,7 +226,12 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
                 </span>
               </div>
               {project.state === 'failed' && project.error !== '' && (
-                <div className="mt-2 font-mono text-[11px] text-red">{project.error}</div>
+                // break-all for the same reason the log tail below has it: this
+                // is verbatim tool output, so it can be one unbroken token (a
+                // path, a URL, a stack frame) that no word-break rule would
+                // split — and at 390px that token is what pushes the card past
+                // the viewport into a horizontal scrollbar.
+                <div className="mt-2 font-mono text-[11px] break-all text-red">{project.error}</div>
               )}
               {project.state !== 'running' && project.logTail.length > 0 && (
                 <details className="mt-2">
