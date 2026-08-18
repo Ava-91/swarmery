@@ -1375,6 +1375,9 @@ const mockEpicPhase = (
       | 'runOutcome'
       | 'runEndedAt'
       | 'runCheckboxesBefore'
+      | 'verifyMode'
+      | 'verifyVerdict'
+      | 'verifyDetail'
     >
   >,
 ): EpicPhase => ({
@@ -1405,6 +1408,11 @@ const mockEpicPhase = (
   runOutcome: 'idle',
   runEndedAt: null,
   runCheckboxesBefore: null,
+  // Verification is opt-in per phase doc, so `off` + an ungraded verdict is the
+  // honest default for a mock phase — the graded cases are set explicitly below.
+  verifyMode: 'off',
+  verifyVerdict: null,
+  verifyDetail: null,
   ...run,
 });
 
@@ -2412,6 +2420,8 @@ export const mockApi = {
       seq: phase.seq,
       name: phase.name,
       runOutcome: phase.runOutcome,
+      verifyVerdict: phase.verifyVerdict,
+      verifyDetail: phase.verifyDetail,
       criteriaTotal: phase.checkboxesTotal,
       criteriaBefore: phase.runCheckboxesBefore,
       criteriaAfter: phase.checkboxesDone,
