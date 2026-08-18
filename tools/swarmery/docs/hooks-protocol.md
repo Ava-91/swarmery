@@ -79,8 +79,8 @@ exit, garbage stdout) lands on the same dialog and never bricks the session (E7)
 | Knob | Value | Why |
 |---|---|---|
 | Shim connect timeout | **500 ms** | A dead daemon adds ≤ 1 s before the native dialog (D3). |
-| Shim long-poll / daemon `approval_timeout` | **≤ 120 s** (default 120 s, config flag) | The shim owns expiry: at 120 s it gives up and exits 0 silent → clean fail-open (E5), not a hard kill. |
-| Installed hook config `"timeout"` | **130** | Claude Code's per-hook `timeout` **kills** the shim process (E6) and its documented default is 60 s — shorter than the poll. The installer MUST set it explicitly to `approval_timeout` + margin so Claude never cuts the poll short; the fallback path stays the shim's own silent exit. |
+| Shim long-poll / daemon `approval_timeout` | **10 min** (default `approvals.DefaultTimeout`, `--approval-timeout` / `SWARMERY_APPROVAL_TIMEOUT`) | The shim owns expiry: at the window it gives up and exits 0 silent → clean fail-open (E5), not a hard kill. |
+| Installed hook config `"timeout"` | **`approval_timeout` + 10 s**, derived (`hookcfg.hookTimeout`) | Claude Code's per-hook `timeout` **kills** the shim process (E6) and its documented default is 60 s — shorter than the poll. The installer MUST derive it from the window, never freeze a literal: a value that trails the window kills the poll early, so the CLI prompts locally while the daemon still shows the request as answerable from the dashboard. `hooks status` reports a trailing timeout as stale. |
 
 While the shim polls, the terminal shows only a spinner — no dialog and no countdown
 (E4); there is no terminal-side race, the hook is authoritative for its lifetime.

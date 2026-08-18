@@ -27,15 +27,42 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 )
 
 // marker identifies swarmery-managed hook command entries.
 const marker = "swarmery hook"
 
+// hookTimeoutMargin is the slack the installed "timeout" carries over the
+// approval window. Claude Code KILLS the hook process at its timeout, while the
+// shim's own expiry is a clean silent fail-open — so the installed value must
+// clear the window, never trail it.
+const hookTimeoutMargin = 10 * time.Second
+
 // hookTimeout is the installed PermissionRequest per-hook "timeout" (seconds):
-// approval_timeout (120 s) + margin, so Claude Code never kills the shim
-// mid-poll (frozen: docs/hooks-protocol.md §Timing, spike E6).
-const hookTimeout = 130
+// the approval window + margin, so Claude Code never kills the shim mid-poll
+// (frozen: docs/hooks-protocol.md §Timing, spike E6). DERIVED, not a literal:
+// a hard-coded value silently truncates the poll the moment the window changes,
+// which leaves the CLI prompting locally while the daemon still holds the
+// request as answerable from the dashboard.
+func hookTimeout() int {
+	return int((approvalWindow() + hookTimeoutMargin).Seconds())
+}
+
+// approvalWindow mirrors the daemon's own resolution of the window
+// (SWARMERY_APPROVAL_TIMEOUT → approvals.DefaultTimeout, see cmd/swarmery's
+// envApprovalTimeout). The installer and the daemon MUST agree on it: the
+// installed timeout exists only to cover the window the daemon will hold.
+func approvalWindow() time.Duration {
+	if v := os.Getenv("SWARMERY_APPROVAL_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return approvals.DefaultTimeout
+}
 
 // managedEvent binds a Claude Code hook event to the shim verb that serves it
 // and to the entry shape Install writes. This table is the single source of
@@ -55,10 +82,16 @@ type managedEvent struct {
 // SessionStart must ride on the daemon's own hook rather than on core's
 // SessionStart hooks: the drift it warns about can BE a missing core, and a
 // plugin that is not installed ships no hooks to warn with.
-var managedEvents = []managedEvent{
-	{event: "PermissionRequest", verb: "permission-request", matcher: "*", timeout: hookTimeout},
-	{event: "Stop", verb: "stop"},
-	{event: "SessionStart", verb: "session-start"},
+//
+// A function, not a var: the PermissionRequest timeout is resolved from the
+// approval window at call time, so an install and a status check in the same
+// process still read the same env the daemon does.
+func managedEvents() []managedEvent {
+	return []managedEvent{
+		{event: "PermissionRequest", verb: "permission-request", matcher: "*", timeout: hookTimeout()},
+		{event: "Stop", verb: "stop"},
+		{event: "SessionStart", verb: "session-start"},
+	}
 }
 
 // System bundles the environment the hooks manager operates on; tests use a
@@ -106,7 +139,7 @@ func (s *System) Install(project string, port int) error {
 	// the current ones — a changed binary path or timeout self-heals.
 	stripOurs(root)
 	hooks := ensureMap(root, "hooks")
-	for _, me := range managedEvents {
+	for _, me := range managedEvents() {
 		entry := map[string]any{"type": "command", "command": s.command(me.verb, port)}
 		if me.timeout > 0 {
 			entry["timeout"] = me.timeout
@@ -181,9 +214,10 @@ func (s *System) Inspect(project string, port int) State {
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return StateBroken
 	}
+	events := managedEvents()
 	found := map[string]bool{}
 	current := 0
-	for _, me := range managedEvents {
+	for _, me := range events {
 		hooks, _ := root["hooks"].(map[string]any)
 		for _, g := range sliceOf(hooks[me.event]) {
 			group, _ := g.(map[string]any)
@@ -194,7 +228,11 @@ func (s *System) Inspect(project string, port int) State {
 					continue
 				}
 				found[me.event] = true
-				if cmd == s.command(me.verb, port) {
+				// The timeout counts as much as the command: an entry whose
+				// timeout trails the approval window gets the shim KILLED
+				// mid-poll, so it must read stale and be refreshed, not pass as
+				// installed.
+				if cmd == s.command(me.verb, port) && timeoutOf(entry) == me.timeout {
 					current++
 				}
 			}
@@ -205,11 +243,22 @@ func (s *System) Inspect(project string, port int) State {
 		return StateNotInstalled
 	// An install predating a newly managed event lands here as stale, which is
 	// exactly right: it needs a refresh to gain the missing hook.
-	case len(found) == len(managedEvents) && current == len(managedEvents):
+	case len(found) == len(events) && current == len(events):
 		return StateInstalled
 	default:
 		return StateStale
 	}
+}
+
+// timeoutOf reads an entry's "timeout" in the shape JSON gives it (a float64),
+// returning 0 for an absent key — which is also managedEvent's "no timeout"
+// value, so the two compare directly.
+func timeoutOf(entry map[string]any) int {
+	t, ok := entry["timeout"].(float64)
+	if !ok {
+		return 0
+	}
+	return int(t)
 }
 
 // Status prints a project → state table.
@@ -278,7 +327,7 @@ func stripOurs(root map[string]any) bool {
 		return false
 	}
 	removed := false
-	for _, me := range managedEvents {
+	for _, me := range managedEvents() {
 		groups := sliceOf(hooks[me.event])
 		if groups == nil {
 			continue

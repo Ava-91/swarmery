@@ -3,10 +3,13 @@ package hookcfg
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/approvals"
 )
 
 func testSystem(t *testing.T) (*System, string) {
@@ -84,7 +87,9 @@ func TestInstallCreatesSettings(t *testing.T) {
 		wantBin + " hook stop",
 		wantBin + " hook session-start",
 		`"matcher": "*"`,
-		`"timeout": 130`,
+		// Derived from the approval window, so the assertion is the relationship
+		// (window + margin), never a frozen number.
+		fmt.Sprintf(`"timeout": %d`, int((approvals.DefaultTimeout + hookTimeoutMargin).Seconds())),
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("settings missing %q:\n%s", want, s)
@@ -284,6 +289,45 @@ func TestSessionStartEntryShape(t *testing.T) {
 	}
 	if entry.Timeout != nil {
 		t.Errorf("timeout = %d, want the key absent", *entry.Timeout)
+	}
+}
+
+// TestShortTimeoutIsStale: an entry whose timeout trails the approval window is
+// the 130 s legacy install — Claude Code kills the shim mid-poll there, so the
+// dashboard answer can no longer reach the CLI. It must read stale and heal.
+func TestShortTimeoutIsStale(t *testing.T) {
+	sys, project := testSystem(t)
+	if err := sys.Install(project, 0); err != nil {
+		t.Fatal(err)
+	}
+	path := SettingsPath(project)
+	var root map[string]any
+	if err := json.Unmarshal(readFile(t, path), &root); err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ := root["hooks"].(map[string]any)
+	group, _ := sliceOf(hooks["PermissionRequest"])[0].(map[string]any)
+	entry, _ := sliceOf(group["hooks"])[0].(map[string]any)
+	entry["timeout"] = 130
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := sys.Inspect(project, 0); got != StateStale {
+		t.Errorf("Inspect with a 130 s timeout = %q, want stale", got)
+	}
+	if err := sys.Install(project, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := sys.Inspect(project, 0); got != StateInstalled {
+		t.Errorf("Inspect after refresh = %q, want installed", got)
+	}
+	if strings.Contains(string(readFile(t, path)), `"timeout": 130`) {
+		t.Error("refresh left the short timeout behind")
 	}
 }
 
