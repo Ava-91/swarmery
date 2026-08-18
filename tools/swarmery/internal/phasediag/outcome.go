@@ -9,6 +9,13 @@ import "database/sql"
 // Derived run outcomes. run_state describes how the PROCESS ended; the outcome
 // describes whether WORK LANDED. The two diverge whenever an executor exits 0
 // without ticking anything — a failed precondition, or refused work.
+//
+// This vocabulary is CLOSED. In particular verification adds nothing to it: a phase
+// whose read-only grade came back FAIL is still `completed` if it ticked all its
+// criteria, with a verify-failed blocker beside it (decision D5, §5.4). A
+// `completed-unverified` state was considered and rejected — it would fork the one
+// question this list answers ("did work land?") into two, and every consumer of the
+// list chip would then have to decide which half it meant.
 const (
 	OutcomeIdle      = "idle"
 	OutcomeRunning   = "running"

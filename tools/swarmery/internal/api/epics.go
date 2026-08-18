@@ -81,6 +81,18 @@ type epicPhaseDTO struct {
 	// UNMEASURED, not zero).
 	RunEndedAt          *string `json:"runEndedAt"`
 	RunCheckboxesBefore *int    `json:"runCheckboxesBefore"`
+	// Post-run verification (migration 0057): the doc's opt-in and the verdict it
+	// produced. VerifyMode is off|normal|strict — `off`, the default, is what makes
+	// verification invisible to every plan that never asked for it. VerifyVerdict is
+	// pass|fail|inconclusive, null until a run has been graded.
+	//
+	// Beside RunOutcome, NOT inside it: the outcome is checkbox-derived and stays that
+	// way (decision D5), and a `fail` also surfaces as a verify-failed blocker in the
+	// diagnosis. The chip the UI renders from these fields reports the grade; the
+	// outcome chip next to it reports whether work landed. Two different questions.
+	VerifyMode    string  `json:"verifyMode"`
+	VerifyVerdict *string `json:"verifyVerdict"`
+	VerifyDetail  *string `json:"verifyDetail"`
 }
 
 // epicRollupDTO is a checkbox rollup across all of an epic's phases.
@@ -536,7 +548,8 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		       e.completion_report, e.activated_at, e.activated_board_task_id,
 		       bt.external_id, bt.board_column,
 		       e.run_state, e.run_session_uuid, e.run_started_at, e.run_error,
-		       e.run_ended_at, e.run_checkboxes_before, e.run_checkboxes_after
+		       e.run_ended_at, e.run_checkboxes_before, e.run_checkboxes_after,
+		       e.verify_mode, e.verify_verdict, e.verify_detail
 		FROM epic_phases e
 		LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
 		WHERE e.workspace_task_id = ?
@@ -569,12 +582,17 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 			// itself that carries "unmeasured".
 			runCheckboxesBefore sql.NullInt64
 			runCheckboxesAfter  sql.NullInt64
+			// The verdict columns (0057). NULL until the phase has been graded, which
+			// is the normal state: verification is opt-in per doc.
+			verifyVerdict sql.NullString
+			verifyDetail  sql.NullString
 		)
 		if err := rows.Scan(&p.ID, &p.Seq, &p.Name, &p.DocPath, &depsJSON, &coversJSON,
 			&p.CheckboxesTotal, &p.CheckboxesDone, &docStatus, &docUpdatedAt,
 			&completion, &p.ActivatedAt, &boardTaskID, &boardExtID, &boardCol,
 			&p.RunState, &runUUID, &runStartedAt, &runError,
-			&runEndedAt, &runCheckboxesBefore, &runCheckboxesAfter); err != nil {
+			&runEndedAt, &runCheckboxesBefore, &runCheckboxesAfter,
+			&p.VerifyMode, &verifyVerdict, &verifyDetail); err != nil {
 			return nil, epicRollupDTO{}, nil, err
 		}
 		p.DependsOn = decodeIntList(depsJSON)
@@ -613,6 +631,12 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		}
 		if runEndedAt.Valid {
 			p.RunEndedAt = &runEndedAt.String
+		}
+		if verifyVerdict.Valid {
+			p.VerifyVerdict = &verifyVerdict.String
+		}
+		if verifyDetail.Valid {
+			p.VerifyDetail = &verifyDetail.String
 		}
 		// OutcomeFromRow, never the pure Outcome: the row-aware version is where the
 		// stamped right edge beats the live count and a NULL baseline stays

@@ -20,7 +20,22 @@ const (
 	KindDepUnmerged       = "dep-unmerged"
 	KindBranchBlocksRetry = "branch-blocks-retry"
 	KindBranchDirty       = "branch-dirty"
-	KindNoCriteria        = "no-criteria"
+
+	// KindVerifyFailed: the phase opted into post-run verification
+	// (`**Verify:** strict`) and the read-only verifier returned FAIL. It is a
+	// BLOCKER, deliberately, and not a new run outcome: decision D5 makes the verdict
+	// an INPUT to the diagnosis, while the ticked checkboxes remain the single truth
+	// about progress. A `completed` phase whose verification failed still reads
+	// `completed` — with this blocker beside it saying why that is not the whole story.
+	//
+	// The blocker surface is exactly the data-carrying advisory channel this package
+	// already has (dep-unmerged, branch-dirty, …), which is why the verdict needed no
+	// new vocabulary anywhere. Only `fail` is reported: pass is the silent normal, and
+	// inconclusive means the verifier could not conclude — an absence of evidence, not
+	// something standing in the operator's way.
+	KindVerifyFailed = "verify-failed"
+
+	KindNoCriteria = "no-criteria"
 
 	// KindOwnWorktree: the phase's branch holds commits AND is checked out at the
 	// worktree this daemon created for that very run. That state needs no action —
@@ -42,6 +57,13 @@ const (
 	// out the phase's own blockers.
 	KindOrphanBranch = "orphan-branch"
 )
+
+// verdictFail is the one verification verdict this package reacts to. Spelled here
+// rather than imported from internal/verify: phasediag is read-only over a column,
+// and taking a dependency on the verifier to compare a string would invert the
+// direction the seams run in (verify already reaches for the run engines, not the
+// other way round). The value is the column's, pinned by TestVerifyFailedBlocker.
+const verdictFail = "fail"
 
 // maxOrphans caps the named orphan blockers one diagnosis emits. A repo littered
 // with old run branches would otherwise flood the modal and bury the phase's own
@@ -92,6 +114,13 @@ type Diagnosis struct {
 	RunError       *string       `json:"runError"`
 	Blockers       []Blocker     `json:"blockers"`
 	AgentMessage   *AgentMessage `json:"agentMessage"`
+	// VerifyVerdict / VerifyDetail are the last verification's answer for this phase
+	// (pass | fail | inconclusive), null when the phase was never graded — the default,
+	// since verification is opt-in per doc. Exposed ALONGSIDE RunOutcome, never folded
+	// into it: the outcome stays checkbox-derived (D5), and a fail additionally raises
+	// the verify-failed blocker.
+	VerifyVerdict *string `json:"verifyVerdict"`
+	VerifyDetail  *string `json:"verifyDetail"`
 }
 
 // ErrPhaseNotFound: no epic_phases row for the id (mapped to 404 by the api layer).
@@ -149,12 +178,14 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		docPath    string
 		projPath   sql.NullString
 		total, don int
+		verdict    sql.NullString
+		vDetail    sql.NullString
 	)
 	err := db.QueryRow(`
 		SELECT e.workspace_task_id, e.seq, e.name, e.doc_path, e.depends_on,
 		       e.checkboxes_total, e.checkboxes_done, e.run_state, e.run_session_uuid,
 		       e.run_started_at, e.run_ended_at, e.run_error, e.run_checkboxes_before,
-		       e.run_checkboxes_after, p.path
+		       e.run_checkboxes_after, e.verify_verdict, e.verify_detail, p.path
 		  FROM epic_phases e
 		  JOIN tasks t ON t.id = e.workspace_task_id
 		  JOIN projects p ON p.id = t.project_id
@@ -162,7 +193,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		&taskID, &d.Seq, &d.Name, &docPath, &depsJSON,
 		&total, &don, &runState, &uuid,
 		&startedAt, &endedAt, &runErr, &before, &after,
-		&projPath)
+		&verdict, &vDetail, &projPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Diagnosis{}, ErrPhaseNotFound
 	}
@@ -189,7 +220,13 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 	d.RunStartedAt = nullStr(startedAt)
 	d.RunEndedAt = nullStr(endedAt)
 	d.RunError = nullStr(runErr)
+	// OutcomeFromRow takes NO verdict argument, on purpose: §5.4 considered
+	// `completed-unverified` and rejected it. The outcome is checkbox-derived and the
+	// verdict travels beside it, so the one derivation both this modal and the list
+	// chip go through stays exactly as wide as it was.
 	d.RunOutcome = OutcomeFromRow(runState, total, don, before, after)
+	d.VerifyVerdict = nullStr(verdict)
+	d.VerifyDetail = nullStr(vDetail)
 	d.Blockers = []Blocker{} // always a JSON array, never null
 
 	// The base branch is the one signal every branch-derived blocker is relative
@@ -296,7 +333,24 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		}
 	}
 
-	// 5. no-criteria — nothing to measure, so no run of this phase can ever be
+	// 5. verify-failed — the phase asked to be graded and the grade came back FAIL.
+	// A phase-level fact about the work itself, so it sits with the phase's own
+	// blockers, after the branch states (which stand between the operator and a retry)
+	// and before no-criteria (a statement about measurability, not about the work).
+	//
+	// Only `fail`: pass is the silent normal, and inconclusive is an absence of
+	// evidence rather than something in the way.
+	if verdict.String == verdictFail {
+		d.Blockers = append(d.Blockers, Blocker{
+			Kind:    KindVerifyFailed,
+			Summary: "Verification of this phase's work returned FAIL — the criteria it ticked were not confirmed",
+			// The verifier's own reasons, verbatim: the whole value of the blocker is
+			// carrying WHY, and a summary alone would send the operator to the logs.
+			Detail: strings.TrimSpace(vDetail.String),
+		})
+	}
+
+	// 6. no-criteria — nothing to measure, so no run of this phase can ever be
 	// proven to have achieved anything.
 	if total == 0 {
 		d.Blockers = append(d.Blockers, Blocker{
@@ -306,7 +360,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		})
 	}
 
-	// 6. orphan-branch — LAST, because it is a fact about the repo rather than
+	// 7. orphan-branch — LAST, because it is a fact about the repo rather than
 	// about this phase. See KindOrphanBranch.
 	if branchesKnown {
 		orphans, err := orphanBranches(db, git, repoRoot, base)
