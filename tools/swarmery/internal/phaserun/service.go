@@ -131,6 +131,12 @@ type Service struct {
 	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
 	ProcAlive func(pid int) bool
 
+	// Verify grades a finished run whose doc opted in (`**Verify:** strict`), through
+	// the same engine board cards go through. nil ⇒ phase verification not wired,
+	// which is both the unit tests' state and a valid production state (the daemon
+	// wires it from the verify service). See verifyRun for the ordering contract: it
+	// runs BEFORE the worktree is reclaimed, because the worktree is the subject.
+	Verify runcore.PhaseVerifier
 	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
 	// per-phase single-flight gate AND — new — a bound this engine never had. A
 	// phase run used to be limited by nothing at all: ten phases started from the
@@ -207,6 +213,14 @@ type phaseInfo struct {
 	// the real one, holding the run's commits, became unreachable. Empty only for a
 	// phase that has never run.
 	RunBranch string
+	// Name is the phase's title, which is what the verifier is told it is grading.
+	Name string
+	// VerifyMode is the phase DOC's opt-in to post-run verification
+	// (`**Verify:** strict`, wsingest.ParseDocVerify), off|normal|strict. Read at
+	// ADMISSION, not at exit: the mode that was in effect when the operator pressed
+	// Run is the contract this run answers to, and a doc rescan mid-run must not
+	// retroactively decide the run should (or should not) have been graded.
+	VerifyMode string
 }
 
 // runRoot resolves the repository this phase runs in: what the phase doc declares
@@ -354,12 +368,21 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	// run_branch is stamped in the SAME statement that opens the run: the branch must
 	// be recorded before anything can commit to it, or a crash between the two writes
 	// leaves commits on a branch nothing names (migration 0043).
+	//
+	// run_start_point joins it for the same reason and is recorded rather than
+	// re-derived (migration 0057, mirroring tasks.start_point from 0051): it is the SHA
+	// Acquire actually pinned this worktree to, and it is the ONLY honest base for the
+	// verifier's `diff base...HEAD`. Re-deriving it at exit would read whatever the
+	// repo's HEAD has moved to since — and falling back to the branch would diff the
+	// branch against itself, which is empty by construction and grades landed work as
+	// "nothing was done".
 	if _, err := s.DB.Exec(`
 		UPDATE epic_phases
 		   SET run_state='running', run_session_uuid=?, run_started_at=?,
 		       run_error=NULL, run_ended_at=NULL, run_branch=?,
+		       run_start_point=NULLIF(?, ''),
 		       run_checkboxes_before=checkboxes_done, run_checkboxes_after=NULL
-		 WHERE id=?`, uuid, s.ts(), branch, phaseID); err != nil {
+		 WHERE id=?`, uuid, s.ts(), branch, acq.StartPoint, phaseID); err != nil {
 		// Worktree FIRST, slot LAST — the same invariant runAndHandle's defer
 		// enforces. Releasing the slot while the worktree still exists lets a
 		// concurrent Start warm-reuse (worktree invariant 4) the deterministic
@@ -397,11 +420,21 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	return uuid, nil
 }
 
-// runAndHandle executes the run to completion, stamps the exit state, removes
-// the worktree (branch kept), and always releases the slot.
+// runAndHandle executes the run to completion, stamps the exit state, optionally
+// verifies the work, removes the worktree (branch kept), and always releases the slot.
 func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, releaseSlot func(), phaseID int64, info phaseInfo, acq worktree.Acquired, spec RunSpec) {
+	// The terminal state, read by the defer below. Only a run that ENDED CLEANLY is
+	// worth grading: a cancelled or crashed executor may have left the tree mid-edit,
+	// and a verdict on that measures the interruption, not the work.
+	endState := ""
 	defer func() {
 		cancel()
+		// Verify BEFORE the worktree goes away — the worktree IS the thing being
+		// graded, and removeWorktree below deletes the only copy of it. This is the
+		// same ordering argument as worktree-before-slot, one step earlier in the
+		// sequence, and it is why verification lives in the defer at all rather than
+		// after the switch: every exit path has to pass through it in this order.
+		s.verifyRun(phaseID, info, acq, endState)
 		// Worktree FIRST, slot LAST. stamp() has already moved the row off
 		// 'running', so the DB gate in Start is open; releasing the single-flight
 		// slot before the (git shell-out, tens of ms) removal opens a window where a
@@ -423,12 +456,15 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, r
 		// Cancel() beat the exit — whatever the child reported, the outcome is a
 		// user cancellation.
 		log.Printf("phaserun: phase=%d uuid=%s cancelled", phaseID, spec.SessionUUID)
+		endState = "failed"
 		s.stamp(phaseID, info.DocPath, "failed", "cancelled")
 	case err != nil:
 		log.Printf("error: phaserun: phase=%d uuid=%s could not start: %v", phaseID, spec.SessionUUID, err)
+		endState = "failed"
 		s.stamp(phaseID, info.DocPath, "failed", err.Error())
 	case res.TimedOut:
 		log.Printf("warning: phaserun: phase=%d uuid=%s timed out", phaseID, spec.SessionUUID)
+		endState = "failed"
 		s.stamp(phaseID, info.DocPath, "failed", "timeout")
 	case res.ExitCode != 0:
 		log.Printf("warning: phaserun: phase=%d uuid=%s exited %d: %s", phaseID, spec.SessionUUID, res.ExitCode, res.Stderr)
@@ -436,10 +472,65 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, r
 		if msg == "" {
 			msg = fmt.Sprintf("exit %d", res.ExitCode)
 		}
+		endState = "failed"
 		s.stamp(phaseID, info.DocPath, "failed", msg)
 	default:
 		log.Printf("phaserun: phase=%d uuid=%s completed in %s", phaseID, spec.SessionUUID, res.Duration)
+		endState = "done"
 		s.stamp(phaseID, info.DocPath, "done", "")
+	}
+}
+
+// verifyRun grades a finished phase run when its doc opted in (`**Verify:** strict`),
+// via the SAME engine that grades board cards (internal/verify.VerifyTarget behind the
+// runcore.PhaseVerifier seam). The verdict lands on epic_phases as an INPUT to the
+// phase's diagnosis — phasediag turns a fail into a `verify-failed` blocker — never as
+// a second status: the checkboxes remain the only truth about progress (decision D5).
+//
+// BLOCKING, on purpose, and called from runAndHandle's defer before removeWorktree:
+// the run's slot stays held for the duration, which is exactly right. The slot is what
+// keeps a retry from warm-reusing the deterministic worktree path out from under the
+// verifier that is reading it.
+//
+// Skipped when: verification is not wired (no seam), the doc did not opt in, the run
+// did not end cleanly, or the worktree is unknown. Every skip is silent except an
+// actual verification error, which is logged and dropped — a failed grade must never
+// turn a phase run that DID land work into a reported failure.
+func (s *Service) verifyRun(phaseID int64, info phaseInfo, acq worktree.Acquired, endState string) {
+	if s.Verify == nil || endState != "done" || acq.Path == "" {
+		return
+	}
+	// `off` (and the empty string a pre-0057 row carries) is the default: a plan that
+	// never asked keeps today's behaviour exactly. Checked here as well as inside the
+	// verifier so an opted-out phase does not even pay a doc read.
+	if info.VerifyMode == "" || info.VerifyMode == wsingest.VerifyOff {
+		return
+	}
+	// The doc as it stands NOW: the executor's ticks are part of what is being
+	// graded, and the criteria list is the contract the verifier judges against.
+	// Unreadable ⇒ nothing to grade against, so skip rather than send an empty
+	// contract the verifier would have to guess at.
+	doc, err := os.ReadFile(info.DocPath)
+	if err != nil {
+		log.Printf("warning: phaserun: phase=%d verify skipped, doc %q unreadable: %v", phaseID, info.DocPath, err)
+		return
+	}
+	log.Printf("phaserun: phase=%d verifying (%s) worktree=%q", phaseID, info.VerifyMode, acq.Path)
+	// context.Background(), not the run's ctx: the defer's cancel() has already fired,
+	// and this is a NEW read-only run with its own timeout — reusing the dead child's
+	// cancelled context would kill the verifier before it started.
+	if err := s.Verify.VerifyPhase(context.Background(), runcore.PhaseVerifyRequest{
+		PhaseID:         phaseID,
+		WorkspaceTaskID: info.WorkspaceTaskID,
+		Mode:            info.VerifyMode,
+		WorktreePath:    acq.Path,
+		Branch:          acq.Branch,
+		StartPoint:      acq.StartPoint,
+		Title:           info.Name,
+		Prompt:          string(doc),
+		ProjectPath:     info.ProjectPath,
+	}); err != nil {
+		log.Printf("error: phaserun: phase=%d verify: %v", phaseID, err)
 	}
 }
 
@@ -665,15 +756,15 @@ func (s *Service) loadPhase(phaseID int64) (phaseInfo, error) {
 	// LEFT JOIN workspaces: the overlay's project.json is a repo-hint source, and a
 	// project with no workspace mapped must still load (the join is advisory).
 	err := s.DB.QueryRow(`
-		SELECT e.workspace_task_id, e.seq, e.doc_path, e.depends_on, e.run_state,
-		       e.run_branch, e.repo, p.path, p.slug, w.root_path
+		SELECT e.workspace_task_id, e.seq, e.name, e.doc_path, e.depends_on, e.run_state,
+		       e.run_branch, e.repo, e.verify_mode, p.path, p.slug, w.root_path
 		  FROM epic_phases e
 		  JOIN tasks t ON t.id = e.workspace_task_id
 		  JOIN projects p ON p.id = t.project_id
 		  LEFT JOIN workspaces w ON w.project_id = p.id
 		 WHERE e.id = ?`, phaseID).Scan(
-		&info.WorkspaceTaskID, &info.Seq, &info.DocPath, &depsJSON,
-		&info.RunState, &runBranch, &repo, &path, &info.ProjectSlug, &wsRoot)
+		&info.WorkspaceTaskID, &info.Seq, &info.Name, &info.DocPath, &depsJSON,
+		&info.RunState, &runBranch, &repo, &info.VerifyMode, &path, &info.ProjectSlug, &wsRoot)
 	if errors.Is(err, sql.ErrNoRows) {
 		return info, ErrPhaseNotFound
 	}

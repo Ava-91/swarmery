@@ -1,6 +1,10 @@
 package runcore
 
-import "github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
+import (
+	"context"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
+)
 
 // WorktreeManager is the subset of *worktree.Manager every run engine uses. An
 // interface so the services can be unit-tested with a stub (the real Manager is
@@ -49,4 +53,41 @@ type WorktreeManager interface {
 // auto-verification not wired (guarded).
 type Verifier interface {
 	Poke(taskID int64)
+}
+
+// PhaseVerifyRequest is everything the verifier needs to grade a finished phase run,
+// assembled by phaserun at the one moment all of it is true at once: the run has
+// ended, its worktree is still on disk, and nothing has reclaimed the branch yet.
+//
+// It is a struct rather than nine positional strings because the fields are all of
+// one type and swapping two of them (Branch for StartPoint, say) compiles cleanly and
+// then grades a diff of nothing.
+type PhaseVerifyRequest struct {
+	// PhaseID identifies the epic_phases row to stamp; WorkspaceTaskID is the epic
+	// the Plans page subscribes to, so a stamped verdict can nudge the right plan.
+	PhaseID, WorkspaceTaskID int64
+	// Mode is the phase doc's own opt-in, off|normal|strict (wsingest.ParseDocVerify).
+	// `off` — the default for every plan that does not ask — makes the whole call a
+	// no-op, which is where "plans keep today's behaviour" is enforced.
+	Mode string
+	// WorktreePath is the run's live checkout, Branch the branch it committed to, and
+	// StartPoint the SHA it was pinned to: the diff base, without which a verifier
+	// compares the branch to itself and grades an empty change set as "nothing done".
+	WorktreePath, Branch, StartPoint string
+	// Title is the phase name; Prompt is the phase doc, which is where the phase's
+	// acceptance criteria live. ProjectPath is the project root the Claude account
+	// binding resolves from.
+	Title, Prompt, ProjectPath string
+}
+
+// PhaseVerifier grades a finished phase run in place. Declared here for the same
+// reason Verifier is — so phaserun never imports verify — and satisfied by
+// *verify.Service.
+//
+// Unlike Verifier.Poke this BLOCKS: the caller must still hold the worktree when the
+// verdict is reached, because the worktree is the only thing being graded. nil ⇒
+// phase verification not wired (guarded), which is also what keeps phaserun's unit
+// tests free of a verifier.
+type PhaseVerifier interface {
+	VerifyPhase(ctx context.Context, req PhaseVerifyRequest) error
 }
