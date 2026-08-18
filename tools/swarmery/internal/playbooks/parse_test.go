@@ -249,3 +249,44 @@ func TestUnknownVar_PreviousStageOutputAllowed(t *testing.T) {
 		t.Fatal("bogus var not flagged")
 	}
 }
+
+// {task_doc} joined the closed set for board micro-plans. A project playbook may
+// reference it, and — the part that would break every consumer — adding it must not
+// change how a playbook that ignores it parses.
+func TestParse_TaskDocIsAKnownVar(t *testing.T) {
+	if bad, ok := unknownVar("write your report into {task_doc}"); ok {
+		t.Fatalf("task_doc flagged as unknown: %q", bad)
+	}
+	src := `---
+name: doc-aware
+---
+## Stage: s
+Do {task_prompt}, then tick the criteria in {task_doc}.
+`
+	pb, err := Parse(src, SourceProject)
+	if err != nil {
+		t.Fatalf("Parse rejected {task_doc}: %v", err)
+	}
+	if len(pb.Stages) != 1 {
+		t.Fatalf("stages = %d, want 1", len(pb.Stages))
+	}
+}
+
+// The built-ins are the "existing playbooks" the closed-set change had to leave
+// alone: they still parse, and none of them references {task_doc} — the execution
+// contract appends its tick+report paragraph conditionally instead, so a card with
+// no micro-plan never carries a sentence about a file that does not exist.
+func TestBuiltins_ParseUnchangedByTaskDoc(t *testing.T) {
+	r := newRegistry(t)
+	got := r.List("")
+	if len(got) == 0 {
+		t.Fatal("no built-in playbooks parsed")
+	}
+	for _, pb := range got {
+		for _, st := range pb.Stages {
+			if strings.Contains(st.Body, "{task_doc}") {
+				t.Errorf("built-in %q references {task_doc} in stage %q", pb.Name, st.Name)
+			}
+		}
+	}
+}
