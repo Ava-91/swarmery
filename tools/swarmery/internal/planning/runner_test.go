@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 )
 
 func TestClaudeBin_ExplicitOverride(t *testing.T) {
@@ -139,6 +141,9 @@ func TestClaudeRunner_Start_BinMissing(t *testing.T) {
 // default, which is the flag that stops the run inheriting the account default
 // (Fable-5 here, several times the price of the pinned tier).
 func TestClaudeRunner_Start_ArgvPin(t *testing.T) {
+	t.Setenv(claudeflags.ModeEnv, "")
+	t.Setenv(permEnv, "")
+
 	argFile := filepath.Join(t.TempDir(), "args")
 	script := filepath.Join(t.TempDir(), "fakeclaude.sh")
 	body := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argFile + "; done\n"
@@ -152,8 +157,10 @@ func TestClaudeRunner_Start_ArgvPin(t *testing.T) {
 		model string
 		want  []string
 	}{
-		{"default model", "", []string{"-p", "plan it", "--session-id", "u-argv", "--model", defaultModel}},
-		{"model override", "claude-sonnet-5", []string{"-p", "plan it", "--session-id", "u-argv", "--model", "claude-sonnet-5"}},
+		{"default model", "", []string{"-p", "plan it", "--session-id", "u-argv",
+			"--permission-mode", claudeflags.DefaultMode, "--model", defaultModel}},
+		{"model override", "claude-sonnet-5", []string{"-p", "plan it", "--session-id", "u-argv",
+			"--permission-mode", claudeflags.DefaultMode, "--model", "claude-sonnet-5"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := os.Remove(argFile); err != nil && !os.IsNotExist(err) {
