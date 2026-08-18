@@ -72,6 +72,11 @@ type stubWt struct {
 	keepBranch   []bool
 	acquireErr   error
 	onRemove     func() // observed inside Remove, before it returns
+	// startPoint is the SHA Acquire reports pinning the worktree to. Deliberately
+	// NOT a branch name: run_start_point exists so the verifier diffs
+	// base...HEAD, and a test whose base happens to equal the branch would pass on
+	// exactly the bug that column prevents. "" ⇒ stubStartPoint.
+	startPoint string
 
 	reclaimed    []string // branches handed to ReclaimEmptyBranch, in order
 	reclaimAhead int      // commits-ahead ReclaimEmptyBranch reports (0 ⇒ reclaimed)
@@ -95,11 +100,19 @@ func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquire
 	}
 	w.acquired = append(w.acquired, taskID)
 	w.acquireRoots = append(w.acquireRoots, repoRoot)
+	sp := w.startPoint
+	if sp == "" {
+		sp = stubStartPoint
+	}
 	return worktree.Acquired{
-		Path:   "/wt/" + projectSlug + "/" + taskID,
-		Branch: "swarm/" + taskID,
+		Path:       "/wt/" + projectSlug + "/" + taskID,
+		Branch:     "swarm/" + taskID,
+		StartPoint: sp,
 	}, nil
 }
+
+// stubStartPoint is the harness's stand-in for the SHA Acquire pins a worktree to.
+const stubStartPoint = "base0ffee"
 
 func (w *stubWt) Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error {
 	w.mu.Lock()

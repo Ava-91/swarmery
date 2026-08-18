@@ -28,8 +28,8 @@ func TestHealStale_KillsSurvivingVerifier(t *testing.T) {
 	db := testDB(t)
 	s := newTestService(t, db, &stubRunner{}, stubTrees{hash: "h"})
 	id := insertTask(t, db, taskOpts{})
-	if _, err := db.Exec(`INSERT INTO verification_runs(task_id, status, started_at, verify_session_uuid)
-		VALUES(?, 'running', ?, 'live-uuid')`, id, s.ts()); err != nil {
+	if _, err := db.Exec(`INSERT INTO verification_runs(target_key, task_id, status, started_at, verify_session_uuid)
+		VALUES('task:'||?, ?, 'running', ?, 'live-uuid')`, id, id, s.ts()); err != nil {
 		t.Fatal(err)
 	}
 	var probed string
@@ -57,8 +57,8 @@ func TestHealStale_NoSurvivorIsSilent(t *testing.T) {
 	db := testDB(t)
 	s := newTestService(t, db, &stubRunner{}, stubTrees{hash: "h"})
 	id := insertTask(t, db, taskOpts{})
-	if _, err := db.Exec(`INSERT INTO verification_runs(task_id, status, started_at, verify_session_uuid)
-		VALUES(?, 'running', ?, 'dead-uuid')`, id, s.ts()); err != nil {
+	if _, err := db.Exec(`INSERT INTO verification_runs(target_key, task_id, status, started_at, verify_session_uuid)
+		VALUES('task:'||?, ?, 'running', ?, 'dead-uuid')`, id, id, s.ts()); err != nil {
 		t.Fatal(err)
 	}
 	s.FindRun = func(string) (int, bool) { return 0, false }

@@ -49,6 +49,13 @@ type Service struct {
 	// Notify emits task_updated (wired to api.publishTaskUpdated) so a stamped
 	// verdict reaches the board over the FROZEN WS bus — no new message type.
 	Notify func(taskID int64)
+	// NotifyPlan emits plan_updated for one epic (wired to the same publisher
+	// phaserun uses), so a PHASE verdict reaches the Plans page over that same frozen
+	// bus. A separate seam from Notify rather than a shared one: the two surfaces
+	// subscribe to different messages, and the ids are from different tables — a
+	// phase's epic id sent as a board task id would refresh an unrelated card.
+	// nil ⇒ no nudge.
+	NotifyPlan func(workspaceTaskID int64)
 	// PlaybookVerify resolves a task's verify strictness knob (fusion phase 13)
 	// from its playbook name + project path: "strict" | "normal" | "off". nil ⇒
 	// every task verifies at the normal bar (pre-playbook behavior; keeps verify
@@ -144,19 +151,21 @@ var ErrNoWorktree = errors.New("verify: task has no worktree to grade")
 // task (single-flight). The manual endpoint maps it to 409.
 var ErrAlreadyRunning = errors.New("verify: a verification is already running for this task")
 
-// VerifyTask runs the whole flow for one task (spec steps 1-6). BLOCKS — the
-// caller runs it in a goroutine (Poke) or inline for the manual endpoint's async
-// seam. All infra failures degrade to INCONCLUSIVE (never FAIL — an env problem
-// is not evidence the work is wrong; DESIGN.md §4.6), so a fix task is spawned
-// ONLY on a genuine FAIL verdict.
+// VerifyTask verifies one board card. It is a Target CONSTRUCTOR over
+// VerifyTarget — the row load, the playbook knob, the stamp destination (tasks) and
+// the fix-task chain are the task-shaped parts; everything below the Target is the
+// same engine a phase run goes through.
+//
+// BLOCKS — the caller runs it in a goroutine (Poke) or inline for the manual
+// endpoint's async seam. All infra failures degrade to INCONCLUSIVE (never FAIL — an
+// env problem is not evidence the work is wrong; DESIGN.md §4.6), so a fix task is
+// spawned ONLY on a genuine FAIL verdict.
 func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
-	// Step 1 gate: task exists + has a worktree.
+	// Step 1 gate: task exists (the one lookup the engine cannot do — it holds no
+	// notion of a task).
 	tk, err := s.loadTask(taskID)
 	if err != nil {
 		return err
-	}
-	if strings.TrimSpace(tk.worktreePath) == "" {
-		return ErrNoWorktree
 	}
 
 	// Step 1 gate: the playbook verify knob (fusion phase 13). A task whose
@@ -164,16 +173,62 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 	// (the task keeps whatever verdict it had). strict/normal fall through and
 	// tighten the prompt bar in Step 3. Resolved via the injected seam so verify
 	// stays decoupled from the playbook registry; nil seam ⇒ everything is normal.
-	strictness := s.strictness(tk)
-	if strictness == strictnessOff {
+	// The Target carries it; the engine enforces it.
+	return s.VerifyTarget(ctx, Target{
+		Key:          TaskKey(taskID),
+		TaskID:       taskID,
+		WorktreePath: tk.worktreePath,
+		Branch:       tk.branch,
+		StartPoint:   tk.startPoint,
+		Title:        tk.title,
+		Prompt:       tk.prompt,
+		Model:        tk.model,
+		ProjectPath:  tk.projectPath,
+		Strictness:   s.strictness(tk),
+		Stamp: func(v Verdict, detail string) error {
+			_, err := s.DB.Exec(
+				`UPDATE tasks SET verify_verdict=?, verify_detail=NULLIF(?, '') WHERE id=?`,
+				string(v), detail, taskID)
+			return err
+		},
+		// The fix-task chain is board-only. tk is captured rather than reloaded: the
+		// budget it carries (verify_retry_count) can only be moved by another
+		// verification of this same task, which single-flight has already excluded.
+		OnFail: func(detail string) error { return s.handleFail(tk, detail) },
+		Notify: func() { s.notify(taskID) },
+	})
+}
+
+// VerifyTarget is the verification ENGINE, identical for every surface: gate,
+// single-flight, tree-hash memo, scope gate, the read-only run, verdict parse, stamp
+// (spec steps 1-6). It performs no lookups of its own — everything it grades and
+// everywhere it writes arrives in the Target, which is what lets a phase run reuse it
+// without a single task-shaped branch.
+//
+// BLOCKS. Every infra failure degrades to INCONCLUSIVE, never FAIL.
+func (s *Service) VerifyTarget(ctx context.Context, t Target) error {
+	// Gate: something to grade. An absent worktree is not a failing one.
+	if strings.TrimSpace(t.WorktreePath) == "" {
+		return ErrNoWorktree
+	}
+	if t.Stamp == nil {
+		// A target with nowhere to record its answer would spend a session to produce
+		// a verdict nothing keeps. Programmer error, refused before the run row.
+		return fmt.Errorf("verify: target %s has no Stamp", t.Key)
+	}
+
+	// Gate: the strictness knob. `off` is never graded — no run row, no verdict stamp
+	// (the target keeps whatever verdict it had). It is the board's playbook verify:off
+	// and the phase doc's `**Verify:** off` alike, resolved by the constructor above.
+	if t.Strictness == strictnessOff {
 		return nil
 	}
 
-	// Step 1 gate: single-flight. Insert a `running` row; the partial unique
-	// index (idx_verification_running) rejects a second in-flight run for the
-	// same task, so this INSERT IS the lock (durable, survives restart — the
-	// reaper/heal reclaim a stuck one). Mirrors provision.Enqueue's index guard.
-	runID, err := s.beginRun(taskID)
+	// Gate: single-flight. Insert a `running` row; the partial unique index
+	// (idx_verification_running) rejects a second in-flight run for the same TARGET
+	// KEY, so this INSERT IS the lock (durable, survives restart — the reaper/heal
+	// reclaim a stuck one). Mirrors provision.Enqueue's index guard.
+	runID, err := s.beginRun(t)
 	if errors.Is(err, ErrAlreadyRunning) {
 		return ErrAlreadyRunning
 	}
@@ -182,23 +237,23 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 	}
 
 	// From here every exit MUST finalize the run row (finishRun) so no `running`
-	// row leaks (a leak would block all future verifies of this task until the
+	// row leaks (a leak would block all future verifies of this target until the
 	// reaper fires). Concurrency cap around the actual work.
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
 
-	// Step 2: tree-hash gate. A cache hit for (tree_hash, task_id) stamps the
+	// Step 2: tree-hash gate. A cache hit for (tree_hash, target_key) stamps the
 	// cached verdict and records a detail='cache' run WITHOUT spawning. A
 	// tree-hash error (worktree vanished mid-flight — the RemoveWorktreeFor race)
 	// degrades to INCONCLUSIVE, not FAIL.
-	treeHash, err := s.Trees.TreeHash(tk.worktreePath)
+	treeHash, err := s.Trees.TreeHash(t.WorktreePath)
 	if err != nil {
-		return s.stampInconclusive(taskID, runID, "", "could not read worktree tree ("+err.Error()+"): worktree may have been reclaimed")
+		return s.stampInconclusive(t, runID, "", "could not read worktree tree ("+err.Error()+"): worktree may have been reclaimed")
 	}
-	if cached, ok, cerr := s.cacheGet(treeHash, taskID); cerr != nil {
+	if cached, ok, cerr := s.cacheGet(treeHash, t.Key); cerr != nil {
 		return cerr
 	} else if ok {
-		return s.stampCached(taskID, runID, treeHash, cached)
+		return s.stampCached(t, runID, treeHash, cached)
 	}
 
 	// Step 2.5: scope gate. A change too large for a bounded read-only pass is
@@ -212,26 +267,26 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 	// evidence of a huge one, and refusing on it would deny verification for a repo
 	// state we simply could not measure.
 	//
-	// The base is start_point: the SHA admit() pinned this task's worktree to
-	// (0051). This used to be tk.branch — the branch diffed against ITSELF, which
-	// is always zero files, so the gate could never fire and the prompt's "diff vs"
-	// instruction named a no-op range. Both consumers now measure the same real
-	// interval, base...HEAD.
-	base := tk.startPoint
+	// The base is the target's StartPoint: the SHA the run's worktree was pinned to
+	// (tasks.start_point / epic_phases.run_start_point). It used to be the branch —
+	// the branch diffed against ITSELF, which is always zero files, so the gate could
+	// never fire and the prompt's "diff vs" instruction named a no-op range. Both
+	// consumers now measure the same real interval, base...HEAD.
+	base := t.StartPoint
 	if base == "" {
-		// Row dispatched before 0051 — no honest base exists. Skip the scope gate
-		// (an unmeasurable diff is not evidence of a huge one; and re-introducing
-		// the branch here would gate on a guaranteed-zero diff, which is worse than
-		// not gating: it looks like a check and can never fail) and let the prompt
-		// fall back to the branch name as before.
-		base = tk.branch
-		log.Printf("verify: task %d: no start_point recorded, diff base falls back to branch", taskID)
+		// Row from before the start point was recorded — no honest base exists. Skip
+		// the scope gate (an unmeasurable diff is not evidence of a huge one; and
+		// re-introducing the branch here would gate on a guaranteed-zero diff, which
+		// is worse than not gating: it looks like a check and can never fail) and let
+		// the prompt fall back to the branch name as before.
+		base = t.Branch
+		log.Printf("verify: %s: no start point recorded, diff base falls back to branch", t.Key)
 	}
-	if s.Cfg.MaxDiffFiles > 0 && tk.startPoint != "" {
-		if n, derr := s.Trees.DiffFileCount(tk.worktreePath, base); derr != nil {
-			log.Printf("verify: task %d: diff size unreadable, scope gate skipped: %v", taskID, derr)
+	if s.Cfg.MaxDiffFiles > 0 && t.StartPoint != "" {
+		if n, derr := s.Trees.DiffFileCount(t.WorktreePath, base); derr != nil {
+			log.Printf("verify: %s: diff size unreadable, scope gate skipped: %v", t.Key, derr)
 		} else if n > s.Cfg.MaxDiffFiles {
-			return s.stampInconclusive(taskID, runID, treeHash, fmt.Sprintf(
+			return s.stampInconclusive(t, runID, treeHash, fmt.Sprintf(
 				"diff spans %d files, above the %d-file bound for a bounded read-only pass: "+
 					"split the work or raise SWARMERY_VERIFY_MAX_DIFF_FILES", n, s.Cfg.MaxDiffFiles))
 		}
@@ -240,47 +295,92 @@ func (s *Service) VerifyTask(ctx context.Context, taskID int64) error {
 	// Step 3: run the read-only verifier + parse the verdict.
 	uuid := s.UUID()
 	s.linkVerifySession(runID, uuid)
-	model := tk.model
+	model := t.Model
 	if model == "" {
 		model = defaultModel
 	}
 	spec := RunSpec{
-		// base, not tk.branch: BuildPrompt's third parameter has always been named
+		// base, not the branch: BuildPrompt's third parameter has always been named
 		// startPoint (prompt.go) — we are finally passing what it asked for.
-		Prompt:      BuildPrompt(tk.title, tk.prompt, base, strictness),
+		Prompt:      BuildPrompt(t.Title, t.Prompt, base, t.Strictness),
 		SessionUUID: uuid,
-		Cwd:         tk.worktreePath,
+		Cwd:         t.WorktreePath,
 		Model:       model,
-		// Resolved from the PROJECT path, never from Cwd: Cwd is the task's
+		// Resolved from the PROJECT path, never from Cwd: Cwd is the run's
 		// worktree and carries no .claude/settings.local.json, so a cwd-side
 		// resolve would silently verify under the default account (plan A3).
 		// "" = unbound project = default account = no env delta.
-		Account: claudeacct.Binding(tk.projectPath),
+		Account: claudeacct.Binding(t.ProjectPath),
 	}
 	run, rerr := s.Run.Run(ctx, spec)
 	if rerr != nil {
 		// Process never ran (PATH miss/fork failure) → INCONCLUSIVE.
-		return s.stampInconclusive(taskID, runID, treeHash, "verifier did not run: "+rerr.Error())
+		return s.stampInconclusive(t, runID, treeHash, "verifier did not run: "+rerr.Error())
 	}
 	if run.TimedOut {
 		// Killed by the hard timeout → INCONCLUSIVE (could not conclude), never FAIL.
-		return s.stampInconclusive(taskID, runID, treeHash, "verifier timed out")
+		return s.stampInconclusive(t, runID, treeHash, "verifier timed out")
 	}
 
 	verdict, reasons := ParseVerdict(run.Output)
 
 	// Step 4 + 5: stamp the verdict, cache pass/fail (never inconclusive), and on
-	// FAIL create/dedup a fix task within the root's retry budget.
+	// FAIL hand off to the target's own fail follow-up (the board's fix-task chain;
+	// a nil hook — every phase target — stamps and stops).
 	switch verdict {
 	case VerdictPass:
-		return s.stampVerdict(taskID, runID, treeHash, VerdictPass, reasons, true /*cache*/)
+		return s.stampVerdict(t, runID, treeHash, VerdictPass, reasons, true /*cache*/)
 	case VerdictFail:
-		if err := s.stampVerdict(taskID, runID, treeHash, VerdictFail, reasons, true /*cache*/); err != nil {
+		if err := s.stampVerdict(t, runID, treeHash, VerdictFail, reasons, true /*cache*/); err != nil {
 			return err
 		}
-		return s.handleFail(tk, reasons)
+		return t.onFail(reasons)
 	default: // VerdictInconclusive
-		return s.stampInconclusive(taskID, runID, treeHash, reasons)
+		return s.stampInconclusive(t, runID, treeHash, reasons)
+	}
+}
+
+// VerifyPhase grades a finished phase run — the second target this engine serves
+// (§5.3). It satisfies runcore.PhaseVerifier, which phaserun calls from its run
+// goroutine while the worktree is still on disk.
+//
+// The verdict is an INPUT to the phase's diagnosis, never a second status: it lands
+// on epic_phases.verify_verdict, where phasediag turns a `fail` into a verify-failed
+// blocker beside a checkbox-derived outcome (decision D5). No fix task is spawned —
+// OnFail is deliberately absent, because turning a failed plan phase into more
+// dispatched work is the operator's call on the Plans page, not the verifier's.
+func (s *Service) VerifyPhase(ctx context.Context, req runcore.PhaseVerifyRequest) error {
+	return s.VerifyTarget(ctx, Target{
+		Key:          PhaseKey(req.PhaseID),
+		WorktreePath: req.WorktreePath,
+		Branch:       req.Branch,
+		StartPoint:   req.StartPoint,
+		Title:        req.Title,
+		Prompt:       req.Prompt,
+		ProjectPath:  req.ProjectPath,
+		Strictness:   StrictnessFromMode(req.Mode),
+		Stamp: func(v Verdict, detail string) error {
+			_, err := s.DB.Exec(
+				`UPDATE epic_phases SET verify_verdict=?, verify_detail=NULLIF(?, '') WHERE id=?`,
+				string(v), detail, req.PhaseID)
+			return err
+		},
+		Notify: func() { s.notifyPlan(req.WorkspaceTaskID) },
+	})
+}
+
+// StrictnessFromMode maps a phase doc's `**Verify:**` mode (wsingest's off|normal|
+// strict) onto the prompt bar. Anything unrecognized is `off` — the same direction
+// wsingest's parser already normalizes in, because running a grader nobody asked for
+// is worse than not running one.
+func StrictnessFromMode(mode string) Strictness {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "strict":
+		return StrictnessStrict
+	case "normal":
+		return StrictnessNormal
+	default:
+		return strictnessOff
 	}
 }
 
@@ -360,18 +460,20 @@ func (s *Service) loadTask(id int64) (task, error) {
 
 // ── verification_runs lifecycle (single-writer inline SQL) ──
 
-// beginRun inserts a `running` row, returning its id. A unique-index violation
-// (idx_verification_running) means another run is in flight → ErrAlreadyRunning.
-func (s *Service) beginRun(taskID int64) (int64, error) {
+// beginRun inserts a `running` row for the target, returning its id. A unique-index
+// violation (idx_verification_running, now keyed on target_key — 0058) means another
+// run is in flight → ErrAlreadyRunning.
+func (s *Service) beginRun(t Target) (int64, error) {
 	res, err := s.DB.Exec(
-		`INSERT INTO verification_runs(task_id, status, started_at) VALUES(?, 'running', ?)`,
-		taskID, s.ts())
+		`INSERT INTO verification_runs(target_key, task_id, status, started_at)
+		 VALUES(?, ?, 'running', ?)`,
+		t.Key, t.taskIDValue(), s.ts())
 	if err != nil {
 		// The partial unique index rejected a second in-flight row.
 		var existing int64
 		if again := s.DB.QueryRow(
-			`SELECT id FROM verification_runs WHERE task_id=? AND status='running' LIMIT 1`,
-			taskID).Scan(&existing); again == nil {
+			`SELECT id FROM verification_runs WHERE target_key=? AND status='running' LIMIT 1`,
+			t.Key).Scan(&existing); again == nil {
 			return 0, ErrAlreadyRunning
 		}
 		return 0, err
@@ -404,59 +506,56 @@ func (s *Service) linkVerifySession(runID int64, uuid string) {
 
 // ── stamping ──
 
-// stampVerdict writes tasks.verify_verdict + verify_detail, finalizes the run
-// row, optionally caches a pass/fail verdict, and emits task_updated. It NEVER
-// caches inconclusive (guarded by the caller passing cache=false for that path).
-func (s *Service) stampVerdict(taskID, runID int64, treeHash string, v Verdict, detail string, cache bool) error {
-	if _, err := s.DB.Exec(
-		`UPDATE tasks SET verify_verdict=?, verify_detail=NULLIF(?, '') WHERE id=?`,
-		string(v), truncate(detail, verdictReasonsCap), taskID); err != nil {
+// stampVerdict writes the verdict + detail onto the target's own row (Target.Stamp:
+// tasks for a card, epic_phases for a phase), finalizes the run row, optionally
+// caches a pass/fail verdict, and nudges the target's live surface. It NEVER caches
+// inconclusive (guarded by the caller passing cache=false for that path).
+//
+// The detail is truncated HERE, once, before it reaches any Stamp — the 4KB budget is
+// the schema's, not the board's, and a second stamper that forgot the cap would park
+// an unbounded model transcript in a column.
+func (s *Service) stampVerdict(t Target, runID int64, treeHash string, v Verdict, detail string, cache bool) error {
+	if err := t.Stamp(v, truncate(detail, verdictReasonsCap)); err != nil {
 		return err
 	}
 	s.finishRun(runID, string(v), treeHash, detail)
 	if cache && treeHash != "" && (v == VerdictPass || v == VerdictFail) {
-		s.cachePut(treeHash, taskID, v)
+		s.cachePut(treeHash, t.Key, v)
 	}
-	s.notify(taskID)
+	t.notify()
 	return nil
 }
 
 // stampInconclusive is the fail-safe stamp: verdict inconclusive, run finalized,
-// NOTHING cached, NO fix task. Used for every infra/ambiguity path.
-func (s *Service) stampInconclusive(taskID, runID int64, treeHash, detail string) error {
-	return s.stampVerdict(taskID, runID, treeHash, VerdictInconclusive, detail, false /*never cache*/)
+// NOTHING cached, NO fail follow-up. Used for every infra/ambiguity path.
+func (s *Service) stampInconclusive(t Target, runID int64, treeHash, detail string) error {
+	return s.stampVerdict(t, runID, treeHash, VerdictInconclusive, detail, false /*never cache*/)
 }
 
 // stampCached stamps a cache-hit verdict without spawning: it finalizes the run
-// row with detail='cache' and stamps the task with the memoized verdict. The
+// row with detail='cache' and stamps the target with the memoized verdict. The
 // cache only ever holds pass/fail, so this never produces inconclusive.
-func (s *Service) stampCached(taskID, runID int64, treeHash string, v Verdict) error {
-	if _, err := s.DB.Exec(
-		`UPDATE tasks SET verify_verdict=?, verify_detail='verified from cache (unchanged tree)' WHERE id=?`,
-		string(v), taskID); err != nil {
+func (s *Service) stampCached(t Target, runID int64, treeHash string, v Verdict) error {
+	if err := t.Stamp(v, "verified from cache (unchanged tree)"); err != nil {
 		return err
 	}
 	s.finishRun(runID, string(v), treeHash, "cache")
-	s.notify(taskID)
-	// A cached FAIL still needs the fix-task flow (the tree is unchanged and still
-	// failing). Reload for the fix-chain walk.
+	t.notify()
+	// A cached FAIL still needs the fail follow-up (the tree is unchanged and still
+	// failing).
 	if v == VerdictFail {
-		tk, err := s.loadTask(taskID)
-		if err != nil {
-			return err
-		}
-		return s.handleFail(tk, "verification failed (unchanged tree, cached verdict)")
+		return t.onFail("verification failed (unchanged tree, cached verdict)")
 	}
 	return nil
 }
 
 // ── tree-hash cache (single-writer inline SQL) ──
 
-func (s *Service) cacheGet(treeHash string, taskID int64) (Verdict, bool, error) {
+func (s *Service) cacheGet(treeHash, targetKey string) (Verdict, bool, error) {
 	var v string
 	err := s.DB.QueryRow(
-		`SELECT verdict FROM verification_cache WHERE tree_hash=? AND task_id=?`,
-		treeHash, taskID).Scan(&v)
+		`SELECT verdict FROM verification_cache WHERE tree_hash=? AND target_key=?`,
+		treeHash, targetKey).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -466,18 +565,18 @@ func (s *Service) cacheGet(treeHash string, taskID int64) (Verdict, bool, error)
 	return Verdict(v), true, nil
 }
 
-// cachePut memoizes a pass/fail verdict for (tree_hash, task_id). INSERT OR
+// cachePut memoizes a pass/fail verdict for (tree_hash, target_key). INSERT OR
 // IGNORE: a concurrent identical put is harmless. Never called for inconclusive
 // (the CHECK constraint would also reject it). Best-effort — a cache write
 // failure must not fail the verdict.
-func (s *Service) cachePut(treeHash string, taskID int64, v Verdict) {
+func (s *Service) cachePut(treeHash, targetKey string, v Verdict) {
 	if v != VerdictPass && v != VerdictFail {
 		return
 	}
 	if _, err := s.DB.Exec(
-		`INSERT OR IGNORE INTO verification_cache(tree_hash, task_id, verdict, created_at)
-		 VALUES(?,?,?,?)`, treeHash, taskID, string(v), s.ts()); err != nil {
-		log.Printf("error: verify: cache put (task %d): %v", taskID, err)
+		`INSERT OR IGNORE INTO verification_cache(tree_hash, target_key, verdict, created_at)
+		 VALUES(?,?,?,?)`, treeHash, targetKey, string(v), s.ts()); err != nil {
+		log.Printf("error: verify: cache put (%s): %v", targetKey, err)
 	}
 }
 
@@ -665,6 +764,74 @@ func nullableModel(m string) any {
 	return m
 }
 
+// ── out-of-band stamping (reaper + startup heal) ──
+
+// stampByKey writes a verdict onto whichever row a target key names, for the two
+// paths that have NO Target: the reaper and the startup heal walk verification_runs
+// rows, which outlive the Target that opened them. It is the one place the key ⇒
+// table mapping is duplicated, and it is duplicated because the alternative —
+// reconstructing a full Target from a run row — would have to invent the worktree
+// path, the branch and the base that row no longer knows.
+//
+// onlyIfUnset preserves the heal's narrower contract: a restart must not overwrite a
+// verdict a later run already reached, while the reaper deliberately does (the run it
+// reaps IS the current one). An unroutable key is logged and skipped — guessing a
+// kind would stamp a verdict onto an unrelated row.
+func (s *Service) stampByKey(key string, v Verdict, detail string, onlyIfUnset bool) {
+	kind, id, ok := SplitKey(key)
+	if !ok {
+		log.Printf("error: verify: cannot route verdict for unrecognized target key %q", key)
+		return
+	}
+	guard := ""
+	if onlyIfUnset {
+		guard = ` AND (verify_verdict IS NULL OR verify_verdict='')`
+	}
+	table := "tasks"
+	if kind == KindPhase {
+		table = "epic_phases"
+	}
+	if _, err := s.DB.Exec(
+		`UPDATE `+table+` SET verify_verdict=?, verify_detail=? WHERE id=?`+guard,
+		string(v), detail, id); err != nil {
+		log.Printf("error: verify: stamp %s: %v", key, err)
+		return
+	}
+	switch kind {
+	case KindTask:
+		s.notify(id)
+	case KindPhase:
+		s.notifyPlanForPhase(id)
+	}
+}
+
+// notifyPlan nudges the Plans page for one epic. Wired at the composition root to
+// the same plan_updated publisher phaserun uses; nil ⇒ no nudge (the verdict is
+// durable either way and shows on the next fetch).
+func (s *Service) notifyPlan(workspaceTaskID int64) {
+	if s.NotifyPlan != nil && workspaceTaskID > 0 {
+		s.NotifyPlan(workspaceTaskID)
+	}
+}
+
+// notifyPlanForPhase resolves a phase's epic and nudges it. Only the out-of-band
+// paths need this lookup: VerifyPhase already receives the workspace task id from
+// phaserun, which is holding the row.
+func (s *Service) notifyPlanForPhase(phaseID int64) {
+	if s.NotifyPlan == nil {
+		return
+	}
+	var taskID int64
+	if err := s.DB.QueryRow(
+		`SELECT workspace_task_id FROM epic_phases WHERE id=?`, phaseID).Scan(&taskID); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("error: verify: resolve epic of phase %d for notify: %v", phaseID, err)
+		}
+		return
+	}
+	s.notifyPlan(taskID)
+}
+
 // ── reaper + startup heal ──
 
 // Reap marks `running` verification_runs rows older than Cfg.StaleAfter as
@@ -675,15 +842,18 @@ func nullableModel(m string) any {
 func (s *Service) Reap() (int, error) {
 	cutoff := s.clock().Add(-s.Cfg.StaleAfter).UTC().Format(tsFormat)
 	rows, err := s.DB.Query(
-		`SELECT id, task_id FROM verification_runs WHERE status='running' AND started_at < ?`, cutoff)
+		`SELECT id, target_key FROM verification_runs WHERE status='running' AND started_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}
-	type stuck struct{ runID, taskID int64 }
+	type stuck struct {
+		runID int64
+		key   string
+	}
 	var stucks []stuck
 	for rows.Next() {
 		var st stuck
-		if err := rows.Scan(&st.runID, &st.taskID); err != nil {
+		if err := rows.Scan(&st.runID, &st.key); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -695,14 +865,8 @@ func (s *Service) Reap() (int, error) {
 	}
 	for _, st := range stucks {
 		s.finishRun(st.runID, "error", "", "reaped: verification run exceeded "+s.Cfg.StaleAfter.String())
-		if _, err := s.DB.Exec(
-			`UPDATE tasks SET verify_verdict='inconclusive',
-			                  verify_detail='verification run stalled and was reaped'
-			 WHERE id=?`, st.taskID); err != nil {
-			log.Printf("error: verify: reap stamp task %d: %v", st.taskID, err)
-			continue
-		}
-		s.notify(st.taskID)
+		s.stampByKey(st.key, VerdictInconclusive,
+			"verification run stalled and was reaped", false /*overwrite*/)
 	}
 	if len(stucks) > 0 {
 		log.Printf("swarmery verify: reaped %d stalled verification run(s)", len(stucks))
@@ -723,18 +887,18 @@ func (s *Service) Reap() (int, error) {
 // procgroup.Kill), which is also what makes the 'inconclusive' stamp true.
 func (s *Service) HealStale() error {
 	rows, err := s.DB.Query(
-		`SELECT id, task_id, COALESCE(verify_session_uuid,'') FROM verification_runs WHERE status='running'`)
+		`SELECT id, target_key, COALESCE(verify_session_uuid,'') FROM verification_runs WHERE status='running'`)
 	if err != nil {
 		return err
 	}
 	type stuck struct {
-		runID, taskID int64
-		uuid          string
+		runID     int64
+		key, uuid string
 	}
 	var stucks []stuck
 	for rows.Next() {
 		var st stuck
-		if err := rows.Scan(&st.runID, &st.taskID, &st.uuid); err != nil {
+		if err := rows.Scan(&st.runID, &st.key, &st.uuid); err != nil {
 			rows.Close()
 			return err
 		}
@@ -747,12 +911,8 @@ func (s *Service) HealStale() error {
 	for _, st := range stucks {
 		s.killOrphan(st.uuid, st.runID)
 		s.finishRun(st.runID, "error", "", "interrupted by daemon restart")
-		if _, err := s.DB.Exec(
-			`UPDATE tasks SET verify_verdict='inconclusive',
-			                  verify_detail='verification interrupted by daemon restart'
-			 WHERE id=? AND (verify_verdict IS NULL OR verify_verdict='')`, st.taskID); err != nil {
-			log.Printf("error: verify: heal stamp task %d: %v", st.taskID, err)
-		}
+		s.stampByKey(st.key, VerdictInconclusive,
+			"verification interrupted by daemon restart", true /*onlyIfUnset*/)
 	}
 	if len(stucks) > 0 {
 		log.Printf("swarmery verify: healed %d interrupted verification run(s)", len(stucks))

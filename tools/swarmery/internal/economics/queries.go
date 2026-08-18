@@ -151,18 +151,29 @@ WHERE t.reverted = 1 AND ` + taskScope + `
 GROUP BY t.id
 ORDER BY t.id`
 
-// qWasteRetried: tasks that needed at least one re-dispatch.
+// retrySum is the honest retry total: BOTH re-dispatch budgets, summed.
+//
+// It used to be tasks.retry_count alone, which named itself "retried" while counting
+// only half the waste. 0051 split one counter into two — retry_count is the
+// dispatcher's no-progress heal budget, verify_retry_count is the verification
+// fix-chain budget — and every task re-run because its verification failed then
+// vanished from this metric entirely. Both are re-runs of work already paid for, which
+// is exactly what the waste metric exists to count, so both are counted; the label at
+// the call site says which two.
+const retrySum = `(t.retry_count + t.verify_retry_count)`
+
+// qWasteRetried: tasks that needed at least one re-run, from either budget.
 const qWasteRetried = `SELECT` + taskCostHead + `''` + taskCostTail + taskCostJoin + `
-WHERE t.retry_count > 0 AND ` + taskScope + `
+WHERE ` + retrySum + ` > 0 AND ` + taskScope + `
 GROUP BY t.id
 ORDER BY t.id`
 
-// qRetrySum totals the re-dispatches themselves, which the cost column cannot
+// qRetrySum totals the re-runs themselves, which the cost column cannot
 // express: no schema column attributes a turn to an attempt.
 const qRetrySum = `
-SELECT COALESCE(SUM(t.retry_count), 0)
+SELECT COALESCE(SUM` + retrySum + `, 0)
 FROM tasks t
-WHERE t.retry_count > 0 AND ` + taskScope
+WHERE ` + retrySum + ` > 0 AND ` + taskScope
 
 // qWasteLooped: tasks whose quality gate re-dispatched more than once.
 const qWasteLooped = `SELECT` + taskCostHead + `''` + taskCostTail + taskCostJoin + `
@@ -497,7 +508,7 @@ func loadWaste(db *sql.DB, o Options) (WasteMetric, error) {
 		query string
 	}{
 		{&m.Reverted, "reverted (tasks.reverted = 1)", qWasteReverted},
-		{&m.Retried, "retried (tasks.retry_count > 0)", qWasteRetried},
+		{&m.Retried, "retried (dispatch heals + verify fix-chain)", qWasteRetried},
 		{&m.Looped, "looped (task_loops, > 1 loop)", qWasteLooped},
 		{&m.Stranded, "stranded (running, all sessions ended)", qWasteStranded},
 	}

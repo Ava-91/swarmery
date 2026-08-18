@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import type { PhaseDiagnosis, PhaseRunOutcome } from '../api/types';
+import type { PhaseDiagnosis, PhaseRunOutcome, PhaseVerifyVerdict } from '../api/types';
 import {
   deleteOrphanBranch,
   deletePhaseRunBranch,
@@ -35,12 +35,38 @@ function diagnosisReason(diag: PhaseDiagnosis): string {
     `Phase ${String(diag.seq)} "${diag.name}" run ended ${diag.runOutcome}: ${String(diag.criteriaAfter)}/${String(diag.criteriaTotal)} acceptance criteria ticked.`,
     ...diag.blockers.map((b) => `Blocker: ${b.summary}`),
   ];
+  if (diag.verifyVerdict !== null)
+    lines.push(
+      `Verification verdict: ${diag.verifyVerdict}${diag.verifyDetail !== null ? ` — ${diag.verifyDetail}` : ''}`,
+    );
   if (diag.runError !== null) lines.push(`Run error: ${diag.runError}`);
   if (diag.agentMessage !== null)
     lines.push(`Executor said: ${diag.agentMessage.text}${diag.agentMessage.truncated ? '…' : ''}`);
   lines.push('Revise the plan so this phase (and its dependents) can succeed.');
   return lines.join('\n');
 }
+
+/** Verdict chip copy + styling, matching the Plans list's own chip so the two
+ * surfaces describe one grade the same way. The verdict sits BESIDE the outcome chip
+ * in the header — the outcome answers "did work land?" (checkboxes, decision D5) and
+ * the verdict answers "was it confirmed?". */
+const VERDICT_CHIP: Record<PhaseVerifyVerdict, { label: string; cls: string; title: string }> = {
+  pass: {
+    label: 'verified',
+    cls: 'border-green/40 bg-green/10 text-green',
+    title: 'a read-only verifier confirmed this phase’s acceptance criteria',
+  },
+  fail: {
+    label: 'verify failed',
+    cls: 'border-red/40 bg-red/10 text-red',
+    title: 'a read-only verifier could NOT confirm the ticked criteria — see the verify-failed blocker',
+  },
+  inconclusive: {
+    label: 'verify inconclusive',
+    cls: 'border-amber/40 bg-amber/10 text-amber',
+    title: 'the verifier could not conclude (env or timeout) — this is not a failing grade',
+  },
+};
 
 type Phase =
   | { kind: 'loading' }
@@ -316,6 +342,14 @@ export function RunOutcomeModal({
                 {chip.label}
               </span>
             )}
+            {diag?.verifyVerdict != null && (
+              <span
+                className={`rounded border px-1.5 py-px font-mono text-[9.5px] ${VERDICT_CHIP[diag.verifyVerdict].cls}`}
+                data-tip={VERDICT_CHIP[diag.verifyVerdict].title}
+              >
+                {VERDICT_CHIP[diag.verifyVerdict].label}
+              </span>
+            )}
           </div>
         </div>
 
@@ -369,7 +403,15 @@ export function RunOutcomeModal({
                   {diag.blockers.map((b, i) => (
                     <li
                       key={`${b.kind}-${String(i)}`}
-                      className="rounded-lg border border-line bg-bg/40 px-2.5 py-2"
+                      className={`rounded-lg border px-2.5 py-2 ${
+                        // verify-failed is the one blocker that reports a GRADE of the
+                        // work rather than a state of the repo, and it is the actionable
+                        // one on an otherwise-green phase — so it reads red like the
+                        // verdict chip above instead of blending into the neutral rows.
+                        b.kind === 'verify-failed'
+                          ? 'border-red/25 bg-red/5'
+                          : 'border-line bg-bg/40'
+                      }`}
                     >
                       <div className="text-[11.5px] text-ink">{b.summary}</div>
                       <div className="mt-1 font-mono text-[10px] whitespace-pre-line text-ink-faint">

@@ -2766,6 +2766,12 @@ export type RunConflictCode =
   | 'no-phases'
   | 'plan-complete';
 
+/** The phase doc's verification opt-in (epic_phases.verify_mode). */
+export type PhaseVerifyMode = 'off' | 'normal' | 'strict';
+
+/** A read-only verification verdict (epic_phases.verify_verdict / tasks.verify_verdict). */
+export type PhaseVerifyVerdict = 'pass' | 'fail' | 'inconclusive';
+
 /** One reason a phase did not progress — mirrors phasediag.Blocker. */
 export interface PhaseBlocker {
   kind:
@@ -2777,6 +2783,11 @@ export interface PhaseBlocker {
      *  it — a retry continues that work, and a delete 409s, so this kind offers NO
      *  delete action (phasediag.KindOwnWorktree). */
     | 'own-worktree'
+    /** the phase opted into post-run verification (`**Verify:** strict`) and the
+     *  read-only verifier returned FAIL. An INPUT to the diagnosis, not a status:
+     *  `runOutcome` stays checkbox-derived, and this blocker carries the verifier's
+     *  own reasons in `detail` (phasediag.KindVerifyFailed). */
+    | 'verify-failed'
     | 'no-criteria'
     /** a swarm/phase-<id> branch whose id matches no phase row: work stranded under
      *  a previous id generation. A legitimate delete target, but only through the
@@ -2812,6 +2823,11 @@ export interface PhaseDiagnosis {
   runStartedAt: string | null;
   runEndedAt: string | null;
   runError: string | null;
+  /** Last verification verdict for this phase, null when it was never graded (the
+   *  default — verification is opt-in per doc). A `fail` also appears in `blockers`
+   *  as `verify-failed`; the outcome above is unaffected either way. */
+  verifyVerdict: PhaseVerifyVerdict | null;
+  verifyDetail: string | null;
   blockers: PhaseBlocker[];
   agentMessage: PhaseAgentMessage | null;
 }
@@ -2859,6 +2875,15 @@ export interface EpicPhase {
   /** Ticked-criteria count snapshotted at the run's start. NULL means UNMEASURED
    * (rows predating the snapshot), never zero — never render a 0 → N delta from it. */
   runCheckboxesBefore: number | null;
+  /** The phase doc's opt-in to post-run verification (`**Verify:** strict`). `off` is
+   *  the default, which is why verification is invisible on every plan that never
+   *  asked for it. */
+  verifyMode: PhaseVerifyMode;
+  /** The verdict that opt-in produced, null until a run has been graded. Rendered as
+   *  a chip BESIDE the outcome chip, never merged into it: the outcome answers "did
+   *  work land?" and the verdict answers "was it confirmed?" — two questions. */
+  verifyVerdict: PhaseVerifyVerdict | null;
+  verifyDetail: string | null;
 }
 
 /** Checkbox rollup across an epic's phases. */

@@ -1533,6 +1533,13 @@ func cmdServe(args []string) error {
 		log.Printf("warning: phaserun heal on startup: %v", err)
 	}
 	api.AttachPhaseRun(phaserunSvc)
+	// Opt-in post-run verification for phases (execution-engine unification phase 5):
+	// a phase doc carrying `**Verify:** strict` gets graded by the SAME read-only
+	// engine board cards go through, before its worktree is reclaimed. Wired here
+	// because the verifier is constructed earlier and phaserun must not import it;
+	// the verdict lands on epic_phases as an INPUT to the phase's diagnosis (D5), never
+	// as a second status. Every plan that does not ask keeps today's behaviour.
+	phaserunSvc.Verify = verifySvc
 	// The diagnosis endpoint reads git directly (branch ancestry) through the same
 	// boundary the worktree manager uses.
 	api.AttachPhaseDiag(wtMgr.Git, wtMgr)

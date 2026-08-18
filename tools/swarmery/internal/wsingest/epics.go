@@ -68,6 +68,10 @@ type epicPhase struct {
 	repo             string
 	completionReport string   // `## Completion Report` section body; "" when absent
 	covers           []string // spec-criteria ids (`**Covers:** SC-1, SC-3`) the doc declares it delivers; nil when absent
+	// verifyMode is the doc's opt-in to post-run verification (`**Verify:** strict`),
+	// normalized to off|normal|strict. Doc-owned like everything else here: the plan
+	// author decides which phases are worth grading, and a rescan re-derives it.
+	verifyMode string
 }
 
 var (
@@ -136,6 +140,59 @@ var (
 	// The prose header form: `**Repo:** `/Volumes/Work/swarmery``.
 	docRepoLineRe = regexp.MustCompile(`(?i)^\s*\*\*Repos?:\*\*\s*(.+?)\s*$`)
 )
+
+// VerifyOff / VerifyNormal / VerifyStrict are the phase-doc verification modes.
+// Exported because internal/phaserun switches on them and epic_phases stores them;
+// one spelling, one place.
+const (
+	VerifyOff    = "off"
+	VerifyNormal = "normal"
+	VerifyStrict = "strict"
+)
+
+// docVerifyRe matches the header line `**Verify:** strict`.
+var docVerifyRe = regexp.MustCompile(`(?i)^\s*\*\*Verify:\*\*\s*(.+?)\s*$`)
+
+// ParseDocVerify extracts the phase doc's opt-in to verification from its header
+// block, normalized to off|normal|strict.
+//
+// Bounded by docStatusHeaderLines and stopping at the first `## ` section, for the
+// reason parseDocStatus is: phase docs quote agent prompts and templates further
+// down, and a `**Verify:**` line inside a quoted prompt is describing someone else's
+// phase.
+//
+// Default and fallback are both `off`, deliberately in opposite directions: absent
+// means the plan never asked (plans keep today's behaviour), and an UNRECOGNIZED
+// value means the author asked for something this daemon does not understand — and
+// running a grader nobody specified is worse than not running one. The tolerance
+// contract for phase docs is "degrade with a warning, never fail the scan".
+func ParseDocVerify(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > docStatusHeaderLines {
+		lines = lines[:docStatusHeaderLines]
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			break
+		}
+		m := docVerifyRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		switch v := strings.ToLower(strings.TrimSpace(m[1])); v {
+		case VerifyStrict:
+			return VerifyStrict
+		case VerifyNormal, "on", "yes", "true":
+			return VerifyNormal
+		case VerifyOff, "no", "false", "none":
+			return VerifyOff
+		default:
+			log.Printf("warn: wsingest: unrecognized **Verify:** %q in a phase doc header — verification stays off", v)
+			return VerifyOff
+		}
+	}
+	return VerifyOff
+}
 
 // parseDocRepo extracts the phase doc's own declared repo cell from its header
 // block. Bounded by docStatusHeaderLines and stopping at the first `## ` section
@@ -501,6 +558,7 @@ func parsePlan(planDir string, warn func(string, ...any)) []epicPhase {
 			phases[i].repo = repo
 		}
 		phases[i].covers = ParseCovers(string(body))
+		phases[i].verifyMode = ParseDocVerify(string(body))
 		if fi, err := os.Stat(abs); err == nil {
 			phases[i].docUpdatedAt = fi.ModTime().UTC().Format(time.RFC3339)
 		}
@@ -756,12 +814,18 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 		if p.repo != "" {
 			repo = p.repo
 		}
+		// NOT NULL DEFAULT 'off' in the schema, so an empty parse must still write a
+		// value rather than a NULL the column would reject.
+		verifyMode := p.verifyMode
+		if verifyMode == "" {
+			verifyMode = VerifyOff
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO epic_phases
 				(workspace_task_id, seq, name, doc_path, depends_on,
 				 checkboxes_total, checkboxes_done, doc_status, doc_updated_at,
-				 completion_report, repo, covers)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 completion_report, repo, covers, verify_mode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(workspace_task_id, doc_path) DO UPDATE SET
 				seq               = excluded.seq,
 				name              = excluded.name,
@@ -772,10 +836,11 @@ func applyEpics(tx *sql.Tx, taskID int64, phases []epicPhase, readmePresent bool
 				doc_updated_at    = excluded.doc_updated_at,
 				completion_report = excluded.completion_report,
 				repo              = excluded.repo,
-				covers            = excluded.covers`,
+				covers            = excluded.covers,
+				verify_mode       = excluded.verify_mode`,
 			taskID, p.seq, p.name, p.docPath, string(depJSON),
 			p.checkboxesTotal, p.checkboxesDone, docStatus, docUpdatedAt,
-			completionReport, repo, string(coversJSON)); err != nil {
+			completionReport, repo, string(coversJSON), verifyMode); err != nil {
 			return err
 		}
 	}
@@ -907,11 +972,21 @@ type phaseState struct {
 	runCheckboxesAfter   sql.NullInt64
 	activatedAt          sql.NullString
 	activatedBoardTaskID sql.NullInt64
+	// Verification's own daemon-owned trio (0057). verify_mode is NOT here: the doc
+	// authors that one, so a rescan re-derives it — these three are written by the
+	// run and must survive a doc rename exactly like run_branch does.
+	runStartPoint sql.NullString
+	verifyVerdict sql.NullString
+	verifyDetail  sql.NullString
 }
 
 // carriesState reports whether the row holds anything a rescan must not lose.
 func (p phaseState) carriesState() bool {
-	return p.runState != "idle" || p.runSessionUUID.Valid || p.activatedBoardTaskID.Valid
+	return p.runState != "idle" || p.runSessionUUID.Valid || p.activatedBoardTaskID.Valid ||
+		// A verdict outlives its run: a phase whose row is otherwise idle can still
+		// carry the grade of the run that produced it, and losing it on a doc rename
+		// would silently downgrade "verified" to "never verified".
+		p.verifyVerdict.Valid
 }
 
 // snapshotPhases reads every phase row of the task with its daemon-owned columns.
@@ -921,7 +996,8 @@ func snapshotPhases(tx *sql.Tx, taskID int64) ([]phaseState, error) {
 	rows, err := tx.Query(`
 		SELECT id, seq, doc_path, run_state, run_session_uuid, run_started_at,
 		       run_ended_at, run_error, run_branch, run_checkboxes_before,
-		       run_checkboxes_after, activated_at, activated_board_task_id
+		       run_checkboxes_after, activated_at, activated_board_task_id,
+		       run_start_point, verify_verdict, verify_detail
 		  FROM epic_phases
 		 WHERE workspace_task_id = ?`, taskID)
 	if err != nil {
@@ -934,7 +1010,8 @@ func snapshotPhases(tx *sql.Tx, taskID int64) ([]phaseState, error) {
 		if err := rows.Scan(&p.id, &p.seq, &p.docPath, &p.runState, &p.runSessionUUID,
 			&p.runStartedAt, &p.runEndedAt, &p.runError, &p.runBranch,
 			&p.runCheckboxesBefore, &p.runCheckboxesAfter, &p.activatedAt,
-			&p.activatedBoardTaskID); err != nil {
+			&p.activatedBoardTaskID,
+			&p.runStartPoint, &p.verifyVerdict, &p.verifyDetail); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -994,11 +1071,13 @@ func carryAcrossRenames(tx *sql.Tx, taskID int64, phases []epicPhase, before []p
 			UPDATE epic_phases
 			   SET run_state=?, run_session_uuid=?, run_started_at=?, run_ended_at=?,
 			       run_error=?, run_branch=?, run_checkboxes_before=?,
-			       run_checkboxes_after=?, activated_at=?, activated_board_task_id=?
+			       run_checkboxes_after=?, activated_at=?, activated_board_task_id=?,
+			       run_start_point=?, verify_verdict=?, verify_detail=?
 			 WHERE workspace_task_id = ? AND doc_path = ?`,
 			old.runState, old.runSessionUUID, old.runStartedAt, old.runEndedAt,
 			old.runError, old.runBranch, old.runCheckboxesBefore, old.runCheckboxesAfter,
-			old.activatedAt, old.activatedBoardTaskID, taskID, dst.docPath); err != nil {
+			old.activatedAt, old.activatedBoardTaskID,
+			old.runStartPoint, old.verifyVerdict, old.verifyDetail, taskID, dst.docPath); err != nil {
 			return nil, err
 		}
 		drained = append(drained, old.docPath)

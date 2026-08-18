@@ -249,7 +249,7 @@ func countFixTasks(t *testing.T, db *sql.DB, rootExtID string) int {
 func cacheCount(t *testing.T, db *sql.DB, taskID int64) int {
 	t.Helper()
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM verification_cache WHERE task_id=?`, taskID).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM verification_cache WHERE target_key='task:'||?`, taskID).Scan(&n); err != nil {
 		t.Fatalf("cache count: %v", err)
 	}
 	return n
@@ -580,7 +580,7 @@ func TestReap_StaleRunningToInconclusive(t *testing.T) {
 	// Insert a running row that started 3h ago (older than the 2h stale window).
 	old := time.Now().Add(-3 * time.Hour).UTC().Format(tsFormat)
 	if _, err := db.Exec(
-		`INSERT INTO verification_runs(task_id, status, started_at) VALUES(?, 'running', ?)`, id, old); err != nil {
+		`INSERT INTO verification_runs(target_key, task_id, status, started_at) VALUES('task:'||?, ?, 'running', ?)`, id, id, old); err != nil {
 		t.Fatal(err)
 	}
 	n, err := s.Reap()
@@ -607,7 +607,7 @@ func TestReap_LeavesFreshRunningAlone(t *testing.T) {
 	// A run that started 1 minute ago is well within the window.
 	fresh := time.Now().Add(-time.Minute).UTC().Format(tsFormat)
 	if _, err := db.Exec(
-		`INSERT INTO verification_runs(task_id, status, started_at) VALUES(?, 'running', ?)`, id, fresh); err != nil {
+		`INSERT INTO verification_runs(target_key, task_id, status, started_at) VALUES('task:'||?, ?, 'running', ?)`, id, id, fresh); err != nil {
 		t.Fatal(err)
 	}
 	n, err := s.Reap()
@@ -625,7 +625,7 @@ func TestHealStale_InterruptedRunToInconclusive(t *testing.T) {
 	id := insertTask(t, db, taskOpts{})
 	// A running row from a "crashed" daemon (any age).
 	if _, err := db.Exec(
-		`INSERT INTO verification_runs(task_id, status, started_at) VALUES(?, 'running', ?)`, id, s.ts()); err != nil {
+		`INSERT INTO verification_runs(target_key, task_id, status, started_at) VALUES('task:'||?, ?, 'running', ?)`, id, id, s.ts()); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.HealStale(); err != nil {
@@ -647,7 +647,7 @@ func TestVerifySingleFlight(t *testing.T) {
 	id := insertTask(t, db, taskOpts{})
 	// Pre-seed a running row → the next VerifyTask must bounce with ErrAlreadyRunning.
 	if _, err := db.Exec(
-		`INSERT INTO verification_runs(task_id, status, started_at) VALUES(?, 'running', ?)`, id, s.ts()); err != nil {
+		`INSERT INTO verification_runs(target_key, task_id, status, started_at) VALUES('task:'||?, ?, 'running', ?)`, id, id, s.ts()); err != nil {
 		t.Fatal(err)
 	}
 	err := s.VerifyTask(context.Background(), id)
