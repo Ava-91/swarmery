@@ -32,6 +32,11 @@ var verifySvc *verify.Service
 func AttachVerify(s *verify.Service) {
 	if s != nil {
 		s.Notify = publishTaskUpdated
+		// A PHASE verdict lands on the Plans page instead, over the same frozen bus
+		// AttachPhaseRun uses. Two seams because the two surfaces subscribe to
+		// different frames and the ids come from different tables — an epic id sent as
+		// a board task id would refresh an unrelated card.
+		s.NotifyPlan = publishPlanUpdated
 	}
 	verifySvc = s
 }
