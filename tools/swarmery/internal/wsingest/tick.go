@@ -51,15 +51,19 @@ func TickPhaseChecklist(db *sql.DB, boardTaskID int64) (int, error) {
 func tickAllCheckboxes(text string) (string, int) {
 	lines := strings.Split(text, "\n")
 	n := 0
-	for i, line := range lines {
+	// Lines inside fenced code blocks are skipped for the same reason
+	// CountCheckboxes skips them, and here the stakes are higher: a doc quoting a
+	// template would have its EXAMPLE rewritten on disk, silently turning the
+	// documentation of an empty checklist into a ticked one.
+	forEachLineOutsideFences(text, func(i int, line string) {
 		loc := checkboxRe.FindStringSubmatchIndex(line)
 		if loc == nil {
-			continue
+			return
 		}
 		if line[loc[2]:loc[3]] == " " {
 			lines[i] = line[:loc[2]] + "x" + line[loc[3]:]
 			n++
 		}
-	}
+	})
 	return strings.Join(lines, "\n"), n
 }
