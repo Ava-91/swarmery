@@ -24,18 +24,24 @@ func Migrate(db *sql.DB) error {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	applied := map[int]bool{}
-	rows, err := db.Query(`SELECT version FROM schema_migrations`)
+	// The ledger is read as version→NAME, not version→bool: the number alone cannot
+	// tell "already applied" from "a different file claimed this number", and those
+	// two need opposite handling (see the collision check below).
+	applied := map[int]string{}
+	rows, err := db.Query(`SELECT version, name FROM schema_migrations`)
 	if err != nil {
 		return fmt.Errorf("read schema_migrations: %w", err)
 	}
 	for rows.Next() {
-		var v int
-		if err := rows.Scan(&v); err != nil {
+		var (
+			v int
+			n string
+		)
+		if err := rows.Scan(&v, &n); err != nil {
 			rows.Close()
 			return err
 		}
-		applied[v] = true
+		applied[v] = n
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -59,8 +65,24 @@ func Migrate(db *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		if applied[version] {
-			continue
+		if prev, ok := applied[version]; ok {
+			if prev == name {
+				continue // already applied
+			}
+			// A DIFFERENT file already holds this number. Skipping silently is how a
+			// real migration never runs and the daemon serves a schema that is missing
+			// a column: two branches each numbered a migration 0056, whichever built
+			// first recorded it, and the other's `tasks.workspace_dir` never applied —
+			// every Plans page 500'd on "no such column" with nothing in the log.
+			//
+			// Refusing to start is the lesser failure: it names the problem instead of
+			// hiding it behind a runtime error far from the cause. Renumber the new
+			// file to the next free number; a deliberate RENAME of an applied
+			// migration means updating its schema_migrations row to match.
+			return fmt.Errorf(
+				"migration %s: version %d is already recorded as %s — two files claim one number; "+
+					"renumber the new migration (or update the schema_migrations row if you renamed an applied one)",
+				name, version, prev)
 		}
 		body, err := migrationsFS.ReadFile("migrations/" + name)
 		if err != nil {
