@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -42,7 +43,7 @@ type Remover interface {
 // trusting each caller to have built the name correctly. Without it a branch
 // like `dev`, fully contained in HEAD and therefore "zero commits of its own",
 // would qualify for deletion.
-var ownedBranchPrefixes = []string{"swarm/", "worktree-agent-"}
+var ownedBranchPrefixes = []string{runcore.BranchPrefix, "worktree-agent-"}
 
 // ownsBranch reports whether the janitor is allowed to delete this branch.
 func ownsBranch(branch string) bool {
@@ -257,7 +258,7 @@ func (s *Service) sweepBranches(r repo, wts []Worktree, res *Result) {
 		if b == "" || checkedOut[b] {
 			continue
 		}
-		if !strings.HasPrefix(b, "swarm/") && !strings.HasPrefix(b, "worktree-agent-") {
+		if !strings.HasPrefix(b, runcore.BranchPrefix) && !strings.HasPrefix(b, "worktree-agent-") {
 			continue
 		}
 		own, oerr := g.hasOwnCommits(r.path, b)

@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planrun"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // planrunSvc is attached once at daemon startup (nil ⇒ plan-run endpoints 503
@@ -91,6 +92,7 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 		dirtyErr *planrun.BranchDirtyError
 		spansErr *planrun.PlanSpansReposError
 		specErr  *planrun.SpecUncoveredError
+		noSlot   *runcore.NoSlotError
 	)
 	// Start wraps the reclaim failure (fmt.Errorf("reclaim run branch: %w", …)), so
 	// errors.Is still matches through the wrap. Resolved before the switch and
@@ -104,6 +106,10 @@ func (h *Handler) runPlan(w http.ResponseWriter, r *http.Request) {
 		writeConflict(w, codeAlreadyRunning, "a run is already active for this plan")
 	case errors.Is(err, planrun.ErrPhaseRunning):
 		writeConflict(w, codePhaseRunning, "a phase run is active — cancel it before running the whole plan")
+	// The daemon-wide run budget is full. Purely transient and nothing was stamped,
+	// so the body names the holders instead of blaming the plan.
+	case errors.As(err, &noSlot):
+		writeNoRunSlot(w, noSlot)
 	case errors.Is(err, planrun.ErrNotActive):
 		writeConflict(w, codePlanInactive, "plan is not active")
 	case errors.Is(err, planrun.ErrNoPhases):

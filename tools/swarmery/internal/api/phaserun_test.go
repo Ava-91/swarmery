@@ -15,6 +15,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -368,5 +369,87 @@ func TestPhaseRunCancel_InFlight_202(t *testing.T) {
 	}
 	if runErr.String != "cancelled" {
 		t.Errorf("run_error = %q, want cancelled", runErr.String)
+	}
+}
+
+// The daemon-wide run budget is full: 409 with the transient code and the holders
+// named. The distinction the body has to carry is "nothing is wrong with this
+// phase, the machine is busy" — a plain already-running would send the user
+// looking for a run of THIS phase that does not exist.
+func TestPhaseRun_NoFreeRunSlot_409(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	svc := attachPhaseRun(t, db, &phaseStubRunner{}, true)
+	svc.Slots = runcore.NewSlots(1)
+	if _, err := svc.Slots.TryAcquire(runcore.SlotKey("planrun", 77), "u-plan", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postPhase(t, phaseRunURL(srv, taskID, p1))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct {
+		Error   string `json:"error"`
+		Code    string `json:"code"`
+		Max     int    `json:"max"`
+		Holders []struct {
+			Engine string `json:"engine"`
+			ID     int64  `json:"id"`
+			Since  string `json:"since"`
+		} `json:"holders"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != codeNoRunSlot {
+		t.Errorf("code = %q, want %q", body.Code, codeNoRunSlot)
+	}
+	if body.Max != 1 {
+		t.Errorf("max = %d, want 1", body.Max)
+	}
+	if len(body.Holders) != 1 || body.Holders[0].Engine != "planrun" || body.Holders[0].ID != 77 {
+		t.Errorf("holders = %+v, want the plan run holding the pool", body.Holders)
+	}
+	if body.Holders[0].Since == "" {
+		t.Error("holder carries no start time — the operator cannot tell a wedged run from a fresh one")
+	}
+	// Nothing was stamped: the phase is still idle and retriable.
+	var state string
+	if err := db.QueryRow(`SELECT run_state FROM epic_phases WHERE id=?`, p1).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "idle" {
+		t.Errorf("run_state = %q, want idle — a busy pool is not a failed phase", state)
+	}
+}
+
+// The phase surface's half of the bidirectional exclusion, over HTTP: its own
+// code, so the UI can say "cancel the plan run" instead of the plan surface's
+// "cancel the phase run".
+func TestPhaseRun_PlanRunActive_409(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	p1, _ := fixturePhaseIDs(t, db, taskID)
+	attachPhaseRun(t, db, &phaseStubRunner{}, true)
+	if _, err := db.Exec(`INSERT INTO plan_runs (workspace_task_id, run_state) VALUES (?, 'running')`, taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := postPhase(t, phaseRunURL(srv, taskID, p1))
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != codePlanRunning {
+		t.Errorf("code = %q, want %q", body.Code, codePlanRunning)
+	}
+	if !strings.Contains(body.Error, "plan run") {
+		t.Errorf("error = %q, want it to name the plan run", body.Error)
 	}
 }

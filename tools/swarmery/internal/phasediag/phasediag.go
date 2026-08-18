@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -127,7 +128,7 @@ type phaseRow struct {
 // branchName is the deterministic run branch for a phase id — the same name
 // phaserun hands worktree.Acquire ("phase-<id>" ⇒ swarm/phase-<id>).
 func branchName(phaseID int64) string {
-	return "swarm/phase-" + strconv.FormatInt(phaseID, 10)
+	return runcore.PhaseBranch(phaseID)
 }
 
 // Diagnose builds the diagnosis for one phase. git may be nil, and the project may
@@ -334,7 +335,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 // HEAD, nil git, pathless project) never reaches this function, and ANY git error
 // degrades to "no orphans" rather than failing the diagnosis.
 func orphanBranches(db *sql.DB, git worktree.Git, repoRoot, base string) ([]Blocker, error) {
-	out, err := git.Run(repoRoot, "branch", "--list", "swarm/phase-*")
+	out, err := git.Run(repoRoot, "branch", "--list", runcore.PhaseBranchPrefix+"*")
 	if err != nil {
 		return nil, nil
 	}
@@ -345,10 +346,10 @@ func orphanBranches(db *sql.DB, git worktree.Git, repoRoot, base string) ([]Bloc
 		// out in another worktree "+ ", and indents the rest by two spaces.
 		name := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "*+"))
 		name = strings.TrimSpace(name)
-		if !strings.HasPrefix(name, "swarm/phase-") {
+		if !strings.HasPrefix(name, runcore.PhaseBranchPrefix) {
 			continue
 		}
-		id, convErr := strconv.ParseInt(strings.TrimPrefix(name, "swarm/phase-"), 10, 64)
+		id, convErr := strconv.ParseInt(strings.TrimPrefix(name, runcore.PhaseBranchPrefix), 10, 64)
 		if convErr != nil {
 			continue // swarm/phase-<not a number> is not a run branch of ours
 		}

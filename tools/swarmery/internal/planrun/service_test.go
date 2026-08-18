@@ -462,9 +462,7 @@ func TestStartWorktreeFailureReleasesSlot(t *testing.T) {
 	if n != 0 {
 		t.Errorf("plan_runs rows = %d, want 0 (nothing stamped)", n)
 	}
-	s.mu.Lock()
-	inFlight := len(s.active)
-	s.mu.Unlock()
+	inFlight := s.Slots.Count()
 	if inFlight != 0 {
 		t.Errorf("in-flight slots = %d, want 0", inFlight)
 	}
@@ -685,9 +683,7 @@ func TestStart_BranchDirty_RefusesAndReleasesSlot(t *testing.T) {
 	}
 	// The refusal is not sticky: once the branch is resolved, a retry is admitted
 	// (not rejected with ErrRunning by a leaked slot).
-	s.mu.Lock()
-	inFlight := len(s.active)
-	s.mu.Unlock()
+	inFlight := s.Slots.Count()
 	if inFlight != 0 {
 		t.Errorf("in-flight slots = %d, want 0 after a dirty-branch refusal", inFlight)
 	}
@@ -865,9 +861,7 @@ func TestRunTeardown_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 	)
 	wt.onRemove = func() {
 		hookCalled = true
-		s.mu.Lock()
-		_, slotHeld = s.active[taskID]
-		s.mu.Unlock()
+		slotHeld = s.Slots.IsActive(s.slotKey(taskID))
 	}
 	s = newTestService(db, &stubRunner{}, wt)
 
@@ -881,7 +875,7 @@ func TestRunTeardown_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 		t.Error("single-flight slot was already released when the worktree was removed — " +
 			"a concurrent re-Start could reuse and then lose that worktree")
 	}
-	if _, busy := s.active[taskID]; busy {
+	if s.Slots.IsActive(s.slotKey(taskID)) {
 		t.Error("slot still held after the run finished")
 	}
 }
@@ -906,9 +900,7 @@ func TestStart_DBFailure_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 	)
 	wt.onRemove = func() {
 		hookCalled = true
-		s.mu.Lock()
-		_, slotHeld = s.active[taskID]
-		s.mu.Unlock()
+		slotHeld = s.Slots.IsActive(s.slotKey(taskID))
 	}
 	s = newTestService(db, &stubRunner{}, wt)
 
@@ -922,7 +914,7 @@ func TestStart_DBFailure_WorktreeRemovedBeforeSlotRelease(t *testing.T) {
 		t.Error("single-flight slot was already released when the worktree was removed — " +
 			"a concurrent Start could warm-reuse the path this teardown then deletes")
 	}
-	if _, busy := s.active[taskID]; busy {
+	if s.Slots.IsActive(s.slotKey(taskID)) {
 		t.Error("slot still held after the failed admission")
 	}
 }
@@ -1077,9 +1069,7 @@ func TestStart_SpecUncovered_Refuses(t *testing.T) {
 	if n != 0 {
 		t.Errorf("plan_runs rows = %d, want 0 (a refusal leaves no state)", n)
 	}
-	s.mu.Lock()
-	inFlight := len(s.active)
-	s.mu.Unlock()
+	inFlight := s.Slots.Count()
 	if inFlight != 0 {
 		t.Errorf("in-flight slots = %d, want 0 after a spec refusal", inFlight)
 	}

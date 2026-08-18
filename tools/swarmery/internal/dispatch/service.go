@@ -8,7 +8,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,48 +22,21 @@ import (
 // tsFormat matches the millisecond-Z style the api package writes.
 const tsFormat = "2006-01-02T15:04:05.000Z"
 
-// WorktreeManager is the subset of *worktree.Manager the dispatcher uses. An
-// interface so the service can be unit-tested with a stub (the real Manager is
-// itself Git-mockable, but stubbing at this level keeps dispatch tests focused
-// on scheduling logic, not git-list parsing). *worktree.Manager satisfies it.
-// keepBranch is always true for dispatched runs — a task's swarm/<id> branch
-// carries its Swarm-Task-Id commits, which verification (Phase 6) and the user
-// need reachable after the worktree directory is reclaimed.
-type WorktreeManager interface {
-	Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error)
-	Remove(repoRoot string, a worktree.Acquired, keepBranch bool) error
-	// ReclaimEmptyBranch deletes branch when it exists and holds no commits ahead
-	// of the base, so a re-run can re-acquire the deterministic swarm/<taskID>
-	// name instead of dying on ErrBranchExists — the leftover is a name nothing has
-	// checked out, not a live conflict (every Remove above keeps the branch, so it
-	// always survives). Returns the commits-ahead count when the
-	// branch HAS work — the branch is then left untouched and the caller must not
-	// destroy it; 0 means deleted or never existed. Errors when the repo has no
-	// checked-out branch to measure against (worktree.ErrDetachedHead): a guessed
-	// base is the one input a `branch -D` must never run on.
-	ReclaimEmptyBranch(repoRoot, branch string) (int, error)
-	// DeleteBranch force-deletes branch INCLUDING its commits, refusing while it
-	// is checked out or is the repo's HEAD branch. Only for an explicit user
-	// decision — never call it to make room for a re-run. The bool reports
-	// whether a branch was actually there: deleting is idempotent, so a nil error
-	// alone would let a no-op be reported to the user as a deletion.
-	DeleteBranch(repoRoot, branch string) (existed bool, err error)
-	// CommitsForTask returns the SHAs of commits carrying this task's
-	// Swarm-Task-Id trailer. It is the dispatcher's only progress signal: the
-	// count is what distinguishes a re-dispatch that advanced something from one
-	// that did not. An error must never be read as zero commits — see
-	// observedProgress, which keeps the two apart deliberately.
-	CommitsForTask(repoRoot, taskID string) ([]string, error)
-}
-
-// Verifier is the auto-verification trigger seam (fusion phase 6). Declared HERE
-// (in dispatch) and satisfied by *verify.Service, so `verify` can depend on
-// dispatch's data deps (worktree/store) WITHOUT dispatch importing verify — no
-// import cycle. Poke is non-blocking (verify spawns its own goroutine). Attached
-// via the Service.Verifier field; nil ⇒ auto-verification not wired (guarded).
-type Verifier interface {
-	Poke(taskID int64)
-}
+// WorktreeManager and Verifier are runcore's, re-exported here as ALIASES.
+//
+// Both were declared in this package because dispatch was the first engine to need
+// them; phaserun and planrun then imported dispatch for nothing else, and verify
+// satisfied a dispatch-declared interface. They now live in internal/runcore, which
+// every engine already depends on, so those import edges are gone.
+//
+// Aliases rather than new names: `dispatch.WorktreeManager` appears in
+// cmd/swarmery's wiring, in internal/api's reach-throughs and in several test
+// stubs, and an alias keeps every one of them compiling against the same type
+// instead of trading one coupling for a rename.
+type (
+	WorktreeManager = runcore.WorktreeManager
+	Verifier        = runcore.Verifier
+)
 
 // Service owns the dispatch loop: candidate selection, admission gates, spawn,
 // exit/sentinel handling, event-driven Poke + poll fallback, and startup heal.
@@ -97,13 +69,18 @@ type Service struct {
 	FindRun func(sessionUUID string) (int, bool)
 	// ProcAlive reports whether an adopted pid still exists. nil ⇒ signal-0 probe.
 	ProcAlive func(pid int) bool
-	// adoptPoll overrides adoptPollInterval when > 0 (tests shrink it).
+	// adoptPoll overrides runcore.AdoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
 
-	scheduling atomic.Bool // re-entrance guard: overlapping Schedule passes skip
+	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
+	// same-task single-flight gate, the input to MaxConcurrent, and — new — one
+	// pool shared with phase and plan runs, so the three engines can no longer
+	// each spawn up to their own cap against a total none of them could see.
+	// NewService gives every Service its own pool (hermetic unit tests); the
+	// daemon replaces it with the one instance all three engines hold.
+	Slots *runcore.Slots
 
-	mu     sync.Mutex         // guards active
-	active map[int64]struct{} // task ids with a live run (MaxConcurrent + same-task single-flight)
+	scheduling atomic.Bool // re-entrance guard: overlapping Schedule passes skip
 }
 
 // NewService builds a dispatcher. The caller wires DB, Cfg, Run (ClaudeRunner),
@@ -111,9 +88,9 @@ type Service struct {
 func NewService(db *sql.DB, cfg Config, r Runner, wt WorktreeManager) *Service {
 	return &Service{
 		DB: db, Cfg: cfg, Run: r, Wt: wt,
-		UUID:   runcore.NewUUID,
-		now:    time.Now,
-		active: make(map[int64]struct{}),
+		UUID:  runcore.NewUUID,
+		now:   time.Now,
+		Slots: runcore.NewSlots(0),
 	}
 }
 
@@ -152,23 +129,30 @@ func (s *Service) notify(id int64) {
 
 // ── active-run tracking (in-memory; durable truth is board_column) ──
 
-func (s *Service) markActive(id int64) {
-	s.mu.Lock()
-	s.active[id] = struct{}{}
-	s.mu.Unlock()
+// Engine names dispatch in the shared slot registry: board runs are keyed
+// "dispatch:<taskID>", so a board task and a phase that happen to share a numeric
+// id are different runs.
+const Engine = "dispatch"
+
+func (s *Service) slotKey(id int64) string { return runcore.SlotKey(Engine, id) }
+
+// markActive claims the task's run slot: the same-task single-flight gate AND a
+// draw on the daemon-wide budget. Unlike the setter it replaces it can FAIL, and
+// that is the point — a full pool must refuse an admission rather than over-spawn.
+// runcore.ErrBusy means this task is already running (a duplicate); ErrNoSlot
+// means the pool is full and the candidate should be retried next pass. Neither
+// is a terminal state for the row.
+func (s *Service) markActive(id int64) error {
+	_, err := s.Slots.TryAcquire(s.slotKey(id), "", nil)
+	return err
 }
 
 func (s *Service) clearActive(id int64) {
-	s.mu.Lock()
-	delete(s.active, id)
-	s.mu.Unlock()
+	s.Slots.Release(s.slotKey(id))
 }
 
 func (s *Service) isActive(id int64) bool {
-	s.mu.Lock()
-	_, ok := s.active[id]
-	s.mu.Unlock()
-	return ok
+	return s.Slots.IsActive(s.slotKey(id))
 }
 
 // IsActive is isActive for callers outside this package — the board's review
@@ -178,11 +162,11 @@ func (s *Service) isActive(id int64) bool {
 // precisely when a user staring at a card that "looks finished" clicks Re-run.
 func (s *Service) IsActive(id int64) bool { return s.isActive(id) }
 
+// activeCount counts DISPATCH's runs only: MaxConcurrent is the board's own cap
+// and must keep meaning "board runs in flight", not "runs in flight anywhere".
+// The daemon-wide total is s.Slots.Count().
 func (s *Service) activeCount() int {
-	s.mu.Lock()
-	n := len(s.active)
-	s.mu.Unlock()
-	return n
+	return s.Slots.CountEngine(Engine)
 }
 
 // ── public API ──
@@ -274,9 +258,17 @@ func (s *Service) Schedule() {
 		if s.isPaused(ProjectScope(c.ProjectID)) {
 			continue
 		}
-		// Gate: concurrency cap.
+		// Gate: concurrency cap — the BOARD's own cap, over board runs only.
 		if s.activeCount() >= s.Cfg.MaxConcurrent {
 			break // no point scanning further this pass
+		}
+		// Gate: the daemon-wide run budget, shared with phase and plan runs. A board
+		// run is bounded by min(MaxConcurrent, free slots): with a free pool this is
+		// exactly the old behaviour, and while a plan run holds the machine the board
+		// waits instead of piling on. Advisory — the TryAcquire inside admit is the
+		// race-free authority — so winning this check cannot admit past the budget.
+		if s.Slots.Count() >= s.Slots.Max() {
+			break
 		}
 		// Gate: same-task single-flight (Acquire is idempotent for a live task,
 		// so WE must reject a re-dispatch — DESIGN handoff).
@@ -289,7 +281,7 @@ func (s *Service) Schedule() {
 		// id — verify's fix task and its root — could put two headless agents in one
 		// directory on one branch. Skipping only defers: the loser is still a Todo
 		// candidate on the next pass, by which time the checkout is free.
-		if c.ExternalID != "" && heldWorktrees[worktreeKey{c.ProjectID, c.ExternalID}] {
+		if c.ExternalID != "" && heldWorktrees[runcore.WorktreeKey{ProjectID: c.ProjectID, Branch: runcore.TaskBranch(c.ExternalID)}] {
 			continue
 		}
 		// Gate: worktree cap.
@@ -316,7 +308,7 @@ func (s *Service) Schedule() {
 		activeScopes = append(activeScopes, activeScope{ProjectID: c.ProjectID, Scope: c.FileScope})
 		liveWorktrees++
 		if c.ExternalID != "" {
-			heldWorktrees[worktreeKey{c.ProjectID, c.ExternalID}] = true
+			heldWorktrees[runcore.WorktreeKey{ProjectID: c.ProjectID, Branch: runcore.TaskBranch(c.ExternalID)}] = true
 		}
 	}
 }
@@ -528,74 +520,40 @@ func scopeConflicts(c candidate, active []activeScope) bool {
 	return false
 }
 
-// worktreeKey identifies the CHECKOUT a candidate will land in, which is not the
-// same thing as the task. worktree.Manager derives both the path and the branch
-// from (projectSlug, externalID) — `<root>/<slug>/<extID>` on `swarm/<extID>` —
-// so two board rows sharing an external id resolve to ONE directory on ONE
-// branch.
-type worktreeKey struct {
-	projectID  int64
-	externalID string
-}
-
-// liveWorktreeKeys returns the checkout identity of every queue task currently
-// holding one — the set a candidate must not collide with.
+// liveWorktreeKeys returns the checkout identity of every run currently holding
+// one — the set a candidate must not collide with. Delegated to runcore, which
+// counts ALL THREE run surfaces (board, phase, plan); this used to read `tasks`
+// alone, so a phase run's checkout was invisible to the gate that exists to
+// arbitrate checkouts.
 //
-// This exists because the same-task gate (isActive) keys on the task ID while
-// the resource is keyed on the external id, and Acquire will NOT arbitrate the
+// The gate is needed because the same-task gate (isActive) keys on the task ID
+// while the resource is keyed on the branch, and Acquire will NOT arbitrate the
 // difference: a path whose branch already matches is warm-REUSED as-is
-// (worktree.go invariant 4), deliberately, so a crashed run can be resumed
-// rather than destroyed. Idempotent-for-a-live-task is exactly why admission has
-// to do the rejecting — the comment on the isActive gate says so; this is the
-// same argument applied to the id the worktree is actually keyed on.
+// (worktree.go invariant 4), deliberately, so a crashed run can be resumed rather
+// than destroyed. Idempotent-for-a-live-run is exactly why admission has to do the
+// rejecting.
 //
-// One shipped flow puts two rows on one external id: verify's fix task carries
+// One shipped flow puts two board rows on one checkout: verify's fix task carries
 // external_id=<root external id> so its own failure charges the root
-// (verify/service.go createFixTask). Sharing the root's branch is the POINT
-// there — the fix continues the work it is fixing — so the answer is not to
-// split the key but to keep the two runs strictly sequential.
+// (verify/service.go createFixTask). Sharing the root's branch is the POINT there —
+// the fix continues the work it is fixing — so the answer is not to split the key
+// but to keep the two runs strictly sequential.
 //
-// The file-scope gate happens to cover today's instance (a fix task inherits the
-// root's scope, and identical scopes always overlap — as does an undeclared one,
-// which pathsOverlap treats as global). That is incidental: it holds only while
-// the two rows agree on file_scope, which an operator can patch apart via
-// PATCH /api/board/tasks/{id}. This gate is keyed on the resource itself, so it
-// does not depend on that coincidence.
-//
-// Mirrors activeScopes: read from the DB rather than the in-memory active map,
-// so it also sees a run this daemon did not start. Rows with no external id are
-// skipped — they cannot collide on a key they do not have.
-func (s *Service) liveWorktreeKeys() (map[worktreeKey]bool, error) {
-	rows, err := s.DB.Query(`
-		SELECT project_id, external_id FROM tasks
-		 WHERE source='queue' AND board_column='in_progress'
-		   AND worktree_path IS NOT NULL
-		   AND external_id IS NOT NULL AND external_id <> ''`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	held := make(map[worktreeKey]bool)
-	for rows.Next() {
-		var k worktreeKey
-		if err := rows.Scan(&k.projectID, &k.externalID); err != nil {
-			return nil, err
-		}
-		held[k] = true
-	}
-	return held, rows.Err()
+// The file-scope gate happens to cover that instance (a fix task inherits the
+// root's scope, and identical scopes always overlap). That is incidental: it holds
+// only while the two rows agree on file_scope, which an operator can patch apart
+// via PATCH /api/board/tasks/{id}. This gate is keyed on the resource itself, so it
+// does not depend on the coincidence.
+func (s *Service) liveWorktreeKeys() (map[runcore.WorktreeKey]bool, error) {
+	return runcore.WorktreeKeys(s.DB)
 }
 
-// liveWorktreeCount counts queue tasks holding a worktree (worktree_path set,
-// still in_progress — the states that keep a worktree live before verification
-// releases it on done/archived).
+// liveWorktreeCount counts every live worktree the daemon holds, across board,
+// phase and plan runs (runcore.WorktreeCount). MaxWorktrees used to be enforced
+// against queue tasks alone: a machine running four phases and a plan reported ZERO
+// worktrees to the cap that exists to bound them.
 func (s *Service) liveWorktreeCount() (int, error) {
-	var n int
-	err := s.DB.QueryRow(
-		`SELECT COUNT(*) FROM tasks
-		  WHERE source='queue' AND worktree_path IS NOT NULL
-		    AND board_column='in_progress'`).Scan(&n)
-	return n, err
+	return runcore.WorktreeCount(s.DB)
 }
 
 // ── admission ──
@@ -607,10 +565,18 @@ func (s *Service) liveWorktreeCount() (int, error) {
 // idempotent and the next pass retries or a human intervenes).
 func (s *Service) admit(c candidate) bool {
 	// CAS FIRST is not possible before we have branch/worktree — but we must not
-	// double-spawn. Mark active up-front (in-memory) so a concurrent pass in the
-	// same process can't also pick this task; the guarded UPDATE below is the
-	// durable CAS. If admission fails we clear active.
-	s.markActive(c.ID)
+	// double-spawn. Claim the run slot up-front (in-memory) so a concurrent pass in
+	// the same process cannot also pick this task; the guarded UPDATE below is the
+	// durable CAS. If admission fails we release the slot.
+	//
+	// This is also where the daemon-wide budget is actually enforced — the gate in
+	// Schedule is advisory, this claim is atomic. A refusal is NOT an error on the
+	// row: the task stays a Todo candidate and the next pass retries, the same
+	// posture as the file-scope and worktree gates.
+	if err := s.markActive(c.ID); err != nil {
+		log.Printf("dispatch: task=%d not admitted: %v", c.ID, err)
+		return false
+	}
 
 	acq, err := s.Wt.Acquire(c.ProjectPath, c.ProjectSlug, c.ExternalID)
 	if err != nil {
@@ -1160,25 +1126,18 @@ func (s *Service) HealStale() error {
 	// the healed set exactly liveWorktreeCount's live set. It is the mirror of the
 	// `worktree_path IS NULL` guard capture uses for the same disjointness.
 	//
-	// NOT IN () is invalid SQL and `x NOT IN (NULL)` is never true, so the
-	// exclusion clause exists only when there is something to exclude.
-	q := `UPDATE tasks
+	// The survivors are excluded by runcore.HealExcluding, which owns the one rule
+	// three engines each re-derived: `NOT IN ()` is invalid SQL and `x NOT IN (NULL)`
+	// is never true, so the clause may only exist when there is something to exclude.
+	n, err := runcore.HealExcluding(s.DB, `UPDATE tasks
 		   SET board_column='todo', status='queued', dispatch_error='daemon restart',
 		       column_moved_at=?
 		 WHERE source='queue' AND board_column='in_progress'
-		   AND worktree_path IS NOT NULL`
-	args := []any{s.ts()}
-	if len(adopted) > 0 {
-		q += ` AND id NOT IN (?` + strings.Repeat(",?", len(adopted)-1) + `)`
-		for _, id := range adopted {
-			args = append(args, id)
-		}
-	}
-	res, err := s.DB.Exec(q, args...)
+		   AND worktree_path IS NOT NULL`, "id", adopted, s.ts())
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	if n > 0 {
 		log.Printf("swarmery dispatch: healed %d stuck in_progress task(s) to todo", n)
 	}
 	return nil
@@ -1427,9 +1386,19 @@ type Status struct {
 	GlobalPaused  bool     `json:"globalPaused"` // durable global pause flag
 	MaxConcurrent int      `json:"maxConcurrent"`
 	MaxWorktrees  int      `json:"maxWorktrees"`
-	ActiveRuns    int      `json:"activeRuns"`   // live runs in this process
+	ActiveRuns    int      `json:"activeRuns"`   // live BOARD runs in this process
 	FreeSlots     int      `json:"freeSlots"`    // maxConcurrent - activeRuns (>=0)
 	PausedScopes  []string `json:"pausedScopes"` // every currently-paused scope
+
+	// MaxRuns/RunsInFlight/RunSlots describe the DAEMON-WIDE budget
+	// (SWARMERY_MAX_RUNS), which board, phase and plan runs share. Without them the
+	// board's own numbers explain nothing when admission stalls: activeRuns 0 and
+	// freeSlots 2 while nothing starts is exactly what a machine full of phase runs
+	// looks like from here. RunSlots lists every holder so the answer is visible
+	// rather than inferable.
+	MaxRuns      int                `json:"maxRuns"`
+	RunsInFlight int                `json:"runsInFlight"`
+	RunSlots     []runcore.SlotInfo `json:"runSlots"`
 }
 
 // Snapshot builds the status DTO.
@@ -1447,6 +1416,9 @@ func (s *Service) Snapshot() (Status, error) {
 		ActiveRuns:    active,
 		FreeSlots:     free,
 		PausedScopes:  []string{},
+		MaxRuns:       s.Slots.Max(),
+		RunsInFlight:  s.Slots.Count(),
+		RunSlots:      s.Slots.Snapshot(),
 	}
 	rows, err := s.DB.Query(`SELECT scope FROM dispatch_pause WHERE paused=1 ORDER BY scope`)
 	if err != nil {

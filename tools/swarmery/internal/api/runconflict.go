@@ -18,7 +18,9 @@ package api
 import (
 	"errors"
 	"net/http"
+	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -83,6 +85,11 @@ const (
 	// route refuses by construction (it derives the name, it cannot be told one).
 	codeBranchLivePhase = "branch-live-phase"
 
+	// codePlanRunning is codePhaseRunning's mirror, on the PHASE surface: a
+	// whole-plan run is already driving these docs. The pair is what makes the
+	// plan↔phase exclusion independent of which button the operator presses first.
+	codePlanRunning = "plan-running"
+
 	// Plan-run-only admission gates.
 	codePhaseRunning = "phase-running"
 	codePlanInactive = "plan-not-active"
@@ -94,7 +101,33 @@ const (
 	// **Covers:** line in a phase doc (or trimming the spec). Underscore, not
 	// hyphen — the spec (SC-5) froze this wire value before the code existed.
 	codeSpecUncovered = "spec_uncovered"
+
+	// codeNoRunSlot: the daemon-wide run budget (SWARMERY_MAX_RUNS) is full. This
+	// is the only 409 in this list that is purely TRANSIENT — nothing about the
+	// plan, the phase or the project is wrong, and the same request will succeed
+	// once a slot frees. The body carries `holders` (the runs in flight) and `max`,
+	// because "no free run slot" on its own leaves an operator with nowhere to look.
+	codeNoRunSlot = "no-free-run-slot"
 )
+
+// writeNoRunSlot renders a full run budget: a retriable 409 that names what is
+// holding the pool. Shared by the phase-run and plan-run surfaces so both answer
+// a busy machine with one shape the web client can switch on once.
+func writeNoRunSlot(w http.ResponseWriter, err *runcore.NoSlotError) {
+	holders := make([]map[string]any, 0, len(err.Holders))
+	for _, h := range err.Holders {
+		holders = append(holders, map[string]any{
+			"engine": h.Engine,
+			"id":     h.ID,
+			"since":  h.Since.UTC().Format(time.RFC3339),
+		})
+	}
+	writeConflictFields(w,
+		codeNoRunSlot,
+		"the daemon is already running as many agents as it is allowed to "+
+			"(SWARMERY_MAX_RUNS). Nothing was started — retry when one finishes.",
+		map[string]any{"holders": holders, "max": err.Max})
+}
 
 // writeConflict replies 409 {"error": msg, "code": code}.
 func writeConflict(w http.ResponseWriter, code, msg string) {

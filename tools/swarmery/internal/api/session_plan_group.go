@@ -3,6 +3,8 @@ package api
 import (
 	"database/sql"
 	"strconv"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // ---------------------------------------------------------------------------
@@ -71,7 +73,7 @@ func sqlDigitsOrNull(expr string) string {
 // explicit is what makes a malformed "swarm/plan-abc" yield NULL rather than
 // quietly regrouping by path.
 func runIDExpr(kind string) string {
-	prefix := "swarm/" + kind + "-"
+	prefix := runcore.BranchPrefix + kind + "-"
 	fromBranch := sqlDigitsOrNull("substr(s.git_branch, " + strconv.Itoa(len(prefix)+1) + ")")
 	fromCWD := sqlDigitsOrNull(sqlSegmentAfter("s.cwd", "/"+kind+"-"))
 	return "CASE" +
