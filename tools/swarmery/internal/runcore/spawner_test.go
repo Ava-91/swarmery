@@ -34,18 +34,19 @@ func TestArgs_PerEngineArgvPin(t *testing.T) {
 		spec Spec
 		want []string
 	}{
-		// ── planning: the planner run. No permission mode, no settings file, and
-		// --model is ALWAYS emitted (the runner substitutes its own default before
-		// building the spec, so the account default is never inherited).
+		// ── planning: the planner run. No settings file, and --model is ALWAYS
+		// emitted (the runner substitutes its own default before building the spec,
+		// so the account default is never inherited). Permission mode comes from its
+		// own knob, like phaserun's — a planner that cannot write produces nothing.
 		{
 			name: "planning/minimal",
-			spec: Spec{Prompt: "plan this", SessionUUID: "u-plan", Model: "claude-opus-5"},
-			want: []string{"-p", "plan this", "--session-id", "u-plan", "--model", "claude-opus-5"},
+			spec: Spec{Prompt: "plan this", SessionUUID: "u-plan", Model: "claude-opus-5", PermissionMode: "bypassPermissions"},
+			want: []string{"-p", "plan this", "--session-id", "u-plan", "--permission-mode", "bypassPermissions", "--model", "claude-opus-5"},
 		},
 		{
 			name: "planning/model-override",
-			spec: Spec{Prompt: "plan this", SessionUUID: "u-plan", Model: "claude-sonnet-5"},
-			want: []string{"-p", "plan this", "--session-id", "u-plan", "--model", "claude-sonnet-5"},
+			spec: Spec{Prompt: "plan this", SessionUUID: "u-plan", Model: "claude-sonnet-5", PermissionMode: "bypassPermissions"},
+			want: []string{"-p", "plan this", "--session-id", "u-plan", "--permission-mode", "bypassPermissions", "--model", "claude-sonnet-5"},
 		},
 
 		// ── phaserun: one plan phase. Permission mode from its own knob, model from

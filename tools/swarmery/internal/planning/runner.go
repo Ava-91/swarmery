@@ -6,6 +6,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
@@ -44,6 +45,13 @@ const planTimeout = 20 * time.Minute
 // re-resolve over time.
 const defaultModel = "claude-opus-5"
 
+// permEnv is this spawn site's --permission-mode knob (internal/claudeflags owns
+// the resolution and the "off" escape hatch). A planner run's whole product is
+// files — a plan dir under the private workspace — so the flag is not optional
+// here: without it every Write and every mkdir is auto-denied, the process still
+// exits 0, and the plan survives only in a reply nobody stores.
+const permEnv = "SWARMERY_PLANNING_PERMISSION_MODE"
+
 // ClaudeRunner spawns `claude -p <prompt> --session-id <uuid>` with cwd set to
 // the project path. Binary resolution mirrors session_message.go's claudeBin:
 // launchd starts the daemon with a minimal PATH that omits npm/homebrew, so a
@@ -77,6 +85,9 @@ func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 		SessionUUID: spec.SessionUUID,
 		Cwd:         spec.Cwd,
 		Model:       model,
+		// The planner writes: a plan dir with README/spec/phase docs, and nothing
+		// else it does matters if that write is denied. See internal/claudeflags.
+		PermissionMode: claudeflags.Mode(permEnv),
 		// Resolving the account from cwd is correct HERE — and only here and in
 		// provision. A planner run's Cwd is the PROJECT path (see RunSpec.Cwd), so it
 		// carries the project's .claude/settings.local.json. dispatch and verify look

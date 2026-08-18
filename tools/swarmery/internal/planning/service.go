@@ -87,6 +87,12 @@ type Service struct {
 	// subdir per session uuid). Wired by cmd/swarmery to <db dir>/revisions;
 	// "" falls back to the OS temp dir (bare unit tests).
 	ScratchRoot string
+	// WorkspaceRoot is the workspace tree the SCANNER walks, handed to the
+	// planner in its prompt so it writes the plan where wsingest will find it
+	// instead of inferring a root from documentation. Wired by cmd/swarmery to
+	// the same value wsingest gets (mirrors dispatch.Service.WorkspaceRoot); ""
+	// leaves the prompt's placeholder in place.
+	WorkspaceRoot string
 
 	mu     sync.Mutex
 	active map[int64]run // projectID → in-flight planner
@@ -206,7 +212,7 @@ func (s *Service) Start(projectID int64, idea string) (sessionUUID string, err e
 	log.Printf("planning: start project=%d uuid=%s cwd=%q (%d chars idea)", projectID, uuid, path.String, len(idea))
 	s.notify(projectID) // active=true → page shows the run
 
-	spec := RunSpec{Prompt: BuildPrompt(idea), SessionUUID: uuid, Cwd: path.String}
+	spec := RunSpec{Prompt: BuildPrompt(idea, s.WorkspaceRoot), SessionUUID: uuid, Cwd: path.String}
 	s.spawn(func() { s.runAndHandle(ctx, cancel, projectID, spec) })
 	return uuid, nil
 }

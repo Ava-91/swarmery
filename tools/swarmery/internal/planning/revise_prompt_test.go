@@ -39,7 +39,7 @@ var updateGolden = flag.Bool("update", false, "rewrite the recorded plan prompt"
 // instructions that MUST be present) is asserted separately and independently
 // by TestBuildPrompt.
 func TestBuildPromptMatchesGolden(t *testing.T) {
-	got := BuildPrompt("fixed regression idea")
+	got := BuildPrompt("fixed regression idea", "/ws-root")
 
 	if *updateGolden {
 		if err := os.MkdirAll(filepath.Dir(goldenPlanPrompt), 0o755); err != nil {
@@ -66,7 +66,7 @@ func TestBuildPromptMatchesGolden(t *testing.T) {
 // TestPhaseAProtocolSharedByBothTemplates asserts the single shared constant
 // really is in both rendered prompts, verbatim.
 func TestPhaseAProtocolSharedByBothTemplates(t *testing.T) {
-	plan := BuildPrompt("idea")
+	plan := BuildPrompt("idea", "")
 	revise := BuildRevisePrompt(ReviseInput{Reason: "r", PlanDir: "/p/plan", ScratchDir: "/s/uuid"})
 	for name, p := range map[string]string{"plan": plan, "revise": revise} {
 		if !strings.Contains(p, phaseAProtocol) {
