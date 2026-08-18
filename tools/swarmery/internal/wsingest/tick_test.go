@@ -18,6 +18,14 @@ func TestTickAllCheckboxes(t *testing.T) {
 		{"no boxes", "## Acceptance\n\nprose only\n", "## Acceptance\n\nprose only\n", 0},
 		{"star + indent preserved", "* [ ] a\n  - [ ] nested\n", "* [x] a\n  - [x] nested\n", 2},
 		{"non-boxes untouched", "- [] a\n- [y] b\n- [ ] real\n", "- [] a\n- [y] b\n- [x] real\n", 1},
+		{
+			// An auto-tick must not rewrite a quoted template: the doc explains what
+			// an EMPTY checklist looks like, and a ticked example documents a lie.
+			name:  "fenced example survives a tick",
+			in:    "- [ ] real\n\n```markdown\n- [ ] template\n```\n",
+			want:  "- [x] real\n\n```markdown\n- [ ] template\n```\n",
+			wantN: 1,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -27,6 +27,26 @@ func TestCountCheckboxes(t *testing.T) {
 		{"indented", "  - [x] nested\n    - [ ] deeper\n", 1, 2},
 		{"not a checkbox", "- [] a\n- [y] b\n- regular item\n", 0, 0},
 		{"all done", "- [x] a\n- [x] b\n", 2, 2},
+		// Fenced blocks are illustrations, not the doc's own checklist.
+		{"fenced example ignored", "- [x] real\n\n```markdown\n- [ ] template\n```\n", 1, 1},
+		{"tilde fence ignored", "- [x] real\n\n~~~\n- [ ] template\n~~~\n", 1, 1},
+		{
+			// A ```` block quoting ``` markdown is ONE block: a shorter marker can
+			// never close a longer fence, so the inner example stays uncounted.
+			name:     "longer fence quoting a shorter one",
+			in:       "- [x] real\n\n````\n```markdown\n- [ ] template\n```\n````\n- [ ] also real\n",
+			wantDone: 1, wantTot: 2,
+		},
+		{
+			// The shape observed on the shipped phase: every real criterion ticked,
+			// four strays inside two examples. Must read 3/3, not 3/7.
+			name: "the 7/11 shape",
+			in: "## Acceptance criteria\n\n- [x] one\n- [x] two\n- [x] three\n\n" +
+				"```markdown\n- [ ] tmpl a\n- [ ] tmpl b\n```\n\n" +
+				"```markdown\n- [ ] fixture a\n- [ ] fixture b\n```\n",
+			wantDone: 3, wantTot: 3,
+		},
+		{"unclosed fence swallows the rest", "- [x] real\n\n```\n- [ ] stray\n", 1, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
