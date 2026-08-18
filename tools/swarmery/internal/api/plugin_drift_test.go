@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -163,23 +164,55 @@ func TestHealthPluginDriftCounts(t *testing.T) {
 
 // repairSpy records every CLI invocation so the fence tests can assert that no
 // process was spawned at all.
+//
+// `plugin list --json` is answered from `installed` and deliberately NOT
+// recorded: it is the read the handler performs to find out where the plugin
+// lives, whereas calls/dirs assert what the repair actually DID. Counting the
+// probe would make every existing "ran exactly once" assertion say "twice"
+// without telling the reader anything.
 type repairSpy struct {
 	calls [][]string
 	dirs  []string
 	out   []byte
 	err   error
+	// installed is the `plugin list --json` body; "" ⇒ an empty list. Setting
+	// listErr instead simulates a CLI that cannot answer the question at all.
+	installed string
+	listErr   error
 	// onRun simulates a side effect of the real CLI (a user-scope install
 	// writing enabledPlugins into the user settings.json).
 	onRun func()
 }
 
 func (s *repairSpy) Run(_ context.Context, dir string, args ...string) ([]byte, error) {
+	if len(args) >= 2 && args[0] == "plugin" && args[1] == "list" {
+		if s.listErr != nil {
+			return nil, s.listErr
+		}
+		if s.installed == "" {
+			return []byte("[]"), nil
+		}
+		return []byte(s.installed), nil
+	}
 	s.calls = append(s.calls, args)
 	s.dirs = append(s.dirs, dir)
 	if s.onRun != nil {
 		s.onRun()
 	}
 	return s.out, s.err
+}
+
+// installedAt builds a one-entry `plugin list --json` body.
+func installedAt(id, scope, version, projectPath string) string {
+	e := map[string]any{"id": id, "scope": scope, "version": version, "enabled": true}
+	if projectPath != "" {
+		e["projectPath"] = projectPath
+	}
+	raw, err := json.Marshal([]any{e})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func attachRepairer(t *testing.T, s *repairSpy) {
@@ -220,15 +253,116 @@ func TestRepairPluginUpdatesWhenBehind(t *testing.T) {
 	seedPluginCatalog(t, threePackManifest)
 	path := projectPath(t, srv.URL, "1")
 	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_version_behind", "warn", "old", "")
-	spy := &repairSpy{out: []byte("updated")}
+	spy := &repairSpy{
+		out:       []byte("updated"),
+		installed: installedAt("core@swarmery", "project", "1.0.0", path),
+	}
 	attachRepairer(t, spy)
 
 	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
 	if out["action"] != "update" {
 		t.Fatalf("action = %v, want update", out["action"])
 	}
-	if spy.calls[0][1] != "update" {
-		t.Errorf("args = %v, want an update subcommand", spy.calls[0])
+	want := []string{"plugin", "update", "core@swarmery", "--scope", "project"}
+	if strings.Join(spy.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", spy.calls[0], want)
+	}
+}
+
+// The reported failure: the pack is behind at USER scope, and repair asked for
+// `plugin update --scope project` anyway — which the CLI rejects outright with
+// "Plugin X is not installed at scope project". The behind copy is the one that
+// must be updated, wherever it lives.
+func TestRepairPluginUpdatesBehindUserScopeInstallAtUserScope(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_version_behind", "warn",
+		"installed 0.1.0, marketplace has 0.2.0 — run update to pick it up", "")
+	spy := &repairSpy{
+		out:       []byte("updated"),
+		installed: installedAt("core@swarmery", "user", "0.1.0", ""),
+	}
+	attachRepairer(t, spy)
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
+	if out["action"] != "update" || out["scope"] != "user" {
+		t.Fatalf("action/scope = %v/%v, want update/user", out["action"], out["scope"])
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(spy.calls))
+	}
+	if slices.Contains(spy.calls[0], "project") {
+		t.Errorf("args = %v, want no project scope — nothing is installed there to update", spy.calls[0])
+	}
+	want := []string{"plugin", "update", "core@swarmery"}
+	if strings.Join(spy.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", spy.calls[0], want)
+	}
+}
+
+// `local` is the CLI's project-local scope (.claude/settings.local.json). It is
+// available to the project, so it can be behind — and it is not `project`.
+func TestRepairPluginUpdatesBehindLocalScopeInstallAtLocalScope(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_version_behind", "warn", "old", "")
+	spy := &repairSpy{
+		out:       []byte("updated"),
+		installed: installedAt("core@swarmery", "local", "0.1.0", path),
+	}
+	attachRepairer(t, spy)
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
+	if out["scope"] != "local" {
+		t.Fatalf("scope = %v, want local", out["scope"])
+	}
+	want := []string{"plugin", "update", "core@swarmery", "--scope", "local"}
+	if strings.Join(spy.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", spy.calls[0], want)
+	}
+}
+
+// A "behind" row whose install has since been removed must not run an update
+// against a copy that is not there — the finding is stale, the repair is an
+// install. This is the state /Volumes/Work/english-grammar was left in.
+func TestRepairPluginInstallsWhenBehindFindingIsStale(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_version_behind", "warn", "old", "")
+	spy := &repairSpy{out: []byte("installed")} // nothing installed anywhere
+	attachRepairer(t, spy)
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
+	if out["action"] != "install" {
+		t.Fatalf("action = %v, want install — the behind finding is stale", out["action"])
+	}
+	want := []string{"plugin", "install", "core@swarmery", "--scope", "project"}
+	if strings.Join(spy.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", spy.calls[0], want)
+	}
+}
+
+// A CLI that cannot answer "where is it installed" must not block the repair:
+// the handler falls back to the finding-derived action at project scope, which
+// is what it did before the lookup existed.
+func TestRepairPluginFallsBackToProjectScopeWhenListFails(t *testing.T) {
+	srv, db := projectsTestServer(t)
+	seedPluginCatalog(t, threePackManifest)
+	path := projectPath(t, srv.URL, "1")
+	seedFinding(t, db, pluginTarget("core@swarmery", path), "plugin_version_behind", "warn", "old", "")
+	spy := &repairSpy{out: []byte("updated"), listErr: errors.New("exit status 1")}
+	attachRepairer(t, spy)
+
+	out := doJSON(t, "POST", srv.URL+"/api/projects/1/plugins/core@swarmery/repair", nil, 200)
+	if out["scope"] != "project" {
+		t.Fatalf("scope = %v, want project", out["scope"])
+	}
+	want := []string{"plugin", "update", "core@swarmery", "--scope", "project"}
+	if strings.Join(spy.calls[0], " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", spy.calls[0], want)
 	}
 }
 

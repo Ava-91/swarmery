@@ -434,17 +434,6 @@ var pluginRepairer plugindrift.Runner
 // AttachPluginRepairer points the repair endpoint at a CLI runner.
 func AttachPluginRepairer(r plugindrift.Runner) { pluginRepairer = r }
 
-// isSymlinkedClaudeDir reports whether projectPath/.claude is itself a symlink
-// — the multi-repo consumer overlay pattern (a shared agents/ repo with each
-// consuming repo's .claude symlinked into it; see CLAUDE.md's Self-hosting
-// section and EXTENDING.md). Lstat (not Stat) so the symlink itself is
-// inspected rather than followed; any error (missing/unreadable) reports false
-// so the normal repair path still runs and surfaces its own error.
-func isSymlinkedClaudeDir(projectPath string) bool {
-	fi, err := os.Lstat(filepath.Join(projectPath, ".claude"))
-	return err == nil && fi.Mode()&os.ModeSymlink != 0
-}
-
 // pluginsClaudeDir anchors the user-level settings.json that the user-scope
 // repair fallback has to revert. Injectable for tests.
 var pluginsClaudeDir = defaultMemoryClaudeDir()
@@ -453,8 +442,9 @@ type repairPluginResponse struct {
 	ID     string `json:"id"`
 	Action string `json:"action"` // install | update
 	// Scope is which scope the CLI was actually asked for: "project" normally,
-	// "user" for the symlinked-overlay fallback. The UI shows it because the
-	// two are not equivalent — see repairViaUserScope.
+	// "local" or "user" when that is where the plugin being updated actually
+	// lives, and "user" for the symlinked-overlay fallback. The UI shows it
+	// because the scopes are not equivalent — see repairViaUserScope.
 	Scope   string `json:"scope"`
 	Output  string `json:"output"`
 	Status  string `json:"status"` // recomputed after the run
@@ -563,6 +553,40 @@ func (h *Handler) repairProjectPlugin(w http.ResponseWriter, r *http.Request) {
 	if d, ok := drift[name]; ok && d.status == "behind" {
 		action = "update"
 	}
+	scope := "project"
+
+	// The finding says what is wrong, not where the plugin lives, and that is not
+	// enough to build the command: `plugin update` is scope-bound, so asking for
+	// --scope project when the copy that is behind was installed at user scope
+	// fails with "Plugin X is not installed at scope project". Ask the CLI where
+	// the plugin actually is and act on THAT copy.
+	//
+	// A lookup failure is not "not installed": it leaves the drift-derived action
+	// at project scope, i.e. exactly the behaviour this block refines, so a
+	// broken lookup degrades rather than blocks.
+	inst, installed, lerr := plugindrift.ResolveInstalled(r.Context(), pluginRepairer, pluginID, path)
+	switch {
+	case lerr != nil:
+		log.Printf("repair: cannot read installed plugins (%v) — running %s at project scope", lerr, action)
+	case !installed:
+		// Nothing to update, whatever the finding claimed — a "behind" row whose
+		// install has since been removed would otherwise update a copy that is
+		// not there. Installing for the project that enables the pack is always
+		// the right repair here.
+		action = "install"
+	case action == "update" && inst.Scope == "user":
+		// The behind copy is machine-wide: update it through the guarded path,
+		// which reverts the enabledPlugins key the CLI may write as a side effect.
+		resp, code := repairViaUserScope(r.Context(), pluginID, action)
+		if code == http.StatusOK {
+			resp.Status = recomputedDriftStatus(h.DB, path, name)
+		}
+		writeJSONStatus(w, code, resp)
+		return
+	case action == "update" && inst.Scope == "local":
+		// Installed into .claude/settings.local.json — update it where it lives.
+		scope = "local"
+	}
 
 	// Multi-repo consumer overlay (CLAUDE.md / EXTENDING.md): <project>/.claude
 	// is itself a symlink into a shared agents/ repo. The claude CLI refuses to
@@ -570,7 +594,7 @@ func (h *Handler) repairProjectPlugin(w http.ResponseWriter, r *http.Request) {
 	// (SymlinkWriteRefusedError), so `--scope project` can never succeed there;
 	// fall back to a user-scope install that resolves the drift without writing
 	// through the symlink at all.
-	if isSymlinkedClaudeDir(path) {
+	if onboard.SymlinkedClaudeDir(path) {
 		resp, code := repairViaUserScope(r.Context(), pluginID, action)
 		if code == http.StatusOK {
 			resp.Status = recomputedDriftStatus(h.DB, path, name)
@@ -579,8 +603,8 @@ func (h *Handler) repairProjectPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, rerr := pluginRepairer.Run(r.Context(), path, "plugin", action, pluginID, "--scope", "project")
-	resp := repairPluginResponse{ID: pluginID, Action: action, Scope: "project", Output: string(out), Restart: true}
+	out, rerr := pluginRepairer.Run(r.Context(), path, "plugin", action, pluginID, "--scope", scope)
+	resp := repairPluginResponse{ID: pluginID, Action: action, Scope: scope, Output: string(out), Restart: true}
 	if rerr != nil {
 		resp.Output = strings.TrimSpace(resp.Output + "\n" + rerr.Error())
 		writeJSONStatus(w, http.StatusBadGateway, resp)

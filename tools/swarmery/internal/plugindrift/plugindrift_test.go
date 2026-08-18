@@ -116,6 +116,21 @@ func TestScan_Resolution(t *testing.T) {
 			projectPath: "/my/project",
 		},
 		{
+			// `--scope local` records the install in .claude/settings.local.json
+			// and carries the same projectPath as `project`. Counting only the
+			// latter reported every locally-installed pack as missing for the
+			// project that installed it.
+			name:        "local scope with matching path resolves",
+			installed:   Installed{ID: "core@swarmery", Scope: "local", ProjectPath: "/my/project", Version: "2.4.0"},
+			projectPath: "/my/project",
+		},
+		{
+			name:        "local scope elsewhere names the other project",
+			installed:   Installed{ID: "core@swarmery", Scope: "local", ProjectPath: "/other/project"},
+			wantMissing: true,
+			wantMessage: "/other/project",
+		},
+		{
 			name:        "different id does not resolve",
 			installed:   Installed{ID: "web-pack@swarmery", Scope: "user", Version: "2.4.0"},
 			wantMissing: true,
@@ -146,6 +161,39 @@ func TestScan_Resolution(t *testing.T) {
 				t.Errorf("message = %q, want it to contain %q", res[RuleEnabledNotInstalled][0].Message, tc.wantMessage)
 			}
 		})
+	}
+}
+
+// ResolveInstalled is what the repair endpoint builds its command from, so the
+// two failure modes must stay distinguishable: "not installed" is a repair
+// decision, a lookup error is not.
+func TestResolveInstalled(t *testing.T) {
+	body := listJSON(t,
+		Installed{ID: "core@swarmery", Scope: "user", Version: "0.1.0"},
+		Installed{ID: "web-pack@swarmery", Scope: "local", ProjectPath: "/my/project", Version: "1.1.0"},
+	)
+
+	in, ok, err := ResolveInstalled(context.Background(), stubRunner{out: body}, "core@swarmery", "/my/project")
+	if err != nil || !ok || in.Scope != "user" || in.Version != "0.1.0" {
+		t.Errorf("user-scope lookup = (%+v, %v, %v), want the 0.1.0 user entry", in, ok, err)
+	}
+
+	in, ok, err = ResolveInstalled(context.Background(), stubRunner{out: body}, "web-pack@swarmery", "/my/project")
+	if err != nil || !ok || in.Scope != "local" {
+		t.Errorf("local-scope lookup = (%+v, %v, %v), want the local entry", in, ok, err)
+	}
+
+	_, ok, err = ResolveInstalled(context.Background(), stubRunner{out: body}, "iot-pack@swarmery", "/my/project")
+	if err != nil || ok {
+		t.Errorf("absent plugin = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	if _, ok, err = ResolveInstalled(context.Background(), stubRunner{err: errors.New("boom")}, "core@swarmery", "/my/project"); err == nil || ok {
+		t.Errorf("CLI failure = (%v, %v), want an error and not-found", ok, err)
+	}
+
+	if _, ok, err = ResolveInstalled(context.Background(), stubRunner{out: []byte("not json")}, "core@swarmery", "/my/project"); err == nil || ok {
+		t.Errorf("undecodable output = (%v, %v), want an error and not-found", ok, err)
 	}
 }
 

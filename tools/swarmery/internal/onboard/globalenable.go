@@ -31,6 +31,22 @@ import (
 	"path/filepath"
 )
 
+// SymlinkedClaudeDir reports whether <projectPath>/.claude is itself a symlink
+// — the multi-repo consumer overlay pattern (a shared agents/ repo with each
+// consuming repo's .claude symlinked into it; see CLAUDE.md's Self-hosting
+// section and EXTENDING.md). It is the condition that selects the user-scope
+// fallback this file exists to make safe, so it lives next to it: both the
+// repair endpoint and the provision engine ask the same question, and two
+// copies of the test is how they drift apart.
+//
+// Lstat (not Stat) so the symlink itself is inspected rather than followed; any
+// error (missing/unreadable) reports false so the normal project-scope path
+// still runs and surfaces its own error.
+func SymlinkedClaudeDir(projectPath string) bool {
+	fi, err := os.Lstat(filepath.Join(projectPath, ".claude"))
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
 // ErrGlobalSettingsUnreadable — the user settings.json exists but cannot be
 // read or parsed. The caller must NOT proceed with a user-scope install: the
 // global enable it causes could not be reverted afterwards.
@@ -83,8 +99,8 @@ func CaptureGlobalEnable(claudeDir, pluginID string) (*GlobalEnable, error) {
 // was absent, set to the captured value when it was present.
 //
 // It deliberately re-reads settings.json instead of writing back the whole
-// captured document. The daemon's own provision engine also shells out to
-// user-scope `claude plugin install` (provision/service.go), so this file has
+// captured document. The daemon's own provision engine takes this same fallback
+// for a symlinked consumer (provision/service.go install), so this file has
 // concurrent writers; a narrow read-modify-write touching one key preserves
 // whatever else landed in the meantime. The race window is not zero — a
 // competing write between this read and this write is lost — but it is
