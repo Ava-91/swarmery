@@ -12,6 +12,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procfind"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // tsFormat matches the millisecond-Z style the api/dispatch packages write.
@@ -77,7 +78,7 @@ func NewService(db *sql.DB, cfg Config, r Runner, trees Trees) *Service {
 	}
 	return &Service{
 		DB: db, Cfg: cfg, Run: r, Trees: trees,
-		UUID: newUUID,
+		UUID: runcore.NewUUID,
 		now:  time.Now,
 		sem:  make(chan struct{}, conc),
 	}

@@ -27,18 +27,15 @@ package phaserun
 // alone used to leave that tree writing into a directory being removed under it.
 
 import (
-	"bytes"
 	"context"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/planning"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // Runner is the spawn seam the service depends on.
@@ -64,7 +61,7 @@ type RunSpec struct {
 	// resolving the account from Cwd here would silently fall back to the
 	// default account — plan A3, extended from dispatch/verify to this spawn
 	// site. "" (no known project path) means no account resolution at all;
-	// see accountEnvFor's guard.
+	// see runcore.AccountFor's guard.
 	ProjectPath string
 }
 
@@ -85,19 +82,12 @@ type Run struct {
 // bounded default well under the whole plan's 8h.
 const phaseRunTimeout = 4 * time.Hour
 
-// stderrTailBytes caps captured stderr landing in run_error.
-const stderrTailBytes = 4096
-
 // Env knobs — see the file header.
 const (
 	modelEnv   = "SWARMERY_PHASERUN_MODEL"
 	timeoutEnv = "SWARMERY_PHASERUN_TIMEOUT"
 	permEnv    = "SWARMERY_PHASERUN_PERMISSION_MODE"
 )
-
-// drainGrace bounds the post-exit wait for the run's process group to empty out
-// before the service removes the worktree.
-const drainGrace = 5 * time.Second
 
 // timeoutFromEnv reads SWARMERY_PHASERUN_TIMEOUT, falling back to the default on
 // an unset or unusable value (an operator typo must not mean "no timeout").
@@ -122,102 +112,44 @@ type ClaudeRunner struct {
 	Timeout time.Duration
 }
 
+// Start maps this engine's RunSpec onto runcore.Spec and its Result back onto
+// Run. Everything shared — the argv, the account env merge, the process group,
+// the drain that must finish before the service removes the worktree, the exit
+// ladder — lives in internal/runcore; what stays here is the phase run's own
+// policy: its timeout window, its three env knobs, and the settings file it lends
+// a worktree that cannot discover the project's own.
 func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = timeoutFromEnv()
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	bin, err := planning.ClaudeBin()
-	if err != nil {
-		return &Run{SessionUUID: spec.SessionUUID, ExitCode: -1}, err
-	}
-
-	args := []string{"-p", spec.Prompt, "--session-id", spec.SessionUUID}
-	// Without this the run cannot write, cannot run its verification command and
-	// cannot commit — and it still exits 0. See internal/claudeflags.
-	args = append(args, claudeflags.PermissionModeArgs(permEnv)...)
-	if m := strings.TrimSpace(os.Getenv(modelEnv)); m != "" {
-		args = append(args, "--model", m)
-	}
-	if f := strings.TrimSpace(spec.SettingsFile); f != "" {
-		args = append(args, "--settings", f)
-	}
-
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = spec.Cwd
-	// Account comes from spec.ProjectPath, not from cmd.Dir: cmd.Dir is the
-	// phase's acquired worktree, which has no .claude/settings.local.json of
-	// its own, so claudeacct.EnvFor(cmd.Dir) here would resolve nothing and
-	// silently run the phase under the default account (plan A3). The service
-	// resolves the project path from phaseInfo and puts it in spec.ProjectPath.
-	// nil delta for an unbound/unknown project ⇒ cmd.Env is a byte-identical
-	// copy of os.Environ() — behaviour unchanged from before.
-	cmd.Env = append(os.Environ(), accountEnvFor(spec.ProjectPath)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	// Own process group: cancellation/timeout must reach the whole tree, and Wait
-	// must not block on a pipe an orphan still holds.
-	procgroup.Isolate(cmd, 0)
-	// stdout is the assistant text; we do NOT parse it — the run's transcript is
-	// ingested independently and progress flows through the phase doc's checkbox
-	// ticks (wsingest). Discard it.
-	runErr := cmd.Run()
-	elapsed := time.Since(start) // the run's own wall clock — the drain below is teardown
-
-	// Wait only guarantees the leader is reaped. Block until the group is empty
-	// before returning, because the service removes the worktree the moment we do
-	// — a survivor would be writing into a directory being deleted under it.
-	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
-		log.Printf("warning: phaserun: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
-	}
-
-	run := &Run{
+	res, err := runcore.ClaudeRunner{Engine: "phaserun"}.Start(ctx, runcore.Spec{
+		Prompt:      spec.Prompt,
 		SessionUUID: spec.SessionUUID,
-		Stderr:      tail(stderr.String(), stderrTailBytes),
-		Duration:    elapsed,
-	}
-	if ctx.Err() == context.DeadlineExceeded {
-		run.TimedOut = true
-		run.ExitCode = -1
-		return run, nil // a timeout is an outcome, not a Start error
-	}
-	if runErr != nil {
-		if ee, ok := runErr.(*exec.ExitError); ok {
-			run.ExitCode = ee.ExitCode()
-			return run, nil // a nonzero exit is an outcome the service stamps
-		}
-		// The process could not be started/observed at all (fork failure).
-		run.ExitCode = -1
-		return run, runErr
-	}
-	run.ExitCode = 0
-	return run, nil
-}
-
-// accountEnvFor resolves the CLAUDE_CONFIG_DIR env delta for projectPath.
-// Mirrors internal/api/term.go's termAccountEnv (plan A3, extended to this
-// spawn site): claudeacct.Binding joins its argument with
-// ".claude/settings.local.json" unconditionally, so claudeacct.EnvFor("")
-// would resolve that RELATIVE path against the daemon's OWN process working
-// directory and silently bind the run to whatever unrelated settings file
-// happens to sit there. An empty projectPath must short-circuit to nil before
-// EnvFor is ever called.
-func accountEnvFor(projectPath string) []string {
-	if projectPath == "" {
-		return nil
-	}
-	return claudeacct.EnvFor(projectPath)
-}
-
-// tail returns the last <= n bytes of s, trimmed.
-func tail(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		s = s[len(s)-n:]
-	}
-	return s
+		Cwd:         spec.Cwd,
+		// Without a permission mode the run cannot write, cannot run its
+		// verification command and cannot commit — and it still exits 0. See
+		// internal/claudeflags for the resolution and its escape hatch.
+		PermissionMode: claudeflags.Mode(permEnv),
+		Model:          strings.TrimSpace(os.Getenv(modelEnv)),
+		SettingsFile:   spec.SettingsFile,
+		// The account comes from spec.ProjectPath, never from Cwd: Cwd is the
+		// phase's acquired worktree, which has no .claude/settings.local.json of its
+		// own, so resolving it there would silently run the phase under the default
+		// account (plan A3). An empty/unbound project resolves to "" and produces no
+		// env delta, so cmd.Env stays a byte-identical copy of os.Environ().
+		Account: runcore.AccountFor(spec.ProjectPath),
+		Timeout: timeout,
+		// planning.ClaudeBin, not a bare PATH lookup: launchd starts the daemon with
+		// a minimal PATH that omits npm/homebrew.
+		Bin: planning.ClaudeBin,
+	})
+	return &Run{
+		SessionUUID: res.SessionUUID,
+		ExitCode:    res.ExitCode,
+		TimedOut:    res.TimedOut,
+		Stderr:      res.Stderr,
+		Duration:    res.Duration,
+	}, err
 }

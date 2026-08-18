@@ -1309,15 +1309,8 @@ func TestHealStale_ClosesCheckboxInterval(t *testing.T) {
 	}
 }
 
-func TestNewUUID(t *testing.T) {
-	a, b := newUUID(), newUUID()
-	if a == b {
-		t.Error("newUUID returned identical values")
-	}
-	if len(a) != 36 || a[14] != '4' {
-		t.Errorf("newUUID = %q, not a v4 uuid", a)
-	}
-}
+// newUUID now lives in internal/runcore (one copy for all five engines); its
+// test moved with it to internal/runcore/spawner_test.go.
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 

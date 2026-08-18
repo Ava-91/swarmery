@@ -28,6 +28,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/dispatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
@@ -121,7 +122,7 @@ type Service struct {
 	// production resolver stats the filesystem, and the run gates have to be
 	// testable without a real checkout on disk.
 	RepoRoot func(projectPath string, cells ...string) (string, error)
-	UUID     func() string    // session-uuid generator (test seam; default newUUID)
+	UUID     func() string    // session-uuid generator (test seam; default runcore.NewUUID)
 	now      func() time.Time // clock (test seam; default time.Now)
 	Go       func(func())     // async-spawn seam (nil ⇒ real `go`); mirrors planning.Go
 	// Notify emits plan_updated for the phase's workspace task at run edges.
@@ -147,7 +148,7 @@ func NewService(db *sql.DB, r Runner, wt dispatch.WorktreeManager) *Service {
 		DB:     db,
 		Run:    r,
 		Wt:     wt,
-		UUID:   newUUID,
+		UUID:   runcore.NewUUID,
 		now:    time.Now,
 		active: make(map[int64]run),
 	}

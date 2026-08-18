@@ -1,18 +1,13 @@
 package dispatch
 
 import (
-	"bytes"
 	"context"
-	"log"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeprobe"
-	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 )
 
 // RunSpec is one dispatched headless run.
@@ -56,12 +51,6 @@ type Run struct {
 type Runner interface {
 	Start(ctx context.Context, spec RunSpec) (*Run, error)
 }
-
-// stderrTailBytes caps captured stderr landing in dispatch_error.
-const stderrTailBytes = 4096
-
-// drainGrace bounds the post-exit wait for the run's process group to empty out.
-const drainGrace = 5 * time.Second
 
 // permEnv is this spawn site's --permission-mode knob (internal/claudeflags owns
 // the default and the precedence). A dispatched executor with no permission mode
@@ -131,7 +120,7 @@ func agentPrompt(spec RunSpec) string {
 	return "@" + agent + ": " + spec.Prompt
 }
 
-// permissionArgs resolves ONE run's --permission-mode: the task's playbook wins
+// permissionMode resolves ONE run's --permission-mode: the task's playbook wins
 // over this spawn site's env knob, which internal/claudeflags resolves as
 // before. The precedence is the same shape as the model fallback in
 // runPlaybook — the specific choice beats the general default.
@@ -146,134 +135,88 @@ func agentPrompt(spec RunSpec) string {
 // lives at the parse boundary (internal/playbooks): a value that never parsed
 // cannot be on a Playbook, and re-checking here would duplicate the set in a
 // second place where the two could drift apart.
-func permissionArgs(playbookMode string) []string {
+//
+// The return is the MODE, not a flag pair: internal/runcore builds the argv, and
+// "" there means "omit the flag" — the same convention claudeflags.Mode uses.
+func permissionMode(playbookMode string) string {
 	switch mode := strings.TrimSpace(playbookMode); mode {
 	case "":
-		return claudeflags.PermissionModeArgs(permEnv)
+		return claudeflags.Mode(permEnv)
 	case "default":
-		return nil
+		return ""
 	default:
-		return []string{"--permission-mode", mode}
+		return mode
 	}
 }
 
+// Start maps this engine's RunSpec onto runcore.Spec and its Result back onto
+// Run. Everything shared — the argv, the account env merge, the process group,
+// the drain, the exit ladder — lives in internal/runcore; what stays here is
+// dispatch's own policy: the agent mention, the playbook's permission mode, the
+// account-readiness verdict, and letting the CALLER own the deadline (Timeout is
+// deliberately unset — a stage's ctx carries the dispatcher's RunTimeout).
 func (r ClaudeRunner) Start(ctx context.Context, spec RunSpec) (*Run, error) {
-	// --setting-sources project,local: skip user-level settings (global plugin
-	// stack) — headless runs don't need them; project plugins and OAuth are
-	// unaffected.
-	args := []string{"-p", agentPrompt(spec), "--session-id", spec.SessionUUID,
-		"--setting-sources", "project,local"}
-	// Without this the executor cannot write, run or commit — and it still exits
-	// 0, so the task is stamped done over an empty diff. See
-	// internal/claudeflags (knob: SWARMERY_DISPATCH_PERMISSION_MODE).
-	args = append(args, permissionArgs(spec.PermissionMode)...)
-	if m := strings.TrimSpace(spec.Model); m != "" {
-		args = append(args, "--model", m)
-	}
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = spec.Cwd
-	// Account comes from the SPEC, not from cmd.Dir: cmd.Dir is the task's
-	// worktree, which has no .claude/settings.local.json of its own, so
-	// claudeacct.EnvFor(cmd.Dir) here would resolve nothing and silently run the
-	// task under the default account (plan A3). The service resolves the binding
-	// from the project path and puts the key in spec.Account.
-	// EnvForAccount("") returns nil, so an unbound project's cmd.Env is a
-	// byte-identical copy of os.Environ() — behaviour unchanged from before.
-	cmd.Env = append(os.Environ(), claudeacct.EnvForAccount(spec.Account)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	// Own process group: a timeout or cancel must reach the executor's whole tree
-	// (shells, tools, sub-agents), and Wait must not block on a pipe an orphan
-	// still holds.
-	procgroup.Isolate(cmd, 0)
-	// stdout is the assistant text; we do NOT parse it here — the run's transcript
-	// is ingested independently and the dispatcher reads the linked session's
-	// last assistant turn from the DB for sentinels. Discard it — unless an
-	// AccountVerdict hook wants the exit classified, in which case a bounded
-	// tail is kept for the matcher only (the CLI's no-login line prints on
-	// stdout — docs/claude-cli-credential-behaviour.md §1) and never lands on
-	// the Run, in a log, or in the store.
-	var stdoutTail *tailBuffer
+	// A bounded stdout tail is kept ONLY when a verdict hook wants the exit
+	// classified (the CLI's no-login line prints on stdout —
+	// docs/claude-cli-credential-behaviour.md §1). With no hook, stdout stays
+	// discarded at the OS level: the run's transcript is ingested independently and
+	// the dispatcher reads sentinels from the linked session in the DB, so a pipe
+	// here would buy nothing and cost a copy of every run's output.
+	tailBytes := 0
 	if r.AccountVerdict != nil {
-		stdoutTail = &tailBuffer{max: stderrTailBytes}
-		cmd.Stdout = stdoutTail
+		tailBytes = runcore.StderrTailBytes
 	}
-	err := cmd.Run()
-	elapsed := time.Since(start) // the run's own wall clock — the drain is teardown
 
-	// Wait only guarantees the leader is reaped; a survivor would keep writing into
-	// a worktree the dispatcher may hand to the next stage or reclaim.
-	if cmd.Process != nil && procgroup.Drain(cmd.Process.Pid, drainGrace) {
-		log.Printf("warning: dispatch: uuid=%s left processes behind; killed the run's process group", spec.SessionUUID)
-	}
+	res, err := runcore.ClaudeRunner{Engine: "dispatch"}.Start(ctx, runcore.Spec{
+		Prompt:      agentPrompt(spec),
+		SessionUUID: spec.SessionUUID,
+		Cwd:         spec.Cwd,
+		Model:       spec.Model,
+		// Without this the executor cannot write, run or commit — and it still exits
+		// 0, so the task is stamped done over an empty diff. See internal/claudeflags
+		// (knob: SWARMERY_DISPATCH_PERMISSION_MODE).
+		PermissionMode: permissionMode(spec.PermissionMode),
+		// --setting-sources project,local: skip user-level settings (global plugin
+		// stack) — headless runs don't need them; project plugins and OAuth are
+		// unaffected.
+		SettingSources: "project,local",
+		// Account comes from the SPEC, not from Cwd: Cwd is the task's worktree,
+		// which has no .claude/settings.local.json of its own, so resolving it there
+		// would silently run the task under the default account (plan A3). The
+		// service resolves the binding from the project path once per playbook.
+		Account:         spec.Account,
+		StdoutTailBytes: tailBytes,
+		// No Timeout: the dispatcher's stage ctx owns cancellation (runStage).
+	})
 
 	run := &Run{
-		SessionUUID: spec.SessionUUID,
-		Stderr:      tail(stderr.String(), stderrTailBytes),
-		Duration:    elapsed,
+		SessionUUID: res.SessionUUID,
+		Stderr:      res.Stderr,
+		Duration:    res.Duration,
+		ExitCode:    res.ExitCode,
+		TimedOut:    res.TimedOut,
 	}
-	if ctx.Err() == context.DeadlineExceeded {
-		run.TimedOut = true
-		run.ExitCode = -1
+	if res.TimedOut {
 		return run, nil // a timeout is an outcome, not a Start error — and not an exit, so no verdict
 	}
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			run.ExitCode = ee.ExitCode()
-			r.reportVerdict(spec, run.ExitCode, stdoutTail, run.Stderr)
-			return run, nil // nonzero exit is an outcome the dispatcher routes
-		}
 		// The process could not be started/observed at all (PATH miss, fork
 		// failure). That IS a Start error — the dispatcher marks the row and
 		// releases the slot.
-		run.ExitCode = -1
 		return run, err
 	}
-	run.ExitCode = 0
-	r.reportVerdict(spec, 0, stdoutTail, run.Stderr)
+	// A clean exit and a nonzero one are both outcomes the dispatcher routes, and
+	// both say something about the account.
+	r.reportVerdict(spec, run.ExitCode, res.StdoutTail, run.Stderr)
 	return run, nil
 }
 
 // reportVerdict feeds one finished run's exit through the probe's shared
 // classifier and into the AccountVerdict hook. The combined tail exists only
 // for the duration of this call — matched, never stored.
-func (r ClaudeRunner) reportVerdict(spec RunSpec, exitCode int, stdoutTail *tailBuffer, stderrTail string) {
+func (r ClaudeRunner) reportVerdict(spec RunSpec, exitCode int, stdoutTail, stderrTail string) {
 	if r.AccountVerdict == nil {
 		return
 	}
-	r.AccountVerdict(spec.Account, claudeprobe.ClassifyExit(exitCode, stdoutTail.String()+"\n"+stderrTail))
-}
-
-// tailBuffer is an io.Writer keeping only the last max bytes written — enough
-// for the classifier's fixed markers (a no-login run dies after one short
-// line) without buffering a whole session transcript.
-type tailBuffer struct {
-	max int
-	buf []byte
-}
-
-func (t *tailBuffer) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.max {
-		t.buf = t.buf[len(t.buf)-t.max:]
-	}
-	return len(p), nil
-}
-
-// String tolerates the nil buffer of a hook-less run.
-func (t *tailBuffer) String() string {
-	if t == nil {
-		return ""
-	}
-	return string(t.buf)
-}
-
-// tail returns the last <= n bytes of s, trimmed.
-func tail(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		s = s[len(s)-n:]
-	}
-	return s
+	r.AccountVerdict(spec.Account, claudeprobe.ClassifyExit(exitCode, stdoutTail+"\n"+stderrTail))
 }

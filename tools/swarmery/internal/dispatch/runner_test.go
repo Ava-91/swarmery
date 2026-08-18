@@ -59,7 +59,13 @@ func TestClaudeRunnerNonzeroExit(t *testing.T) {
 	}
 }
 
+// The full argv, exactly: since the extraction to internal/runcore the ORDER
+// comes from a builder five engines share, and `claude` is order-insensitive, so
+// an accidental reordering would be invisible to everything but an assertion like
+// this one. Mirrors the dispatch cases in internal/runcore/spawner_test.go.
 func TestClaudeRunnerModelFlag(t *testing.T) {
+	t.Setenv(claudeflags.ModeEnv, "")
+	t.Setenv(permEnv, "")
 	// Echo the args so we can assert --model is passed through. Exit 0.
 	fakeClaude(t, `echo "$@" > "$PWD/args.txt"; exit 0`)
 	cwd := t.TempDir()
@@ -72,11 +78,11 @@ func TestClaudeRunnerModelFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read args: %v", err)
 	}
-	got := string(out)
-	for _, want := range []string{"-p", "hello", "--session-id", "u3", "--model", "sonnet", "--setting-sources", "project,local"} {
-		if !contains(got, want) {
-			t.Errorf("args %q missing %q", got, want)
-		}
+	got := strings.TrimSpace(string(out))
+	want := "-p hello --session-id u3 --setting-sources project,local --permission-mode " +
+		claudeflags.DefaultMode + " --model sonnet"
+	if got != want {
+		t.Errorf("argv = %q, want %q", got, want)
 	}
 }
 
