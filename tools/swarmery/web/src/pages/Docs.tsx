@@ -1,12 +1,23 @@
-// Docs screen (Canvas v2, vertical-rail variant): a sticky left sidebar with a
-// mono filter box on top and the docs grouped under GUIDES / FORMATS /
-// PROTOCOLS mono section labels — active doc amber-tinted, each row showing
-// title over its FILE.md. Beside it the reading grid: the article (mono group
-// eyebrow · serif H1 · "swarmery/docs/<FILE>" subline · markdown body ·
-// prev/next footer) and a sticky "On this page" rail built from the doc's own
-// `##` headings. Routes: /docs (first doc) and /docs/{slug}; every doc switch is
-// a router navigation, never local state. The markdown body's own leading H1 is
-// stripped — the page title comes from the doc meta.
+// Docs screen (Canvas v2, vertical-rail variant): a left sidebar with a mono
+// filter box on top and the docs grouped under GUIDES / FORMATS / PROTOCOLS
+// mono section labels — active doc amber-tinted, each row showing title over
+// its FILE.md. Beside it the reading grid: the article (mono group eyebrow ·
+// serif H1 · "swarmery/docs/<FILE>" subline · markdown body · prev/next footer)
+// and an "On this page" rail built from the doc's own `##` headings. Routes:
+// /docs (first doc) and /docs/{slug}; every doc switch is a router navigation,
+// never local state. The markdown body's own leading H1 is stripped — the page
+// title comes from the doc meta.
+//
+// Fill route (`handle: { fill: true }`, src/main.tsx): the shell has handed the
+// vertical scroll over, so this screen owns it. Each column is its own scroller
+// inside the grid row instead of a `sticky` block capped against a viewport-unit
+// height — the row IS the leftover height, so nothing here has to know the
+// viewport, and the header/padding subtractions that cap used to hardcode go
+// with it (they were a second copy of the shell's geometry, drifting on it). The
+// vertical padding lives INSIDE each scrollport, so a scrollbar runs the whole
+// column instead of stopping short at an outer inset. Below `desk` the three
+// columns stack and the article keeps the scroll: the rail is capped at a
+// fraction of the pane so a long doc set can never squeeze the article out.
 //
 // Body element metrics (paragraph rhythm, serif section headings, code blocks,
 // heading scroll-margin) live in the scoped `.docs-article` block in index.css,
@@ -93,7 +104,7 @@ export function Docs(): JSX.Element {
   const [doc, setDoc] = useState<DocDetail | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const rootRef = useRef<HTMLDivElement>(null);
+  const articleRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchDocs()
@@ -117,9 +128,12 @@ export function Docs(): JSX.Element {
 
   const { hash, key } = useLocation();
 
-  /** The app's scroller is <main> (App.tsx), not the window — every scroll on
-   * this screen has to go through it. */
-  const scroller = useCallback((): Element | null => rootRef.current?.closest('main') ?? null, []);
+  /** The scrollport every scroll on this screen has to go through. On a fill
+   * route <main> has stopped scrolling (App.tsx), so it is no longer the answer
+   * — the article column is, at every breakpoint. Resolved through the ref
+   * rather than `closest('main')` so the target is the element that actually
+   * owns the overflow, not whichever ancestor used to. */
+  const scroller = useCallback((): HTMLElement | null => articleRef.current, []);
 
   // A new doc starts at its top, exactly as picking one from the rail implies.
   // Skipped when the URL carries an anchor: that navigation asked for a
@@ -151,8 +165,11 @@ export function Docs(): JSX.Element {
     } catch {
       /* keep raw */
     }
-    // `.docs-article` gives every heading a scroll-margin-top that
-    // block:'start' honours, so the target never lands flush to the edge.
+    // scrollIntoView walks up to the nearest scrollable ancestor, which is now
+    // the article column — the same scrollport scroller() returns. The
+    // scroll-margin-top `.docs-article` puts on every heading is measured from
+    // that scrollport's edge, so `block:'start'` lands the heading just below
+    // the top of the article area rather than flush against it.
     const el = document.getElementById(id);
     if (el !== null) el.scrollIntoView({ block: 'start' });
   }, [doc, hash, key]);
@@ -188,16 +205,24 @@ export function Docs(): JSX.Element {
     // the chrome (rail rows, filter box, eyebrow, H1, TOC) runs on the font's
     // natural line box, and 1.5 inflates each element by 2–8px, which compounds
     // into a visible downward drift. The article body re-declares its own 1.75.
-    <div
-      ref={rootRef}
-      className="min-w-0 max-w-[1280px] px-4 pt-6 pb-10 leading-[normal] desk:px-10 desk:pt-[26px] desk:pb-[60px]"
-    >
-      <div className="grid grid-cols-1 items-start gap-11 desk:grid-cols-[220px_minmax(0,1fr)_168px]">
-        {/* Sticky offset mirrors the page's own top padding so the rail rests
-            where it started; <main> is the scroller (frame layout). */}
+    <div className="flex h-full min-h-0 min-w-0 max-w-[1280px] flex-col px-4 leading-[normal] desk:px-10">
+      {/* One grid row that spends the leftover height: `grid-rows-[minmax(0,1fr)]`
+          is what lets the row — and with it every column — be SHORTER than its
+          content, which is the whole point of handing them their own scrollbars.
+          Below `desk` it degrades to a flex column so the rail can be capped
+          against the pane while the article takes the rest; grid `auto` rows
+          would simply overflow instead. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-11 desk:grid desk:grid-cols-[220px_minmax(0,1fr)_168px] desk:grid-rows-[minmax(0,1fr)]">
+        {/* Its own scrollport, so the last entry of a long doc set is always
+            reachable without the page moving. The top padding sits inside it,
+            level with the article's and the TOC's, so all three columns still
+            open on the same mono line. Below `desk` the cap is what keeps a long
+            doc set from squeezing the article out; the column gap already
+            separates it from the article there, so it carries no bottom inset
+            of its own — stacking one would double-space the two blocks. */}
         <nav
           aria-label="Documentation"
-          className="min-w-0 desk:sticky desk:top-[26px] desk:max-h-[calc(100dvh-56px-26px)] desk:overflow-y-auto"
+          className="max-h-[40%] min-h-0 min-w-0 overflow-y-auto pt-6 desk:h-full desk:max-h-none desk:pt-[26px] desk:pb-[60px]"
         >
           {/* The label row lines the rail up with the article's group eyebrow
               and the TOC's "On this page" — all three columns open with the
@@ -246,7 +271,17 @@ export function Docs(): JSX.Element {
           ))}
         </nav>
 
-        <div className="min-w-0 max-w-[720px]">
+        {/* THE scroller of this screen — what scroller() returns and what the
+            slug-change reset, the `#hash` jump and the TOC clicks all move.
+            `flex-1` only bites below `desk` (grid items ignore it), where the
+            article takes whatever the capped rail leaves. No top inset there:
+            the column gap sits OUTSIDE the scrollport, so it is permanent
+            whitespace the body never scrolls under, and a `pt` on top of it
+            would just push the article down. */}
+        <div
+          ref={articleRef}
+          className="min-h-0 min-w-0 max-w-[720px] flex-1 overflow-y-auto pb-10 [-webkit-overflow-scrolling:touch] desk:h-full desk:pt-[26px] desk:pb-[60px]"
+        >
           {docError !== null && <ErrorBox message={docError} />}
           {doc === null && docError === null && <Loading label="doc…" />}
           {doc !== null && rendered !== null && (
@@ -298,7 +333,10 @@ export function Docs(): JSX.Element {
         </div>
 
         {toc.length > 0 && (
-          <nav aria-label="On this page" className="hidden desk:sticky desk:top-[26px] desk:block">
+          <nav
+            aria-label="On this page"
+            className="hidden desk:block desk:h-full desk:min-h-0 desk:overflow-y-auto desk:pt-[26px] desk:pb-[60px]"
+          >
             <div className="mb-2 font-mono text-[10px] tracking-[0.14em] text-ink-faint uppercase">
               On this page
             </div>

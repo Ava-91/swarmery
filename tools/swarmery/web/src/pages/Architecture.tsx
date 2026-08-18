@@ -10,7 +10,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProvisionState, ToolsResponse } from '../api/types';
 import { fetchTools, rebuildArchitectureMap, toggleProjectPlugin } from '../api';
-import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
+import {
+  Card,
+  Empty,
+  ErrorBox,
+  ExpandButton,
+  ExpandableSection,
+  Loading,
+  SectionTitle,
+} from '../components/ui';
 import { fmtAgo } from '../lib/format';
 import { findProject } from '../lib/projectSlug';
 import { useTheme } from '../lib/theme';
@@ -66,7 +74,7 @@ const STAGE_PROGRESS: Record<ProvisionState['state'], { pct: number; label: stri
 function ProvisionProgress({ provision }: { provision: ProvisionState }): JSX.Element {
   const stage = STAGE_PROGRESS[provision.state];
   return (
-    <div className="mt-3 rounded-xl border border-line bg-surface p-4">
+    <div className="mt-3 shrink-0 rounded-xl border border-line bg-surface p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]">
         <span className="inline-flex items-center gap-1.5 text-amber">
           <span aria-hidden>⟳</span>
@@ -92,9 +100,49 @@ function ProvisionProgress({ provision }: { provision: ProvisionState }): JSX.El
   );
 }
 
+// CSS pushed INTO the map document for as long as it is embedded here.
+//
+// WHY it lives dashboard-side and not in the generator's template
+// (plugins/architecture-pack/templates/map.html.tpl): injecting it applies to the
+// architecture-out/architecture-map.html files that consumers have ALREADY
+// generated. A template fix would only reach a project after it re-ran
+// /architecture-map with a newer pack, so every existing artifact would stay
+// broken in the embed until someone rebuilt it. The artifact is also still opened
+// standalone (file:// straight from architecture-out/), and standalone is exactly
+// where these rules must NOT apply — the map is the whole page there, keeps its
+// own theme toggle, and sizes against a real viewport.
+//
+// Scope is deliberately narrow. The artifact's internal layout already survives a
+// constrained height on its own: `body` is a flex column with `overflow:hidden`,
+// `#layout{flex:1;min-height:0}` and `#ref{flex:1;min-height:0;overflow:auto}`
+// give it a real min-height:0 chain, `#boardwrap{flex:1;overflow:auto}` and
+// `#side{overflow-y:auto}` scroll inside the frame, and `#tabs{flex:none}` is
+// pinned above them. So this patches only what standalone-vs-embedded actually
+// changes, and adds no rule that merely restates one the artifact already has.
+const EMBED_CSS = [
+  // The map ships a standalone light/dark toggle; embedded it follows the app
+  // theme (pushed as inline custom properties below), so the control is dead UI.
+  '#theme{display:none}',
+  // The artifact sizes itself with `body{height:100vh}`. Inside an iframe that
+  // already resolves to the frame's height, so this changes nothing today — it
+  // re-anchors the body to its own box so the map cannot outgrow a frame whose
+  // height the embedder controls, whatever a future artifact does with `100vh`.
+  'html,body{height:100%;overflow:hidden}',
+  // `#inspector` is `position:fixed;bottom:20px;max-height:44vh`. Inside a frame
+  // `vh` is already the PANE's height, so 44vh cannot overflow the bottom on its
+  // own — the panel only becomes a problem when the pane is short, where 44% of
+  // very little still hides the board behind it. The cap keeps a usable board in
+  // that case (it binds below ~360px of pane) and is a ceiling, not a floor.
+  // `bottom` goes UP, not down as the plan's note suggested: the offset is
+  // measured from the frame's bottom edge, so a larger one moves the panel AWAY
+  // from `#boardwrap`'s horizontal scrollbar — 20px only just cleared the ~15px
+  // gutter platforms with classic (non-overlay) scrollbars reserve.
+  '#inspector{max-height:min(44vh,calc(100% - 200px));bottom:28px}',
+].join('');
+
 /** Push the dashboard theme into the map iframe: resolved mode on `data-theme`,
- * app tokens as inline vars, and the map's own theme toggle hidden (standalone
- * opens of the artifact keep it — this only applies inside the dashboard). */
+ * app tokens as inline vars, and the embed-only CSS above (which includes hiding
+ * the map's own theme toggle — standalone opens of the artifact keep it). */
 function syncMapTheme(frame: HTMLIFrameElement, resolved: 'light' | 'dark'): void {
   const doc = frame.contentDocument;
   if (doc === null) return;
@@ -108,7 +156,9 @@ function syncMapTheme(frame: HTMLIFrameElement, resolved: 'light' | 'dark'): voi
   if (doc.getElementById('swarmery-embed-style') === null) {
     const style = doc.createElement('style');
     style.id = 'swarmery-embed-style';
-    style.textContent = '#theme{display:none}';
+    style.textContent = EMBED_CSS;
+    // Appended last, so equal-specificity rules (`body`, `#inspector`) win over
+    // the artifact's own <style> earlier in the head without needing !important.
     doc.head.appendChild(style);
   }
 }
@@ -120,26 +170,15 @@ export function Architecture({
   const [data, setData] = useState<ToolsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [full, setFull] = useState(false);
+  // Expanded state only — Esc, the body scroll lock, focus containment and focus
+  // restore all belong to <ExpandableSection> (components/ui.tsx). This page used
+  // to carry its own copy of that overlay, stacked above the tooltip layer and
+  // restoring no focus on close; the shared primitive replaces it wholesale.
+  const [expanded, setExpanded] = useState(false);
   const [acting, setActing] = useState(false);
   const aliveRef = useRef(true);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const { theme, palette } = useTheme();
-
-  // Fullscreen overlay: Esc collapses, page scroll is locked while expanded.
-  useEffect(() => {
-    if (!full) return;
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setFull(false);
-    };
-    window.addEventListener('keydown', onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [full]);
 
   const syncTheme = useCallback((): void => {
     // Deferred one frame: this child effect runs BEFORE ThemeProvider's parent
@@ -221,10 +260,19 @@ export function Architecture({
   }, [projects, load]);
 
   return (
-    <div className="min-w-0 px-4 pt-6 pb-10 desk:px-10 desk:pt-[34px] desk:pb-[60px]">
-      <SectionTitle>architecture</SectionTitle>
+    // Fill route (`handle: { fill: true }`, src/main.tsx): the shell has stopped
+    // scrolling, so the page is the flex column that spends the leftover height —
+    // every fixed-height chunk is `shrink-0` and the map pane takes the rest. The
+    // bottom padding is a gap under the map, not the old document-page rhythm; at
+    // 60px the pane visibly "hung" above the edge instead of filling to it.
+    <div className="flex h-full min-h-0 min-w-0 flex-col px-4 pt-6 pb-4 desk:px-10 desk:pt-[34px] desk:pb-6">
+      {/* SectionTitle owns its margins and takes no className, so the shrink-0
+          flex item is a wrapper around it. */}
+      <div className="shrink-0">
+        <SectionTitle>architecture</SectionTitle>
+      </div>
       {error !== null && (
-        <div className="mb-2">
+        <div className="mb-2 shrink-0">
           <ErrorBox message={error} onRetry={load} />
         </div>
       )}
@@ -259,7 +307,9 @@ export function Architecture({
           )
         ) : (
           <>
-            <Card>
+            {/* The fragment is transparent to layout: this Card, the progress
+                panel and the map pane below are all flex items of the page root. */}
+            <Card className="shrink-0">
               <div className="flex flex-wrap items-center gap-3">
                 {!scoped && (
                   <select
@@ -306,13 +356,10 @@ export function Architecture({
                     </button>
                   )}
                   {project.hasMap && (
-                    <button
-                      type="button"
-                      onClick={() => setFull(true)}
-                      className="rounded-[9px] border border-line-strong bg-field px-2.5 py-[6px] font-mono text-[12px] text-ink transition-colors hover:border-ink-dim"
-                    >
-                      ⛶ fullscreen
-                    </button>
+                    <ExpandButton
+                      onClick={() => setExpanded(true)}
+                      expanded={expanded}
+                    />
                   )}
                 </span>
               </div>
@@ -323,7 +370,7 @@ export function Architecture({
               <ProvisionProgress provision={project.provision} />
             )}
             {project.provision?.state === 'failed' && (
-              <div className="mt-3">
+              <div className="mt-3 shrink-0">
                 <ErrorBox
                   message={`${project.provision.error !== '' ? project.provision.error : 'provision failed'} — press rebuild to retry, or run /architecture-map manually`}
                   onRetry={load}
@@ -331,9 +378,19 @@ export function Architecture({
               </div>
             )}
             {project.hasMap ? (
-              // The wrapper/iframe keep their tree position across the toggle —
-              // only classes change, so expanding never remounts (= reloads) the map.
-              <div className={full ? 'fixed inset-0 z-[60] bg-bg p-3 desk:p-4' : 'mt-3'}>
+              // The pane that spends the leftover height (flex-1/min-h-0 come from
+              // ExpandableSection's own collapsed class), and the same subtree in
+              // both states: expanding only swaps the wrapper's classes, so the
+              // iframe is never remounted and the map keeps its selected node,
+              // board scroll position and pushed theme instead of re-fetching.
+              // `key={project.id}` is the ONE thing that may remount it — switching
+              // projects is a different map.
+              <ExpandableSection
+                expanded={expanded}
+                onToggle={setExpanded}
+                label="architecture map"
+                className="mt-3"
+              >
                 <iframe
                   key={project.id}
                   ref={frameRef}
@@ -348,23 +405,16 @@ export function Architecture({
                   }
                   title="Architecture map"
                   onLoad={syncTheme}
-                  className={`w-full rounded-xl border border-line bg-surface ${
-                    full ? 'h-full' : 'h-[calc(100vh-180px)]'
-                  }`}
+                  // One class list for both states — the height comes from the
+                  // flex parent, never from the viewport. The previous height was
+                  // viewport math minus a hardcoded 180px for the chrome above it;
+                  // every guess that ran short overshot into a second scrollbar,
+                  // and no constant can be right in both shells at both breakpoints.
+                  className="h-full w-full rounded-xl border border-line bg-surface"
                 />
-                {full && (
-                  <button
-                    type="button"
-                    onClick={() => setFull(false)}
-                    aria-label="exit fullscreen"
-                    className="absolute top-5 right-6 rounded-[9px] border border-line-strong bg-surface px-2.5 py-[6px] font-mono text-[12px] text-ink shadow-lg transition-colors hover:border-ink-dim desk:top-6 desk:right-7"
-                  >
-                    ✕ close
-                  </button>
-                )}
-              </div>
+              </ExpandableSection>
             ) : project.provision === null || !ACTIVE_STATES.has(project.provision.state) ? (
-              <div className="mt-3">
+              <div className="mt-3 shrink-0">
                 <Empty>no map yet — press build map to generate it</Empty>
               </div>
             ) : null}

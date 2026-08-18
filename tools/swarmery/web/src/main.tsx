@@ -229,15 +229,19 @@ const router = createBrowserRouter([
             ),
           },
           { path: 'routines', element: <Routines /> },
-          { path: 'serena', element: <Serena /> },
-          { path: 'graphify', element: <Graphify /> },
-          { path: 'architecture', element: <Architecture /> },
+          // The fill handle below marks embedded pages: the shell stops
+          // scrolling and the page fills the leftover height, scrolling inside
+          // its own pane instead of under a second scrollbar (lib/fillRoute.ts).
+          // Document-shaped routes (Planning included) stay unmarked.
+          { path: 'serena', element: <Serena />, handle: { fill: true } },
+          { path: 'graphify', element: <Graphify />, handle: { fill: true } },
+          { path: 'architecture', element: <Architecture />, handle: { fill: true } },
           // Global settings (session mode): appearance + notifications +
           // auto-approve note + daemon/health. Project settings stays scoped at
           // /p/:slug/settings — do NOT add this to the project subtree.
           { path: 'settings', element: <Settings /> },
-          { path: 'docs', element: <Docs /> },
-          { path: 'docs/:slug', element: <Docs /> },
+          { path: 'docs', element: <Docs />, handle: { fill: true } },
+          { path: 'docs/:slug', element: <Docs />, handle: { fill: true } },
         ],
       },
       {
@@ -282,9 +286,10 @@ const router = createBrowserRouter([
           // System shell (tabs), project-scoped — the workspace "System" item.
           { path: 'system', element: ws(<SystemShell />) },
           { path: 'system/*', element: ws(<SystemShell />) },
-          { path: 'architecture', element: ws(<ScopedArchitecture />) },
-          { path: 'serena', element: ws(<ScopedSerena />) },
-          { path: 'graphify', element: ws(<ScopedGraphify />) },
+          // Fill mode, project-scoped — same contract as the global trio above.
+          { path: 'architecture', element: ws(<ScopedArchitecture />), handle: { fill: true } },
+          { path: 'serena', element: ws(<ScopedSerena />), handle: { fill: true } },
+          { path: 'graphify', element: ws(<ScopedGraphify />), handle: { fill: true } },
           { path: 'settings', element: ws(<ProjectSettings />) },
           { path: 'memory', element: ws(<Memory />) },
         ],
