@@ -42,7 +42,7 @@ import { fmtAgo } from '../lib/format';
 import { useSessionHref } from '../lib/sessionHref';
 import { useLiveUpdates } from '../lib/ws';
 import { useProjectWorkspace } from '../workspace/ProjectContext';
-import { Card, Empty, ErrorBox, Loading } from '../components/ui';
+import { Card, Empty, ErrorBox, ExpandableSection, Loading } from '../components/ui';
 import { Explain } from '../components/Explain';
 import { HowItWorks } from '../components/HowItWorks';
 import { QuestionCard } from './planning/QuestionCard';
@@ -85,6 +85,13 @@ export function PlanningMode(): JSX.Element {
   const [newPlanMode, setNewPlanMode] = useState(false);
   // 1s tick that drives the elapsed timer while the planner is thinking.
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // Per-SECTION expand, not per-page: this route deliberately carries no
+  // `handle.fill` (src/main.tsx) because the page is a vertical stack of cards
+  // and reads as a document. The two sections that can outgrow the viewport —
+  // a long option list and a raw planner reply — get their own fullscreen state
+  // instead, so the page keeps scrolling normally while either is collapsed.
+  const [interviewExpanded, setInterviewExpanded] = useState(false);
+  const [replyExpanded, setReplyExpanded] = useState(false);
 
   const aliveRef = useRef(true);
   const ideaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -425,8 +432,31 @@ export function PlanningMode(): JSX.Element {
   // the intake: revise sessions start from the Plans page, not from an idea box.
   const showIntake = !isRevise && !wizardOpen && (wstatus !== 'done' || newPlanMode);
 
-  /** Shared run header: pulse dot, started-ago, session link, History, cancel. */
-  const runHeader = (label: string, pulse: boolean): JSX.Element => (
+  /** The page's own `⛶ expand` trigger.
+   *
+   * Deliberately NOT <ExpandButton> from components/ui.tsx: that one is the
+   * embedded-page affordance (a filled `bg-field` control sized to sit alone in
+   * a toolbar), and next to this header's `History` / `cancel` buttons it reads
+   * as a different, heavier control. Same semantics as ExpandButton — decorative
+   * glyph hidden so the accessible name is just the word, aria-expanded on the
+   * trigger — in this page's header-button skin. */
+  const expandTrigger = (onClick: () => void, expanded: boolean): JSX.Element => (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={expanded}
+      className="rounded-lg border border-line px-3 py-1 font-mono text-[11px] text-ink-dim transition-colors hover:bg-surface2 hover:text-brand"
+    >
+      <span aria-hidden="true">⛶ </span>
+      expand
+    </button>
+  );
+
+  /** Shared run header: pulse dot, started-ago, session link, History, cancel.
+   *
+   * `trailing` opens the right-hand group to a section-specific control (the
+   * expand trigger) without giving every caller of this helper one. */
+  const runHeader = (label: string, pulse: boolean, trailing?: JSX.Element): JSX.Element => (
     <div className="flex flex-wrap items-center gap-2.5">
       <span
         className={`inline-block h-[7px] w-[7px] shrink-0 rounded-full bg-brand ${pulse ? 'animate-pulse' : ''}`}
@@ -445,6 +475,7 @@ export function PlanningMode(): JSX.Element {
         </Link>
       )}
       <div className="ml-auto flex items-center gap-2">
+        {trailing}
         {history.length > 0 && (
           <button
             type="button"
@@ -769,42 +800,107 @@ export function PlanningMode(): JSX.Element {
       {/* AWAITING — the two-pane wizard (structured question) */}
       {wstatus === 'awaiting_answer' && status?.currentQuestion != null && (
         <>
-          <Card>{runHeader('Planner is asking', false)}</Card>
-          <div className="mt-3 grid items-start gap-3 desk:grid-cols-3">
-            <div className="min-w-0 desk:col-span-2">
-              <QuestionCard
-                key={status.currentQuestion.id}
-                question={status.currentQuestion}
-                busy={busy}
-                onSubmit={submitAnswer}
-              />
+          <Card>
+            {runHeader(
+              'Planner is asking',
+              false,
+              expandTrigger(() => setInterviewExpanded(true), interviewExpanded),
+            )}
+          </Card>
+          {/* Expanding swaps CLASSES ONLY — same elements, same positions, same
+              `key`. QuestionCard owns the answer being typed (its selection and
+              the "Other" textarea are local state), so a wrapper that remounted
+              it would silently throw away the answer the moment the user asked
+              for more room to read the options. */}
+          <ExpandableSection
+            expanded={interviewExpanded}
+            onToggle={setInterviewExpanded}
+            label="planner interview"
+            className="mt-3"
+          >
+            <div
+              className={`grid gap-3 desk:grid-cols-3 ${
+                interviewExpanded
+                  ? // desk:grid-rows-1 is what makes the columns scroll: it pins
+                    // the single row to the container height (minmax(0,1fr)), so
+                    // each column is exactly as tall as the overlay and its own
+                    // overflow takes over. Without it the row is content-sized
+                    // and simply spills out of the fixed overlay. Below `desk`
+                    // the grid is one column of two stacked rows, where side-by-
+                    // side scrollers are meaningless — the grid scrolls instead.
+                    'min-h-0 flex-1 items-stretch overflow-y-auto desk:grid-rows-1 desk:overflow-hidden'
+                  : 'items-start'
+              }`}
+            >
+              <div
+                className={`min-w-0 desk:col-span-2 ${
+                  interviewExpanded ? 'desk:min-h-0 desk:overflow-y-auto' : ''
+                }`}
+              >
+                <QuestionCard
+                  key={status.currentQuestion.id}
+                  question={status.currentQuestion}
+                  busy={busy}
+                  onSubmit={submitAnswer}
+                />
+              </div>
+              {/* Sticky is a SCROLLING-PAGE affordance — it keeps the plan in
+                  view as the document scrolls past. Expanded there is no page
+                  scroll to stick against (body is locked); the column becomes
+                  its own scroller instead. */}
+              <div
+                className={`min-w-0 ${
+                  interviewExpanded
+                    ? 'desk:min-h-0 desk:overflow-y-auto'
+                    : 'desk:sticky desk:top-4'
+                }`}
+              >
+                <RunningPlanPanel
+                  plan={status.runningPlan}
+                  status={wstatus}
+                  busy={busy}
+                  onRefine={() => setRefineOpen(true)}
+                  onProceed={submitProceed}
+                />
+              </div>
             </div>
-            <div className="min-w-0 desk:sticky desk:top-4">
-              <RunningPlanPanel
-                plan={status.runningPlan}
-                status={wstatus}
-                busy={busy}
-                onRefine={() => setRefineOpen(true)}
-                onProceed={submitProceed}
-              />
-            </div>
-          </div>
+          </ExpandableSection>
         </>
       )}
 
       {/* AWAITING — raw-text fallback (reply failed the protocol parse) */}
       {wstatus === 'awaiting_answer' && status?.currentQuestion == null && (
         <Card>
-          {runHeader('Planner replied', false)}
-          <div className="mt-3">
+          {runHeader(
+            'Planner replied',
+            false,
+            expandTrigger(() => setReplyExpanded(true), replyExpanded),
+          )}
+          {/* Same wrapper-only rule as the interview above: the reply body and
+              the answer field keep their identity across the toggle, so a
+              half-typed reply survives a trip to fullscreen. */}
+          <ExpandableSection
+            expanded={replyExpanded}
+            onToggle={setReplyExpanded}
+            label="planner reply"
+            className="mt-3"
+          >
             <div className="mb-1.5 font-mono text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">
               planner
             </div>
-            <div className="max-h-72 overflow-y-auto rounded-lg border border-line bg-bg px-3 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-2">
+            {/* Collapsed the reply is one card in a scrolling page, so it is
+                capped and scrolls inside that cap. Expanded the cap is the
+                whole point of expanding — the body takes the leftover height
+                above the reply form instead. */}
+            <div
+              className={`overflow-y-auto rounded-lg border border-line bg-bg px-3 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-2 ${
+                replyExpanded ? 'min-h-0 flex-1' : 'max-h-72'
+              }`}
+            >
               {status?.rawReply ?? '(no reply text)'}
             </div>
             <form
-              className="mt-2 flex flex-wrap gap-2"
+              className="mt-2 flex shrink-0 flex-wrap gap-2"
               onSubmit={(e) => {
                 e.preventDefault();
                 submitRawAnswer();
@@ -826,7 +922,7 @@ export function PlanningMode(): JSX.Element {
                 reply
               </button>
             </form>
-          </div>
+          </ExpandableSection>
         </Card>
       )}
 

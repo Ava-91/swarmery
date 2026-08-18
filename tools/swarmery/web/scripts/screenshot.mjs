@@ -45,12 +45,74 @@ async function assertNoHorizontalScroll(page, path) {
   console.log(`✓ no horizontal scroll on ${path} (${scrollWidth} <= ${clientWidth})`);
 }
 
+// Fill-route invariant: on a page that owns its own scroll there must be exactly
+// ONE vertical scroller, and it must be deeper than the shell. Two things would
+// break that and both are invisible in a screenshot: the document growing past
+// the viewport (the whole app scrolls, header included), or the shell's own
+// container scrolling (the classic two-scrollbar bug). Neither <main> nor its
+// direct child may have scrollable overflow — anything further in is the page's
+// own pane, which is exactly where the scroll belongs.
+async function assertNoNestedVerticalScroll(page, path) {
+  const { docScrollHeight, docClientHeight, offenders } = await page.evaluate(() => {
+    const shellNodes = [...document.querySelectorAll('main, main > div')];
+    return {
+      docScrollHeight: document.documentElement.scrollHeight,
+      docClientHeight: document.documentElement.clientHeight,
+      offenders: shellNodes
+        .filter((el) => el.scrollHeight - el.clientHeight > 1)
+        .map((el) => `${el.tagName.toLowerCase()}.${el.className} (${el.scrollHeight}>${el.clientHeight})`),
+    };
+  });
+  if (docScrollHeight > docClientHeight) {
+    throw new Error(
+      `document scrolls on fill route ${path}: ${docScrollHeight} > ${docClientHeight}`,
+    );
+  }
+  if (offenders.length > 0) {
+    throw new Error(`shell container scrolls on fill route ${path}: ${offenders.join('; ')}`);
+  }
+  console.log(`✓ no nested vertical scroll on ${path} (${docScrollHeight} <= ${docClientHeight})`);
+}
+
+// The contract itself, not one of its side effects: on a fill route the shell
+// container hands the vertical scroll to the page. assertNoNestedVerticalScroll
+// above can pass on a short page even with fill mode reverted, so it needs a
+// companion that only passes when the shell actually stops scrolling.
+//
+// It targets [data-shell-scroller] rather than <main> on purpose: the two shells
+// hand off at different depths (global = <main>; workspace = a div inside a
+// <main> that is ALWAYS overflow-hidden), so a <main> query would pass
+// unconditionally on every /p/<slug>/… route and hide a real regression there.
+async function assertShellScroll(page, path, want) {
+  const overflowY = await page.evaluate(() => {
+    const box = document.querySelector('[data-shell-scroller]');
+    return box === null ? 'no-shell-scroller' : getComputedStyle(box).overflowY;
+  });
+  if (overflowY !== want) {
+    throw new Error(
+      `shell scroller on ${path}: expected overflow-y=${want}, got ${overflowY}`,
+    );
+  }
+  const what = want === 'hidden' ? 'hands off scroll' : 'keeps its scroller';
+  console.log(`✓ shell ${what} on ${path} (overflow-y=${overflowY})`);
+}
+
+// `fill: true` marks a route that declared `handle: { fill: true }` in
+// src/main.tsx, and asserts BOTH halves of that contract at the viewport the
+// call runs in: the shell hands the scroll over, and nothing between the
+// document and the page's own pane scrolls as a result. Riding on shot() rather
+// than living in a separate pass is deliberate — a fill route that gains a
+// screenshot gains its invariant automatically, so the two cannot drift apart.
 async function shot(page, path, name, opts = {}) {
   await page.goto(base + path);
   await settle(page);
   if (opts.waitMs) await page.waitForTimeout(opts.waitMs);
   await page.screenshot({ path: join(outDir, name), fullPage: opts.fullPage ?? false });
   await assertNoHorizontalScroll(page, path);
+  if (opts.fill === true) {
+    await assertShellScroll(page, path, 'hidden');
+    await assertNoNestedVerticalScroll(page, path);
+  }
   console.log(`✓ ${name}`);
 }
 
@@ -72,7 +134,10 @@ const mobile = await browser.newPage({
   deviceScaleFactor: 2,
 });
 await shot(mobile, '/', 'overview.png');
-await shot(mobile, '/docs', 'docs-mobile.png');
+// Fill mode has to hold at the owner's viewport too, not just on desktop: the
+// shells switch layout at `desk` and the mobile branch is the one a desktop-only
+// assertion would never cover.
+await shot(mobile, '/docs', 'docs-mobile.png', { fill: true });
 await shot(mobile, '/sessions', 'sessions.png');
 // Approvals (phase 2): pending cards + history, incl. the WS-injected request.
 await shot(mobile, '/approvals', 'approvals.png', { waitMs: APPROVALS_WAIT_MS });
@@ -99,7 +164,29 @@ await scrollTabPanel(desktop, 600);
 await desktop.screenshot({ path: join(outDir, 'session-detail-desktop.png') });
 await assertNoHorizontalScroll(desktop, '/sessions/1?tab=timeline');
 console.log('✓ session-detail-desktop.png');
-await shot(desktop, '/docs/neutrality', 'docs.png');
+await shot(desktop, '/docs/neutrality', 'docs.png', { fill: true });
+// The embedded pages. In mock mode their iframes point at `/api/...` paths the
+// mock layer does not serve, so the frame stays blank and each page may fall
+// back to its "nothing to embed" hint — that is fine and expected here. What is
+// under test is GEOMETRY, not content: fill mode is declared on the route
+// (src/main.tsx), so the shell hands the scroll over either way, and a page that
+// went back to viewport math would fail these assertions with an empty frame
+// just as loudly as with a loaded one.
+await shot(desktop, '/architecture', 'architecture-desktop.png', { fill: true });
+await shot(desktop, '/graphify', 'graphify-desktop.png', { fill: true });
+await shot(desktop, '/serena', 'serena-desktop.png', { fill: true });
+// The docs INDEX, the one fill route with no screenshot of its own at this
+// viewport (/docs/<slug> above is the article view). Asserted without one so
+// the index cannot regress unwatched.
+await desktop.goto(`${base}/docs`);
+await settle(desktop);
+await assertShellScroll(desktop, '/docs', 'hidden');
+await assertNoNestedVerticalScroll(desktop, '/docs');
+// Control: a non-fill route must keep its shell scroller, so the pair above is
+// discriminating rather than true everywhere.
+await desktop.goto(`${base}/sessions`);
+await settle(desktop);
+await assertShellScroll(desktop, '/sessions', 'auto');
 await desktop.close();
 
 await browser.close();
