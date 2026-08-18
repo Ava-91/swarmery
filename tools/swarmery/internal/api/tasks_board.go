@@ -265,6 +265,11 @@ type boardTaskDTO struct {
 	// and on what evidence. Computed per request by internal/staleness — a cached
 	// verdict would be stale exactly when it matters, since the state it reads
 	// changes outside the daemon. Empty when the task does not claim to be running.
+	// PlanExternalID is the external id of the WORKSPACE task this card's micro-plan
+	// became — the Plans-page entry for the same unit of work (phase 4). Null when
+	// the card has no micro-plan, or when wsingest has not indexed the dir yet: the
+	// chip appears once there is somewhere for it to link to, rather than dangling.
+	PlanExternalID  *string `json:"planExternalId"`
 	Staleness       string  `json:"staleness,omitempty"`
 	StalenessReason string  `json:"stalenessReason,omitempty"`
 	ColumnMovedAt   *string `json:"columnMovedAt"`
@@ -278,8 +283,13 @@ const boardTaskSelect = `
 	       t.dispatch_error, t.start_point, t.retry_count, t.verify_retry_count,
 	       t.verify_verdict, t.verify_detail, t.result_note,
 	       t.agent, t.origin, t.origin_session_id,
-	       t.column_moved_at, t.created_at
-	FROM tasks t JOIN projects p ON p.id = t.project_id`
+	       t.column_moved_at, t.created_at, w.external_id
+	FROM tasks t JOIN projects p ON p.id = t.project_id
+	-- The card's micro-plan, if it has one and wsingest has indexed it: the dir is
+	-- the join (tasks.workspace_dir), the 'plan' artifact is what points at it, and
+	-- LEFT so a card without one is unaffected.
+	LEFT JOIN task_artifacts ta ON ta.kind = 'plan' AND ta.path = t.workspace_dir || '/plan'
+	LEFT JOIN tasks w ON w.id = ta.task_id AND w.source = 'workspace'`
 
 func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 	var (
@@ -294,7 +304,7 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 		&d.DispatchError, &d.StartPoint, &d.RetryCount, &d.VerifyRetryCount,
 		&d.VerifyVerdict, &d.VerifyDetail, &d.ResultNote,
 		&d.Agent, &d.Origin, &d.OriginSessionID,
-		&d.ColumnMovedAt, &d.CreatedAt); err != nil {
+		&d.ColumnMovedAt, &d.CreatedAt, &d.PlanExternalID); err != nil {
 		return err
 	}
 	d.ExternalID = externalID.String

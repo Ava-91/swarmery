@@ -747,7 +747,20 @@ export function Plans(): JSX.Element {
                       : 'border-line bg-surface/40 hover:border-line-strong'
                   }`}
                 >
-                  <div className="truncate text-[13px] font-medium text-ink">{e.title}</div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{e.title}</div>
+                    {/* A micro-plan: this plan IS a dispatched board card, materialized so its
+                        outcome is evidence in a doc rather than a column someone dragged it to.
+                        The chip is what makes the two views of one unit of work navigable. */}
+                    {e.cardExternalId !== null && (
+                      <span
+                        data-tip={`board card ${e.cardExternalId}`}
+                        className="shrink-0 rounded border border-line px-1 py-px font-mono text-[9px] text-ink-dim"
+                      >
+                        card
+                      </span>
+                    )}
+                  </div>
                   <div className="mt-0.5 font-mono text-[10px] text-ink-faint">
                     {e.startedAt !== null ? e.startedAt.slice(0, 10) : e.externalId}
                     {' · '}

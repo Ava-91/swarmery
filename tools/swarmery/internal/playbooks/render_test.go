@@ -6,7 +6,7 @@ import (
 )
 
 func TestRender_AllVars(t *testing.T) {
-	body := "task={task_prompt} start={start_point} branch={branch} id={task_id} scope={file_scope} prev={previous_stage_output}"
+	body := "task={task_prompt} start={start_point} branch={branch} id={task_id} scope={file_scope} prev={previous_stage_output} doc={task_doc}"
 	got := Render(body, Vars{
 		TaskPrompt:          "DO THE THING",
 		StartPoint:          "main",
@@ -14,10 +14,22 @@ func TestRender_AllVars(t *testing.T) {
 		TaskID:              "T-abc",
 		FileScope:           "web/, api/",
 		PreviousStageOutput: "PLAN123",
+		TaskDoc:             "/ws/p/workspace/working/2026/08/17/card-t-abc/plan/phase-1-task.md",
 	})
-	want := "task=DO THE THING start=main branch=swarm/T-abc id=T-abc scope=web/, api/ prev=PLAN123"
+	want := "task=DO THE THING start=main branch=swarm/T-abc id=T-abc scope=web/, api/ prev=PLAN123 " +
+		"doc=/ws/p/workspace/working/2026/08/17/card-t-abc/plan/phase-1-task.md"
 	if got != want {
 		t.Fatalf("Render:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A card without a micro-plan is the documented normal case (the feature is off, or
+// minting failed and the run proceeded docless), so {task_doc} has to collapse to
+// "" rather than render a literal placeholder into a live dispatched prompt.
+func TestRender_EmptyTaskDocCollapses(t *testing.T) {
+	got := Render("doc[{task_doc}]end", Vars{})
+	if got != "doc[]end" {
+		t.Fatalf("empty task_doc render = %q, want %q", got, "doc[]end")
 	}
 }
 

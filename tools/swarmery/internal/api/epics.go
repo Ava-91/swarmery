@@ -147,6 +147,11 @@ type epicDTO struct {
 	// worked on this plan yet, which is a different statement from "we don't know",
 	// and until phase 3 the panel could only make the second one.
 	LinkedSessions []linkedSessionDTO `json:"linkedSessions"`
+	// CardExternalID is set when this plan is a MICRO-PLAN: the board card that
+	// materialized it at dispatch (phase 4). The two are one unit of work seen from
+	// two pages, and the chip is what makes that navigable instead of a coincidence
+	// of names.
+	CardExternalID *string `json:"cardExternalId"`
 }
 
 // linkedSessionDTO is one task_sessions row joined to its session, as the Plans
@@ -287,6 +292,12 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// Which of these plans are micro-plans, and of which card. Same posture.
+	microPlanCards, err := h.microPlanCardsByTask()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 
 	for i := range out {
 		out[i].PlanRun = planRuns[out[i].TaskID]
@@ -298,6 +309,9 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		out[i].Phases = phases
 		out[i].Rollup = rollup
 		out[i].Spec = buildEpicSpec(specCriteria[out[i].TaskID], covers)
+		if card, ok := microPlanCards[out[i].TaskID]; ok {
+			out[i].CardExternalID = &card
+		}
 		out[i].LinkedSessions = linkedSessions[out[i].TaskID]
 		if out[i].LinkedSessions == nil {
 			out[i].LinkedSessions = []linkedSessionDTO{} // [] not null: the UI maps over it
@@ -315,6 +329,37 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
 	}
 	writeJSON(w, out, nil)
+}
+
+// microPlanCardsByTask maps a workspace task id to the external id of the board
+// card whose dispatch materialized it — empty for every hand-written plan.
+//
+// Joined through tasks.workspace_dir rather than a foreign key because that column
+// holds the dir, which is the durable identity: a workspace task row is re-derived
+// from the tree, so an id cached at mint time would go stale on the first rename.
+func (h *Handler) microPlanCardsByTask() (map[int64]string, error) {
+	rows, err := h.DB.Query(`
+		SELECT ta.task_id, c.external_id
+		  FROM tasks c
+		  JOIN task_artifacts ta ON ta.kind = 'plan' AND ta.path = c.workspace_dir || '/plan'
+		 WHERE c.source = 'queue' AND c.workspace_dir IS NOT NULL AND c.workspace_dir <> ''
+		   AND c.external_id IS NOT NULL AND c.external_id <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var (
+			taskID int64
+			extID  string
+		)
+		if err := rows.Scan(&taskID, &extID); err != nil {
+			return nil, err
+		}
+		out[taskID] = extID
+	}
+	return out, rows.Err()
 }
 
 // linkedSessionsByTask loads every workspace task's linked sessions, keyed by task

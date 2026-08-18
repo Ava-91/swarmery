@@ -18,6 +18,13 @@ var knownVars = map[string]bool{
 	"task_id":               true,
 	"file_scope":            true,
 	"previous_stage_output": true,
+	// {task_doc} is the absolute path of the card's micro-plan phase doc, or ""
+	// when the card has none (micro-plans disabled, or a mint that failed —
+	// non-fatal by design). A playbook that references it therefore has to read
+	// as sense when it renders empty, which is why the built-in execution
+	// contract appends its tick+report paragraph CONDITIONALLY rather than
+	// inlining the placeholder.
+	"task_doc": true,
 }
 
 // stageHeaderPrefix marks a stage section. A line whose trimmed form starts with

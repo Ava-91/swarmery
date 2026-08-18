@@ -1371,6 +1371,14 @@ export interface BoardTask {
   /** Session a captured card was minted from; null for manual cards. */
   originSessionId: number | null;
   /**
+   * External id of the WORKSPACE task this card's micro-plan became — the Plans
+   * page entry for the same unit of work. A dispatched card materializes a
+   * single-phase plan so its outcome is evidence in a doc (ticked checkboxes, a
+   * Completion Report) instead of the column someone dragged it to. Null when the
+   * card has no micro-plan, or before the scanner has indexed the dir.
+   */
+  planExternalId: string | null;
+  /**
    * Derived server-side on every request, never stored: whether a task that
    * claims to be running actually is, and the evidence behind that verdict.
    * OMITTED (not null) when there is no hint to give — absence is the signal —
@@ -2914,6 +2922,9 @@ export interface Epic {
    * run-plan skill). Null until the plan has ever been run. Distinct from the
    * per-phase EpicPhase.runState — a plan run never stamps individual phases. */
   planRun: PlanRun | null;
+  /** Set when this plan is a MICRO-PLAN: the external id of the board card whose
+   * dispatch materialized it. The two are one unit of work seen from two pages. */
+  cardExternalId: string | null;
   /** Every session task_sessions attaches to this plan: the daemon's own runs
    * (explicit) and the interactive sessions inferred from the plan files they
    * edited (heuristic). Never null — [] means nothing has worked on this plan,

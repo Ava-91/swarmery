@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/playbooks"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskdir"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
@@ -71,6 +73,13 @@ type Service struct {
 	ProcAlive func(pid int) bool
 	// adoptPoll overrides runcore.AdoptPollInterval when > 0 (tests shrink it).
 	adoptPoll time.Duration
+
+	// WorkspaceRoot is the workspace tree a dispatched card materializes its
+	// micro-plan into (wsingest.Root() — the daemon wires the same value both
+	// packages use, so the writer and the scanner can never disagree about paths).
+	// "" disables minting, as does SWARMERY_MICRO_PLANS=0: the run then proceeds
+	// docless, exactly as it did before micro-plans existed.
+	WorkspaceRoot string
 
 	// Slots is the DAEMON-WIDE run registry and budget (internal/runcore): the
 	// same-task single-flight gate, the input to MaxConcurrent, and — new — one
@@ -319,6 +328,7 @@ func (s *Service) Schedule() {
 type candidate struct {
 	ID           int64
 	ExternalID   string
+	Title        string // the card's title — the micro-plan's headings and table cell
 	ProjectID    int64
 	ProjectSlug  string
 	ProjectPath  string // repo root for worktree.Acquire
@@ -338,7 +348,7 @@ type candidate struct {
 // then id, with per-candidate dependency satisfaction resolved in-memory.
 func (s *Service) candidates() ([]candidate, error) {
 	rows, err := s.DB.Query(`
-		SELECT t.id, COALESCE(t.external_id,''), t.project_id, p.slug, p.path,
+		SELECT t.id, COALESCE(t.external_id,''), COALESCE(t.title,''), t.project_id, p.slug, p.path,
 		       t.prompt, t.model, t.agent, t.playbook, t.priority, t.created_at, t.file_scope, t.dependencies
 		  FROM tasks t JOIN projects p ON p.id = t.project_id
 		 WHERE t.source='queue' AND t.board_column='todo'
@@ -352,7 +362,7 @@ func (s *Service) candidates() ([]candidate, error) {
 	for rows.Next() {
 		var c candidate
 		var scopeJSON, depsJSON string
-		if err := rows.Scan(&c.ID, &c.ExternalID, &c.ProjectID, &c.ProjectSlug,
+		if err := rows.Scan(&c.ID, &c.ExternalID, &c.Title, &c.ProjectID, &c.ProjectSlug,
 			&c.ProjectPath, &c.Prompt, &c.Model, &c.Agent, &c.Playbook, &c.Priority, &c.CreatedAt,
 			&scopeJSON, &depsJSON); err != nil {
 			return nil, err
@@ -627,6 +637,13 @@ func (s *Service) admit(c candidate) bool {
 		log.Printf("error: dispatch: record dispatch session uuid (task %d): %v", c.ID, err)
 	}
 
+	// Materialize the card's micro-plan (execution-engine unification phase 4): a
+	// single-phase plan dir in the workspace, so this card's outcome is evidence in a
+	// doc rather than the column someone dragged it to. Non-fatal by construction —
+	// a docless run is the pre-micro-plan behaviour, and refusing to run work because
+	// a markdown file could not be written would be the worse trade.
+	taskDoc := s.mintMicroPlan(c)
+
 	s.notify(c.ID)
 
 	// Resolve the playbook (fusion phase 13): NULL ⇒ an auto-profile picks one and
@@ -639,8 +656,80 @@ func (s *Service) admit(c candidate) bool {
 	pb := s.resolvePlaybook(c)
 
 	// Spawn the run. The goroutine owns exit handling + slot release.
-	s.spawn(func() { s.runPlaybook(c, acq, pb, uuid) })
+	s.spawn(func() { s.runPlaybook(c, acq, pb, uuid, taskDoc) })
 	return true
+}
+
+// linkMicroPlanSession links a dispatched run's session to the WORKSPACE task row
+// wsingest created from the card's micro-plan dir.
+//
+// Resolved by path (tasks.workspace_dir → task_artifacts.path of kind 'plan'),
+// because the dir is the durable identity and the row is not: wsingest re-derives
+// the row from the tree, so caching an id here would go stale on the first rename.
+// A missing row is the normal case at the first stage exit — wsingest may not have
+// scanned yet — and is silently skipped.
+func (s *Service) linkMicroPlanSession(taskID int64, uuid string) {
+	var wsTaskID int64
+	err := s.DB.QueryRow(`
+		SELECT ta.task_id
+		  FROM tasks c
+		  JOIN task_artifacts ta ON ta.kind='plan' AND ta.path = c.workspace_dir || '/plan'
+		  JOIN tasks w ON w.id = ta.task_id AND w.source='workspace'
+		 WHERE c.id = ? AND c.workspace_dir IS NOT NULL AND c.workspace_dir <> ''`,
+		taskID).Scan(&wsTaskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return // no micro-plan, or wsingest has not indexed it yet
+	}
+	if err != nil {
+		log.Printf("error: dispatch: resolve micro-plan task (card %d): %v", taskID, err)
+		return
+	}
+	runcore.LinkSession(s.DB, Engine, wsTaskID, uuid)
+}
+
+// microPlansEnv is the escape hatch: SWARMERY_MICRO_PLANS=0 (or false/off) makes a
+// dispatched card behave exactly as it did before micro-plans — no dir, no doc, no
+// paragraph in the contract.
+const microPlansEnv = "SWARMERY_MICRO_PLANS"
+
+// microPlansEnabled reports whether dispatched cards materialize micro-plans.
+// Default ON: the honesty contract is the point of the feature, and an operator who
+// wants the old behaviour has to ask for it.
+func microPlansEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(microPlansEnv))) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
+// mintMicroPlan writes the card's micro-plan and returns its phase-doc path, or ""
+// when there is none (feature off, no workspace root wired, or a mint that failed).
+//
+// The dir is recorded on tasks.workspace_dir — the join between the card and the
+// plan it materialized. No workspace task ROW is written here: wsingest discovers
+// the dir on its next pass and stays the only writer of those rows, so there is one
+// path from a dir to a row and no way for the two to disagree.
+func (s *Service) mintMicroPlan(c candidate) string {
+	if s.WorkspaceRoot == "" || !microPlansEnabled() {
+		return ""
+	}
+	dir, err := taskdir.MintMicroPlan(s.WorkspaceRoot, c.ProjectSlug, taskdir.Card{
+		ExternalID: c.ExternalID,
+		Title:      c.Title,
+		Prompt:     c.Prompt,
+		RepoPath:   c.ProjectPath,
+	}, s.clock())
+	if err != nil {
+		// Logged, not surfaced on the card: the run is about to happen either way, and
+		// a dispatch_error here would read as "your task failed" over a task that ran.
+		log.Printf("warning: dispatch: task=%d micro-plan mint failed: %v", c.ID, err)
+		return ""
+	}
+	if _, err := s.DB.Exec(`UPDATE tasks SET workspace_dir=? WHERE id=?`, dir, c.ID); err != nil {
+		log.Printf("error: dispatch: record workspace_dir (task %d): %v", c.ID, err)
+	}
+	return taskdir.PhaseDocPath(dir)
 }
 
 // resolvedStage is one stage's rendered prompt plus its name (for a stage-fail
@@ -765,7 +854,7 @@ func (s *Service) failAdmission(id int64, msg string) {
 // A single-stage playbook (the default) walks this loop exactly once, so its
 // behavior is byte-for-byte the pre-playbook runAndHandle: link → sentinel →
 // exit-code routing → pokeVerify.
-func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPlaybook, firstUUID string) {
+func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPlaybook, firstUUID, taskDoc string) {
 	defer s.clearActive(c.ID)
 
 	stages := pb.stages
@@ -798,8 +887,9 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPla
 			TaskID:              c.ExternalID,
 			FileScope:           scopeText(c.FileScope),
 			PreviousStageOutput: prevOutput,
+			TaskDoc:             taskDoc,
 		}
-		prompt := BuildStagePrompt(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, c.FileScope)
+		prompt := BuildStagePromptDoc(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, taskDoc, c.FileScope)
 		// Model precedence, most specific first: the card's own override, then the
 		// recipe's declared model, then the global default. The middle step is what
 		// makes the `model:` frontmatter knob real — it parsed and rendered as a UI
@@ -834,6 +924,13 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPla
 		// stage sessions land in task_sessions; the primary session_id sticks to
 		// the first that ingests).
 		s.linkSession(c.ID, uuid)
+		// And to the card's MICRO-PLAN, which is a different task row: the Plans page
+		// reads task_sessions for the workspace task, so without this second link the
+		// micro-plan renders with no session that ever ran it — the same blindness
+		// phase 3 fixed for phase and plan runs. Parks silently until wsingest has
+		// ingested the dir; every later stage exit retries, and wsingest's own
+		// reconcile pass converges the rest.
+		s.linkMicroPlanSession(c.ID, uuid)
 
 		// Sentinel classification runs FIRST on any stage exit — an honest BLOCKED /
 		// PREMISE-STALE / NO-OP reply is authoritative regardless of exit code and
