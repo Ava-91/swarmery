@@ -131,7 +131,13 @@ export function TerminalDock({
   const view = dockView(state);
   if (!view.mount) return null;
 
-  const effHeight = fullscreen ? Math.max(height, MAX_HEIGHT) : height;
+  // Clamp against the viewport too: the shell roots are `h-dvh overflow-hidden`
+  // (App.tsx / workspace/WorkspaceShell.tsx), so a dock taller than the window
+  // would push the StatusBar — which carries the toggle that closes it — out of
+  // a frame that no longer scrolls. 75vh is the bound fullscreen already uses.
+  const effHeight = fullscreen
+    ? Math.max(height, MAX_HEIGHT)
+    : Math.min(height, Math.round(window.innerHeight * 0.75));
 
   return (
     <div

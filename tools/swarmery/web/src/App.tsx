@@ -245,7 +245,10 @@ function AppShell(): JSX.Element {
 
   return (
     <NotifyPrefsContext.Provider value={{ prefs: notifyPrefs, setPrefs: setNotifyPrefs }}>
-    <div className="app-shell flex h-dvh flex-col">
+    {/* overflow-hidden: this shell IS the viewport, so the document itself must
+        never scroll — the scroller is <main> below (or the page, on fill routes).
+        Same guard as workspace/WorkspaceShell.tsx. */}
+    <div className="app-shell flex h-dvh flex-col overflow-hidden">
       {/* Full-width top header: wordmark, scope filter, search/filters, status. */}
       <header className="header-hairline relative z-20 flex h-14 shrink-0 items-center gap-4 bg-bg px-4 desk:px-6">
         {/* Fixed-width block on desktop (24px pad + 208px + 16px gap = 248px) so
@@ -378,7 +381,7 @@ function AppShell(): JSX.Element {
           // modes. The two shells hand off scroll at different depths (here it is
           // <main>, in the workspace shell it is a div inside it), so the
           // screenshot harness needs one selector that finds the right node in
-          // either — see assertShellHandsOffScroll in scripts/screenshot.mjs.
+          // either — see assertShellScroll in scripts/screenshot.mjs.
           data-shell-scroller=""
           className={
             fill
