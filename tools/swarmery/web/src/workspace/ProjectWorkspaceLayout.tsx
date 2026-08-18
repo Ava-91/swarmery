@@ -14,6 +14,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { fetchTools } from '../api';
+import { useFillRoute } from '../lib/fillRoute';
 import { useScope } from '../lib/scope';
 import {
   TerminalDock,
@@ -110,6 +111,9 @@ function WorkspaceInner(): JSX.Element {
   const { projects } = useScope();
   const { pathname } = useLocation();
   const board = useBoard(projectId);
+  // Does the active route own its vertical scroll? Declared on the route itself
+  // (main.tsx `handle: { fill: true }`), never matched on the pathname here.
+  const fill = useFillRoute();
 
   // Tool nav gating: this project has serena / graphify provisioned? Poll the
   // same /api/tools feed the global sidebar uses (60s), matched by slug.
@@ -213,7 +217,16 @@ function WorkspaceInner(): JSX.Element {
                 <WorkspaceLink key={item.path} slug={slug} item={item} compact />
               ))}
             </div>
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            {/* Fill routes (lib/fillRoute.ts) own their own scroll — this
+                container hands it over. Every other route keeps the
+                byte-identical scroller it has always had. */}
+            <div
+              className={
+                fill
+                  ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
+                  : 'flex min-h-0 flex-1 flex-col overflow-y-auto'
+              }
+            >
               <Outlet />
             </div>
           </main>

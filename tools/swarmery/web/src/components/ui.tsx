@@ -2,7 +2,7 @@
 // language: JetBrains Mono uppercase eyebrows, hairline pill status chips,
 // warm near-black hairline cards).
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import type { SessionStatus } from '../api/types';
 import { fmtSpan } from '../lib/format';
 
@@ -224,6 +224,109 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ----- expandable section — fullscreen without remounting the children -----
+ * Embedded pages (architecture map, graphify viz, serena panes, docs) hand this
+ * wrapper a HEAVY child — an iframe or a canvas that carries state the user is
+ * mid-way through: pan/zoom, scroll position, a loaded document, a graph
+ * layout. So expanding has to be a class change and nothing else.
+ *
+ * INVARIANT: `children` render from ONE subtree in both states. No conditional
+ * render of the children, no `key` that varies with `expanded`, no portal.
+ * Move them into a branch and React unmounts the old tree, which reloads every
+ * iframe and throws away exactly the state that was being looked at — the same
+ * wrapper-only rule pages/Architecture.tsx relies on so its fullscreen map does
+ * not re-fetch. The close button is a SIBLING placed after the children, so it
+ * never shifts their position in the tree. */
+
+/** Trigger styling for the expand affordance, exported so a page that needs its
+ * own label/placement still matches every other embedded page. */
+export const EXPAND_BUTTON_CLASS =
+  'rounded-[9px] border border-line-strong bg-field px-2.5 py-[6px] font-mono text-[12px] text-ink transition-colors hover:border-ink-dim';
+
+/** The standard `⛶ expand` trigger — one glyph and one word, everywhere. */
+export function ExpandButton({
+  onClick,
+  label = 'expand',
+}: {
+  onClick: () => void;
+  /** Overrides the word after the glyph (the aria-label follows it). */
+  label?: string;
+}): JSX.Element {
+  return (
+    <button type="button" onClick={onClick} aria-label={label} className={EXPAND_BUTTON_CLASS}>
+      ⛶ {label}
+    </button>
+  );
+}
+
+export function ExpandableSection({
+  expanded,
+  onToggle,
+  label,
+  children,
+  className,
+}: {
+  expanded: boolean;
+  onToggle: (next: boolean) => void;
+  /** Names the overlay for screen readers while expanded (aria-label). */
+  label: string;
+  children: ReactNode;
+  /** Extra classes for the collapsed wrapper; the overlay owns its own box. */
+  className?: string;
+}): JSX.Element {
+  // onToggle may change identity on every render (callers pass inline arrows);
+  // call the latest one without re-running the effect below, which would
+  // re-capture the focus anchor and re-read the body overflow it must restore.
+  const toggleRef = useRef(onToggle);
+  toggleRef.current = onToggle;
+
+  // While expanded: Esc collapses, the page behind is scroll-locked, and the
+  // element that opened the overlay takes the focus back on collapse so
+  // keyboard navigation resumes where it left off instead of at the document
+  // top. Lifted from pages/Architecture.tsx — one copy lives here now.
+  useEffect(() => {
+    if (!expanded) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') toggleRef.current(false);
+    };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+      opener?.focus();
+    };
+  }, [expanded]);
+
+  const collapsedClass =
+    className === undefined
+      ? 'flex min-h-0 flex-1 flex-col'
+      : `flex min-h-0 flex-1 flex-col ${className}`;
+
+  return (
+    <div
+      className={expanded ? 'fixed inset-0 z-[45] flex flex-col bg-bg p-3 desk:p-4' : collapsedClass}
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded ? true : undefined}
+      aria-label={expanded ? label : undefined}
+    >
+      {children}
+      {expanded && (
+        <button
+          type="button"
+          onClick={() => onToggle(false)}
+          aria-label={`collapse ${label}`}
+          className="absolute top-5 right-6 rounded-[9px] border border-line-strong bg-surface px-2.5 py-[6px] font-mono text-[12px] text-ink shadow-lg transition-colors hover:border-ink-dim desk:top-6 desk:right-7"
+        >
+          ✕ close
+        </button>
+      )}
     </div>
   );
 }
