@@ -248,7 +248,16 @@ export function ConfirmDialog({
  * below, workspace/NewTaskModal.tsx) and below tooltips at z-[60]
  * (components/Tooltip.tsx). A fill route never has a z-40 modal open at the
  * same time, so 45 only has to clear the header; it is deliberately under 50 so
- * a real dialog can still be raised over an expanded section. */
+ * a real dialog can still be raised over an expanded section.
+ *
+ * That last case is NOT wired up yet, and the `defaultPrevented` guards below
+ * are what it will hang on: no z-50 dialog in this app claims Escape today
+ * (ConfirmDialog above and workspace/NewTaskModal.tsx close on a button or the
+ * backdrop, neither attaches a keydown listener), and no current consumer of
+ * this component raises one while expanded — so the guard is currently dead
+ * code kept for the day one does. Whoever opens the first dialog over an
+ * expanded section must give it an Escape handler that calls preventDefault(),
+ * or Esc will collapse the section UNDER the dialog instead of closing it. */
 
 /** Trigger styling for the expand affordance, exported so a page that needs its
  * own label/placement still matches every other embedded page. */
