@@ -131,6 +131,15 @@ func TestDocFromCell(t *testing.T) {
 		{"no doc here", ""},
 		{"", ""},
 		{"`some/path/phase-9.md`", "phase-9.md"}, // basename only
+		// A planner writes the Doc cell as a clickable link. One token, ending in
+		// ")" — the bare-token scan never saw it, so every row was dropped and the
+		// table degraded to the no-DAG fallback.
+		{"[phase-1-fill-primitive.md](./phase-1-fill-primitive.md)", "phase-1-fill-primitive.md"},
+		{"[phase-2](phase-2-architecture.md)", "phase-2-architecture.md"},
+		{"[doc](../2026/08/18/x/plan/phase-3-a.md)", "phase-3-a.md"},
+		{"[phase-4](./phase-4-docs.md#agent-prompt)", "phase-4-docs.md"},
+		// Backticks still win over a link when a cell carries both.
+		{"`phase-5-real.md` [phase-5-label.md](./phase-5-other.md)", "phase-5-real.md"},
 	}
 	for _, c := range cases {
 		if got := docFromCell(c.in); got != c.want {
