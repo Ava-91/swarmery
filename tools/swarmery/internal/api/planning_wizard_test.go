@@ -90,10 +90,11 @@ func TestWizardGET_DTOFieldNames(t *testing.T) {
 	}
 
 	// The FROZEN field-name contract — phase 3 mirrors these in TypeScript
-	// (mode/reviseTaskId: plan-revision phase 4 does the same).
-	want := []string{"active", "currentQuestion", "history", "mode", "planDir",
-		"rawReply", "reviseTaskId", "runningPlan", "sessionId", "sessionUuid",
-		"startedAt", "status"}
+	// (mode/reviseTaskId: plan-revision phase 4 does the same; lastError carries
+	// the reason a rolled-back action gives the operator).
+	want := []string{"active", "currentQuestion", "history", "lastError", "mode",
+		"planDir", "rawReply", "reviseTaskId", "runningPlan", "sessionId",
+		"sessionUuid", "startedAt", "status"}
 	var keys []string
 	for k := range got {
 		keys = append(keys, k)

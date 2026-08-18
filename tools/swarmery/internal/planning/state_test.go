@@ -520,18 +520,125 @@ func TestRevertToAwaiting(t *testing.T) {
 	db := testDB(t)
 	insertWizardRow(t, db, "uuid-revert", StatusGenerating)
 	s := newInlineService(t, db, &stubRunner{})
-	s.RevertToAwaiting("uuid-revert")
+	s.RevertToAwaiting("uuid-revert", "resume died")
 	status, _, _, _ := wizardState(t, db, "uuid-revert")
 	if status != StatusAwaiting {
 		t.Errorf("status = %q, want awaiting_answer after revert", status)
 	}
 	// Terminal states are never revived.
 	db.Exec(`UPDATE planning_sessions SET status='done' WHERE session_uuid='uuid-revert'`)
-	s.RevertToAwaiting("uuid-revert")
+	s.RevertToAwaiting("uuid-revert", "resume died")
 	status, _, _, _ = wizardState(t, db, "uuid-revert")
 	if status != StatusDone {
 		t.Errorf("status = %q, want done (revert must not touch terminal states)", status)
 	}
+}
+
+// ── last_error: why the wizard is answerable again ──
+
+// THE regression this column exists for: a failed resume rolls the wizard back
+// to awaiting_answer with the SAME question, which is byte-identical to the
+// planner asking again. Without a stamped reason the operator re-answers forever
+// (observed: a resume that could not find the transcript, 56 min of looping).
+func TestRevertToAwaiting_StampsReasonAndSnapshotSurfacesIt(t *testing.T) {
+	db := testDB(t)
+	s, uuid := answeredFixture(t, db)
+	if _, _, err := s.Answer(1, "q-scope", []string{"opt-a"}, ""); err != nil {
+		t.Fatalf("Answer: %v", err)
+	}
+
+	s.RevertToAwaiting(uuid, "the planner run failed (exit status 1)")
+
+	st, err := s.WizardSnapshot(1)
+	if err != nil {
+		t.Fatalf("WizardSnapshot: %v", err)
+	}
+	if st.Status != StatusAwaiting {
+		t.Fatalf("status = %q, want awaiting_answer", st.Status)
+	}
+	if st.LastError == nil || !strings.Contains(*st.LastError, "exit status 1") {
+		t.Fatalf("lastError = %v, want the rollback reason", st.LastError)
+	}
+	// The question is unchanged — which is exactly why the reason must be there.
+	if st.CurrentQuestion == nil || st.CurrentQuestion.ID != "q-scope" {
+		t.Errorf("currentQuestion = %+v, want the same q-scope question", st.CurrentQuestion)
+	}
+}
+
+// A rollback with no reason still stamps something: an unexplained revert is the
+// silent state this column was added to make impossible.
+func TestRevertToAwaiting_BlankReasonStillExplains(t *testing.T) {
+	db := testDB(t)
+	insertWizardRow(t, db, "uuid-blank-reason", StatusGenerating)
+	s := newInlineService(t, db, &stubRunner{})
+
+	s.RevertToAwaiting("uuid-blank-reason", "   ")
+
+	st, err := s.WizardSnapshot(1)
+	if err != nil {
+		t.Fatalf("WizardSnapshot: %v", err)
+	}
+	if st.LastError == nil || *st.LastError == "" {
+		t.Fatalf("lastError = %v, want a non-empty fallback reason", st.LastError)
+	}
+}
+
+// The banner describes the LAST attempt, so the next action must clear it — the
+// operator's retry, not its outcome, is what makes the old failure history.
+func TestLastErrorClearedByNextAction(t *testing.T) {
+	db := testDB(t)
+	s, uuid := answeredFixture(t, db)
+	if _, _, err := s.Answer(1, "q-scope", []string{"opt-a"}, ""); err != nil {
+		t.Fatalf("Answer: %v", err)
+	}
+	s.RevertToAwaiting(uuid, "the planner run failed (exit status 1)")
+
+	if _, _, err := s.Answer(1, "q-scope", []string{"opt-a"}, ""); err != nil {
+		t.Fatalf("retry Answer: %v", err)
+	}
+	st, err := s.WizardSnapshot(1)
+	if err != nil {
+		t.Fatalf("WizardSnapshot: %v", err)
+	}
+	if st.LastError != nil {
+		t.Errorf("lastError = %q, want null once the retry started", *st.LastError)
+	}
+}
+
+// A fresh question landing while a stale failure is stamped clears it too: the
+// planner answered, so the banner is history no matter which path got us here.
+func TestLastErrorClearedByNewQuestion(t *testing.T) {
+	db := testDB(t)
+	s, uuid := answeredFixture(t, db)
+	if _, _, err := s.Answer(1, "q-scope", []string{"opt-a"}, ""); err != nil {
+		t.Fatalf("Answer: %v", err)
+	}
+	s.RevertToAwaiting(uuid, "the planner run failed (exit status 1)")
+
+	s.applyQuestionTurn(mustWizardRow(t, s, uuid), ParsedTurn{
+		Question: &PlanningQuestion{ID: "q-next", Type: "single_select", Question: "next?"},
+	})
+
+	st, err := s.WizardSnapshot(1)
+	if err != nil {
+		t.Fatalf("WizardSnapshot: %v", err)
+	}
+	if st.LastError != nil {
+		t.Errorf("lastError = %q, want null once a new question landed", *st.LastError)
+	}
+	if st.CurrentQuestion == nil || st.CurrentQuestion.ID != "q-next" {
+		t.Errorf("currentQuestion = %+v, want q-next", st.CurrentQuestion)
+	}
+}
+
+// mustWizardRow loads the row the apply* helpers take.
+func mustWizardRow(t *testing.T, s *Service, uuid string) *wizardRow {
+	t.Helper()
+	row, err := s.wizardByUUID(uuid)
+	if err != nil || row == nil {
+		t.Fatalf("wizardByUUID(%q) = %v, %v", uuid, row, err)
+	}
+	return row
 }
 
 // A stale resume's failure (cancel + start a new idea while a 15-min resume is
@@ -542,7 +649,7 @@ func TestRevertToAwaiting_StaleUUIDDoesNotTouchNewerWizard(t *testing.T) {
 	insertWizardRow(t, db, "uuid-newer", StatusGenerating)       // the new wizard
 	s := newInlineService(t, db, &stubRunner{})
 
-	s.RevertToAwaiting("uuid-stale-resume")
+	s.RevertToAwaiting("uuid-stale-resume", "resume died")
 
 	if st, _, _, _ := wizardState(t, db, "uuid-stale-resume"); st != StatusCancelled {
 		t.Errorf("stale row status = %q, want cancelled (terminal, never revived)", st)

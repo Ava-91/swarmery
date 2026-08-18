@@ -490,6 +490,25 @@ export function PlanningMode(): JSX.Element {
         </div>
       )}
 
+      {/* LAST ERROR — the reply that never reached the planner. The wizard is
+          back on the SAME question in that case, which without this banner reads
+          as the planner repeating itself, so the operator re-answers in a loop.
+          Cleared server-side the moment the next action starts. */}
+      {status?.lastError != null && (
+        <div
+          className="mt-3 flex flex-wrap items-start gap-2 rounded-lg border border-red/30 bg-red/5 px-3 py-2"
+          role="alert"
+        >
+          <span className="rounded border border-red/40 bg-red/10 px-1.5 py-px font-mono text-[9.5px] text-red">
+            not delivered
+          </span>
+          <span className="min-w-0 text-[12.5px] leading-relaxed text-ink-2">
+            Your last reply did not reach the planner: {status.lastError}. The question below is the
+            same one — answering it again is the retry.
+          </span>
+        </div>
+      )}
+
       {/* REVISE banner — above whatever card the wizard state renders, so at
           every step the operator knows this interview edits nothing directly. */}
       {isRevise && (

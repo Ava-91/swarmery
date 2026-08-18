@@ -35,6 +35,7 @@ Vocabulary: the top-level plan unit is a **Phase** (`phase-N-<slug>.md`); inside
   - Implementation Details include code snippets and interfaces sufficient for an executor to act without additional research
   - Every Copy-paste Agent Prompt is self-contained: repo path + branch, "read first" file list, numbered tasks, verification commands, a TICK CONTRACT paragraph (absolute path of the phase doc + flip satisfied `- [ ]` checkboxes immediately after each task's verification passes, never batched), report-back instructions
   - Acceptance Criteria are measurable ("npm run typecheck passes" not "code is correct")
+  - **One dispatch = at least one tickable checkbox.** If the phase's agent prompt scopes a single run to a step/subset ("Step N of M" / "КРОК N" pattern), the criteria list MUST carry one checkbox per step in dispatch order; whole-phase aggregate criteria ("all 6 modules ported") are allowed only after them, as final gates. A criteria list where the first successful dispatch can tick nothing is a plan defect: the platform renders a 0-ticked run as "no progress"/noop and a healthy executor looks failed.
   - Every file reference uses exact paths (not "the service file")
 - Stop conditions: All plan files written. If maxTurns exhausted, write README.md first, then phase files, and flag partial. If plan rejected by tech-lead (Phase 3.6), incorporate feedback and re-emit (max 2 iterations).
 - Out of scope: Implementing code, running tests, tasks >1 week (use @implementation-planner), Phase 3.6 pre-mortem (owned by @tech-lead).
@@ -169,6 +170,7 @@ Context compaction: if context exceeds 60% window during planning, write README.
 - Do not name new plan docs `step-NN-*.md` -- the top-level unit is a Phase (`phase-N-<slug>.md`); a phase's Steps live inside it as acceptance-criteria checkboxes (`step-` files are legacy read-compat only)
 - Do not create phases >4 hours -- break down further
 - Do not skip Acceptance Criteria -- every phase needs measurable Steps
+- Do not write only whole-phase aggregate criteria when the agent prompt scopes runs to steps -- each dispatchable step gets its own checkbox, aggregates go last as final gates (otherwise partial runs render as "no progress" noops)
 - Do not create plans without reading Phase 2 context first -- validate inputs before planning
 - Do not create empty phases -- every phase has at least 1 Step
 - Do not use "the service file" -- use exact paths like `apps/<mainApp>/src/lib/services/missions.ts`
