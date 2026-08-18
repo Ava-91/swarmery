@@ -255,10 +255,11 @@ func writeWizardErr(w http.ResponseWriter, err error) bool {
 // never roll back a NEWER wizard the operator started meanwhile.
 func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service, uuid, text, okStatus string) {
 	var (
-		sid int64
-		cwd sql.NullString
+		sid     int64
+		cwd     sql.NullString
+		account sql.NullString
 	)
-	err := h.DB.QueryRow(`SELECT id, cwd FROM sessions WHERE session_uuid = ?`, uuid).Scan(&sid, &cwd)
+	err := h.DB.QueryRow(`SELECT id, cwd, account FROM sessions WHERE session_uuid = ?`, uuid).Scan(&sid, &cwd, &account)
 	if errors.Is(err, sql.ErrNoRows) {
 		svc.RevertToAwaiting(uuid)
 		writeClientErr(w, http.StatusConflict, "planner session not ingested yet — retry in a moment")
@@ -274,7 +275,7 @@ func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service
 		writeClientErr(w, http.StatusConflict, "planner session has no known working directory to resume in")
 		return
 	}
-	started, err := startResume(sid, uuid, cwd.String, text, func(runErr error) {
+	started, err := startResume(sid, uuid, cwd.String, account.String, text, func(runErr error) {
 		// Runs after process exit, BEFORE the resume slot release. A failed or
 		// timed-out resume rolls back so the wizard is answerable again. On
 		// success nothing to do here: the post-release session_updated frame

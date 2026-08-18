@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
 )
 
 // errResumeCwdGone reports that the directory a session recorded as its cwd no
@@ -25,12 +27,16 @@ var errResumeCwdGone = errors.New("session working directory no longer exists")
 // planning-wizard endpoints go through it, so a wizard answer and a composer
 // message can never race the same transcript — they contend on the same map.
 //
+// account is the sessions row's account key — the resume MUST run under the same
+// Claude config dir the transcript was written in, or `claude -r` reports "No
+// conversation found with session ID" and the caller's action silently fails.
+//
 // onExit (nil ok) runs after the process exits, BEFORE the slot is released, so
 // its state change (planning rolls status back to awaiting_answer on error) is
 // already visible when the final session_updated frame goes out. Returns
 // (false, nil) when a resume is already in flight for uuid; a non-nil err means
 // the claude binary could not be resolved (nothing was spawned).
-func startResume(sessionID int64, sessionUUID, cwd, text string, onExit func(err error)) (started bool, err error) {
+func startResume(sessionID int64, sessionUUID, cwd, account, text string, onExit func(err error)) (started bool, err error) {
 	// Cheapest, most specific reject first: a vanished cwd is a state error the
 	// caller must explain to the operator, not a missing-binary condition.
 	if fi, statErr := os.Stat(cwd); statErr != nil || !fi.IsDir() {
@@ -51,8 +57,8 @@ func startResume(sessionID int64, sessionUUID, cwd, text string, onExit func(err
 	msgInFlight[sessionUUID] = resumeRun{cancel: cancel, startedAt: time.Now()}
 	msgInFlightMu.Unlock()
 
-	log.Printf("session_message: resume session id=%d uuid=%s cwd=%q (%d chars)", sessionID, sessionUUID, cwd, len(text))
-	go runSessionMessage(ctx, cancel, sessionID, bin, sessionUUID, cwd, text, onExit)
+	log.Printf("session_message: resume session id=%d uuid=%s cwd=%q account=%q (%d chars)", sessionID, sessionUUID, cwd, account, len(text))
+	go runSessionMessage(ctx, cancel, sessionID, bin, sessionUUID, cwd, account, text, onExit)
 	return true, nil
 }
 
@@ -71,7 +77,7 @@ func resumeInFlight(sessionUUID string) bool {
 // only log completion/failure and publish session_updated at the run's edges so
 // the composer flips to Stop (and back) while it is in flight. onExit (nil ok)
 // observes the process outcome before the slot release (see startResume).
-func runSessionMessage(ctx context.Context, cancel context.CancelFunc, id int64, bin, sessionUUID, cwd, text string, onExit func(err error)) {
+func runSessionMessage(ctx context.Context, cancel context.CancelFunc, id int64, bin, sessionUUID, cwd, account, text string, onExit func(err error)) {
 	var runErr error
 	defer func() {
 		if onExit != nil {
@@ -87,6 +93,13 @@ func runSessionMessage(ctx context.Context, cancel context.CancelFunc, id int64,
 
 	cmd := exec.CommandContext(ctx, bin, "-r", sessionUUID, "-p", text, "--output-format", "json")
 	cmd.Dir = cwd
+	// The transcript `claude -r` must find lives under the config dir of the
+	// account that WROTE it, so the resume takes the account from the sessions row
+	// rather than from cwd: a dispatched session's cwd is a worktree with no
+	// project settings file, which would resolve to the default account and read
+	// an empty projects/ dir. EnvForAccount yields nil for the default account, so
+	// cmd.Env is then a byte-identical copy of os.Environ().
+	cmd.Env = append(os.Environ(), claudeacct.EnvForAccount(account)...)
 	// Own process group: a daemon restart (make install / launchd job stop)
 	// SIGKILLs the daemon's process group — without this, every in-flight
 	// dashboard-driven session dies mid-turn. Detached children survive as
