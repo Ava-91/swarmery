@@ -1464,6 +1464,26 @@ const mockEpics: Epic[] = [
       }),
     ],
     rollup: { done: 10, total: 25, pct: 40 },
+    // The union the sessions panel renders: a daemon run the ?planTask= grouping also
+    // finds, and an operator's own session that ONLY the inferred link can surface.
+    linkedSessions: [
+      {
+        sessionUuid: 'aaaa1111-2222-4333-8444-555566667777',
+        linkSource: 'explicit',
+        confidence: 1,
+        costUsd: 1.82,
+        startedAt: iso(2 * 24 * 60 * MIN),
+        endedAt: iso(2 * 24 * 60 * MIN - 40),
+      },
+      {
+        sessionUuid: 'bbbb2222-3333-4444-8555-666677778888',
+        linkSource: 'heuristic',
+        confidence: 0.9,
+        costUsd: null,
+        startedAt: iso(90),
+        endedAt: null,
+      },
+    ],
   },
   {
     taskId: 7011,
@@ -1516,6 +1536,26 @@ const mockEpics: Epic[] = [
       }),
     ],
     rollup: { done: 10, total: 10, pct: 100 },
+    // A finished plan: its whole-plan run, plus the interactive session that wrote the
+    // plan docs in the first place — the row that used to be invisible.
+    linkedSessions: [
+      {
+        sessionUuid: 'cccc3333-4444-4555-8666-777788889999',
+        linkSource: 'explicit',
+        confidence: 1,
+        costUsd: 6.4,
+        startedAt: iso(8 * 24 * 60 * MIN),
+        endedAt: iso(8 * 24 * 60 * MIN - 120),
+      },
+      {
+        sessionUuid: 'dddd4444-5555-4666-8777-888899990000',
+        linkSource: 'heuristic',
+        confidence: 0.9,
+        costUsd: 0.91,
+        startedAt: iso(9 * 24 * 60 * MIN),
+        endedAt: iso(9 * 24 * 60 * MIN - 55),
+      },
+    ],
   },
 ];
 

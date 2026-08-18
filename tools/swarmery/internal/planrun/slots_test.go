@@ -69,3 +69,30 @@ func TestStart_StillRefusesDuringALivePhaseRun(t *testing.T) {
 		t.Fatalf("err = %v, want ErrPhaseRunning", err)
 	}
 }
+
+// A plan run's session must attach to the plan it drives — the same defect
+// phaserun had, and the same fix.
+func TestStart_LinksTheRunSessionToThePlan(t *testing.T) {
+	db, taskID, _ := fixture(t)
+	if _, err := db.Exec(`INSERT INTO sessions (session_uuid, started_at, project_id)
+		VALUES ('uuid-1', '2026-08-17T10:00:00Z', 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTestService(db, &stubRunner{}, &stubWt{})
+	if _, err := s.Start(taskID, "", ""); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var source string
+	err := db.QueryRow(`
+		SELECT ts.link_source FROM task_sessions ts
+		  JOIN sessions se ON se.id = ts.session_id
+		 WHERE ts.task_id = ? AND se.session_uuid = 'uuid-1'`, taskID).Scan(&source)
+	if err != nil {
+		t.Fatalf("the run's session did not link to the plan: %v", err)
+	}
+	if source != "explicit" {
+		t.Errorf("link_source = %q, want explicit", source)
+	}
+}

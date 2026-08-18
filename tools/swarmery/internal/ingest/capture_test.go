@@ -687,3 +687,94 @@ func drainTaskFrames(t *testing.T, notes <-chan Notification) []Notification {
 		}
 	}
 }
+
+// TestCaptureTodosSkipsEngineRunSessions is the self-capture defect from the
+// execution-engine plan's evidence section. The capture exemption checked the
+// DISPATCH arms only, so a phase-run or plan-run session matched neither branch and
+// minted captured board cards from its own work: the executor's own todo list
+// arriving on the board as new cards while the phase it belongs to was still
+// running.
+//
+// The run_session_uuid columns are checked directly, not via the explicit
+// task_sessions link phase 3 also writes, because the columns are authoritative the
+// moment the run starts while a link can be missing for as long as ingest lags — and
+// a predicate that guards the board must not depend on a race. The arms below
+// therefore create NO task_sessions row.
+func TestCaptureTodosSkipsEngineRunSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link func(t *testing.T, db *sql.DB, projectID int64)
+	}{
+		{
+			name: "phase run (epic_phases.run_session_uuid)",
+			link: func(t *testing.T, db *sql.DB, projectID int64) {
+				t.Helper()
+				taskID := insertEngineWorkspaceTask(t, db, projectID)
+				mustExecCapture(t, db, `
+					INSERT INTO epic_phases
+						(workspace_task_id, seq, name, doc_path, depends_on, run_state, run_session_uuid)
+					VALUES (?, 1, 'Phase 1', '/ws/plan/phase-1.md', '[]', 'running', ?)`,
+					taskID, dispatchedSessionUUID)
+			},
+		},
+		{
+			name: "plan run (plan_runs.run_session_uuid)",
+			link: func(t *testing.T, db *sql.DB, projectID int64) {
+				t.Helper()
+				taskID := insertEngineWorkspaceTask(t, db, projectID)
+				mustExecCapture(t, db, `
+					INSERT INTO plan_runs (workspace_task_id, run_state, run_session_uuid)
+					VALUES (?, 'running', ?)`, taskID, dispatchedSessionUUID)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testDB(t)
+			// Seed project + session first, so the run's uuid is on its row before the
+			// transcript is read — the live ordering (the engine stamps, then the
+			// transcript appears).
+			seedCaptureSession(t, db, dispatchedSessionUUID)
+			tc.link(t, db, projectIDOf(t, db, dispatchedSessionUUID))
+			sessionID := sessionIDByUUID(t, db, dispatchedSessionUUID)
+
+			ingestFixture(t, db, "dispatched-todo-session.jsonl")
+
+			if got := capturedTitles(t, db, sessionID); len(got) != 0 {
+				t.Errorf("engine-run session captured %d cards (%q), want 0", len(got), got)
+			}
+			if got := count(t, db, `SELECT COUNT(*) FROM tasks WHERE capture_key IS NOT NULL`); got != 0 {
+				t.Errorf("captured rows = %d, want 0", got)
+			}
+		})
+	}
+
+	// The control: the SAME transcript with no engine run claiming it still captures.
+	// Without this the two arms above would pass equally well if capture were broken
+	// outright.
+	t.Run("a plain interactive session still captures", func(t *testing.T) {
+		db := testDB(t)
+		seedCaptureSession(t, db, dispatchedSessionUUID)
+		sessionID := sessionIDByUUID(t, db, dispatchedSessionUUID)
+
+		ingestFixture(t, db, "dispatched-todo-session.jsonl")
+
+		if got := capturedTitles(t, db, sessionID); len(got) == 0 {
+			t.Error("an unclaimed session captured nothing — the exemption is over-matching")
+		}
+	})
+}
+
+// insertEngineWorkspaceTask writes the workspace task a phase/plan run hangs off
+// (both run tables carry a real FK to tasks.id).
+func insertEngineWorkspaceTask(t *testing.T, db *sql.DB, projectID int64) int64 {
+	t.Helper()
+	mustExecCapture(t, db, `
+		INSERT INTO tasks (project_id, title, prompt, created_at, source, external_id)
+		VALUES (?, 'the plan being executed', 'goal', '2026-07-10T09:00:00.000Z',
+		        'workspace', '2026-07-10-the-plan')`, projectID)
+	var id int64
+	if err := db.QueryRow(`SELECT id FROM tasks ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}

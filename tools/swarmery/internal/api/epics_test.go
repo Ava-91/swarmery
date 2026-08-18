@@ -514,3 +514,121 @@ func TestListEpicsDerivedStatus(t *testing.T) {
 		t.Errorf("status = %q, want active (raw running normalized)", epics[0].Status)
 	}
 }
+
+// TestListEpics_LinkedSessions pins the DTO the Plans page's sessions panel reads.
+// Its absence is what produced the board-redesign run's "no sessions ran this plan"
+// screen over work that was visibly landing: the epic DTO carried run_session_uuid
+// and nothing else, so an interactive session — the path that did most of the work —
+// had nowhere to appear.
+func TestListEpics_LinkedSessions(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+
+	// Two sessions: a daemon run (explicit) and an interactive one inferred from the
+	// plan files it edited (heuristic). The run session is priced; the other is not.
+	mustExecEpics(t, db, `INSERT INTO sessions (id, project_id, session_uuid, started_at, ended_at)
+		VALUES (1, 1, 'u-run', '2026-07-24T10:00:00Z', '2026-07-24T11:00:00Z'),
+		       (2, 1, 'u-interactive', '2026-07-24T12:00:00Z', NULL)`)
+	mustExecEpics(t, db, `INSERT INTO turns (session_id, seq, role, started_at, cost_usd)
+		VALUES (1, 1, 'assistant', '2026-07-24T10:30:00Z', 0.25),
+		       (1, 2, 'assistant', '2026-07-24T10:40:00Z', 0.75)`)
+	mustExecEpics(t, db, `INSERT INTO task_sessions (task_id, session_id, link_source, confidence)
+		VALUES (?, 1, 'explicit', 1.0), (?, 2, 'heuristic', 0.9)`, taskID, taskID)
+
+	e := firstEpic(t, srv)
+	if len(e.LinkedSessions) != 2 {
+		t.Fatalf("linkedSessions = %+v, want 2", e.LinkedSessions)
+	}
+	// Newest first, so the panel's top row is the session an operator is most likely
+	// looking for.
+	if e.LinkedSessions[0].SessionUUID != "u-interactive" {
+		t.Errorf("order = %q first, want the newest session", e.LinkedSessions[0].SessionUUID)
+	}
+
+	run := e.LinkedSessions[1]
+	if run.LinkSource != "explicit" || run.Confidence == nil || *run.Confidence != 1.0 {
+		t.Errorf("run link = %+v, want explicit/1.0", run)
+	}
+	if run.CostUSD == nil || *run.CostUSD != 1.0 {
+		t.Errorf("run costUsd = %v, want 1.0 (the sum of its turns)", run.CostUSD)
+	}
+	if run.EndedAt == nil {
+		t.Error("a finished session has no endedAt")
+	}
+
+	inferred := e.LinkedSessions[0]
+	if inferred.LinkSource != "heuristic" || inferred.Confidence == nil || *inferred.Confidence != 0.9 {
+		t.Errorf("inferred link = %+v, want heuristic/0.9", inferred)
+	}
+	if inferred.CostUSD != nil {
+		t.Errorf("costUsd = %v, want null while no turn is priced", *inferred.CostUSD)
+	}
+	if inferred.EndedAt != nil {
+		t.Errorf("endedAt = %v, want null for a live session", *inferred.EndedAt)
+	}
+}
+
+// An epic nothing has worked on yet must serialize [] rather than null: "nothing has
+// run" and "we don't know" are different claims, and the UI maps over this field.
+func TestListEpics_LinkedSessionsEmptyIsAList(t *testing.T) {
+	srv, _, _, _ := epicFixture(t)
+	resp, err := http.Get(srv.URL + "/api/epics?projectId=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var raw []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := raw[0]["linkedSessions"]
+	if !ok {
+		t.Fatal("linkedSessions missing from the DTO")
+	}
+	if _, isList := got.([]any); !isList {
+		t.Errorf("linkedSessions = %#v, want []", got)
+	}
+}
+
+// A BOARD card's dispatch link must not leak into a plan's panel — the board has its
+// own surface for those, and this join would otherwise sweep up every link in the DB.
+func TestListEpics_LinkedSessionsExcludesBoardTasks(t *testing.T) {
+	srv, db, _, _ := epicFixture(t)
+	mustExecEpics(t, db, `INSERT INTO sessions (id, project_id, session_uuid, started_at)
+		VALUES (1, 1, 'u-board', '2026-07-24T10:00:00Z')`)
+	mustExecEpics(t, db, `INSERT INTO tasks (project_id, title, prompt, status, created_at,
+		source, external_id) VALUES (1,'a card','p','queued','2026-07-24T00:00:00Z','queue','T-1')`)
+	var boardID int64
+	if err := db.QueryRow(`SELECT id FROM tasks WHERE external_id='T-1'`).Scan(&boardID); err != nil {
+		t.Fatal(err)
+	}
+	mustExecEpics(t, db, `INSERT INTO task_sessions (task_id, session_id, link_source, confidence)
+		VALUES (?, 1, 'explicit', 1.0)`, boardID)
+
+	if got := firstEpic(t, srv).LinkedSessions; len(got) != 0 {
+		t.Errorf("linkedSessions = %+v, want none — that link belongs to a board card", got)
+	}
+}
+
+func firstEpic(t *testing.T, srv *httptest.Server) epicDTO {
+	t.Helper()
+	resp, err := http.Get(srv.URL + "/api/epics?projectId=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var epics []epicDTO
+	if err := json.NewDecoder(resp.Body).Decode(&epics); err != nil {
+		t.Fatal(err)
+	}
+	if len(epics) == 0 {
+		t.Fatal("no epics returned")
+	}
+	return epics[0]
+}
+
+func mustExecEpics(t *testing.T, db *sql.DB, q string, args ...any) {
+	t.Helper()
+	if _, err := db.Exec(q, args...); err != nil {
+		t.Fatalf("exec %s: %v", q, err)
+	}
+}

@@ -397,6 +397,11 @@ func (s *Service) Start(taskID int64, agent, mode string) (sessionUUID string, e
 		return "", err
 	}
 
+	// Attach this run's session to the plan it drives. Almost always a no-op here
+	// (the process has not started, so nothing is ingested); runAndHandle links again
+	// at exit and wsingest's reconcile pass converges whatever is still missing.
+	runcore.LinkSession(s.DB, Engine, taskID, uuid)
+
 	log.Printf("planrun: start plan=%d agent=%s mode=%s uuid=%s worktree=%q phases=%d",
 		taskID, agent, runMode, uuid, acq.Path, len(info.Phases))
 	s.notify(taskID)
@@ -440,6 +445,8 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, r
 		// from under it.
 		s.removeWorktree(info.RepoRoot, acq)
 		releaseSlot()
+		// The reconcile arm — see Start. This is where the link usually lands.
+		runcore.LinkSession(s.DB, Engine, info.TaskID, spec.SessionUUID)
 		s.notify(info.TaskID)
 	}()
 
