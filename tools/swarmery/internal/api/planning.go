@@ -261,44 +261,51 @@ func (h *Handler) spawnWizardResume(w http.ResponseWriter, svc *planning.Service
 	)
 	err := h.DB.QueryRow(`SELECT id, cwd, account FROM sessions WHERE session_uuid = ?`, uuid).Scan(&sid, &cwd, &account)
 	if errors.Is(err, sql.ErrNoRows) {
-		svc.RevertToAwaiting(uuid)
-		writeClientErr(w, http.StatusConflict, "planner session not ingested yet — retry in a moment")
+		const msg = "planner session not ingested yet — retry in a moment"
+		svc.RevertToAwaiting(uuid, msg)
+		writeClientErr(w, http.StatusConflict, msg)
 		return
 	}
 	if err != nil {
-		svc.RevertToAwaiting(uuid)
+		svc.RevertToAwaiting(uuid, "could not read the planner session row: "+err.Error())
 		writeErr(w, err)
 		return
 	}
 	if strings.TrimSpace(cwd.String) == "" {
-		svc.RevertToAwaiting(uuid)
-		writeClientErr(w, http.StatusConflict, "planner session has no known working directory to resume in")
+		const msg = "planner session has no known working directory to resume in"
+		svc.RevertToAwaiting(uuid, msg)
+		writeClientErr(w, http.StatusConflict, msg)
 		return
 	}
 	started, err := startResume(sid, uuid, cwd.String, account.String, text, func(runErr error) {
 		// Runs after process exit, BEFORE the resume slot release. A failed or
-		// timed-out resume rolls back so the wizard is answerable again. On
-		// success nothing to do here: the post-release session_updated frame
+		// timed-out resume rolls back so the wizard is answerable again, WITH the
+		// process error as the reason — this is the one rollback the operator
+		// cannot otherwise see: the POST already answered 202, so a bare revert
+		// looks exactly like the planner asking the same question again.
+		// On success nothing to do here: the post-release session_updated frame
 		// reaches watchPlanningTurns, which re-parses with the slot free (the
 		// path that also settles a raw-fallback reply ingested mid-run).
 		if runErr != nil {
-			svc.RevertToAwaiting(uuid)
+			svc.RevertToAwaiting(uuid, "the planner run failed ("+runErr.Error()+") — your reply was not delivered, retry it")
 		}
 	})
 	if errors.Is(err, errResumeCwdGone) {
-		svc.RevertToAwaiting(uuid)
-		writeClientErr(w, http.StatusConflict,
-			"the planner session's working directory ("+cwd.String+") no longer exists — start a new planning session")
+		msg := "the planner session's working directory (" + cwd.String + ") no longer exists — start a new planning session"
+		svc.RevertToAwaiting(uuid, msg)
+		writeClientErr(w, http.StatusConflict, msg)
 		return
 	}
 	if err != nil {
-		svc.RevertToAwaiting(uuid)
-		writeClientErr(w, http.StatusServiceUnavailable, "claude executable not found (set SWARMERY_CLAUDE_BIN)")
+		const msg = "claude executable not found (set SWARMERY_CLAUDE_BIN)"
+		svc.RevertToAwaiting(uuid, msg)
+		writeClientErr(w, http.StatusServiceUnavailable, msg)
 		return
 	}
 	if !started {
-		svc.RevertToAwaiting(uuid)
-		writeClientErr(w, http.StatusConflict, "a resume is already running for this session")
+		const msg = "a resume is already running for this session"
+		svc.RevertToAwaiting(uuid, msg)
+		writeClientErr(w, http.StatusConflict, msg)
 		return
 	}
 	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": okStatus})

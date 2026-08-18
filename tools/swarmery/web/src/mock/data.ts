@@ -1673,6 +1673,7 @@ const mockPlanningIdle: PlanningStatus = {
   planDir: null,
   mode: '',
   reviseTaskId: null,
+  lastError: null,
 };
 
 /** Running plan v1 — shown beside the first interview question. */

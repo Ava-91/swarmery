@@ -1589,6 +1589,12 @@ export interface PlanningStatus {
   mode: 'plan' | 'revise' | '';
   /** The workspace task whose plan a `revise` wizard targets; null otherwise. */
   reviseTaskId: number | null;
+  /** Why the LAST action did not go through (failed resume spawn, planner
+   * process gone). The wizard is back in `awaiting_answer` with the SAME
+   * question in that case, which is indistinguishable from the planner asking
+   * again — this is the only signal that the answer was never delivered. Null
+   * as soon as the next action starts. */
+  lastError: string | null;
 }
 
 /** POST /api/projects/{id}/planning → 202 body. */

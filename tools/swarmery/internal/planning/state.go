@@ -117,6 +117,10 @@ type WizardStatus struct {
 	RawReply        *string           `json:"rawReply"`
 	History         []WizardTurn      `json:"history"`
 	PlanDir         *string           `json:"planDir"`
+	// LastError explains why the wizard is answerable again after an action that
+	// did not go through (failed resume spawn, dead planner). Null once the next
+	// action starts — it describes the LAST attempt, never the current state.
+	LastError *string `json:"lastError"`
 }
 
 // wizardRow mirrors one planning_sessions row.
@@ -133,15 +137,16 @@ type wizardRow struct {
 	updatedAt       string
 	mode            string
 	reviseTaskID    sql.NullInt64
+	lastError       sql.NullString
 }
 
-const wizardCols = `id, project_id, session_uuid, status, running_plan, current_question, raw_reply, plan_dir, created_at, updated_at, mode, revise_task_id`
+const wizardCols = `id, project_id, session_uuid, status, running_plan, current_question, raw_reply, plan_dir, created_at, updated_at, mode, revise_task_id, last_error`
 
 func scanWizard(scan func(...any) error) (*wizardRow, error) {
 	var r wizardRow
 	err := scan(&r.id, &r.projectID, &r.uuid, &r.status, &r.runningPlan,
 		&r.currentQuestion, &r.rawReply, &r.planDir, &r.createdAt, &r.updatedAt,
-		&r.mode, &r.reviseTaskID)
+		&r.mode, &r.reviseTaskID, &r.lastError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -397,7 +402,7 @@ func (s *Service) applyQuestionTurn(row *wizardRow, pt ParsedTurn) {
 	res, err := s.DB.Exec(
 		`UPDATE planning_sessions
 		    SET current_question=?, running_plan=COALESCE(?, running_plan),
-		        raw_reply=NULL, status=?, updated_at=?
+		        raw_reply=NULL, status=?, last_error=NULL, updated_at=?
 		  WHERE id=? AND status IN (?, ?, ?)`,
 		string(qJSON), rpJSON, StatusAwaiting, s.ts(), row.id,
 		StatusGenerating, StatusAwaiting, StatusProceeding)
@@ -433,7 +438,8 @@ func (s *Service) applyRawTurn(row *wizardRow, text string) {
 	// CAS: only the open statuses the read observed may flip to awaiting — a
 	// Cancel/Start racing this write must not be resurrected by a stale row.
 	res, err := s.DB.Exec(
-		`UPDATE planning_sessions SET current_question=NULL, raw_reply=?, status=?, updated_at=?
+		`UPDATE planning_sessions SET current_question=NULL, raw_reply=?, status=?,
+		        last_error=NULL, updated_at=?
 		  WHERE id=? AND status IN (?, ?, ?)`,
 		text, StatusAwaiting, s.ts(), row.id,
 		StatusGenerating, StatusAwaiting, StatusProceeding)
@@ -484,9 +490,12 @@ func (s *Service) stampNewestTurn(sessionID int64, ans wizardAnswer) {
 // between admitAwaiting's read and this write is never overwritten back to
 // generating; (b) of two concurrent Answers only one flips — the loser gets
 // ErrNotAwaiting (a clean 409 upstream, no spawn, no revert).
+// The previous action's failure is cleared here rather than on the next
+// successful turn: the operator has retried, so the stale banner must go the
+// moment the retry starts, not when it lands.
 func (s *Service) setStatus(row *wizardRow, status string) error {
 	res, err := s.DB.Exec(
-		`UPDATE planning_sessions SET status=?, updated_at=? WHERE id=? AND status=?`,
+		`UPDATE planning_sessions SET status=?, last_error=NULL, updated_at=? WHERE id=? AND status=?`,
 		status, s.ts(), row.id, row.status)
 	if err != nil {
 		return err
@@ -577,11 +586,21 @@ func (s *Service) Proceed(projectID int64) (text, sessionUUID string, err error)
 // STALE resume's failure (the operator cancelled and started a new idea while
 // a 15-min resume was in flight) can only touch its own row, never the
 // project's newer wizard. Terminal states are never revived (status guard).
-func (s *Service) RevertToAwaiting(sessionUUID string) {
+//
+// reason is stamped on the row and surfaced next to the question. It is what
+// distinguishes "your answer did not go through" from "the planner asked again",
+// which are otherwise the same awaiting_answer + same current_question state —
+// the shape that let a broken resume look like an endless interview. A blank
+// reason is refused rather than stored: a rollback with no explanation is the
+// bug this column exists to prevent.
+func (s *Service) RevertToAwaiting(sessionUUID, reason string) {
+	if strings.TrimSpace(reason) == "" {
+		reason = "the planner run failed for an unrecorded reason — retry your answer"
+	}
 	res, err := s.DB.Exec(
-		`UPDATE planning_sessions SET status=?, updated_at=?
+		`UPDATE planning_sessions SET status=?, last_error=?, updated_at=?
 		  WHERE session_uuid=? AND status IN (?, ?)`,
-		StatusAwaiting, s.ts(), sessionUUID, StatusGenerating, StatusProceeding)
+		StatusAwaiting, reason, s.ts(), sessionUUID, StatusGenerating, StatusProceeding)
 	if err != nil {
 		log.Printf("error: planning: revert uuid=%s: %v", sessionUUID, err)
 		return
@@ -650,11 +669,17 @@ func (s *Service) WizardSnapshot(projectID int64) (WizardStatus, error) {
 	alive := s.processAlive(projectID, row.uuid)
 	if (row.status == StatusGenerating || row.status == StatusProceeding) && !alive {
 		if t, perr := time.Parse(time.RFC3339, row.updatedAt); perr == nil && s.clock().Sub(t) > staleWindow {
+			// Stamped like a rollback, because that is what it is: the operator's
+			// action produced no reply and the wizard is answerable again. Without
+			// the reason the reconcile is the silent path that reads as a repeated
+			// question.
+			const reason = "the planner process ended without a reply — retry your answer"
 			if _, uerr := s.DB.Exec(
-				`UPDATE planning_sessions SET status=?, updated_at=? WHERE id=? AND status=?`,
-				StatusAwaiting, s.ts(), row.id, row.status); uerr == nil {
+				`UPDATE planning_sessions SET status=?, last_error=?, updated_at=? WHERE id=? AND status=?`,
+				StatusAwaiting, reason, s.ts(), row.id, row.status); uerr == nil {
 				log.Printf("planning: wizard uuid=%s stale %s — reconciled to awaiting_answer", row.uuid, row.status)
 				row.status = StatusAwaiting
+				row.lastError = sql.NullString{String: reason, Valid: true}
 			}
 		}
 	}
@@ -695,6 +720,9 @@ func (s *Service) WizardSnapshot(projectID int64) (WizardStatus, error) {
 	}
 	if row.planDir.Valid {
 		st.PlanDir = &row.planDir.String
+	}
+	if row.lastError.Valid && strings.TrimSpace(row.lastError.String) != "" {
+		st.LastError = &row.lastError.String
 	}
 
 	rows, err := s.DB.Query(
