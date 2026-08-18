@@ -197,9 +197,40 @@ func splitID(id string) (name, marketplace string) {
 	return name, marketplace
 }
 
+// ResolveInstalled reports the installed entry that makes id available to
+// projectPath, asking the CLI directly rather than reading a stored finding.
+//
+// The repair endpoint needs this because a drift verdict says WHAT is wrong and
+// not WHERE the plugin lives: resolveFor counts a user-scoped install as
+// available to every project, so "behind" is reported for a user- or
+// local-scope copy just as readily as for a project-scope one, while `claude
+// plugin update` is scope-bound and fails outright ("not installed at scope
+// project") when asked for the wrong one.
+//
+// err != nil means the question could not be answered (CLI or decode failure).
+// The caller must not read that as "not installed" — same rule as Scan's
+// RuleDetectorUnavailable short-circuit.
+func ResolveInstalled(ctx context.Context, r Runner, id, projectPath string) (Installed, bool, error) {
+	out, err := r.Run(ctx, "", "plugin", "list", "--json")
+	if err != nil {
+		return Installed{}, false, err
+	}
+	installed, err := decodeList(out)
+	if err != nil {
+		return Installed{}, false, err
+	}
+	in, ok := resolveFor(installed, id, projectPath)
+	return in, ok, nil
+}
+
 // resolveFor implements the availability rule: an installed entry counts for
-// this project when it is user-scoped, or project-scoped with a matching
-// projectPath. Caller-supplied projectPath must already be canonicalised.
+// this project when it is user-scoped, or scoped to a matching projectPath.
+// Caller-supplied projectPath must already be canonicalised.
+//
+// "local" is the CLI's own name for a project-local install (recorded in
+// .claude/settings.local.json rather than settings.json) and carries the same
+// projectPath as "project" — treating only the latter as available reported
+// every locally-installed pack as missing for the project that installed it.
 func resolveFor(installed []Installed, id, projectPath string) (Installed, bool) {
 	for _, in := range installed {
 		if in.ID != id {
@@ -208,7 +239,7 @@ func resolveFor(installed []Installed, id, projectPath string) (Installed, bool)
 		if in.Scope == "user" {
 			return in, true
 		}
-		if in.Scope == "project" && sameDir(in.ProjectPath, projectPath) {
+		if (in.Scope == "project" || in.Scope == "local") && sameDir(in.ProjectPath, projectPath) {
 			return in, true
 		}
 	}
@@ -232,7 +263,7 @@ func sameDir(a, b string) bool {
 func enabledNotInstalledMessage(id string, installed []Installed) string {
 	var elsewhere []string
 	for _, in := range installed {
-		if in.ID == id && in.Scope == "project" && in.ProjectPath != "" {
+		if in.ID == id && (in.Scope == "project" || in.Scope == "local") && in.ProjectPath != "" {
 			elsewhere = append(elsewhere, in.ProjectPath)
 		}
 	}

@@ -32,7 +32,7 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// repair: `claude plugin install|update <id> --scope project`; {name} is the
 	// FULL plugin id (core@swarmery) — "@" is a legal path-segment character.
 	// Falls back to a user-scope install when the project's .claude is a
-	// symlinked overlay (isSymlinkedClaudeDir → repairViaUserScope,
+	// symlinked overlay (onboard.SymlinkedClaudeDir → repairViaUserScope,
 	// project_plugins.go) — the CLI cannot write project-scope settings through
 	// a symlink there.
 	mux.HandleFunc("POST /api/projects/{id}/plugins/{name}/repair", requireLocalOrigin(h.repairProjectPlugin))

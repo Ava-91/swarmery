@@ -3,7 +3,9 @@ package provision
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,16 +16,39 @@ import (
 
 type stubRunner struct {
 	calls   [][]string
-	failOn  string // fail when the args-join has this prefix
+	dirs    []string // cwd per call — `--scope project` only resolves from the project
+	failOn  string   // fail when the args-join has this prefix
 	failErr error
+	// onRun simulates the side effect of a real user-scope `plugin install`:
+	// writing enabledPlugins into the user settings.json. It fires only on the
+	// install call — firing it on the preceding `marketplace update` would poison
+	// the snapshot the revert is measured against, and pass the test for the
+	// wrong reason.
+	onRun func()
 }
 
-func (s *stubRunner) Claude(_ context.Context, _, _ string, args ...string) (string, error) {
+func (s *stubRunner) Claude(_ context.Context, dir, _ string, args ...string) (string, error) {
 	s.calls = append(s.calls, args)
+	s.dirs = append(s.dirs, dir)
+	if s.onRun != nil && len(args) >= 2 && args[1] == "install" {
+		s.onRun()
+	}
 	if s.failOn != "" && strings.HasPrefix(strings.Join(args, " "), s.failOn) {
 		return "", s.failErr
 	}
 	return "", nil
+}
+
+// installCall returns the args and cwd of the `plugin install` invocation.
+func (s *stubRunner) installCall(t *testing.T) ([]string, string) {
+	t.Helper()
+	for i, c := range s.calls {
+		if len(c) >= 2 && c[0] == "plugin" && c[1] == "install" {
+			return c, s.dirs[i]
+		}
+	}
+	t.Fatal("no `plugin install` call was made")
+	return nil, ""
 }
 
 func (s *stubRunner) generateCalls() int {
@@ -143,6 +168,120 @@ func TestRunGeneratesWhenStale(t *testing.T) {
 	}
 	if got := status(t, s, id); got != "done" {
 		t.Fatalf("status=%s", got)
+	}
+}
+
+// Enabling a pack for ONE project must not install it for the machine. The CLI
+// defaults `plugin install` to --scope user, which installs and enables the pack
+// everywhere — a per-project toggle with a machine-wide effect.
+func TestRunInstallsAtProjectScope(t *testing.T) {
+	r := &stubRunner{}
+	s := newSvc(t, r, map[string]GenerateAction{})
+	dir := t.TempDir() // a plain .claude-less project: not a symlinked overlay
+	id, _, _ := s.Enqueue(1, "graphify-pack")
+	if err := s.Run(context.Background(), id, dir, "graphify-pack"); err != nil {
+		t.Fatal(err)
+	}
+
+	args, cwd := r.installCall(t)
+	want := []string{"plugin", "install", "graphify-pack@swarmery", "--scope", "project"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+	// --scope project resolves from the cwd; without it the CLI has no project.
+	if cwd != dir {
+		t.Errorf("cwd = %q, want the project path %q", cwd, dir)
+	}
+}
+
+// The multi-repo overlay consumer (.claude is a symlink into a shared agents/
+// repo): the CLI refuses to write project-scope settings through it, so the
+// install falls back to user scope and reverts the global enable afterwards.
+func TestRunInstallFallsBackToUserScopeOnSymlinkedClaudeDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("agents", filepath.Join(dir, ".claude")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	claudeDir := t.TempDir()
+	userSettings := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(userSettings, []byte(`{"enabledPlugins":{"core@swarmery":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &stubRunner{}
+	r.onRun = func() { // the real CLI's user-scope side effect
+		if err := os.WriteFile(userSettings,
+			[]byte(`{"enabledPlugins":{"core@swarmery":true,"graphify-pack@swarmery":true}}`), 0o644); err != nil {
+			t.Error(err)
+		}
+	}
+	s := newSvc(t, r, map[string]GenerateAction{})
+	s.ClaudeDir = claudeDir
+
+	id, _, _ := s.Enqueue(1, "graphify-pack")
+	if err := s.Run(context.Background(), id, dir, "graphify-pack"); err != nil {
+		t.Fatal(err)
+	}
+
+	args, cwd := r.installCall(t)
+	want := []string{"plugin", "install", "graphify-pack@swarmery"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %v, want %v — project scope cannot succeed here", args, want)
+	}
+	if cwd != "" {
+		t.Errorf("cwd = %q, want empty for a user-scope install", cwd)
+	}
+
+	raw, err := os.ReadFile(userSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := got["enabledPlugins"]["graphify-pack@swarmery"]; present {
+		t.Error("graphify-pack is still globally enabled — enabling it for one project turned it on for every project")
+	}
+	if got["enabledPlugins"]["core@swarmery"] != true {
+		t.Error("a foreign global enable was clobbered by the revert")
+	}
+}
+
+// A user settings.json that cannot be snapshotted must stop the fallback: a
+// global enable the daemon cannot revert is worse than an uninstalled pack.
+func TestRunInstallRefusesUnrevertableFallback(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("agents", filepath.Join(dir, ".claude")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	claudeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{"enabledPlugins": [broken`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &stubRunner{}
+	s := newSvc(t, r, map[string]GenerateAction{})
+	s.ClaudeDir = claudeDir
+
+	id, _, _ := s.Enqueue(1, "graphify-pack")
+	if err := s.Run(context.Background(), id, dir, "graphify-pack"); err == nil {
+		t.Fatal("expected a refusal")
+	}
+	for _, c := range r.calls {
+		if len(c) >= 2 && c[1] == "install" {
+			t.Fatalf("install ran without a trustworthy snapshot: %v", c)
+		}
+	}
+	j, _, _ := s.Latest(1, "graphify-pack")
+	if j.Status != "failed" || !strings.Contains(j.Error, "every project on this machine") {
+		t.Fatalf("job = %+v, want a failure explaining the refusal", j)
 	}
 }
 
