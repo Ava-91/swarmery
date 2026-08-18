@@ -683,7 +683,14 @@ func parseSpec(planDir string, warn func(string, ...any)) []SpecCriterion {
 // v4: spec.md criteria + phase Covers — plan/spec.md's SC-tagged checkboxes
 // become spec_criteria rows and a phase doc's `**Covers:**` declaration lands in
 // epic_phases.covers; already-indexed plans need a re-parse to populate both.
-const parserVersion = "v4"
+// v5: two extractions changed at once and neither bumped this on its own, which is
+// exactly the failure this constant exists to prevent — an indexed plan keeps
+// whatever the previous parser stored until its bytes happen to change:
+//   - CountCheckboxes ignores checkboxes inside fenced code blocks, so a doc that
+//     quotes a checklist template stops inflating its total (a shipped phase read
+//     7/11 with all seven criteria ticked);
+//   - epic_phases.verify_mode is parsed from the `**Verify:**` header line.
+const parserVersion = "v5"
 
 // planHash combines every plan file's bytes into one content hash, so the gate
 // re-parses when the README OR any phase doc changes (a checkbox flip lives in a
