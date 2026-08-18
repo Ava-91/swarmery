@@ -381,6 +381,35 @@ func TestWasteFourComponentsStaySeparate(t *testing.T) {
 	}
 }
 
+// TestRetriedCountsBothBudgets pins the honesty fix: "retried" reads BOTH re-dispatch
+// counters. 0051 split one column into two — retry_count (the dispatcher's no-progress
+// heal) and verify_retry_count (the verification fix-chain) — and for as long as this
+// metric read only the first, every task re-run because its verification failed was
+// invisible waste while the label claimed to count retries.
+func TestRetriedCountsBothBudgets(t *testing.T) {
+	db := newFixtureDB(t)
+
+	// Task 1 has zero dispatch retries and TWO verify fix-chain retries: under the old
+	// query it was not "retried" at all. It is linked to sessions 1+2 (cost 0.10+0.50).
+	mustExec(t, db, `UPDATE tasks SET verify_retry_count=2 WHERE id=1`)
+	// Task 6 already has retry_count=2; give it one verify retry so the sum, not the
+	// max and not either column alone, is what the total reflects.
+	mustExec(t, db, `UPDATE tasks SET verify_retry_count=1 WHERE id=6`)
+
+	m := mustCompute(t, db, Options{}).Waste
+
+	if m.Retried.Tasks != 2 {
+		t.Errorf("retried tasks = %d, want 2 — a verify-only retry is still a retry", m.Retried.Tasks)
+	}
+	// 2 (task 1 verify) + 2 (task 6 dispatch) + 1 (task 6 verify) = 5.
+	if m.Retries != 5 {
+		t.Errorf("Retries = %d, want 5 (retry_count + verify_retry_count across both tasks)", m.Retries)
+	}
+	if !almost(m.Retried.CostUSD, 0.95) {
+		t.Errorf("retried cost = %v, want 0.95 (task 1's 0.60 + task 6's 0.35)", m.Retried.CostUSD)
+	}
+}
+
 func TestModelMix(t *testing.T) {
 	m := mustCompute(t, newFixtureDB(t), Options{}).ModelMix
 	if len(m.Rows) != 4 {
