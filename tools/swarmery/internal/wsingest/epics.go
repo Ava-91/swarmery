@@ -37,6 +37,9 @@ var (
 	phaseDocRe = regexp.MustCompile(`(?i)^(?:phase|step)-.*\.md$`)
 	// The Doc column cell wraps the filename in backticks: `phase-1-x.md`.
 	backtickDocRe = regexp.MustCompile("`([^`]+\\.md)`")
+	// …or writes it as a markdown link: [phase-1-x.md](./phase-1-x.md). The
+	// capture is the TARGET; a `#anchor` or query tail is trimmed off.
+	linkDocRe = regexp.MustCompile(`\]\(\s*([^()\s#?]+\.md)`)
 	// Leading integers in the "Depends on" cell: "1, 2", "1 (API), 3 (live)".
 	// Deliberately liberal: real plans also write "01", "1-5", "5–6", "ph.1",
 	// "0 (spike)", "step-01", or free prose like "rebase after 4/14" — none of
@@ -523,10 +526,23 @@ func isTableDivider(cells []string) bool {
 }
 
 // docFromCell pulls the `.md` filename out of a Doc cell, preferring the
-// backtick-wrapped form. Falls back to the first bare token ending in .md.
-// Returns "" when the cell names no doc. Pure.
+// backtick-wrapped form, then a markdown link, then the first bare token ending
+// in .md. Returns "" when the cell names no doc. Pure.
+//
+// The link form is not a nicety: a planner writing a README table reaches for
+// `[phase-1-x.md](./phase-1-x.md)` so the doc is clickable, and that cell is a
+// single token ending in ")" — invisible to the bare-token scan. Every row then
+// names no doc, the whole table parses to nothing, and the plan silently
+// degrades to the one-phase-per-doc fallback, which knows no Depends on. The
+// operator sees the right phases with an empty DAG, so a plan run fans all of
+// them out at once.
 func docFromCell(cell string) string {
 	if m := backtickDocRe.FindStringSubmatch(cell); m != nil {
+		return filepath.Base(strings.TrimSpace(m[1]))
+	}
+	// The link TARGET, not the label: the target is the path, and a mismatched
+	// label is the author's typo, not the file the phase runs from.
+	if m := linkDocRe.FindStringSubmatch(cell); m != nil {
 		return filepath.Base(strings.TrimSpace(m[1]))
 	}
 	for _, tok := range strings.Fields(cell) {
