@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
 )
 
@@ -138,7 +139,14 @@ func (s *Service) run(ctx context.Context, jobID int64, projectPath, pack string
 	s.set(jobID, "generating", "running "+pack+" generator", "", false)
 	gctx, cancel := context.WithTimeout(ctx, act.Timeout)
 	defer cancel()
-	if _, err := s.Runner.Claude(gctx, projectPath, act.Prompt, "-p", "--model", defaultModel, "--output-format", "text"); err != nil {
+	// A generate action's whole product is files (architecture-out/** for the
+	// architecture pack), and a headless run without --permission-mode can write
+	// nothing — not even inside its own cwd — while still exiting 0. Without the
+	// flag the job reports "generated" over an artifact that does not exist, and
+	// Fresh() then reruns it on every toggle. See internal/claudeflags.
+	genArgs := append([]string{"-p", "--model", defaultModel, "--output-format", "text"},
+		claudeflags.PermissionModeArgs(permEnv)...)
+	if _, err := s.Runner.Claude(gctx, projectPath, act.Prompt, genArgs...); err != nil {
 		s.set(jobID, "failed", "", err.Error(), true)
 		return err
 	}

@@ -33,6 +33,11 @@ const stderrTailBytes = 4096
 // alias — aliases re-resolve over time.
 const defaultModel = "claude-opus-5"
 
+// permEnv is this spawn site's --permission-mode knob (internal/claudeflags owns
+// the resolution and the "off" escape hatch). Used by the generate step in
+// service.go, whose product is files on disk.
+const permEnv = "SWARMERY_PROVISION_PERMISSION_MODE"
+
 // ClaudeRunner is the production Runner: a plain PATH lookup of the claude
 // binary, the same pattern internal/improve and internal/toolproc use.
 type ClaudeRunner struct{}
