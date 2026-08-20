@@ -2,7 +2,7 @@
 // language: JetBrains Mono uppercase eyebrows, hairline pill status chips,
 // warm near-black hairline cards).
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import type { SessionStatus } from '../api/types';
 import { fmtSpan } from '../lib/format';
 
@@ -224,6 +224,322 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ----- expandable section — fullscreen without remounting the children -----
+ * Embedded pages (architecture map, graphify viz, serena panes, docs) hand this
+ * wrapper a HEAVY child — an iframe or a canvas that carries state the user is
+ * mid-way through: pan/zoom, scroll position, a loaded document, a graph
+ * layout. So expanding has to be a class change and nothing else.
+ *
+ * INVARIANT: `children` render from ONE subtree in both states. No conditional
+ * render of the children, no `key` that varies with `expanded`, no portal.
+ * Move them into a branch and React unmounts the old tree, which reloads every
+ * iframe and throws away exactly the state that was being looked at — the same
+ * wrapper-only rule pages/Architecture.tsx relies on so its fullscreen map does
+ * not re-fetch. The close button is a SIBLING placed after the children, so it
+ * never shifts their position in the tree.
+ *
+ * LAYERING: the expanded overlay is z-[45] — above the app header (z-20,
+ * App.tsx) and above the in-flow modals at z-40 (workspace/TaskModal.tsx,
+ * components/usage/UsageModal.tsx), below the dialog layer at z-50 (Modal
+ * below, workspace/NewTaskModal.tsx) and below tooltips at z-[60]
+ * (components/Tooltip.tsx). A fill route never has a z-40 modal open at the
+ * same time, so 45 only has to clear the header; it is deliberately under 50 so
+ * a real dialog can still be raised over an expanded section.
+ *
+ * That last case is NOT wired up yet, and the `defaultPrevented` guards below
+ * are what it will hang on: no z-50 dialog in this app claims Escape today
+ * (ConfirmDialog above and workspace/NewTaskModal.tsx close on a button or the
+ * backdrop, neither attaches a keydown listener), and no current consumer of
+ * this component raises one while expanded — so the guard is currently dead
+ * code kept for the day one does. Whoever opens the first dialog over an
+ * expanded section must give it an Escape handler that calls preventDefault(),
+ * or Esc will collapse the section UNDER the dialog instead of closing it. */
+
+/** Trigger styling for the expand affordance, exported so a page that needs its
+ * own label/placement still matches every other embedded page. */
+export const EXPAND_BUTTON_CLASS =
+  'rounded-[9px] border border-line-strong bg-field px-2.5 py-[6px] font-mono text-[12px] text-ink transition-colors hover:border-ink-dim';
+
+/** The standard `⛶ expand` trigger — one glyph and one word, everywhere. */
+export function ExpandButton({
+  onClick,
+  label = 'expand',
+  expanded,
+  className = EXPAND_BUTTON_CLASS,
+}: {
+  onClick: () => void;
+  /** Overrides the word after the glyph (the accessible name follows it). */
+  label?: string;
+  /** Drives aria-expanded, like every other disclosure trigger in the app. */
+  expanded?: boolean;
+  /** Re-skins the trigger for a page whose header buttons are lighter than a
+   * toolbar control (planning). The SEMANTICS — decorative glyph, accessible
+   * name, aria-expanded — stay here so a re-skin cannot drift away from them. */
+  className?: string;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={expanded}
+      className={className}
+    >
+      {/* The glyph is decoration — hiding it keeps the accessible name equal to
+          the visible word instead of "⛶ expand". */}
+      <span aria-hidden="true">⛶ </span>
+      {label}
+    </button>
+  );
+}
+
+/* Body scroll lock, shared by every expanded section.
+ *
+ * Saving and restoring per instance breaks as soon as two sections exist: A
+ * locks (captures ''), B locks (captures 'hidden'), A collapses and writes ''
+ * back — the page behind scrolls again while B is still fullscreen. One
+ * module-level refcount owns the original value: captured on 0→1, restored on
+ * 1→0, so nesting and out-of-order collapse both stay correct. */
+let scrollLocks = 0;
+let scrollLockPrev = '';
+
+function lockBodyScroll(): void {
+  if (scrollLocks === 0) {
+    scrollLockPrev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+  scrollLocks += 1;
+}
+
+function unlockBodyScroll(): void {
+  scrollLocks = Math.max(0, scrollLocks - 1);
+  if (scrollLocks === 0) document.body.style.overflow = scrollLockPrev;
+}
+
+/* Esc ownership. One window listener per expanded section would collapse ALL of
+ * them on a single Esc; the stack makes the most recently expanded one the only
+ * responder, which is what "Esc closes the thing on top" means. */
+const escStack: object[] = [];
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])';
+
+export function ExpandableSection({
+  expanded,
+  onToggle,
+  label,
+  children,
+  className,
+}: {
+  expanded: boolean;
+  onToggle: (next: boolean) => void;
+  /** Names the overlay for screen readers while expanded (aria-label). */
+  label: string;
+  children: ReactNode;
+  /** Extra classes for the collapsed wrapper; the overlay owns its own box. */
+  className?: string;
+}): JSX.Element {
+  // onToggle may change identity on every render (callers pass inline arrows);
+  // call the latest one without re-running the effect below, which would
+  // re-capture the focus anchor and re-read the body overflow it must restore.
+  // Written in an effect, not during render — a render-phase ref write is what
+  // React warns about, and the handler below only ever fires post-commit.
+  const toggleRef = useRef(onToggle);
+  useEffect(() => {
+    toggleRef.current = onToggle;
+  });
+
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  // While expanded: Esc collapses (this section only, if several are open), the
+  // page behind is scroll-locked through the shared refcount, focus moves to the
+  // close button and returns to the element that opened the overlay on collapse
+  // so keyboard navigation resumes where it left off instead of at the document
+  // top. pages/Architecture.tsx still carries its own older copy of this
+  // behaviour (at z-[60], and it never restores focus); the Architecture phase
+  // deletes that copy in favour of this one, dropping its overlay to z-[45].
+  useEffect(() => {
+    if (!expanded) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const owner = {};
+    escStack.push(owner);
+
+    // Only the topmost expanded section answers Esc.
+    const collapseIfTopmost = (): void => {
+      if (escStack[escStack.length - 1] === owner) toggleRef.current(false);
+    };
+
+    const onKey = (e: KeyboardEvent): void => {
+      // A dialog raised OVER an expanded section (z-50 > z-[45]) gets Esc first;
+      // if it handled the key, this section must not also collapse behind it.
+      if (e.defaultPrevented) return;
+      if (e.key === 'Escape') {
+        collapseIfTopmost();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      // Focus containment. aria-modal tells assistive tech the rest of the page
+      // is unavailable, so Tab must not walk into the shell behind — it is still
+      // in the DOM. Containment stops at an iframe boundary by construction:
+      // once focus is inside a frame, its document owns Tab and the host cannot
+      // see it. That is acceptable here (the frame IS the content) and is why
+      // the close button is also reachable by mouse and by Esc.
+      const box = boxRef.current;
+      if (box === null) return;
+      const focusable = [...box.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first === undefined || last === undefined) return;
+      const active = document.activeElement;
+      if (!e.shiftKey && (active === last || !box.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && (active === first || !box.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKey);
+
+    // Backstop for every way focus can leave the overlay that the Tab handler
+    // above cannot see: tabbing BACKWARDS out of a child frame (the frame's
+    // document owns that key, and the browser then walks to the host element
+    // before the <iframe> — outside the overlay), and any programmatic focus
+    // from the shell behind. aria-modal promises the rest of the page is
+    // unavailable, so focus is pulled back to the close button. Only the topmost
+    // section may do this, or two open sections would fight over the focus.
+    const onFocusIn = (e: FocusEvent): void => {
+      if (escStack[escStack.length - 1] !== owner) return;
+      const box = boxRef.current;
+      if (box === null) return;
+      const target = e.target;
+      if (target !== null && !box.contains(target as Node)) closeRef.current?.focus();
+    };
+    document.addEventListener('focusin', onFocusIn);
+
+    // A keydown inside an iframe fires in the frame's own document and never
+    // crosses into ours, so Esc would die the moment the user clicked into the
+    // map or graph — the normal state while expanded. Same-origin frames get a
+    // listener of their own; a cross-origin one (serena's dashboard) cannot, by
+    // design.
+    //
+    // It handles Escape ONLY. Tab belongs to whichever document the key was
+    // pressed in: the frame runs its own tab order, and from the host side
+    // `document.activeElement` is just the <iframe>, so reusing the containment
+    // handler here would cancel the frame's navigation and yank focus out to the
+    // close button on the first Shift+Tab inside the map. (Filtering by
+    // `e.target.ownerDocument` does not work either — an element from the frame
+    // is not an `instanceof` the HOST realm's Node, so the check silently fails
+    // open. Two handlers is the honest fix.)
+    //
+    // Attaching once is not enough: a frame still loading at expand time holds a
+    // throwaway about:blank, and the architecture map re-navigates its frame on
+    // every rebuild (cache-busted src). Both replace the document and would drop
+    // the listener with it, so the host-side `load` event re-attaches — it fires
+    // for same-origin navigations and is the only signal the host reliably gets.
+    const onFrameKey = (e: KeyboardEvent): void => {
+      if (e.defaultPrevented) return;
+      if (e.key === 'Escape') collapseIfTopmost();
+    };
+    const framesDocs = new Set<Document>();
+    const attachToFrame = (frame: HTMLIFrameElement): void => {
+      try {
+        const doc = frame.contentDocument;
+        if (doc === null || framesDocs.has(doc)) return;
+        doc.addEventListener('keydown', onFrameKey);
+        framesDocs.add(doc);
+      } catch {
+        // Cross-origin frame — the host is not allowed to listen inside it.
+      }
+    };
+    const frames = [...(boxRef.current?.querySelectorAll('iframe') ?? [])];
+    const onFrameLoad = (e: Event): void => {
+      if (e.currentTarget instanceof HTMLIFrameElement) attachToFrame(e.currentTarget);
+    };
+    for (const frame of frames) {
+      attachToFrame(frame);
+      frame.addEventListener('load', onFrameLoad);
+    }
+
+    lockBodyScroll();
+    closeRef.current?.focus();
+
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('focusin', onFocusIn);
+      for (const frame of frames) frame.removeEventListener('load', onFrameLoad);
+      for (const doc of framesDocs) doc.removeEventListener('keydown', onFrameKey);
+      const at = escStack.lastIndexOf(owner);
+      if (at !== -1) escStack.splice(at, 1);
+      unlockBodyScroll();
+      // On unmount-while-expanded the opener is often detached; focus() is then
+      // a harmless no-op. Do not "fix" this into a document.body.focus() — and
+      // when the section mounted already expanded there IS no opener but <body>,
+      // which would drop keyboard position to the document top for nothing.
+      if (opener !== null && opener !== document.body) opener.focus();
+    };
+  }, [expanded]);
+
+  // Reset the OWNER's flag when an expanded section stops being rendered.
+  //
+  // Every consumer gates this section on the pane still existing — a serena
+  // project that is running, a graphify project that has a viz, an architecture
+  // map that built. When that condition flips while expanded (the project
+  // stops, the map is deleted), the section unmounts: the effect above cleans
+  // up correctly, so scroll unlocks and the listeners go. But `expanded` lives
+  // in the PAGE, and nothing has told it — so the flag stays true, the trigger
+  // that comes back still reads aria-expanded="true", and the next time the
+  // pane renders the section mounts straight into fullscreen over a pane the
+  // user never asked to expand.
+  //
+  // Fixing it here rather than in each page is the point: the invariant is
+  // "collapsed is the only state this can be resurrected in", and it belongs to
+  // the primitive that owns the state machine. An empty dep list is what makes
+  // this possible — its cleanup runs on unmount ONLY, the one case the
+  // [expanded] effect above cannot tell apart from an ordinary collapse (both
+  // run the same cleanup).
+  const expandedRef = useRef(expanded);
+  useEffect(() => {
+    expandedRef.current = expanded;
+  });
+  useEffect(
+    () => () => {
+      if (expandedRef.current) toggleRef.current(false);
+    },
+    [],
+  );
+
+  const collapsedClass =
+    className === undefined
+      ? 'flex min-h-0 flex-1 flex-col'
+      : `flex min-h-0 flex-1 flex-col ${className}`;
+
+  return (
+    <div
+      ref={boxRef}
+      className={expanded ? 'fixed inset-0 z-[45] flex flex-col bg-bg p-3 desk:p-4' : collapsedClass}
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded ? true : undefined}
+      aria-label={expanded ? label : undefined}
+    >
+      {children}
+      {expanded && (
+        <button
+          type="button"
+          ref={closeRef}
+          onClick={() => onToggle(false)}
+          aria-label={`collapse ${label}`}
+          className="absolute top-5 right-6 rounded-[9px] border border-line-strong bg-surface px-2.5 py-[6px] font-mono text-[12px] text-ink shadow-lg transition-colors hover:border-ink-dim desk:top-6 desk:right-7"
+        >
+          ✕ close
+        </button>
+      )}
     </div>
   );
 }

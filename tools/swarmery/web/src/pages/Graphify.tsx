@@ -10,7 +10,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolsResponse } from '../api/types';
 import { fetchTools } from '../api';
-import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
+import {
+  Card,
+  Empty,
+  ErrorBox,
+  ExpandButton,
+  ExpandableSection,
+  Loading,
+  SectionTitle,
+} from '../components/ui';
 import { fmtAgo } from '../lib/format';
 import { findProject } from '../lib/projectSlug';
 
@@ -22,6 +30,11 @@ export function Graphify({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elem
   // (scopedSlug set) the switcher owns project choice, so the in-page dropdown
   // is hidden and the selection is pinned to that slug.
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Expanded state only — Esc (including from inside the same-origin viz frame),
+  // the body scroll lock, focus containment and focus restore all belong to
+  // <ExpandableSection> (components/ui.tsx), the same primitive pages/Architecture.tsx
+  // uses. Nothing about the overlay is re-implemented here.
+  const [expanded, setExpanded] = useState(false);
 
   // Unmount guard (ProjectPlugins idiom): a ref because the load callback
   // outlives any single effect run.
@@ -55,10 +68,18 @@ export function Graphify({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elem
     : (projects.find((p) => p.id === selectedId) ?? projects.find((p) => p.hasViz) ?? projects[0]);
 
   return (
-    <div className="min-w-0 px-4 pt-6 pb-10 desk:px-10 desk:pt-[34px] desk:pb-[60px]">
-      <SectionTitle>graphify</SectionTitle>
+    // Fill route (`handle: { fill: true }`, src/main.tsx): the shell has stopped
+    // scrolling, so the page is the flex column that spends the leftover height —
+    // every fixed-height chunk is `shrink-0` and the viz pane takes the rest. The
+    // bottom padding is a gap under the pane, not the old document-page rhythm.
+    <div className="flex h-full min-h-0 min-w-0 flex-col px-4 pt-6 pb-4 desk:px-10 desk:pt-[34px] desk:pb-6">
+      {/* SectionTitle owns its margins and takes no className, so the shrink-0
+          flex item is a wrapper around it. */}
+      <div className="shrink-0">
+        <SectionTitle>graphify</SectionTitle>
+      </div>
       {error !== null && (
-        <div className="mb-2">
+        <div className="mb-2 shrink-0">
           <ErrorBox message={error} onRetry={load} />
         </div>
       )}
@@ -73,7 +94,9 @@ export function Graphify({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elem
           </Empty>
         ) : (
           <>
-            <Card>
+            {/* The fragment is transparent to layout: this Card and the viz pane
+                below are both flex items of the page root. */}
+            <Card className="shrink-0">
               <div className="flex flex-wrap items-center gap-3">
                 {!scoped && (
                   <select
@@ -94,19 +117,43 @@ export function Graphify({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elem
                     graph built {fmtAgo(project.builtAt)}
                   </span>
                 )}
+                {project.hasViz && (
+                  <span className="ml-auto flex items-center gap-2">
+                    <ExpandButton onClick={() => setExpanded(true)} expanded={expanded} />
+                  </span>
+                )}
               </div>
             </Card>
             {project.hasViz ? (
-              <div className="mt-3">
+              // The pane that spends the leftover height (flex-1/min-h-0 come from
+              // ExpandableSection's own collapsed class), and the same subtree in
+              // both states: expanding only swaps the wrapper's classes, so the
+              // iframe is never remounted and the graph keeps its layout, pan/zoom
+              // and selection instead of re-fetching the viz artifact.
+              // `key={project.id}` is the ONE thing that may remount it — switching
+              // projects is a different graph.
+              <ExpandableSection
+                expanded={expanded}
+                onToggle={setExpanded}
+                label="graphify visualization"
+                className="mt-3"
+              >
                 <iframe
                   key={project.id}
                   src={project.vizPath}
                   title="Graphify visualization"
-                  className="h-[calc(100vh-180px)] w-full rounded-xl border border-line bg-surface"
+                  // One class list for both states — the height comes from the flex
+                  // parent, never from the viewport. The previous height was viewport
+                  // math minus a hardcoded 180px for the chrome above it; every guess
+                  // that ran short overshot into a second scrollbar, and no constant
+                  // can be right in both shells at both breakpoints.
+                  className="h-full w-full rounded-xl border border-line bg-surface"
                 />
-              </div>
+              </ExpandableSection>
             ) : (
-              <div className="mt-3">
+              // shrink-0: the honest hint is content-sized, so it sits under the
+              // toolbar instead of stretching into a tall empty box of its own.
+              <div className="mt-3 shrink-0">
                 <Empty>
                   {project.hasGraph
                     ? 'graph.json exists but no visualization — run /graphify <repo> (without --no-viz) to generate graph.html'

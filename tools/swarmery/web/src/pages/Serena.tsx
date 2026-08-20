@@ -10,7 +10,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolsResponse, ToolsSerenaProject } from '../api/types';
 import { fetchTools, serenaStart, serenaStop } from '../api';
-import { Card, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
+import {
+  Card,
+  Empty,
+  ErrorBox,
+  ExpandButton,
+  ExpandableSection,
+  Loading,
+  SectionTitle,
+} from '../components/ui';
 import { fmtAgo } from '../lib/format';
 import { findProject } from '../lib/projectSlug';
 
@@ -43,6 +51,13 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
   // (scopedSlug set) the workspace switcher owns the project, so the in-page
   // dropdown is hidden and the selection is pinned to that slug.
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Expanded state only — Esc, the body scroll lock, focus containment and focus
+  // restore all belong to <ExpandableSection> (components/ui.tsx), the same
+  // primitive pages/Architecture.tsx uses. Note the frame below is cross-origin,
+  // so the section's in-frame Esc listener cannot attach here: while focus is
+  // inside serena's dashboard, Esc belongs to that document and the ✕ close
+  // button (or clicking back out to the host) is the way out.
+  const [expanded, setExpanded] = useState(false);
 
   // Unmount guard shared by load / actions / settle-polling (ProjectPlugins
   // idiom): a ref because these callbacks outlive any single effect run.
@@ -132,10 +147,18 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
   };
 
   return (
-    <div className="min-w-0 px-4 pt-6 pb-10 desk:px-10 desk:pt-[34px] desk:pb-[60px]">
-      <SectionTitle>serena</SectionTitle>
+    // Fill route (`handle: { fill: true }`, src/main.tsx): the shell has stopped
+    // scrolling, so the page is the flex column that spends the leftover height —
+    // every fixed-height chunk is `shrink-0` and the dashboard pane takes the rest.
+    // The bottom padding is a gap under the pane, not the old document-page rhythm.
+    <div className="flex h-full min-h-0 min-w-0 flex-col px-4 pt-6 pb-4 desk:px-10 desk:pt-[34px] desk:pb-6">
+      {/* SectionTitle owns its margins and takes no className, so the shrink-0
+          flex item is a wrapper around it. */}
+      <div className="shrink-0">
+        <SectionTitle>serena</SectionTitle>
+      </div>
       {error !== null && (
-        <div className="mb-2">
+        <div className="mb-2 shrink-0">
           <ErrorBox message={error} onRetry={load} />
         </div>
       )}
@@ -152,7 +175,9 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
           </Empty>
         ) : (
           <>
-            <Card>
+            {/* The fragment is transparent to layout: this Card and the dashboard
+                pane below are both flex items of the page root. */}
+            <Card className="shrink-0">
               <div className="flex flex-wrap items-center gap-3">
                 {!scoped && (
                   <select
@@ -174,35 +199,52 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
                     started {fmtAgo(project.startedAt)}
                   </span>
                 )}
-                <button
-                  type="button"
-                  disabled={busy}
-                  aria-label={
-                    busy
-                      ? 'busy'
-                      : project.state === 'running' || project.state === 'starting'
-                        ? 'stop serena'
-                        : 'start serena'
-                  }
-                  onClick={() => toggle(project)}
-                  className="ml-auto rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {busy
-                    ? '…'
-                    : project.state === 'starting' || project.state === 'running'
-                      ? 'stop'
-                      : 'start'}
-                </button>
+                <span className="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={
+                      busy
+                        ? 'busy'
+                        : project.state === 'running' || project.state === 'starting'
+                          ? 'stop serena'
+                          : 'start serena'
+                    }
+                    onClick={() => toggle(project)}
+                    className="rounded-lg border border-line bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-2 transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busy
+                      ? '…'
+                      : project.state === 'starting' || project.state === 'running'
+                        ? 'stop'
+                        : 'start'}
+                  </button>
+                  {/* Only meaningful while there is a pane to expand. */}
+                  {project.state === 'running' && project.dashboardUrl !== '' && (
+                    <ExpandButton onClick={() => setExpanded(true)} expanded={expanded} />
+                  )}
+                </span>
               </div>
               {project.state === 'failed' && project.error !== '' && (
-                <div className="mt-2 font-mono text-[11px] text-red">{project.error}</div>
+                // break-all for the same reason the log tail below has it: this
+                // is verbatim tool output, so it can be one unbroken token (a
+                // path, a URL, a stack frame) that no word-break rule would
+                // split — and at 390px that token is what pushes the card past
+                // the viewport into a horizontal scrollbar.
+                <div className="mt-2 font-mono text-[11px] break-all text-red">{project.error}</div>
               )}
               {project.state !== 'running' && project.logTail.length > 0 && (
                 <details className="mt-2">
                   <summary className="cursor-pointer font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink">
                     log tail ({project.logTail.length})
                   </summary>
-                  <div className="mt-1.5 rounded-lg border border-line bg-field px-3 py-2">
+                  {/* The tail is unbounded (it grows with the log) and the card
+                      above is `shrink-0`, so an open <details> would push the page
+                      past the viewport and put the scrollbar back on the whole
+                      document — the exact thing fill mode removes. Cap it and let
+                      the tail scroll inside itself, the `max-h-… + overflow-y-auto`
+                      idiom the rest of the app uses for log/JSON bodies. */}
+                  <div className="mt-1.5 max-h-40 overflow-y-auto rounded-lg border border-line bg-field px-3 py-2">
                     {project.logTail.map((line, i) => (
                       <div
                         // eslint-disable-next-line react/no-array-index-key -- append-only tail
@@ -217,14 +259,38 @@ export function Serena({ scopedSlug }: { scopedSlug?: string } = {}): JSX.Elemen
               )}
             </Card>
             {project.state === 'running' && project.dashboardUrl !== '' && (
-              <div className="mt-3">
+              // The pane that spends the leftover height (flex-1/min-h-0 come from
+              // ExpandableSection's own collapsed class), and the same subtree in
+              // both states: expanding only swaps the wrapper's classes, so the
+              // iframe is never remounted and the dashboard keeps its session.
+              //
+              // CROSS-ORIGIN, deliberately: `dashboardUrl` is serena's own origin
+              // (127.0.0.1:24282), not the daemon proxy — serena's dashboard.js
+              // makes root-absolute ajax calls that escape any path prefix. So the
+              // embed-CSS/theme injection pages/Architecture.tsx does into its
+              // same-origin frame is impossible here and is not missing by
+              // oversight: the host may only set this frame's OUTER box (height
+              // via the flex parent) and expand it. Nothing inside it can be
+              // restyled, and Esc does not reach the host while focus is in the
+              // frame — the ✕ close button covers that.
+              <ExpandableSection
+                expanded={expanded}
+                onToggle={setExpanded}
+                label="serena dashboard"
+                className="mt-3"
+              >
                 <iframe
                   key={project.id}
                   src={project.dashboardUrl}
                   title="Serena dashboard"
-                  className="h-[calc(100vh-220px)] w-full rounded-xl border border-line bg-surface"
+                  // One class list for both states — the height comes from the flex
+                  // parent, never from the viewport. The previous height was viewport
+                  // math minus a hardcoded 220px for the chrome above it; every guess
+                  // that ran short overshot into a second scrollbar, and no constant
+                  // can be right in both shells at both breakpoints.
+                  className="h-full w-full rounded-xl border border-line bg-surface"
                 />
-              </div>
+              </ExpandableSection>
             )}
           </>
         )

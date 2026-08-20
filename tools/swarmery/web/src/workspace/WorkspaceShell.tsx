@@ -23,7 +23,12 @@ export function WorkspaceShell(): JSX.Element {
   const { health, unreachable } = useHealth();
   const daemonOk = !unreachable;
   return (
-    <div className="flex h-dvh flex-col">
+    // overflow-hidden: a shell that IS the viewport must never scroll the
+    // document — the scroller lives inside (ProjectWorkspaceLayout's
+    // [data-shell-scroller], or the page itself on fill routes). Without it a
+    // sub-pixel row height (the mobile tab strip lands on a .5 boundary) rounds
+    // up and the whole app gains a 1px document scroll.
+    <div className="flex h-dvh flex-col overflow-hidden">
       <header className="header-hairline relative z-20 flex h-14 shrink-0 items-center gap-4 bg-bg px-4 desk:px-6">
         {/* Same fixed-width wordmark block as the fleet header (desk:w-[208px])
             so the ModeToggle sits at the identical x-position — no shift when
