@@ -30,6 +30,11 @@ export interface PendingSend {
   text: string;
   state: 'pending' | 'failed';
   sentAt: number;
+  /** Why the send was refused, as the server said it. Absent when the bubble
+   * went stale on its own (no response to quote) — the refusals worth reading
+   * are the explained ones: a live process, a removed run worktree, a branch
+   * that no longer exists. */
+  reason?: string | undefined;
 }
 
 /* ----- tool activity one-liner ----- */
@@ -258,14 +263,21 @@ function PendingTurn({
         {entry.text}
       </div>
       {failed ? (
-        <button
-          type="button"
-          onClick={() => onRetry?.(entry.key)}
-          className="mt-1 flex items-center gap-1.5 rounded-md px-1 pr-1 font-mono text-[10px] text-red transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red"
-        >
-          <span aria-hidden="true">⚠</span>
-          failed — retry
-        </button>
+        <div className="flex flex-col items-end">
+          {entry.reason !== undefined && entry.reason !== '' ? (
+            <p className="mt-1 max-w-[88%] text-right font-mono text-[10px] leading-relaxed text-red">
+              {entry.reason}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => onRetry?.(entry.key)}
+            className="mt-1 flex items-center gap-1.5 rounded-md px-1 pr-1 font-mono text-[10px] text-red transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red"
+          >
+            <span aria-hidden="true">⚠</span>
+            failed — retry
+          </button>
+        </div>
       ) : (
         <span className="mt-1 flex items-center gap-1.5 pr-1 font-mono text-[10px] text-ink-faint">
           <span className="h-[6px] w-[6px] animate-blink-dot rounded-full bg-brand" aria-hidden="true" />

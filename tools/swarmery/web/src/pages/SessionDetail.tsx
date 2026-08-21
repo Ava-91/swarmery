@@ -391,13 +391,15 @@ export function SessionDetailPage(): JSX.Element {
 
   // POST rejected: flip the most recent still-pending bubble with this text to
   // `failed` (match by text — the composer just created exactly one).
-  const onSendFailed = useCallback((text: string): void => {
+  const onSendFailed = useCallback((text: string, reason?: string): void => {
     setPending((p) => {
       const idx = p.map((e) => e.text === text && e.state === 'pending').lastIndexOf(true);
       const target = idx === -1 ? undefined : p[idx];
       if (target === undefined) return p;
       const next = p.slice();
-      next[idx] = { ...target, state: 'failed' };
+      // Keep the server's reason on the bubble — it is the only place the
+      // operator ever sees why the send was refused.
+      next[idx] = { ...target, state: 'failed', reason };
       return next;
     });
   }, []);
@@ -412,12 +414,15 @@ export function SessionDetailPage(): JSX.Element {
         p.map((e) => {
           if (e.key !== key) return e;
           text = e.text;
-          return { ...e, state: 'pending', sentAt: Date.now() };
+          // Drop the stale reason while the retry is in flight, or the bubble
+          // would read as failed-for-that-reason while it is actually sending.
+          return { ...e, state: 'pending', sentAt: Date.now(), reason: undefined };
         }),
       );
       if (text === null || detail === null) return;
-      sendSessionMessage(detail.id, text).catch(() => {
-        setPending((p) => p.map((e) => (e.key === key ? { ...e, state: 'failed' } : e)));
+      sendSessionMessage(detail.id, text).catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        setPending((p) => p.map((e) => (e.key === key ? { ...e, state: 'failed', reason } : e)));
       });
     },
     [detail],

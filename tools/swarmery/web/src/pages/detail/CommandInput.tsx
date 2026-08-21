@@ -38,9 +38,11 @@ export function CommandInput({
   /** Called synchronously on submit with the sent text — the parent echoes it
    * as a pending bubble immediately (before the POST resolves). */
   onSent?: (text: string) => void;
-  /** Called with the same text if the POST rejects, so the parent can flip that
-   * optimistic bubble to a failed/retry state. */
-  onSendFailed?: (text: string) => void;
+  /** Called with the same text if the POST rejects, plus the server's reason, so
+   * the parent can flip that optimistic bubble to a failed/retry state AND show
+   * why. A refusal here is usually actionable — a live process to stop, a run
+   * whose branch is gone — and a bare "failed" sends the operator guessing. */
+  onSendFailed?: ((text: string, reason?: string) => void) | undefined;
 }): JSX.Element {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -66,10 +68,9 @@ export function CommandInput({
     setText('');
     sendSessionMessage(sessionId, trimmed)
       .catch((e: unknown) => {
-        // The pending bubble carries the failure now; keep the composer clean
-        // (no duplicate inline error for a send — cancel errors still show).
-        onSendFailed?.(trimmed);
-        if (e instanceof Error) console.warn('session message send failed:', e.message);
+        // The pending bubble carries both the failure and its reason; the
+        // composer itself stays clean (no duplicate inline error for a send).
+        onSendFailed?.(trimmed, e instanceof Error ? e.message : String(e));
       })
       .finally(() => setSending(false));
   };
