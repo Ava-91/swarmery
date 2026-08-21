@@ -12,6 +12,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/docsfs"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/improve"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/provision"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/web"
 )
 
@@ -50,6 +51,9 @@ func NewServer(db *sql.DB, watching bool) (http.Handler, error) {
 	if err := h.Provision.HealStale(); err != nil {
 		log.Printf("warning: provision heal on startup: %v", err)
 	}
+	// The resume path re-creates a finished run's worktree on its existing branch
+	// so a stopped session can still be answered (session_message.go).
+	h.Wt = &worktree.Manager{Git: worktree.ExecGit{}}
 	Routes(mux, h)
 
 	dist, err := web.Dist()

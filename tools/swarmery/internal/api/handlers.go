@@ -16,6 +16,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/projectscan"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/provision"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // Handler bundles the API dependencies.
@@ -46,6 +47,13 @@ type Handler struct {
 	// probes single-flights the account readiness probe (accounts.go) — one
 	// `claude` per account at a time; concurrent re-checks share the result.
 	probes probeFlights
+	// Wt re-attaches the worktree of a finished run so its session stays
+	// answerable after the janitor removed the directory (session_message.go).
+	// Its own instance rather than the dispatcher's: the Manager holds no run
+	// state, only Root + the git boundary, which is why wtjanitor already builds
+	// one of its own. Nil disables the recovery — the resume then reports the
+	// missing directory as before.
+	Wt *worktree.Manager
 }
 
 type projectDTO struct {
@@ -515,8 +523,8 @@ func encodeSessionCursor(startedAt string, id int64) string {
 // token is a client error (400), never a 500.
 //
 // An EMPTY started_at is a legal position, not a malformed token: sessions.
-// started_at is NOT NULL but may be '' (a row minted before any record
-// carried a timestamp), and '' sorts last under `ORDER BY started_at DESC`,
+// started_at is NOT NULL but may be ” (a row minted before any record
+// carried a timestamp), and ” sorts last under `ORDER BY started_at DESC`,
 // so it is exactly the position a last-page cursor lands on. Rejecting it
 // here turned "load more" into a hard 400 whenever such a row fell on a page
 // boundary — the cursor must round-trip every value the ORDER BY can produce.
