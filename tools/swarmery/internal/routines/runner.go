@@ -9,7 +9,16 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 )
+
+// permEnv is this spawn site's --permission-mode knob (internal/claudeflags owns
+// the resolution and the "off" escape hatch). An ai-prompt step is operator
+// authored and routinely asks for files — refreshed docs, a written report — and
+// a headless run without the flag can write NOTHING, not even inside its own
+// cwd, while still exiting 0. The routine would then report success over an
+// artifact that was never created.
+const permEnv = "SWARMERY_ROUTINES_PERMISSION_MODE"
 
 // Runner is the ai-prompt boundary: it spawns one headless `claude -p` run in
 // the given cwd and returns raw stdout. Mocked in every test — no real claude
@@ -62,6 +71,7 @@ func (r ClaudeRunner) Run(ctx context.Context, cwd, prompt, model string) (strin
 	if m := strings.TrimSpace(model); m != "" {
 		args = append(args, "--model", m)
 	}
+	args = append(args, claudeflags.PermissionModeArgs(permEnv)...)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = cwd
 	// cwd doubles as the account lookup key here: for a project-scoped routine it

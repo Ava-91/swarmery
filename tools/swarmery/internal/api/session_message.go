@@ -14,6 +14,7 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudebin"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procwatch"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // Headless resume message: send a prompt to a session's conversation from the
@@ -117,10 +118,16 @@ func (h *Handler) PostSessionMessage(w http.ResponseWriter, r *http.Request) {
 		procState   sql.NullString
 		cwd         sql.NullString
 		account     sql.NullString
+		branch      sql.NullString
+		repoRoot    sql.NullString
 	)
+	// git_branch and the project path ride along for the worktree recovery below:
+	// a finished run's cwd is gone, but its branch still holds the work.
 	err = h.DB.QueryRow(
-		`SELECT session_uuid, proc_state, cwd, account FROM sessions WHERE id = ?`, id,
-	).Scan(&sessionUUID, &procState, &cwd, &account)
+		`SELECT s.session_uuid, s.proc_state, s.cwd, s.account, s.git_branch, p.path
+		   FROM sessions s JOIN projects p ON p.id = s.project_id
+		  WHERE s.id = ?`, id,
+	).Scan(&sessionUUID, &procState, &cwd, &account, &branch, &repoRoot)
 	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
@@ -149,12 +156,17 @@ func (h *Handler) PostSessionMessage(w http.ResponseWriter, r *http.Request) {
 	// the exact same single-flight map, timeout, and session_updated edges.
 	started, err := startResume(id, sessionUUID, cwd.String, account.String, text, nil)
 	if errors.Is(err, errResumeCwdGone) {
-		// A run's worktree is removed when the run ends, so this is the normal
-		// end state of a finished phase/plan run — say what happened and what to
-		// do instead, rather than resuming into a directory that is not there.
-		writeClientErr(w, http.StatusConflict,
-			"this session ran in "+cwd.String+", which no longer exists — a run's worktree is removed when the run ends. Re-run the phase instead of resuming this session.")
-		return
+		// A run's worktree is removed when the run ends — but only the CHECKOUT is
+		// disposable: the commits stay on swarm/<taskID>. So the missing directory
+		// is not the end of the conversation, it is something to put back. Re-attach
+		// the branch at the same path and resume there; the agent then sees exactly
+		// the tree it left behind.
+		if rErr := h.reattachRunWorktree(repoRoot.String, cwd.String); rErr != nil {
+			writeClientErr(w, http.StatusConflict, reattachFailureMessage(cwd.String, branch.String, rErr))
+			return
+		}
+		log.Printf("session_message: re-attached run worktree %s for session id=%d", cwd.String, id)
+		started, err = startResume(id, sessionUUID, cwd.String, account.String, text, nil)
 	}
 	if err != nil {
 		http.Error(w, `{"error":"claude executable not found (set SWARMERY_CLAUDE_BIN)"}`, http.StatusServiceUnavailable)
@@ -202,4 +214,35 @@ func truncateOutput(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// reattachRunWorktree puts a finished run's checkout back at its own path, on the
+// branch it already had. Nothing here moves a ref or deletes a directory (see
+// worktree.ReattachPath) — the worst case is a refusal, which the caller turns
+// into an explanation.
+func (h *Handler) reattachRunWorktree(repoRoot, cwd string) error {
+	if h.Wt == nil {
+		return errors.New("worktree recovery is not wired in this build")
+	}
+	if strings.TrimSpace(repoRoot) == "" {
+		return errors.New("the session's project has no known path")
+	}
+	_, err := h.Wt.ReattachPath(repoRoot, cwd)
+	return err
+}
+
+// reattachFailureMessage explains a refusal in the operator's terms. The two
+// cases differ in what is actually lost: a vanished BRANCH means the run's work
+// is gone and there is nothing to continue, while any other refusal means the
+// work is still on the branch and only the checkout could not be restored.
+func reattachFailureMessage(cwd, branch string, err error) string {
+	if branch == "" {
+		branch = "the run's branch"
+	}
+	if errors.Is(err, worktree.ErrBranchGone) {
+		return "this session ran in " + cwd + ", and " + branch +
+			" no longer exists either — the run's work is not recoverable, so re-run the phase instead of resuming this session."
+	}
+	return "this session ran in " + cwd + ", which was removed when the run ended. " +
+		branch + " still holds the work, but the checkout could not be restored: " + err.Error()
 }

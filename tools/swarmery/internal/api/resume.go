@@ -11,7 +11,25 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeacct"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/claudeflags"
 )
+
+// resumePermEnv is this spawn site's --permission-mode knob (internal/claudeflags
+// owns the resolution and the "off" escape hatch). A resumed turn is as headless
+// as the initial run: nobody can answer a permission prompt, so without the flag
+// the CLI refuses every write — including writes INSIDE the session's allowed
+// directories, reported as "may only create or modify files in the allowed
+// working directories" — and the process still exits 0. That is silent data loss
+// for any resume whose product is files: the planning wizard writes its plan on
+// the PROCEED turn, which is a resume, so the plan only ever existed in a reply.
+const resumePermEnv = "SWARMERY_RESUME_PERMISSION_MODE"
+
+// resumeArgs is the argv of one resume spawn, split out so the flags are
+// assertable without spawning a process (mirrors runcore.Args).
+func resumeArgs(sessionUUID, text string) []string {
+	args := []string{"-r", sessionUUID, "-p", text, "--output-format", "json"}
+	return append(args, claudeflags.PermissionModeArgs(resumePermEnv)...)
+}
 
 // errResumeCwdGone reports that the directory a session recorded as its cwd no
 // longer exists. The common case is a phase or plan run: the daemon removes the
@@ -91,7 +109,7 @@ func runSessionMessage(ctx context.Context, cancel context.CancelFunc, id int64,
 	}()
 	publishSessionUpdated(id) // resumeInFlight is now true → composer shows Stop
 
-	cmd := exec.CommandContext(ctx, bin, "-r", sessionUUID, "-p", text, "--output-format", "json")
+	cmd := exec.CommandContext(ctx, bin, resumeArgs(sessionUUID, text)...)
 	cmd.Dir = cwd
 	// The transcript `claude -r` must find lives under the config dir of the
 	// account that WROTE it, so the resume takes the account from the sessions row
