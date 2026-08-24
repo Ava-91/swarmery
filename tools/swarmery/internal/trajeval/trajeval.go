@@ -24,6 +24,41 @@ func normAgent(t string) string {
 
 const searchLoopThreshold = 4
 
+// searchTools are the tools a SEARCH loop can actually be made of: repeated
+// LOOKING that never turns into doing.
+//
+// The detector used to accept any tool name, and on the live corpus that made
+// the metric mean something other than its name. Of 557 recorded search-loop
+// findings, 83% were runs of Bash and 3% were runs of Edit — a run of Edit
+// calls is the agent producing work, and a run of Bash calls is how anything
+// gets built or tested here. Worse, the Bash command-shape guard shipped in
+// this same cycle explicitly asks agents to issue ONE operation per call,
+// which raises consecutive Bash calls by design: left alone, the deterministic
+// gate would have inflated the very number the next retro reads as "the
+// searching got worse".
+//
+// So the run is restricted to the tools whose repetition without progress is
+// genuinely a pathology. A tool outside this set ends the current run and does
+// not begin one.
+var searchTools = map[string]bool{
+	"Grep":         true,
+	"Glob":         true,
+	"Read":         true,
+	"NotebookRead": true,
+	"WebSearch":    true,
+	"WebFetch":     true,
+}
+
+// progressTools are tool calls that produce work, so they break a run even
+// when the ingest pipeline emitted no file_change event for them — which is
+// why 15 findings in the live corpus were runs of Edit in the first place.
+var progressTools = map[string]bool{
+	"Edit":         true,
+	"MultiEdit":    true,
+	"Write":        true,
+	"NotebookEdit": true,
+}
+
 // event is one row of the events table, reduced to the fields detectors need.
 type event struct {
 	turnID int64
@@ -43,10 +78,26 @@ func isProgress(typ string) bool {
 	return typ == "file_change" || typ == "commit" || typ == "test_run"
 }
 
+// isSearchCall reports whether an event extends a search run.
+func isSearchCall(e event) bool {
+	return e.typ == "tool_call" && searchTools[e.tool]
+}
+
+// breaksRun reports whether an event ends the current run: a progress event,
+// or a tool call that produces work. Everything the agent does that is not
+// looking counts as having stopped looking.
+func breaksRun(e event) bool {
+	return isProgress(e.typ) || (e.typ == "tool_call" && progressTools[e.tool])
+}
+
 // detectSearchLoop returns the FIRST detected loop in the stream: a finding
-// when >= searchLoopThreshold consecutive tool_call events share one tool name
-// with no intervening progress event. Tool calls with an empty tool name reset
-// the current run rather than extending it.
+// when >= searchLoopThreshold consecutive calls to the SAME search tool
+// (searchTools) occur with no intervening progress — no file_change, commit or
+// test_run event, and no call to a tool that produces work.
+//
+// Any other event ends the current run. A tool call outside searchTools ends it
+// without starting a new one: four builds in a row are not a search loop, and
+// counting them as one is what made this metric unreadable.
 func detectSearchLoop(evs []event) *finding {
 	var runTool string
 	var run []int64
@@ -58,14 +109,16 @@ func detectSearchLoop(evs []event) *finding {
 	}
 	for _, e := range evs {
 		switch {
-		case e.typ == "tool_call" && e.tool != "" && e.tool == runTool:
+		case isSearchCall(e) && e.tool == runTool:
 			run = append(run, e.turnID)
-		case e.typ == "tool_call" && e.tool != "":
+		case isSearchCall(e):
 			if f := flush(); f != nil {
 				return f
 			}
 			runTool, run = e.tool, []int64{e.turnID}
-		case isProgress(e.typ), e.typ == "tool_call": // progress OR empty-tool call resets
+		case breaksRun(e), e.typ == "tool_call":
+			// Progress, work, or any non-search tool call: the agent stopped
+			// looking, so whatever run was open ends here.
 			if f := flush(); f != nil {
 				return f
 			}
