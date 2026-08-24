@@ -444,31 +444,37 @@ func (h *Handler) retroAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pf, pargs := scopeFilter(r)
-
-	cur, err := h.retroAgentWindow(dr, pf, pargs)
+	out, err := h.buildRetroAgents(dr, pf, pargs)
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	writeJSON(w, out, nil)
+}
+
+// buildRetroAgents computes the scorecard payload for one resolved window and
+// scope. Split out of the handler so /api/retro/report (retro_report.go) can
+// reuse it verbatim instead of re-deriving the same aggregates.
+func (h *Handler) buildRetroAgents(dr dateRange, pf string, pargs []any) (retroAgentsDTO, error) {
+	cur, err := h.retroAgentWindow(dr, pf, pargs)
+	if err != nil {
+		return retroAgentsDTO{}, err
 	}
 	prev, err := h.retroAgentWindow(prevWindow(dr), pf, pargs)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroAgentsDTO{}, err
 	}
 	rates, err := h.agentOutcomeRates(dr, pf, pargs)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroAgentsDTO{}, err
 	}
 	delRates, err := h.delegationRates(dr, pf, pargs)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroAgentsDTO{}, err
 	}
 	evalByAgent, err := h.latestEvals()
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroAgentsDTO{}, err
 	}
 	// One registry lookup for the whole table: the set of agents the rewriter
 	// can act on, keyed by the same normalized name as the scorecard rows. A nil
@@ -477,8 +483,7 @@ func (h *Handler) retroAgents(w http.ResponseWriter, r *http.Request) {
 	if h.Improve != nil {
 		registrySet, err = h.Improve.RegistryAgentSet()
 		if err != nil {
-			writeErr(w, err)
-			return
+			return retroAgentsDTO{}, err
 		}
 	}
 
@@ -547,8 +552,7 @@ func (h *Handler) retroAgents(w http.ResponseWriter, r *http.Request) {
 	// (rolled-up) days.
 	rolled, err := h.hasRolledUpDays(dr.days[0], dr.days[len(dr.days)-1], pf, pargs)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroAgentsDTO{}, err
 	}
 	if !rolled {
 		if fromDay, perr := time.ParseInLocation(dayFmt, dr.days[0], time.Local); perr == nil {
@@ -557,13 +561,12 @@ func (h *Handler) retroAgents(w http.ResponseWriter, r *http.Request) {
 				fromDay.AddDate(0, 0, -n).Format(dayFmt),
 				fromDay.AddDate(0, 0, -1).Format(dayFmt), pf, pargs)
 			if err != nil {
-				writeErr(w, err)
-				return
+				return retroAgentsDTO{}, err
 			}
 		}
 	}
 	out.Approx = rolled
-	writeJSON(w, out, nil)
+	return out, nil
 }
 
 // ── /api/retro/friction ───────────────────────────────────────────────────
@@ -625,6 +628,19 @@ func (h *Handler) retroFriction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pf, pargs := scopeFilter(r)
+	out, err := h.buildRetroFriction(dr, pf, pargs, r.URL.Query().Get("project"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, out, nil)
+}
+
+// buildRetroFriction computes the friction board for one resolved window and
+// scope. project is the RAW ?project= value: the approval-rule lookup resolves
+// it itself (enabledRulePatterns) rather than through the SQL scope predicate.
+// Split out of the handler so /api/retro/report can reuse it.
+func (h *Handler) buildRetroFriction(dr dateRange, pf string, pargs []any, project string) (frictionDTO, error) {
 	out := frictionDTO{
 		DeniedTools: []frictionDeniedDTO{},
 		ErrorGroups: []frictionErrGroupDTO{},
@@ -632,10 +648,9 @@ func (h *Handler) retroFriction(w http.ResponseWriter, r *http.Request) {
 
 	// Denied tools: the statsTools event skeleton, aggregated, filtered,
 	// ranked and capped entirely in SQL — no row streaming.
-	rules, err := h.enabledRulePatterns(r.URL.Query().Get("project"))
+	rules, err := h.enabledRulePatterns(project)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 	rows, err := h.DB.Query(`
 		SELECT e.tool_name,
@@ -653,29 +668,25 @@ func (h *Handler) retroFriction(w http.ResponseWriter, r *http.Request) {
 		 LIMIT ?`,
 		append(append([]any{dr.start, dr.end}, pargs...), frictionTopN)...)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var d frictionDeniedDTO
 		if err := rows.Scan(&d.Tool, &d.Calls, &d.Denied); err != nil {
-			writeErr(w, err)
-			return
+			return frictionDTO{}, err
 		}
 		d.HasRule = ruleCoversTool(rules, d.Tool)
 		out.DeniedTools = append(out.DeniedTools, d)
 	}
 	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 
 	// Error groups: the shared grouping helper (also backing /api/stats/errors).
 	groups, err := h.errorGroups(dr, pf, pargs)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 	if len(groups) > frictionTopN {
 		groups = groups[:frictionTopN]
@@ -701,8 +712,7 @@ func (h *Handler) retroFriction(w http.ResponseWriter, r *http.Request) {
 		   AND pr.requested_at >= ? AND pr.requested_at < ? AND p.archived = 0`+pf,
 		append([]any{dr.start, dr.end}, pargs...))
 	if err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 	out.Approvals.Resolved = int64(len(waits))
 	if n := len(waits); n > 0 {
@@ -725,16 +735,14 @@ func (h *Handler) retroFriction(w http.ResponseWriter, r *http.Request) {
 		 WHERE pr.status = 'pending' AND p.archived = 0`+pf,
 		pargs...).Scan(&out.Approvals.Pending)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 	rolled, err := h.hasRolledUpDays(dr.days[0], dr.days[len(dr.days)-1], pf, pargs)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return frictionDTO{}, err
 	}
 	out.Approx = rolled
-	writeJSON(w, out, nil)
+	return out, nil
 }
 
 // ── /api/retro/lessons ────────────────────────────────────────────────────
@@ -767,6 +775,17 @@ func (h *Handler) retroLessons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pf, pargs := scopeFilter(r)
+	out, err := h.buildRetroLessons(dr, pf, pargs)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, out, nil)
+}
+
+// buildRetroLessons computes the lessons feed for one resolved window and
+// scope. Split out of the handler so /api/retro/report can reuse it.
+func (h *Handler) buildRetroLessons(dr dateRange, pf string, pargs []any) (retroLessonsDTO, error) {
 
 	rows, err := h.DB.Query(`
 		SELECT t.external_id, t.title, t.started_at, l.seq, l.title, l.action, l.body
@@ -779,8 +798,7 @@ func (h *Handler) retroLessons(w http.ResponseWriter, r *http.Request) {
 		 LIMIT ?`,
 		append(append([]any{dr.start, dr.end}, pargs...), retroLessonsLimit)...)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroLessonsDTO{}, err
 	}
 	defer rows.Close()
 
@@ -790,8 +808,7 @@ func (h *Handler) retroLessons(w http.ResponseWriter, r *http.Request) {
 		var startedAt string
 		var action, body sql.NullString
 		if err := rows.Scan(&d.TaskExternalID, &d.TaskTitle, &startedAt, &d.Seq, &d.Title, &action, &body); err != nil {
-			writeErr(w, err)
-			return
+			return retroLessonsDTO{}, err
 		}
 		// tasks.started_at is the card's calendar date at UTC midnight — the
 		// date IS its first 10 chars (a tz conversion could shift the day).
@@ -807,10 +824,9 @@ func (h *Handler) retroLessons(w http.ResponseWriter, r *http.Request) {
 		out.Lessons = append(out.Lessons, d)
 	}
 	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
+		return retroLessonsDTO{}, err
 	}
-	writeJSON(w, out, nil)
+	return out, nil
 }
 
 // ── /api/retro/tasks ──────────────────────────────────────────────────────
@@ -850,6 +866,17 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pf, pargs := scopeFilter(r)
+	out, err := h.buildRetroTasks(dr, pf, pargs)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, out, nil)
+}
+
+// buildRetroTasks computes the estimation table for one resolved window and
+// scope. Split out of the handler so /api/retro/report can reuse it.
+func (h *Handler) buildRetroTasks(dr dateRange, pf string, pargs []any) (retroTasksDTO, error) {
 
 	rows, err := h.DB.Query(`
 		SELECT t.id, t.external_id, t.title,
@@ -866,8 +893,7 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 		 LIMIT ?`,
 		append(append([]any{dr.start, dr.end}, pargs...), retroTasksLimit)...)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return retroTasksDTO{}, err
 	}
 	defer rows.Close()
 
@@ -879,8 +905,7 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 		var id int64
 		var est, act, variance sql.NullFloat64
 		if err := rows.Scan(&id, &d.ExternalID, &d.Title, &est, &act, &variance, &d.Loops); err != nil {
-			writeErr(w, err)
-			return
+			return retroTasksDTO{}, err
 		}
 		if est.Valid {
 			d.EstimatedHours = &est.Float64
@@ -896,8 +921,7 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 		out.Tasks = append(out.Tasks, d)
 	}
 	if err := rows.Err(); err != nil {
-		writeErr(w, err)
-		return
+		return retroTasksDTO{}, err
 	}
 
 	// Verdict split: classify every ledger row of the selected tasks in Go
@@ -907,16 +931,14 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 			strings.Repeat(",?", len(ids)-1) + `)`
 		vrows, err := h.DB.Query(q, ids...)
 		if err != nil {
-			writeErr(w, err)
-			return
+			return retroTasksDTO{}, err
 		}
 		defer vrows.Close()
 		for vrows.Next() {
 			var id int64
 			var verdict string
 			if err := vrows.Scan(&id, &verdict); err != nil {
-				writeErr(w, err)
-				return
+				return retroTasksDTO{}, err
 			}
 			slot, ok := index[id]
 			if !ok {
@@ -930,11 +952,10 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := vrows.Err(); err != nil {
-			writeErr(w, err)
-			return
+			return retroTasksDTO{}, err
 		}
 	}
-	writeJSON(w, out, nil)
+	return out, nil
 }
 
 // enabledRulePatterns fetches the enabled approval-rule patterns backing the
@@ -1033,26 +1054,48 @@ var recStatuses = map[string]bool{
 // attribution (R5 process / R6 config / R7 architecture) drop out of a
 // project-scoped view, which is correct — they belong to the whole fleet.
 func (h *Handler) retroRecommendations(w http.ResponseWriter, r *http.Request) {
-	q := `SELECT id, rule, target_kind, target, title, detail, evidence, baseline,
-	             status, created_at, updated_at
-	        FROM recommendations`
-	var args []any
-
 	filter := r.URL.Query().Get("status")
 	if filter == "" {
-		filter = "proposed,accepted,adopted"
+		filter = defaultRecStatusFilter
 	}
+	var statuses []string
 	if filter != "all" {
-		parts := strings.Split(filter, ",")
-		ph := make([]string, 0, len(parts))
-		for _, p := range parts {
+		for _, p := range strings.Split(filter, ",") {
 			p = strings.TrimSpace(p)
 			if !recStatuses[p] {
 				writeClientErr(w, http.StatusBadRequest, "unknown status "+p)
 				return
 			}
+			statuses = append(statuses, p)
+		}
+	}
+	out, err := h.buildRetroRecommendations(statuses, strings.TrimSpace(r.URL.Query().Get("projectId")))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, out, nil)
+}
+
+// defaultRecStatusFilter is the "actionable rail" set the UI asks for when it
+// passes no ?status= at all.
+const defaultRecStatusFilter = "proposed,accepted,adopted"
+
+// buildRetroRecommendations lists advisor recommendations, newest activity
+// first. A nil statuses slice means "every status" (?status=all); a non-empty
+// projectID post-filters on evidence attribution. Split out of the handler so
+// /api/retro/report can reuse it — the status vocabulary is validated by the
+// caller, because only an HTTP request can answer a bad one with a 400.
+func (h *Handler) buildRetroRecommendations(statuses []string, projectID string) (recommendationsDTO, error) {
+	q := `SELECT id, rule, target_kind, target, title, detail, evidence, baseline,
+	             status, created_at, updated_at
+	        FROM recommendations`
+	var args []any
+	if len(statuses) > 0 {
+		ph := make([]string, 0, len(statuses))
+		for _, s := range statuses {
 			ph = append(ph, "?")
-			args = append(args, p)
+			args = append(args, s)
 		}
 		q += ` WHERE status IN (` + strings.Join(ph, ",") + `)`
 	}
@@ -1062,20 +1105,18 @@ func (h *Handler) retroRecommendations(w http.ResponseWriter, r *http.Request) {
 	// (empty set ⇒ nothing matches, an unknown project yields no recs).
 	var projectUUIDs map[string]struct{}
 	scoped := false
-	if pid := strings.TrimSpace(r.URL.Query().Get("projectId")); pid != "" {
+	if projectID != "" {
 		scoped = true
-		set, err := h.projectSessionUUIDs(pid)
+		set, err := h.projectSessionUUIDs(projectID)
 		if err != nil {
-			writeErr(w, err)
-			return
+			return recommendationsDTO{}, err
 		}
 		projectUUIDs = set
 	}
 
 	rows, err := h.DB.Query(q, args...)
 	if err != nil {
-		writeErr(w, err)
-		return
+		return recommendationsDTO{}, err
 	}
 	defer rows.Close()
 	out := recommendationsDTO{Recommendations: []recommendationDTO{}}
@@ -1085,8 +1126,7 @@ func (h *Handler) retroRecommendations(w http.ResponseWriter, r *http.Request) {
 		var base sql.NullString
 		if err := rows.Scan(&d.ID, &d.Rule, &d.TargetKind, &d.Target, &d.Title,
 			&d.Detail, &evidence, &base, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
-			writeErr(w, err)
-			return
+			return recommendationsDTO{}, err
 		}
 		if scoped && !evidenceInProject(evidence, projectUUIDs) {
 			continue
@@ -1095,7 +1135,7 @@ func (h *Handler) retroRecommendations(w http.ResponseWriter, r *http.Request) {
 		d.scanBaseline(base)
 		out.Recommendations = append(out.Recommendations, d)
 	}
-	writeJSON(w, out, rows.Err())
+	return out, rows.Err()
 }
 
 // projectSessionUUIDs returns the set of session_uuids belonging to a project

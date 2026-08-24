@@ -1083,6 +1083,46 @@ export interface RecommendationsResp {
   recommendations: Recommendation[];
 }
 
+// --- Retro report + digest (GET /api/retro/report) ---------------------------
+
+/**
+ * The whole /retro window in one consistent snapshot. The five sections are
+ * the SAME payloads the per-section endpoints serve — the report exists so the
+ * improver loop reads one moment in time instead of five.
+ */
+export interface RetroReport {
+  from: string;
+  to: string;
+  /** Project scope as requested; '' = whole fleet. */
+  scope: string;
+  approx: boolean;
+  agents: RetroAgentsResp;
+  friction: RetroFrictionResp;
+  lessons: RetroLessonsResp;
+  tasks: RetroTasksResp;
+  recommendations: RecommendationsResp;
+  /**
+   * True when at least one section's query failed. Those sections come back
+   * EMPTY, not zero — `partialSections` names them so the UI can say so.
+   */
+  partial: boolean;
+  partialSections: string[];
+}
+
+export interface RetroReportResp {
+  report: RetroReport;
+  /**
+   * Deterministic markdown rendering of the report: the evidence text the
+   * system-improver agent reads, every line ending in `[E:kind:id]` citation
+   * markers. The same report always renders byte-identically.
+   */
+  digest: string;
+  /** True when sections were dropped to fit the digest budget. */
+  digestTruncated: boolean;
+  /** sha256 of `digest` — what an analysis row is pinned to. */
+  digestSha256: string;
+}
+
 /** POST /api/retro/advise outcome tally. */
 export interface AdviseStats {
   proposed: number;

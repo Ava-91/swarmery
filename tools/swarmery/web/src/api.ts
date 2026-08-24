@@ -80,6 +80,7 @@ import type {
   RetroAgentsResp,
   RetroFrictionResp,
   RetroLessonsResp,
+  RetroReportResp,
   RetroTasksResp,
   Routine,
   RoutineInput,
@@ -704,6 +705,17 @@ export function fetchRetroLessons(range: AnalyticsRange = {}): Promise<RetroLess
 export function fetchRetroTasks(range: AnalyticsRange = {}): Promise<RetroTasksResp> {
   if (MOCK) return mockApi.retroTasks();
   return get(`/api/retro/tasks?${rangeQuery(range, {})}`);
+}
+
+/**
+ * GET /api/retro/report — every /retro section for one window plus the
+ * deterministic markdown digest built from it. One call, one consistent
+ * snapshot: the five per-section fetchers above can straddle an ingest tick
+ * and disagree with each other, which is fine for a page and not for evidence.
+ */
+export function fetchRetroReport(range: AnalyticsRange = {}): Promise<RetroReportResp> {
+  if (MOCK) return mockApi.retroReport();
+  return get(`/api/retro/report?${rangeQuery(range, {})}`);
 }
 
 /**
