@@ -125,6 +125,28 @@ type Result struct {
 // Complete reports whether the phase may be recorded as complete.
 func (r Result) Complete() bool { return r.State == StateComplete }
 
+// HoldsPlanBack reports whether this phase should stop its PLAN from reading
+// done. It is Complete() with one exception: a phase with NO acceptance criteria.
+//
+// Such a phase is unprovable — it is `incomplete` and says so on its own row,
+// which is right and predates this gate. But a plan is measured by its checkbox
+// ROLLUP, and a phase with nothing to count contributes nothing to that rollup in
+// either direction. Letting it veto the plan means one prose-only phase doc keeps
+// a finished plan out of Done forever, with no action available that would ever
+// clear it: the doc has no criteria to tick, and writing some retroactively would
+// be inventing an agreement nobody made.
+//
+// That is not hypothetical — it is what two live plans looked like at 102/102 and
+// 13/13 ticked while reading `active`. The dependency gate in phaserun keeps the
+// stricter rule (a 0/0 dependency cannot unblock a dependent), because there the
+// question is "may work START on top of this", where unprovable must mean no.
+func (r Result) HoldsPlanBack(in Input) bool {
+	if in.CriteriaTotal == 0 && !in.VerificationRequired() {
+		return false
+	}
+	return !r.Complete()
+}
+
 // VerificationRequired reports whether this phase opted into being graded.
 func (in Input) VerificationRequired() bool {
 	return in.VerifyMode != "" && in.VerifyMode != VerifyOff

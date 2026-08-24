@@ -680,7 +680,7 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 			runCheckboxesBefore, runCheckboxesAfter)
 		// THE gate — the same call phaserun's dependency check and the diagnosis
 		// modal make, so no surface can privately decide this row is done.
-		gate := phasegate.Check(phasegate.Input{
+		gateIn := phasegate.Input{
 			CriteriaDone:     p.CheckboxesDone,
 			CriteriaTotal:    p.CheckboxesTotal,
 			VerifyMode:       p.VerifyMode,
@@ -689,13 +689,14 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 			CompletionReport: completion.String,
 			Ran:              runEndedAt.Valid,
 			ClosureRequired:  closureRequired,
-		})
+		}
+		gate := phasegate.Check(gateIn)
 		p.CompletionState = gate.State
 		p.CompletionBlockers = gate.Reasons
 		if p.CompletionBlockers == nil {
 			p.CompletionBlockers = []string{} // [] not null: the UI maps over it
 		}
-		if !gate.Complete() {
+		if gate.HoldsPlanBack(gateIn) {
 			rollup.IncompletePhases++
 		}
 		rollup.Done += p.CheckboxesDone
