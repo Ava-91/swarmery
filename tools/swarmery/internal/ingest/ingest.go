@@ -50,7 +50,7 @@ const UnknownProjectPath = "(unknown)"
 // i.e. nothing that says a session ever ran. Claude Code writes such files:
 // a transcript whose only line is {"type":"ai-title",…}, no envelope, no
 // cwd, no clock. Minting a row from one produced a session with started_at
-// '' on the '(unknown)' project, permanently stuck in whatever status the
+// ” on the '(unknown)' project, permanently stuck in whatever status the
 // mtime heuristic guessed at insert time.
 //
 // Callers treat it as "skip this batch and do NOT advance the offset": the
@@ -790,7 +790,7 @@ func (in *ingester) closeToolCall(r *record, b contentBlock, dedup string, paren
 		// Background (run_in_background) launch: the tool_result arrives
 		// immediately ("Async agent launched") while the sidechain keeps
 		// running — neither an error nor a real duration. The sidechain
-		// ingest refines duration_ms later (reconcileAsyncSubagent).
+		// ingest refines duration_ms later (reconcileSubagentDuration).
 		async := ar.IsAsync || ar.Status == "async_launched"
 		if ar.Status != "" && ar.Status != "completed" && !async {
 			status = "error"
@@ -825,8 +825,13 @@ func (in *ingester) closeToolCall(r *record, b contentBlock, dedup string, paren
 		if err := in.adoptOrphanSidechainEvents(ar.AgentID, p.eventID); err != nil {
 			return err
 		}
-		if async {
-			return in.reconcileAsyncSubagent(p.eventID, "")
+		// Reconcile whenever the result could not date the run: the async marker,
+		// or a result that reported no duration at all. Without the second
+		// condition a call whose toolUseResult was empty keeps the launch
+		// roundtrip forever, and every per-agent duration statistic built on it
+		// describes the spawn instead of the work.
+		if async || ar.TotalDurationMs <= 0 {
+			return in.reconcileSubagentDuration(p.eventID, "")
 		}
 		return nil
 	}
@@ -1010,7 +1015,7 @@ func (in *ingester) ingestSidechain(path string) error {
 		if err := in.adoptOrphanSidechainEvents(scope, parentID); err != nil {
 			return err
 		}
-		if err := in.reconcileAsyncSubagent(parentID, lastRecordTS(recs)); err != nil {
+		if err := in.reconcileSubagentDuration(parentID, lastRecordTS(recs)); err != nil {
 			return err
 		}
 	}
@@ -1034,16 +1039,32 @@ func (in *ingester) adoptOrphanSidechainEvents(scope string, parentID int64) err
 	return err
 }
 
-// reconcileAsyncSubagent fixes the duration of background (run_in_background)
-// Agent calls. Their tool_result arrives ~immediately with status
-// "async_launched" and no totalDurationMs, so the subagent_start/stop rows are
-// closed with the launch roundtrip (~0.1s) while the sidechain runs for
-// minutes. Once sidechain records are ingested, the real duration is the span
-// subagent_start.ts → last sidechain record timestamp (lastTS; when empty the
-// latest stored child event ts is used instead). Monotonic and idempotent:
-// the duration only ever grows towards the sidechain's true end, so live tail
-// batches refine it and re-ingest converges to the same value.
-func (in *ingester) reconcileAsyncSubagent(parentID int64, lastTS string) error {
+// reconcileSubagentDuration fixes the duration of an Agent call whose tool_result
+// could not tell us how long it took.
+//
+// TWO cases land here, and they look identical from the row's side:
+//
+//  1. A background (run_in_background) launch. Its tool_result arrives
+//     ~immediately with status "async_launched" and no totalDurationMs, so the
+//     start/stop rows are closed with the launch roundtrip (~0.1s) while the
+//     sidechain runs for minutes.
+//  2. A call whose toolUseResult carried NO usable fields at all — no status, no
+//     agentId, no totalDurationMs. The same launch roundtrip is kept, for the
+//     same wrong reason, and nothing ever corrected it.
+//
+// Case 2 is not hypothetical and it is not harmless: it is why one retrospective
+// read "verification-agent p95 47s" and "test-writer p95 1s at $0.00" and
+// concluded the fleet's verifiers were dying in seconds. Six of seven
+// verification runs in that window had 8–24 parented sidechain events spanning
+// two to three MINUTES, and each was recorded as ~1.8 seconds. The agent was
+// working; the measurement was not.
+//
+// The real duration is the span subagent_start.ts → last sidechain record
+// timestamp (lastTS; when empty the latest stored child event ts is used
+// instead). Monotonic and idempotent: the duration only ever GROWS towards the
+// sidechain's true end, so live-tail batches refine it, re-ingest converges to
+// the same value, and a genuine short run can never be inflated.
+func (in *ingester) reconcileSubagentDuration(parentID int64, lastTS string) error {
 	if lastTS == "" {
 		var maxTS sql.NullString
 		if err := in.tx.QueryRow(
@@ -1058,14 +1079,18 @@ func (in *ingester) reconcileAsyncSubagent(parentID int64, lastTS string) error 
 	}
 	var stopID int64
 	var startTS string
+	// Matches BOTH cases in the doc comment: the explicit async marker, and a
+	// stop row whose status is absent or empty — the "the result told us nothing"
+	// shape. A stop row carrying a real status ("completed") is left alone: there
+	// the tool_result did report, and its number is the authoritative one.
 	err := in.tx.QueryRow(
 		`SELECT stop.id, start.ts FROM events stop
 		 JOIN events start ON start.id = stop.parent_event_id
 		 WHERE stop.parent_event_id = ? AND stop.type = 'subagent_stop'
-		   AND json_extract(stop.payload, '$.status') = 'async_launched'`,
+		   AND COALESCE(json_extract(stop.payload, '$.status'), '') IN ('async_launched', '')`,
 		parentID).Scan(&stopID, &startTS)
 	if err == sql.ErrNoRows {
-		return nil // foreground agent (or stop not ingested yet) — nothing to fix
+		return nil // the result reported a real status — nothing to fix
 	}
 	if err != nil {
 		return err
