@@ -58,6 +58,35 @@ type hookResult struct {
 	err    error
 }
 
+// hookCtx is the context every long-poll in this file must run under: cancelled
+// when the test ends.
+//
+// WHY IT EXISTS. A permission request is a LONG POLL — the handler blocks in a
+// select until a decision, the client disconnects, or the approval window
+// closes. With `approvals.Options{}` that window is DefaultTimeout, ten
+// minutes. So a test that opens a poll and never resolves it leaves a handler
+// blocked for ten minutes, and `httptest.Server.Close()` — registered by
+// approvalsTestServer as a cleanup — waits for outstanding handlers. The whole
+// package then sits on that wait until Go's own 10-minute test timeout kills
+// the binary. That is exactly how this package failed CI once: a 600-second
+// `internal/api` with the goroutine dump pointing at a blocked
+// hookPermissionRequest.
+//
+// It never reproduced locally because the failure is a race with the runner's
+// speed, not with the code — which is the worst kind to leave to discipline.
+//
+// Cleanup order is what makes this work, and it is not accidental: cleanups run
+// LIFO, approvalsTestServer registers srv.Close BEFORE any test body calls
+// hookCtx, so the cancel here fires FIRST. Every client disconnects, each
+// handler takes its `r.Context().Done()` branch and Detaches, and Close() then
+// has nothing left to wait for.
+func hookCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func postHook(srv *httptest.Server, ctx context.Context, body string) <-chan hookResult {
 	out := make(chan hookResult, 1)
 	go func() {
@@ -105,7 +134,7 @@ func resolveVia(t *testing.T, srv *httptest.Server, id float64, action, reason s
 
 func TestLongPollApprove(t *testing.T) {
 	srv, _, _ := approvalsTestServer(t, approvals.Options{})
-	res := postHook(srv, context.Background(), hookBody("lp-approve", "Bash", "ls -la"))
+	res := postHook(srv, hookCtx(t), hookBody("lp-approve", "Bash", "ls -la"))
 
 	pending := waitPending(t, srv)
 	if pending["status"] != "pending" || pending["toolName"] != "Bash" {
@@ -140,7 +169,7 @@ func TestLongPollApprove(t *testing.T) {
 
 func TestLongPollDenyWithReason(t *testing.T) {
 	srv, _, _ := approvalsTestServer(t, approvals.Options{})
-	res := postHook(srv, context.Background(), hookBody("lp-deny", "Bash", "rm -rf /"))
+	res := postHook(srv, hookCtx(t), hookBody("lp-deny", "Bash", "rm -rf /"))
 
 	pending := waitPending(t, srv)
 	resp := resolveVia(t, srv, pending["id"].(float64), "deny", "not on prod")
@@ -166,7 +195,7 @@ func TestLongPollDenyWithReason(t *testing.T) {
 // TestLongPollTimeout204: sweeper expiry ends the poll with 204, no body.
 func TestLongPollTimeout204(t *testing.T) {
 	srv, db, svc := approvalsTestServer(t, approvals.Options{Timeout: 100 * time.Millisecond})
-	res := postHook(srv, context.Background(), hookBody("lp-timeout", "Bash", "ls"))
+	res := postHook(srv, hookCtx(t), hookBody("lp-timeout", "Bash", "ls"))
 	waitPending(t, srv)
 
 	time.Sleep(150 * time.Millisecond)
@@ -217,8 +246,8 @@ func TestLongPollClientDisconnect(t *testing.T) {
 func TestDedupFanOutHTTP(t *testing.T) {
 	srv, db, _ := approvalsTestServer(t, approvals.Options{})
 	body := hookBody("lp-dedup", "Bash", "curl example.com")
-	res1 := postHook(srv, context.Background(), body)
-	res2 := postHook(srv, context.Background(), body)
+	res1 := postHook(srv, hookCtx(t), body)
+	res2 := postHook(srv, hookCtx(t), body)
 
 	pending := waitPending(t, srv)
 	// Give the second caller time to attach (it must NOT create a row).
@@ -244,7 +273,7 @@ func TestDedupFanOutHTTP(t *testing.T) {
 
 func TestResolveConflictAndNotFound(t *testing.T) {
 	srv, _, _ := approvalsTestServer(t, approvals.Options{})
-	res := postHook(srv, context.Background(), hookBody("lp-409", "Bash", "ls"))
+	res := postHook(srv, hookCtx(t), hookBody("lp-409", "Bash", "ls"))
 	pending := waitPending(t, srv)
 	id := pending["id"].(float64)
 
@@ -360,7 +389,7 @@ func TestListApprovals(t *testing.T) {
 	ctxs := []string{"one", "two", "three"}
 	var results []<-chan hookResult
 	for _, c := range ctxs {
-		results = append(results, postHook(srv, context.Background(), hookBody("lp-list", "Bash", c)))
+		results = append(results, postHook(srv, hookCtx(t), hookBody("lp-list", "Bash", c)))
 		time.Sleep(5 * time.Millisecond) // distinct requested_at ordering
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -502,7 +531,7 @@ func TestHookExcludedCwd204(t *testing.T) {
 	srv, db, _ := approvalsTestServer(t, approvals.Options{
 		Exclude: ingest.ParseExcludeList(ingest.DefaultExclude),
 	})
-	r := <-postHook(srv, context.Background(), hookBody("excluded-cwd", "Bash", "ls"))
+	r := <-postHook(srv, hookCtx(t), hookBody("excluded-cwd", "Bash", "ls"))
 	if r.err != nil || r.status != http.StatusNoContent {
 		t.Fatalf("excluded hook: status = %d, err = %v; want 204", r.status, r.err)
 	}
@@ -541,7 +570,7 @@ func postAction(t *testing.T, srv *httptest.Server, id float64, body string) *ht
 // {questions, answers}} in the default updated-input delivery mode.
 func TestAnswerLongPollUpdatedInput(t *testing.T) {
 	srv, db, _ := approvalsTestServer(t, approvals.Options{})
-	res := postHook(srv, context.Background(), askHookBody("lp-answer"))
+	res := postHook(srv, hookCtx(t), askHookBody("lp-answer"))
 
 	pending := waitPending(t, srv)
 	if pending["toolName"] != "AskUserQuestion" {
@@ -598,7 +627,7 @@ func TestAnswerHTTPStatusMatrix(t *testing.T) {
 	srv, _, svc := approvalsTestServer(t, approvals.Options{})
 
 	// A Bash row can never take {action:"answer"} → 400, row stays pending.
-	resBash := postHook(srv, context.Background(), hookBody("lp-answer-400", "Bash", "ls"))
+	resBash := postHook(srv, hookCtx(t), hookBody("lp-answer-400", "Bash", "ls"))
 	pendingBash := waitPending(t, srv)
 	resp := postAction(t, srv, pendingBash["id"].(float64), `{"action":"answer","answers":{"x":"y"}}`)
 	if resp.StatusCode != http.StatusBadRequest {
@@ -617,7 +646,7 @@ func TestAnswerHTTPStatusMatrix(t *testing.T) {
 	<-resBash
 
 	// AskUserQuestion row: missing answer → 400; valid → 200; repeat → 409.
-	resAsk := postHook(srv, context.Background(), askHookBody("lp-answer-409"))
+	resAsk := postHook(srv, hookCtx(t), askHookBody("lp-answer-409"))
 	pendingAsk := waitPending(t, srv)
 	askID := pendingAsk["id"].(float64)
 
@@ -651,7 +680,7 @@ func TestAnswerHTTPStatusMatrix(t *testing.T) {
 // verbatim as the tool result, E3).
 func TestAnswerDeliveryDenyMessage(t *testing.T) {
 	srv, db, _ := approvalsTestServer(t, approvals.Options{AnswerDelivery: approvals.DeliveryDenyMessage})
-	res := postHook(srv, context.Background(), askHookBody("lp-answer-fallback"))
+	res := postHook(srv, hookCtx(t), askHookBody("lp-answer-fallback"))
 	pending := waitPending(t, srv)
 
 	postAction(t, srv, pending["id"].(float64),
@@ -689,7 +718,7 @@ func TestAnswerDeliveryDenyMessage(t *testing.T) {
 // renders the dialog). The row records resolved_elsewhere via dashboard.
 func TestTerminalHandoffNoDecision(t *testing.T) {
 	srv, db, _ := approvalsTestServer(t, approvals.Options{})
-	res := postHook(srv, context.Background(), askHookBody("lp-terminal"))
+	res := postHook(srv, hookCtx(t), askHookBody("lp-terminal"))
 	pending := waitPending(t, srv)
 
 	resp := postAction(t, srv, pending["id"].(float64), `{"action":"terminal"}`)
@@ -727,7 +756,7 @@ func TestLongPollAutoApprovedByRule(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := <-postHook(srv, context.Background(), hookBody("lp-rule", "Bash", "ls -la"))
+	r := <-postHook(srv, hookCtx(t), hookBody("lp-rule", "Bash", "ls -la"))
 	if r.err != nil || r.status != 200 {
 		t.Fatalf("long-poll result: %d %v", r.status, r.err)
 	}

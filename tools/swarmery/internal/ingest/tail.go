@@ -139,7 +139,7 @@ func TailFile(db *sql.DB, path, originRoot string, th Thresholds) (TailResult, e
 			if err := ing.adoptOrphanSidechainEvents(scope, parentEventID); err != nil {
 				return res, err
 			}
-			if err := ing.reconcileAsyncSubagent(parentEventID, lastRecordTS(recs)); err != nil {
+			if err := ing.reconcileSubagentDuration(parentEventID, lastRecordTS(recs)); err != nil {
 				return res, err
 			}
 		}
