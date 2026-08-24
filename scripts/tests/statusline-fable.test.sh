@@ -70,7 +70,16 @@ if [ -z "$out" ]; then ok; else bad "helper: fetch failure -> empty (silent fail
 
 # ── statusline render tests ───────────────────────────────────────
 CFG_DIR="$WORK/fake-config-dir"
-SLUG="$(printf '%s' "$CFG_DIR" | shasum -a 256 | cut -c1-8)"
+# Same portable digest the statusline uses (shasum on BSD/macOS, sha256sum on
+# GNU). With the macOS spelling only, this produced an EMPTY slug on Linux while
+# the statusline fell back to "default" — so the test wrote a cache the render
+# never read, and every FB case failed for a reason that had nothing to do with
+# the behaviour under test.
+if command -v shasum >/dev/null 2>&1; then
+  SLUG="$(printf '%s' "$CFG_DIR" | shasum -a 256 | cut -c1-8)"
+else
+  SLUG="$(printf '%s' "$CFG_DIR" | sha256sum | cut -c1-8)"
+fi
 TMP="$WORK/tmp"; mkdir -p "$TMP" "$CFG_DIR"
 FB_CACHE="$TMP/agents-statusline-fable-${SLUG}.txt"
 # Pre-warm the weather cache so the statusline never curls wttr.in during tests.

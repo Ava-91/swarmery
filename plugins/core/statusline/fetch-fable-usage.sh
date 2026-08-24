@@ -68,7 +68,13 @@ command -v curl >/dev/null 2>&1 || fail
 # token → call the endpoint; on auth failure try the next candidate, never print
 # the token. All candidates exhausted → empty output, no FB segment.
 CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-CFG_SUFFIX="$(printf '%s' "$CFG_DIR" | shasum -a 256 2>/dev/null | cut -c1-8)"
+# shasum is the BSD/macOS spelling, sha256sum the GNU one — the helper runs on
+# whichever the machine has, and the statusline computes the same slug the same way.
+if command -v shasum >/dev/null 2>&1; then
+  CFG_SUFFIX="$(printf '%s' "$CFG_DIR" | shasum -a 256 2>/dev/null | cut -c1-8)"
+else
+  CFG_SUFFIX="$(printf '%s' "$CFG_DIR" | sha256sum 2>/dev/null | cut -c1-8)"
+fi
 if [ -n "${SWARMERY_FABLE_KEYCHAIN_SERVICE:-}" ]; then
   SERVICES=("$SWARMERY_FABLE_KEYCHAIN_SERVICE")
 elif [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
