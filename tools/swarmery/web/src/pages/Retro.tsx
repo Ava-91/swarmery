@@ -51,6 +51,8 @@ import {
 } from '../lib/format';
 import { ScopeChip } from '../components/ScopeChip';
 import { useScope } from '../lib/scope';
+import { Explain } from '../components/Explain';
+import { HowItWorks } from '../components/HowItWorks';
 import { ApproxHint, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { ImproveModal } from '../components/ImproveModal';
 
@@ -365,15 +367,19 @@ function RecommendationsRail(): JSX.Element | null {
         <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
           Recommendations
         </div>
-        <button
-          type="button"
-          disabled={analyzing}
-          onClick={analyze}
-          data-tip="run the advisor rule engine now"
-          className="ml-auto rounded-[7px] border border-line-strong px-2 py-[3px] font-mono text-[10.5px] text-ink-dim transition-colors hover:border-brand/40 hover:text-brand disabled:opacity-50"
-        >
-          {analyzing ? 'analyzing…' : 'Analyze now'}
-        </button>
+        <Explain id="retro-recommendations" />
+        <span className="ml-auto flex items-baseline gap-1.5">
+          <Explain id="retro-analyze-button" />
+          <button
+            type="button"
+            disabled={analyzing}
+            onClick={analyze}
+            data-tip="deterministic: re-runs the local rule engine, calls no model"
+            className="rounded-[7px] border border-line-strong px-2 py-[3px] font-mono text-[10.5px] text-ink-dim transition-colors hover:border-brand/40 hover:text-brand disabled:opacity-50"
+          >
+            {analyzing ? 'analyzing…' : 'Analyze now'}
+          </button>
+        </span>
       </div>
       <div className="mt-2 flex flex-col gap-2.5">
         {recs.length === 0 ? (
@@ -663,6 +669,7 @@ function ProposalsRail({ reloadKey }: { reloadKey: number }): JSX.Element | null
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
           Agent proposals
         </span>
+        <Explain id="retro-proposals" />
         {failed !== null && <span className="font-mono text-[10px] text-red">{failed}</span>}
       </div>
       {proposals === null ? (
@@ -818,8 +825,9 @@ function JudgmentsSection({ project }: { project?: string }): JSX.Element | null
 
   return (
     <section className="mt-[18px]">
-      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
-        Trajectory judgments
+      <div className="mb-2 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+        <span>Trajectory judgments</span>
+        <Explain id="retro-judgments" />
       </div>
       <div className="flex flex-col gap-2.5">
         {judged.map(({ session, judgments }) => (
@@ -909,7 +917,7 @@ function RetroLeadCard({ data }: { data: RetroAgentsResp }): JSX.Element {
       {/* left — editorial copy */}
       <div className="min-w-0 flex-1 basis-80">
         <p className="font-display text-[20px] font-medium leading-[1.3] tracking-[-0.01em] text-ink text-balance">
-          {headline}
+          {headline} <Explain id="retro-kpis" />
         </p>
         <p className="mt-1.5 font-mono text-[10.5px] text-ink-3">{sub}</p>
       </div>
@@ -1015,7 +1023,7 @@ function Scorecard({
           <button
             type="button"
             onClick={() => onImprove(row)}
-            data-tip="preview the evidence and generate an improvement proposal for this agent"
+            data-tip="preview the evidence, then generate a minimal diff to THIS agent’s definition file only"
             className="rounded-[7px] border border-line-strong px-1.5 py-[2px] font-mono text-[10px] text-ink-dim transition-colors hover:border-green/40 hover:text-green"
           >
             Improve
@@ -1442,6 +1450,7 @@ export function Retro(): JSX.Element {
             setTo(d);
           }}
         />
+        <HowItWorks id="retro-page" className="mt-5 max-w-[80ch]" />
       </div>
 
       {agents !== null && <RetroLeadCard data={agents} />}
@@ -1466,7 +1475,9 @@ export function Retro(): JSX.Element {
         <>
           {agents.approx && <ApproxHint />}
 
-          <SectionTitle>Agent scorecards</SectionTitle>
+          <SectionTitle>
+            Agent scorecards <Explain id="retro-scorecard" /> <Explain id="retro-agent-improve" />
+          </SectionTitle>
           {agents.agents.length === 0 ? (
             <Empty>no subagent activity in this range</Empty>
           ) : (
@@ -1488,14 +1499,18 @@ export function Retro(): JSX.Element {
 
       {lessons !== null && (
         <>
-          <SectionTitle>Lessons learned</SectionTitle>
+          <SectionTitle>
+            Lessons learned <Explain id="retro-lessons" />
+          </SectionTitle>
           <LessonsFeed lessons={lessons} />
         </>
       )}
 
       {taskRows !== null && (
         <>
-          <SectionTitle>Estimation accuracy</SectionTitle>
+          <SectionTitle>
+            Estimation accuracy <Explain id="retro-estimation" />
+          </SectionTitle>
           <div className="rounded-[14px] border border-line px-3.5 py-3.5">
             <EstimationTable tasks={taskRows} />
           </div>
@@ -1504,7 +1519,9 @@ export function Retro(): JSX.Element {
 
       {friction !== null && (
         <>
-          <SectionTitle>Friction board</SectionTitle>
+          <SectionTitle>
+            Friction board <Explain id="retro-friction" />
+          </SectionTitle>
           <div className="grid items-start gap-[22px] wide:grid-cols-2">
             <section>
               <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
