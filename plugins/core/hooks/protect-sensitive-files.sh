@@ -59,6 +59,29 @@ for f in "${protected_files[@]}"; do
   fi
 done
 
+# Block edits to credential material. Extended 2026-08-24 alongside
+# read-before-write.sh: that hook echoes a file's CONTENTS to stderr so the
+# agent's retry succeeds, and it defers to this list to decide what must never
+# be echoed. Anything reachable here is therefore both un-editable AND
+# un-quotable — the two properties have to be decided in one place, or the
+# recovery path quietly becomes a disclosure path.
+if [[ "$base_name" == *.pem || "$base_name" == *.key || "$base_name" == *.p12 || \
+      "$base_name" == *.pfx || "$base_name" == *.jks || "$base_name" == *.keystore || \
+      "$base_name" == id_rsa* || "$base_name" == id_ed25519* || "$base_name" == id_ecdsa* || \
+      "$base_name" == id_dsa* || "$base_name" == .npmrc || "$base_name" == .netrc || \
+      "$base_name" == _netrc || "$base_name" == .pgpass || "$base_name" == .htpasswd || \
+      "$base_name" == credentials || "$base_name" == credentials.json || \
+      "$base_name" == service-account*.json || "$base_name" == kubeconfig || \
+      "$base_name" == .dockercfg || "$base_name" == .docker.json || \
+      "$base_name" == *.tfvars || "$base_name" == settings.local.json ]]; then
+  echo "🚫 BLOCKED: Cannot modify credential material: $file_path" >&2
+  echo "Protected pattern: credential file ($base_name)" >&2
+  echo "" >&2
+  echo "Private keys, tokens, kubeconfigs and local settings are edited by a human," >&2
+  echo "never by an agent — and their contents are never quoted back into a session." >&2
+  exit 2
+fi
+
 # Block edits to any .env* file (basename prefix match — covers
 # .env, .env.local, .env.production, .env.example, …).
 if [[ "$base_name" == .env* ]]; then

@@ -39,6 +39,22 @@ assert 2 "populated values"          "$(jp '/repo/secrets.populated.yaml')"
 assert 2 "prod values"               "$(jp '/repo/values.prod.yaml')"
 assert 2 "generated .rsc"            "$(jp '/repo/output/router.rsc')"
 
+# ── BLOCK: credential material (added with read-before-write.sh) ──
+# These are also the paths read-before-write.sh refuses to echo, so the list is
+# load-bearing twice: un-editable AND un-quotable.
+assert 2 "private key .pem"          "$(jp '/repo/certs/server.pem')"
+assert 2 "private key .key"          "$(jp '/repo/certs/server.key')"
+assert 2 "ssh id_rsa"                "$(jp '/home/u/.ssh/id_rsa')"
+assert 2 "ssh id_ed25519"            "$(jp '/home/u/.ssh/id_ed25519')"
+assert 2 ".npmrc"                    "$(jp '/repo/.npmrc')"
+assert 2 ".netrc"                    "$(jp '/home/u/.netrc')"
+assert 2 "aws credentials"           "$(jp '/home/u/.aws/credentials')"
+assert 2 "gcp service account"       "$(jp '/repo/service-account-prod.json')"
+assert 2 "kubeconfig"                "$(jp '/home/u/.kube/kubeconfig')"
+assert 2 "terraform tfvars"          "$(jp '/repo/infra/prod.tfvars')"
+assert 2 "settings.local.json"       "$(jp '/repo/.claude/settings.local.json')"
+assert 2 "java keystore"             "$(jp '/repo/app.jks')"
+
 # ── ALLOW (exit 0) ────────────────────────────────────────────────
 assert 0 "ordinary source file"      "$(jp '/repo/src/app.ts')"
 assert 0 "README.md"                 "$(jp '/repo/README.md')"
@@ -47,6 +63,11 @@ assert 0 "no file_path"              '{"tool_input":{}}'
 assert 0 "skills/docker-build/ ok"   "$(jp '/repo/skills/docker-build/x.sh')"
 # .env* is a basename prefix; environment.ts is not a dotenv file.
 assert 0 "environment.ts not dotenv" "$(jp '/repo/environment.ts')"
+# The credential patterns are basename-anchored, not substring: a source file
+# that merely mentions a credential word stays editable.
+assert 0 "keyboard.ts is not a .key"  "$(jp '/repo/src/keyboard.ts')"
+assert 0 "credentials.test.ts ok"     "$(jp '/repo/src/credentials.test.ts')"
+assert 0 "settings.json (not local)"  "$(jp '/repo/.claude/settings.json')"
 
 printf 'protect-sensitive-files: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
