@@ -269,6 +269,34 @@ The run is always fleet-wide, even from a project-scoped page: the rules compute
 rates, and narrowing the *input* to one project would produce statistically wrong numbers.
 Narrowing happens on the read side instead.
 
+## Improve the system
+
+The page-level counterpart to [Agent improve](#agent-improve). It takes the whole window — every
+section of the report, as one consistent snapshot — renders it as a deterministic digest, and has
+an agent write an analysis in three parts: what hurts, why, and what to change. Its mandate covers
+agents, skills, commands, hooks and processes, which is exactly the ground the per-agent rewriter
+structurally cannot reach.
+
+Unlike [Analyze now](#analyze-now), **this one calls a model and costs tokens**. One analysis runs
+at a time; a second press answers "already running" rather than starting a competing one.
+
+**Citation is the contract, enforced in code.** Every evidence line in the digest carries an
+`[E:kind:id]` marker, and every claim in the analysis must end in one copied from it. An analysis
+that cites nothing, or that cites an identifier the digest never offered, is stored as **failed**
+with the reason — never as a valid proposal. Prose about a system is easy to write and hard to
+check, so unverifiable advice wearing the same badge as evidence is worse than no analysis at all.
+The rejected text is kept on the failed row, because a refusal you cannot inspect is one you
+cannot learn from.
+
+**Nothing is written until you accept.** The lifecycle is
+`running → proposed → accepted | dismissed`, and then `accepted → planned`. Only an accepted
+analysis can start a planning session, and only its "what I would change" section travels — as the
+idea for a normal [Planning Mode](#planning-mode) interview, in a project you pick explicitly. That
+choice is deliberate rather than inherited from the page scope: the changes land in the agent
+system's own repository, which is usually not the project whose sessions produced the evidence.
+
+If that project already has a planning run in flight, the card says so and links to it.
+
 ## Agent improve
 
 The button on a scorecard. It generates a **minimal unified diff to exactly one agent definition

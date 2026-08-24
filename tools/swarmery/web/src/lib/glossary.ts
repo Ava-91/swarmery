@@ -394,6 +394,25 @@ const RAW = {
     doc: { slug: 'concepts', anchor: 'analyze-now' },
   },
 
+  'retro-improve': {
+    term: 'Improve the system',
+    short:
+      'Reads the whole window, has an agent write what hurts and what to change, every claim citing its evidence. It writes nothing anywhere until you accept it.',
+    tone: 'action',
+    actions: [
+      'Read the citations, not the prose — a claim you cannot trace is one the contract should have rejected.',
+      'Accept only what you would defend; dismissing costs nothing but a re-run.',
+      'Accepting hands the change section to Planning Mode as the seed of a normal interview.',
+    ],
+    facts: [
+      { label: 'unlike Analyze now', value: 'this one does call a model, and it costs tokens' },
+      { label: 'unlike per-agent Improve', value: 'covers agents, skills, commands, hooks, processes' },
+      { label: 'rejected when', value: 'the analysis cites nothing, or cites an id the report never had' },
+      { label: 'one at a time', value: 'a second start returns "already running", not a second run' },
+    ],
+    doc: { slug: 'concepts', anchor: 'improve-the-system' },
+  },
+
   'retro-agent-improve': {
     term: 'Agent improve',
     short:

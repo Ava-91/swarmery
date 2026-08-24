@@ -115,6 +115,8 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("POST /api/retro/analysis", requireLocalOrigin(h.startRetroAnalysis))
 	mux.HandleFunc("GET /api/retro/analysis", h.latestRetroAnalysis)
 	mux.HandleFunc("PATCH /api/retro/analysis/{id}", requireLocalOrigin(h.patchRetroAnalysis))
+	// The handoff into the EXISTING Planning Mode. Gated on status='accepted'.
+	mux.HandleFunc("POST /api/retro/analysis/{id}/plan", requireLocalOrigin(h.planFromRetroAnalysis))
 	mux.HandleFunc("GET /api/retro/recommendations", h.retroRecommendations)
 	mux.HandleFunc("PATCH /api/retro/recommendations/{id}", requireLocalOrigin(h.patchRecommendation))
 	mux.HandleFunc("POST /api/retro/advise", requireLocalOrigin(h.retroAdvise))

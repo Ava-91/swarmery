@@ -52,6 +52,7 @@ import {
 import { ScopeChip } from '../components/ScopeChip';
 import { useScope } from '../lib/scope';
 import { Explain } from '../components/Explain';
+import { RetroImproveCard } from '../components/RetroImproveCard';
 import { HowItWorks } from '../components/HowItWorks';
 import { ApproxHint, Empty, ErrorBox, Loading, SectionTitle } from '../components/ui';
 import { ImproveModal } from '../components/ImproveModal';
@@ -1395,8 +1396,14 @@ export function Retro(): JSX.Element {
     [today],
   );
 
+  // One range object for the page and for the improver card: a fresh literal
+  // on every render would re-trigger the card's effects.
+  const range = useMemo(
+    () => ({ from, to, ...(scope !== null ? { project: scope } : {}) }),
+    [from, to, scope],
+  );
+
   const load = useCallback((): void => {
-    const range = { from, to, ...(scope !== null ? { project: scope } : {}) };
     setError(null);
     fetchRetroAgents(range)
       .then(setAgents)
@@ -1420,7 +1427,7 @@ export function Retro(): JSX.Element {
         setTrajectoryKindsMap(m);
       })
       .catch(() => setTrajectoryKindsMap({}));
-  }, [from, to, scope]);
+  }, [range]);
 
   useEffect(load, [load]);
 
@@ -1452,6 +1459,8 @@ export function Retro(): JSX.Element {
         />
         <HowItWorks id="retro-page" className="mt-5 max-w-[80ch]" />
       </div>
+
+      <RetroImproveCard range={range} />
 
       {agents !== null && <RetroLeadCard data={agents} />}
 

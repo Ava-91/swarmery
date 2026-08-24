@@ -1109,6 +1109,63 @@ export interface RetroReport {
   partialSections: string[];
 }
 
+/** Lifecycle of a saved system analysis (migration 0061). */
+export type RetroAnalysisStatus =
+  | 'running'
+  | 'proposed'
+  | 'accepted'
+  | 'dismissed'
+  | 'planned'
+  | 'failed';
+
+/**
+ * One saved analysis of a retro window, written by the system-improver agent
+ * and gated by the operator. Nothing downstream — no workspace write, no
+ * planning session — happens before `accepted`.
+ */
+export interface RetroAnalysis {
+  id: number;
+  windowFrom: string;
+  windowTo: string;
+  /** Project slug; '' = the whole fleet. */
+  scope: string;
+  /** sha256 of the digest this analysis was written from. */
+  digestSha256: string;
+  markdown: string;
+  /** Distinct [E:kind:id] citations the analysis carries. */
+  citations: number;
+  status: RetroAnalysisStatus;
+  /** Verbatim failure reason; '' unless status is 'failed'. */
+  error: string;
+  /** Set when status is 'planned'. */
+  planningSessionUuid: string;
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface RetroAnalysisResp {
+  analysis: RetroAnalysis | null;
+}
+
+/** 202 body of POST /api/retro/analysis/{id}/plan. */
+export interface RetroPlanStarted {
+  sessionUuid: string;
+  /** DB path slug, for the /p/<slug>/planning deep link. */
+  projectSlug: string;
+  analysis: RetroAnalysis | null;
+}
+
+/**
+ * 409 body when the target project already has a planning run in flight. It
+ * carries the ACTIVE session so the UI can link there instead of showing a
+ * bare status code.
+ */
+export interface RetroPlanConflict {
+  error: string;
+  sessionUuid: string;
+  projectSlug: string;
+}
+
 export interface RetroReportResp {
   report: RetroReport;
   /**

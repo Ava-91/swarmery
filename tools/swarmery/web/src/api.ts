@@ -80,6 +80,10 @@ import type {
   RetroAgentsResp,
   RetroFrictionResp,
   RetroLessonsResp,
+  RetroAnalysis,
+  RetroAnalysisResp,
+  RetroPlanConflict,
+  RetroPlanStarted,
   RetroReportResp,
   RetroTasksResp,
   Routine,
@@ -716,6 +720,89 @@ export function fetchRetroTasks(range: AnalyticsRange = {}): Promise<RetroTasksR
 export function fetchRetroReport(range: AnalyticsRange = {}): Promise<RetroReportResp> {
   if (MOCK) return mockApi.retroReport();
   return get(`/api/retro/report?${rangeQuery(range, {})}`);
+}
+
+/**
+ * The server's own `{"error": "…"}` sentence, falling back to the status code.
+ * The improver card shows this text verbatim: an operator who is told "409"
+ * learns nothing, and one who is told "accept it first" knows what to press.
+ */
+async function errText(res: Response): Promise<string> {
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  return data.error ?? `request failed: ${String(res.status)}`;
+}
+
+/**
+ * POST /api/retro/analysis — start the page-level improver over this window.
+ * 202 with a `running` row; 409 when one is already in flight.
+ */
+export async function startRetroAnalysis(range: AnalyticsRange = {}): Promise<RetroAnalysis> {
+  const res = await fetch(`/api/retro/analysis?${rangeQuery(range, {})}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return (await res.json()) as RetroAnalysis;
+}
+
+/** GET /api/retro/analysis — the newest analysis for the scope, or null. */
+export function fetchRetroAnalysis(project?: string): Promise<RetroAnalysisResp> {
+  if (MOCK) return Promise.resolve({ analysis: null });
+  const qs = project !== undefined && project !== '' ? `?project=${encodeURIComponent(project)}` : '';
+  return get(`/api/retro/analysis${qs}`);
+}
+
+/** PATCH /api/retro/analysis/{id} — the operator's gate. */
+export async function decideRetroAnalysis(
+  id: number,
+  status: 'accepted' | 'dismissed',
+): Promise<RetroAnalysis> {
+  const res = await fetch(`/api/retro/analysis/${String(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) throw new Error(await errText(res));
+  return (await res.json()) as RetroAnalysis;
+}
+
+/**
+ * POST /api/retro/analysis/{id}/plan — hand an accepted analysis to Planning
+ * Mode. A 409 carries the ACTIVE session, so the caller rethrows a typed
+ * conflict rather than a string the UI would have to parse.
+ */
+export async function planFromRetroAnalysis(
+  id: number,
+  projectId: number,
+): Promise<RetroPlanStarted> {
+  const res = await fetch(`/api/retro/analysis/${String(id)}/plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId }),
+  });
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => ({}))) as Partial<RetroPlanConflict>;
+    throw new RetroPlanConflictError(
+      body.error ?? 'a planning run is already active for this project',
+      body.sessionUuid ?? '',
+      body.projectSlug ?? '',
+    );
+  }
+  if (!res.ok) throw new Error(await errText(res));
+  return (await res.json()) as RetroPlanStarted;
+}
+
+/** Typed 409 from planFromRetroAnalysis, carrying the active session to link to. */
+export class RetroPlanConflictError extends Error {
+  readonly sessionUuid: string;
+  readonly projectSlug: string;
+  constructor(message: string, sessionUuid: string, projectSlug: string) {
+    super(message);
+    this.name = 'RetroPlanConflictError';
+    this.sessionUuid = sessionUuid;
+    this.projectSlug = projectSlug;
+  }
 }
 
 /**
