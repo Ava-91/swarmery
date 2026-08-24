@@ -314,7 +314,7 @@ func (h *Handler) phasesAllComplete(taskID int64) (bool, error) {
 		if err := rows.Scan(&done, &total, &verifyMode, &verdict, &report, &ran, &boardCol, &archived); err != nil {
 			return false, err
 		}
-		if !phasegate.Check(phasegate.Input{
+		in := phasegate.Input{
 			CriteriaDone:     done,
 			CriteriaTotal:    total,
 			VerifyMode:       verifyMode,
@@ -323,7 +323,8 @@ func (h *Handler) phasesAllComplete(taskID int64) (bool, error) {
 			CompletionReport: report,
 			Ran:              ran,
 			ClosureRequired:  closureRequired,
-		}).Complete() {
+		}
+		if phasegate.Check(in).HoldsPlanBack(in) {
 			all = false
 		}
 	}
