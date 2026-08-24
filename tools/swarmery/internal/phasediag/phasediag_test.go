@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -315,8 +316,12 @@ func TestDiagnoseDepWithoutCriteriaIsIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Diagnose: %v", err)
 	}
-	if got := kinds(d.Blockers); len(got) != 1 || got[0] != KindDepIncomplete {
-		t.Fatalf("kinds = %v, want [%s]", got, KindDepIncomplete)
+	// The subject phase is 4/4 with no Completion Report, so the closure gate
+	// legitimately adds `unreported` beside this one. Assert the blocker this test
+	// is about rather than the whole set: pinning the set here would make every
+	// future blocker a failure of an unrelated test.
+	if got := kinds(d.Blockers); !slices.Contains(got, KindDepIncomplete) {
+		t.Fatalf("kinds = %v, want %s among them", got, KindDepIncomplete)
 	}
 	b := blockerOf(t, d, KindDepIncomplete)
 	if strings.Contains(b.Summary, "0/0") {

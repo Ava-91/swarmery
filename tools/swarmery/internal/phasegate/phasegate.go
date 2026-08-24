@@ -31,7 +31,12 @@
 //     was invisible: an ABSENT verdict.
 package phasegate
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
+)
 
 // Completion states. Closed set.
 const (
@@ -44,6 +49,14 @@ const (
 	// StateIncomplete — the criteria themselves are not met. The pre-existing
 	// answer, unchanged.
 	StateIncomplete = "incomplete"
+	// StateUnreported — the work is there and (where asked for) confirmed, but the
+	// record of it is not: an empty or placeholder Completion Report, or no lesson.
+	// Separate from StateUnverified because they call for different actions —
+	// re-run the verifier versus write down what happened — and one label for both
+	// would send the operator to the wrong one half the time. When BOTH are true
+	// the state is StateUnverified: unconfirmed work is the more serious of the
+	// two, and Reasons carries the rest.
+	StateUnreported = "unreported"
 )
 
 // Verdict values as stamped on the row. Mirrors verify.Verdict without importing
@@ -73,6 +86,26 @@ type Input struct {
 	// Those predate acceptance-criteria counting and prove completion by their
 	// column; the gate honours that rather than retroactively re-opening them.
 	LegacyDone bool
+	// CompletionReport is the phase doc's `## Completion Report` body as
+	// wsingest parsed it — "" when the section is absent OR present but empty,
+	// which the parser already treats as the same thing.
+	//
+	// The contract has demanded this section in three places (the dispatcher's
+	// execution contract, phaserun's prompt, the phase-doc template) and nothing
+	// refused an empty one, so the instruction was advice: churn was measurable
+	// for exactly two tasks in a fourteen-day window.
+	CompletionReport string
+	// LessonRecorded reports whether this phase's PLAN has at least one lesson in
+	// the pre-existing store (retro_lessons, fed from the task's
+	// phases/09-retrospective.md). Plan-level rather than phase-level on purpose:
+	// that is where the retro flow already reads lessons from, and inventing a
+	// per-phase lesson table beside it would be the second store this criterion
+	// forbids.
+	LessonRecorded bool
+	// ClosureRequired is the closure gate's own opt-in, resolved by the caller
+	// from ClosureGateEnabled(). Off ⇒ report and lesson are not required, which
+	// is the migration path for plans already in flight when the gate shipped.
+	ClosureRequired bool
 }
 
 // Result is the gate's answer. Reasons is empty exactly when State is
@@ -114,20 +147,120 @@ func Check(in Input) Result {
 		return Result{State: StateIncomplete, Reasons: reasons}
 	}
 
+	// ONE gate, several reasons. The verification condition and the closure
+	// conditions are collected together rather than short-circuiting, so the
+	// operator sees everything standing between this phase and done in one
+	// answer instead of fixing one thing and being refused for the next.
+	verificationUnmet := false
 	if in.VerificationRequired() {
 		switch in.VerifyVerdict {
 		case "":
-			return Result{State: StateUnverified, Reasons: []string{
-				"this phase asked to be verified (verify: " + in.VerifyMode +
-					") and carries no verdict — the grade never landed, so the ticked criteria are unconfirmed",
-			}}
+			verificationUnmet = true
+			reasons = append(reasons,
+				"this phase asked to be verified (verify: "+in.VerifyMode+
+					") and carries no verdict — the grade never landed, so the ticked criteria are unconfirmed")
 		case VerdictInconclusive:
-			return Result{State: StateUnverified, Reasons: []string{
-				"verification could not conclude, so the ticked criteria are unconfirmed — " +
-					"see the verify detail for whether the verifier ran at all",
-			}}
+			verificationUnmet = true
+			reasons = append(reasons,
+				"verification could not conclude, so the ticked criteria are unconfirmed — "+
+					"see the verify detail for whether the verifier ran at all")
 		}
 	}
 
+	if in.ClosureRequired {
+		if why := reportProblem(in.CompletionReport); why != "" {
+			reasons = append(reasons, why)
+		}
+		if !in.LessonRecorded {
+			reasons = append(reasons,
+				"no lesson is recorded for this plan — add a `### Lesson N: <title>` entry under "+
+					"`## Lessons Learned` in the task's phases/09-retrospective.md, which is where "+
+					"the retro flow already reads lessons from")
+		}
+	}
+
+	if len(reasons) > 0 {
+		state := StateUnreported
+		if verificationUnmet {
+			state = StateUnverified
+		}
+		return Result{State: state, Reasons: reasons}
+	}
 	return Result{State: StateComplete}
+}
+
+// substantiveReportRe is the "names something concrete" test: a path with an
+// extension or a directory separator, a git SHA, or a PR/commit reference.
+// Deliberately crude — see reportProblem.
+var substantiveReportRe = regexp.MustCompile(
+	`(?i)([\w./-]+\.(go|ts|tsx|js|jsx|py|sh|md|json|yaml|yml|sql|tf|rs|java|rb|css|html)\b|` +
+		`[\w-]+/[\w./-]+|\b[0-9a-f]{7,40}\b|#\d+)`)
+
+// minReportRunes is the length floor. "done" and "ok" are not reports; the
+// floor is low enough that a genuine two-sentence report clears it easily.
+const minReportRunes = 80
+
+// placeholderReportRe catches the stub a template leaves behind and the words
+// an agent reaches for when it has nothing to say.
+var placeholderReportRe = regexp.MustCompile(
+	`(?i)^\s*(tbd|todo|n/?a|none|pending|-{1,3}|_+|<[^>]*>|\(?to be (filled|written)[^)]*\)?|nothing to report|see (above|reply|below))\s*\.?\s*$`)
+
+// reportProblem returns "" when the Completion Report passes, else the reason.
+//
+// It gates on SUBSTANCE, not presence: an empty section, whitespace, a template
+// placeholder, or prose that names nothing concrete does not close a phase. The
+// substance test is simply "does it name a file, a commit, or a PR" — a
+// deliberately crude check, because a prose analyser here would be a
+// hard-to-explain oracle that agents learn to game in more elaborate ways.
+//
+// KNOWN LIMIT, recorded rather than engineered around: a report can satisfy this
+// by naming one file and saying nothing useful. That is not preventable at this
+// layer and trying would cost more than it saves. What the gate buys is that the
+// section can no longer be EMPTY, which is what made churn unmeasurable.
+func reportProblem(report string) string {
+	trimmed := strings.TrimSpace(report)
+	if trimmed == "" {
+		return "the phase doc's `## Completion Report` section is empty — " +
+			"write what shipped, the files and commits, the verification output, and any deviation. " +
+			"That section is the only summary the dashboard shows for this phase"
+	}
+	if placeholderReportRe.MatchString(trimmed) {
+		return "the `## Completion Report` is a placeholder (" + firstWords(trimmed, 6) + ") — " +
+			"a blocked phase still owes a real report describing how far it got and what stopped it"
+	}
+	if len([]rune(trimmed)) < minReportRunes {
+		return fmt.Sprintf(
+			"the `## Completion Report` is %d characters — too short to be a report of anything; "+
+				"name what shipped and where", len([]rune(trimmed)))
+	}
+	if !substantiveReportRe.MatchString(trimmed) {
+		return "the `## Completion Report` names nothing concrete — cite the files you changed, " +
+			"the commits you made, or the PR, so the work can be found later"
+	}
+	return ""
+}
+
+// firstWords is a short echo of the offending text for the refusal message.
+func firstWords(s string, n int) string {
+	f := strings.Fields(s)
+	if len(f) > n {
+		f = f[:n]
+	}
+	return strings.Join(f, " ")
+}
+
+// ClosureGateEnabled reports the closure conditions' kill switch:
+// SWARMERY_CLOSURE_GATE=0/false/off disables them. Default ON.
+//
+// The switch exists for one situation and is documented as such: plans already
+// in flight when the gate shipped have phases that were closed under the old
+// contract, and an operator who needs them to read as done while the reports are
+// backfilled should be able to say so explicitly — rather than discovering the
+// gate by having a finished plan reopen itself.
+func ClosureGateEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SWARMERY_CLOSURE_GATE"))) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
 }

@@ -570,6 +570,17 @@ func buildEpicSpec(criteria []specCriterionDTO, covers []phaseCovers) *epicSpecD
 // is used to compute each phase's path relative to plan/ (the ?path= the doc
 // endpoints accept).
 func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epicRollupDTO, []phaseCovers, error) {
+	// The closure conditions are PLAN-level facts, resolved ONCE and BEFORE the
+	// phase cursor opens. Before, not after: the SQLite pool is single-connection,
+	// so any nested query issued while a cursor is open deadlocks — the same
+	// hazard listEpics documents about hydrating phases. Once, because asking per
+	// phase would let two phases of one plan disagree about their own plan.
+	closureRequired := phasegate.ClosureGateEnabled()
+	lessonRecorded, lerr := h.planHasLesson(taskID)
+	if lerr != nil {
+		return nil, epicRollupDTO{}, nil, lerr
+	}
+
 	rows, err := h.DB.Query(`
 		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on, e.covers,
 		       e.checkboxes_total, e.checkboxes_done, e.doc_status, e.doc_updated_at,
@@ -676,11 +687,14 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		// THE gate — the same call phaserun's dependency check and the diagnosis
 		// modal make, so no surface can privately decide this row is done.
 		gate := phasegate.Check(phasegate.Input{
-			CriteriaDone:  p.CheckboxesDone,
-			CriteriaTotal: p.CheckboxesTotal,
-			VerifyMode:    p.VerifyMode,
-			VerifyVerdict: verifyVerdict.String,
-			LegacyDone:    boardCol.String == "done" || (p.BoardTaskID != nil && p.ActivatedAt != nil && boardCol.String == "archived"),
+			CriteriaDone:     p.CheckboxesDone,
+			CriteriaTotal:    p.CheckboxesTotal,
+			VerifyMode:       p.VerifyMode,
+			VerifyVerdict:    verifyVerdict.String,
+			LegacyDone:       boardCol.String == "done" || (p.BoardTaskID != nil && p.ActivatedAt != nil && boardCol.String == "archived"),
+			CompletionReport: completion.String,
+			LessonRecorded:   lessonRecorded,
+			ClosureRequired:  closureRequired,
 		})
 		p.CompletionState = gate.State
 		p.CompletionBlockers = gate.Reasons
@@ -698,6 +712,24 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		rollup.Pct = float64(rollup.Done) / float64(rollup.Total) * 100
 	}
 	return phases, rollup, covers, rows.Err()
+}
+
+// planHasLesson reports whether a plan's task carries at least one lesson in the
+// PRE-EXISTING store: retro_lessons, which wsingest fills from the task's
+// phases/09-retrospective.md (`### Lesson N: <title>` under `## Lessons
+// Learned`). Reusing that table is the whole point — a per-phase lesson table
+// beside it would be a second store for the same thing, and the retro feed and
+// the agent hub already read this one.
+func (h *Handler) planHasLesson(taskID int64) (bool, error) {
+	var n int
+	err := h.DB.QueryRow(`
+		SELECT COUNT(*) FROM retro_lessons l
+		  JOIN task_retros r ON r.id = l.retro_id
+		 WHERE r.task_id = ?`, taskID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // decodeIntList parses a JSON array of ints; [] on empty/garbage.

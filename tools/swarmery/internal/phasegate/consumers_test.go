@@ -106,6 +106,41 @@ func TestNoUnlistedCompletionDecision(t *testing.T) {
 	}
 }
 
+// Every gated consumer must hand the gate the CLOSURE inputs too, or the
+// Completion Report and lesson conditions silently do not apply on that path.
+// depSatisfied is the one deliberate exception, and it has to say so in the
+// code: the closure conditions gate what is RECORDED as complete, not what may
+// START, and blocking the DAG on a predecessor's unwritten paperwork is the
+// deadlock this plan warns against.
+func TestGatedConsumersFeedTheClosureInputs(t *testing.T) {
+	root := repoRoot(t)
+	// path:symbol → the reason it legitimately passes ClosureRequired: false.
+	closureExempt := map[string]string{
+		"internal/phaserun/service.go:depSatisfied": "the DAG gate must not stall on a predecessor's paperwork",
+	}
+	for _, c := range Consumers {
+		if !c.Gated || c.Via != "" {
+			continue // forwarding consumers are covered by their producer
+		}
+		key := c.Path + ":" + c.Symbol
+		src, err := os.ReadFile(filepath.Join(root, c.Path))
+		if err != nil {
+			t.Fatalf("%s: %v", c.Path, err)
+		}
+		body := funcBody(string(src), c.Symbol)
+		feeds := strings.Contains(body, "CompletionReport:") && strings.Contains(body, "LessonRecorded:")
+		opted := strings.Contains(body, "ClosureRequired: false")
+		reason, isExempt := closureExempt[key]
+		switch {
+		case isExempt && !opted:
+			t.Errorf("%s is listed as closure-exempt (%s) but does not pass ClosureRequired: false", key, reason)
+		case !isExempt && !feeds:
+			t.Errorf("%s calls the gate without the closure inputs — the report and lesson "+
+				"conditions do not apply on this path, and nothing said so", key)
+		}
+	}
+}
+
 // funcBody extracts the source of a top-level func (method or plain) by name,
 // brace-counting from its opening line. Good enough for this sweep and free of a
 // go/ast dependency in a leaf package.

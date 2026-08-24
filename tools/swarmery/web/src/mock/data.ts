@@ -1455,6 +1455,9 @@ const mockCompletion = ({
       completionState: 'unverified',
       completionBlockers: ['verification could not conclude, so the ticked criteria are unconfirmed'],
     };
+  // Fixtures carry a Completion Report on every fully-ticked phase (see the
+  // factory above), so the mock's closure conditions are satisfied by
+  // construction; `unreported` is exercised by the Go tests, not here.
   return { completionState: 'complete', completionBlockers: [] };
 };
 

@@ -45,6 +45,12 @@ const (
 	// of a grade, and it used to be silent: the phase read as done.
 	KindUnverified = "unverified"
 
+	// KindUnreported: the work landed and (where asked for) was confirmed, but the
+	// record of it did not — an empty or placeholder Completion Report, or no
+	// lesson recorded for the plan. Separate from KindUnverified because the
+	// remedy is different: write down what happened, rather than re-run a grader.
+	KindUnreported = "unreported"
+
 	// KindOwnWorktree: the phase's branch holds commits AND is checked out at the
 	// worktree this daemon created for that very run. That state needs no action —
 	// a retry warm-reuses the worktree and continues the work — and the one thing
@@ -173,28 +179,35 @@ func branchName(phaseID int64) string {
 // guessed; criteria and dependency blockers still render.
 func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Diagnosis, error) {
 	var (
-		d          Diagnosis
-		taskID     int64
-		depsJSON   string
-		runState   string
-		uuid       sql.NullString
-		startedAt  sql.NullString
-		endedAt    sql.NullString
-		runErr     sql.NullString
-		before     sql.NullInt64
-		after      sql.NullInt64
-		docPath    string
-		projPath   sql.NullString
-		total, don int
-		verifyMode sql.NullString
-		verdict    sql.NullString
-		vDetail    sql.NullString
+		d                Diagnosis
+		taskID           int64
+		depsJSON         string
+		runState         string
+		uuid             sql.NullString
+		startedAt        sql.NullString
+		endedAt          sql.NullString
+		runErr           sql.NullString
+		before           sql.NullInt64
+		after            sql.NullInt64
+		docPath          string
+		projPath         sql.NullString
+		total, don       int
+		verifyMode       sql.NullString
+		verdict          sql.NullString
+		vDetail          sql.NullString
+		completionReport sql.NullString
+		lessonRecorded   bool
 	)
 	err := db.QueryRow(`
 		SELECT e.workspace_task_id, e.seq, e.name, e.doc_path, e.depends_on,
 		       e.checkboxes_total, e.checkboxes_done, e.run_state, e.run_session_uuid,
 		       e.run_started_at, e.run_ended_at, e.run_error, e.run_checkboxes_before,
-		       e.run_checkboxes_after, e.verify_mode, e.verify_verdict, e.verify_detail, p.path
+		       e.run_checkboxes_after, e.verify_mode, e.verify_verdict, e.verify_detail,
+		       COALESCE(e.completion_report,''),
+		       EXISTS (SELECT 1 FROM retro_lessons l
+		                 JOIN task_retros r ON r.id = l.retro_id
+		                WHERE r.task_id = e.workspace_task_id),
+		       p.path
 		  FROM epic_phases e
 		  JOIN tasks t ON t.id = e.workspace_task_id
 		  JOIN projects p ON p.id = t.project_id
@@ -202,7 +215,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		&taskID, &d.Seq, &d.Name, &docPath, &depsJSON,
 		&total, &don, &runState, &uuid,
 		&startedAt, &endedAt, &runErr, &before, &after,
-		&verifyMode, &verdict, &vDetail, &projPath)
+		&verifyMode, &verdict, &vDetail, &completionReport, &lessonRecorded, &projPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Diagnosis{}, ErrPhaseNotFound
 	}
@@ -364,15 +377,26 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 	// modal, the Plans list and the dependency gate cannot disagree about the same
 	// row. `fail` is deliberately NOT routed here: decision D5 keeps a failed grade
 	// as completed work with a verify-failed blocker beside it, and 5 above says so.
-	if gate := phasegate.Check(phasegate.Input{
-		CriteriaDone:  d.CriteriaAfter,
-		CriteriaTotal: total,
-		VerifyMode:    verifyMode.String,
-		VerifyVerdict: verdict.String,
-	}); gate.State == phasegate.StateUnverified {
+	gate := phasegate.Check(phasegate.Input{
+		CriteriaDone:     d.CriteriaAfter,
+		CriteriaTotal:    total,
+		VerifyMode:       verifyMode.String,
+		VerifyVerdict:    verdict.String,
+		CompletionReport: completionReport.String,
+		LessonRecorded:   lessonRecorded,
+		ClosureRequired:  phasegate.ClosureGateEnabled(),
+	})
+	switch gate.State {
+	case phasegate.StateUnverified:
 		d.Blockers = append(d.Blockers, Blocker{
 			Kind:    KindUnverified,
 			Summary: "Every acceptance criterion is ticked, but this phase has no verification result — it is unverified, not done",
+			Detail:  strings.Join(gate.Reasons, "\n"),
+		})
+	case phasegate.StateUnreported:
+		d.Blockers = append(d.Blockers, Blocker{
+			Kind:    KindUnreported,
+			Summary: "The work is done and unrecorded — a phase closes with a Completion Report and a lesson, not just with ticked boxes",
 			Detail:  strings.Join(gate.Reasons, "\n"),
 		})
 	}

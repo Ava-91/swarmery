@@ -124,3 +124,132 @@ func TestVerificationRequired(t *testing.T) {
 		}
 	}
 }
+
+// ── the closure conditions (Phase 7) ──
+// One gate, two more reasons. These compose with the verification condition
+// rather than forming a second gate: the operator sees every reason at once.
+
+func TestCheck_ClosureConditions(t *testing.T) {
+	// A report that passes: it names files and says what happened.
+	goodReport := "Rewired the janitor sweep so a reclaimed worktree cannot strand a lock. " +
+		"Files: internal/prune/sweep.go, internal/worktree/worktree.go. Tests: make test green."
+
+	base := func() Input {
+		return Input{
+			CriteriaDone: 3, CriteriaTotal: 3,
+			VerifyMode:       "off",
+			CompletionReport: goodReport,
+			LessonRecorded:   true,
+			ClosureRequired:  true,
+		}
+	}
+
+	t.Run("report and lesson present", func(t *testing.T) {
+		if got := Check(base()); !got.Complete() {
+			t.Fatalf("state = %q, reasons %v", got.State, got.Reasons)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		report    string
+		wantWords string
+	}{
+		{"empty", "", "is empty"},
+		{"whitespace only", "   \n\t  ", "is empty"},
+		{"template placeholder", "TBD", "placeholder"},
+		{"angle-bracket stub", "<what shipped>", "placeholder"},
+		{"see the reply", "See above", "placeholder"},
+		{"too short", "Did the thing.", "too short"},
+		{"names nothing concrete", "The work is finished and everything went smoothly, no problems were encountered at all during this phase.", "names nothing concrete"},
+	} {
+		t.Run("report refused: "+tc.name, func(t *testing.T) {
+			in := base()
+			in.CompletionReport = tc.report
+			got := Check(in)
+			if got.State != StateUnreported {
+				t.Fatalf("state = %q, want unreported (reasons %v)", got.State, got.Reasons)
+			}
+			joined := strings.Join(got.Reasons, " ")
+			if !strings.Contains(joined, tc.wantWords) {
+				t.Errorf("reasons %q do not say %q", joined, tc.wantWords)
+			}
+		})
+	}
+
+	t.Run("missing lesson", func(t *testing.T) {
+		in := base()
+		in.LessonRecorded = false
+		got := Check(in)
+		if got.State != StateUnreported {
+			t.Fatalf("state = %q, want unreported", got.State)
+		}
+		if !strings.Contains(strings.Join(got.Reasons, " "), "09-retrospective.md") {
+			t.Errorf("the refusal must name the existing lesson location; got %v", got.Reasons)
+		}
+	})
+
+	// The blocked path is not a bypass: a phase that stopped early still owes a
+	// report describing how far it got and what stopped it.
+	t.Run("blocked phase still owes a report", func(t *testing.T) {
+		in := base()
+		in.CompletionReport = "BLOCKED"
+		if got := Check(in); got.Complete() {
+			t.Error("a one-word 'BLOCKED' closed the phase")
+		}
+		in.CompletionReport = "BLOCKED: the migration in internal/store/migrations/0058_x.sql needs a column " +
+			"the API has not shipped yet; got as far as wiring the reader."
+		if got := Check(in); !got.Complete() {
+			t.Errorf("an honest blocked report must pass: %v", got.Reasons)
+		}
+	})
+
+	// Off by default for plans already in flight — the migration path.
+	t.Run("closure not required", func(t *testing.T) {
+		in := base()
+		in.CompletionReport = ""
+		in.LessonRecorded = false
+		in.ClosureRequired = false
+		if got := Check(in); !got.Complete() {
+			t.Errorf("with the closure gate off, an unreported phase must still close: %v", got.Reasons)
+		}
+	})
+}
+
+// ONE gate citing several reasons — the property Phase 7 asked for explicitly,
+// rather than two gates that each half-block.
+func TestCheck_OneGateManyReasons(t *testing.T) {
+	got := Check(Input{
+		CriteriaDone: 4, CriteriaTotal: 4,
+		VerifyMode:       "strict", // asked to be graded, never was
+		CompletionReport: "",       // and never reported
+		LessonRecorded:   false,    // and no lesson
+		ClosureRequired:  true,
+	})
+	if got.Complete() {
+		t.Fatal("a phase failing three conditions closed")
+	}
+	if len(got.Reasons) < 3 {
+		t.Errorf("want every reason cited at once, got %d: %v", len(got.Reasons), got.Reasons)
+	}
+	// Unconfirmed work is the more serious of the two states, so it names the row.
+	if got.State != StateUnverified {
+		t.Errorf("state = %q, want unverified when verification is also unmet", got.State)
+	}
+}
+
+// The two failure modes must not collapse into one label: the remedies differ
+// (re-run the grader vs write down what happened).
+func TestUnreportedIsDistinctFromUnverified(t *testing.T) {
+	report := "Shipped the retry budget in internal/dispatch/service.go; make test green."
+	unverified := Check(Input{CriteriaDone: 1, CriteriaTotal: 1, VerifyMode: "normal",
+		CompletionReport: report, LessonRecorded: true, ClosureRequired: true})
+	unreported := Check(Input{CriteriaDone: 1, CriteriaTotal: 1, VerifyMode: "off",
+		CompletionReport: "", LessonRecorded: true, ClosureRequired: true})
+	if unverified.State == unreported.State {
+		t.Fatalf("both read as %q — the operator cannot tell which remedy applies", unverified.State)
+	}
+	if unverified.State != StateUnverified || unreported.State != StateUnreported {
+		t.Errorf("states are swapped: %q / %q", unverified.State, unreported.State)
+	}
+}

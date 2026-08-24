@@ -93,7 +93,7 @@ function isResolvedColumn(col: BoardColumn | null): boolean {
   return col === 'done' || col === 'archived';
 }
 
-type PhaseStatus = 'pending' | 'in_progress' | 'done' | 'unverified' | 'blocked';
+type PhaseStatus = 'pending' | 'in_progress' | 'done' | 'unverified' | 'unreported' | 'blocked';
 
 /** Derives a phase's display status from checkbox progress, a live run, and the
  * dependency gate. The result stays a coarse LIFECYCLE state — whether a process
@@ -108,6 +108,7 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   // criteria are all ticked and the verification the doc asked for never landed.
   if (p.completionState === 'complete') return 'done';
   if (p.completionState === 'unverified') return 'unverified';
+  if (p.completionState === 'unreported') return 'unreported';
   // The doc's own `Status: In progress` marker wins over the dependency gate —
   // an executor writing it is literally working on the phase right now.
   // (`done` must be earned by ticking every checkbox; a `done` marker alone is ignored.)
@@ -235,6 +236,10 @@ const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
   // the app's needs-a-human colour — NOT green, because nobody confirmed this, and
   // NOT red, because nothing says the work is wrong.
   unverified: { label: 'unverified', cls: 'border-amber/40 bg-amber/10 text-amber' },
+  // Work that landed and was never written down. Amber like `unverified` — both
+  // need a human — but its own label, because the fix is different: write the
+  // Completion Report and record the lesson, not re-run a grader.
+  unreported: { label: 'unreported', cls: 'border-amber/40 bg-amber/10 text-amber' },
   in_progress: { label: 'started', cls: 'border-brand/40 text-brand' },
   blocked: { label: 'blocked', cls: 'border-red/40 text-red' },
   pending: { label: 'pending', cls: 'border-line text-ink-faint' },

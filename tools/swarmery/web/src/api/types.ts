@@ -3001,8 +3001,12 @@ export interface EpicPhase {
   completionBlockers: string[];
 }
 
-/** The completion gate's states (server-side internal/phasegate). */
-export type PhaseCompletionState = 'complete' | 'unverified' | 'incomplete';
+/** The completion gate's states (server-side internal/phasegate).
+ *  `unverified` — the work is there and unconfirmed (the grade never landed).
+ *  `unreported` — the work is there and unrecorded (no Completion Report, or no
+ *  lesson). Two states rather than one because the remedies differ: re-run the
+ *  verifier versus write down what happened. */
+export type PhaseCompletionState = 'complete' | 'unverified' | 'unreported' | 'incomplete';
 
 /** Checkbox rollup across an epic's phases. */
 export interface EpicRollup {
