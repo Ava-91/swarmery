@@ -419,9 +419,14 @@ func retroFrictionServer(t *testing.T) *httptest.Server {
 	// One resolved (300 s wait) + one pending permission request. The pending
 	// one was opened 30 days ago — OUTSIDE the 7-day range — because
 	// "pending now" must not be range-filtered.
-	resolvedAt := time.Now().UTC().Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000Z")
-	requestedAt := time.Now().UTC().Add(-1*time.Hour - 300*time.Second).Format("2006-01-02T15:04:05.000Z")
-	pendingAt := time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02T15:04:05.000Z")
+	// ONE clock read for all three stamps. Three separate time.Now() calls made
+	// the seeded span 300s only when every call landed in the same millisecond;
+	// otherwise it came out as 299.999983s and failed the 1e-9 tolerance — a
+	// flake that fires roughly whenever the machine is busy.
+	fixtureNow := time.Now().UTC()
+	resolvedAt := fixtureNow.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000Z")
+	requestedAt := fixtureNow.Add(-1*time.Hour - 300*time.Second).Format("2006-01-02T15:04:05.000Z")
+	pendingAt := fixtureNow.AddDate(0, 0, -30).Format("2006-01-02T15:04:05.000Z")
 	mustExec(`INSERT INTO permission_requests (session_id, tool_name, request_json, status, requested_at, resolved_at) VALUES
 		(1, 'Bash', '{}', 'approved', ?, ?),
 		(1, 'Read', '{}', 'pending',  ?, NULL)`, requestedAt, resolvedAt, pendingAt)

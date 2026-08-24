@@ -274,6 +274,244 @@ const RAW = {
     ],
     doc: { slug: 'concepts', anchor: 'account-binding' },
   },
+
+  // ── /retro ────────────────────────────────────────────────────────────────
+  // The page's own complaint was that it explains nothing: it renders numbers
+  // and two buttons whose real blast radius is invisible. Every block below
+  // therefore answers the same three things — what is measured, from which
+  // source, and what to do with it — and the two action concepts say plainly
+  // what their button does and does NOT do.
+
+  'retro-page': {
+    term: 'Retro page',
+    short:
+      'How the agent system is performing over a window, and the one loop that changes it: measure → analyze → recommend → review → plan.',
+    tone: 'explain',
+    steps: [
+      {
+        title: 'Read the window',
+        body: 'Every block on this page is one window (14 days by default) folded out of session transcripts already in SQLite — runs, cost, errors, denials, waits, and the workspace artifacts your tasks wrote.',
+      },
+      {
+        title: 'Analyze — deterministic, no model',
+        body: '"Analyze now" runs a local rule engine (R1–R9) plus the trajectory evaluator over that data. No LLM is called, nothing is spent, and the same data always yields the same recommendations.',
+      },
+      {
+        title: 'Decide on the recommendations',
+        body: 'Accepting one snapshots the metric it fired on as a baseline. Adoption is then detected automatically for some targets, and verification compares the metric against that baseline a week later.',
+      },
+      {
+        title: 'Improve one agent, or the whole system',
+        body: 'A scorecard’s Improve button rewrites exactly one agent definition file as a reviewable diff. The page-level Improve reads the whole report and writes an analysis of the system — agents, skills, commands, hooks, processes.',
+      },
+      {
+        title: 'Turn an accepted analysis into a plan',
+        body: 'Nothing is written to a repository until you accept an analysis. Accepting hands it to Planning Mode as the idea for a normal planning interview, and the plan lands in the private workspace.',
+      },
+    ],
+    facts: [
+      { label: 'default window', value: '14 local days, ending today' },
+      { label: 'source', value: 'sessions, turns, events, tasks — already-ingested SQLite' },
+      { label: 'one call', value: 'GET /api/retro/report — all sections + a citable digest' },
+    ],
+    doc: { slug: 'concepts', anchor: 'retro-page' },
+  },
+
+  'retro-kpis': {
+    term: 'Retro KPIs',
+    short:
+      'Window totals with an arrow comparing them to the previous window of the same length: agent spend, runs, and the runs that hit an error. The orchestrator is counted separately from subagents.',
+    tone: 'explain',
+    actions: [
+      'Read the arrow, not the number — the absolute total moves with how much you worked.',
+      'A rising error share with flat runs is the signal worth acting on.',
+    ],
+    facts: [
+      { label: 'compared against', value: 'the previous window of equal length' },
+      {
+        label: 'orchestrator',
+        value: 'has no subagent_start of its own, so it reports no run count',
+      },
+      { label: 'approximate', value: 'shown when the window overlaps rolled-up (pruned) days' },
+    ],
+    doc: { slug: 'concepts', anchor: 'retro-kpis' },
+  },
+
+  'retro-scorecard': {
+    term: 'Agent scorecard',
+    short:
+      'One card per subagent: runs, sessions, cost, p95 duration, and an error rate that is the share of RUNS with at least one behavior-fixable error — not raw error events per run.',
+    tone: 'explain',
+    actions: [
+      'Compare the error rate to the previous window before reacting to a single bad day.',
+      'Harness and infrastructure noise is excluded, so what is left is arguably fixable in the prompt.',
+      'Use Improve on a card only after the same weakness shows up twice.',
+    ],
+    facts: [
+      { label: 'error rate', value: 'distinct runs with ≥1 behavior-fixable error ÷ runs' },
+      { label: 'runs', value: 'subagent_start events, folded across naming notations' },
+      { label: 're-dispatch', value: 'from the task_delegations ledger your retro docs wrote' },
+    ],
+    doc: { slug: 'concepts', anchor: 'agent-scorecard' },
+  },
+
+  'retro-recommendations': {
+    term: 'Advisor recommendations',
+    short:
+      'What a deterministic rule engine (R1–R9) concluded from this data. Each carries the numbers it fired on and the sessions that produced them — evidence, not advice.',
+    tone: 'action',
+    actions: [
+      'Accept one to snapshot its metric as a baseline; dismiss suppresses re-proposal for 30 days.',
+      'Adoption is auto-detected only for agent, tool and process targets.',
+      'An error-group or config recommendation verifies straight from accepted — it never shows "adopted".',
+    ],
+    facts: [
+      { label: 'lifecycle', value: 'proposed → accepted | dismissed → adopted → verified' },
+      { label: 'verification', value: 'metric ≥20% better than baseline, ≥7 days after adoption' },
+      { label: 'identity', value: 'one row per rule:target, aggregated across projects' },
+    ],
+    doc: { slug: 'concepts', anchor: 'advisor-recommendations' },
+  },
+
+  'retro-analyze-button': {
+    term: 'Analyze now',
+    short:
+      'Re-runs the rule engine and the local trajectory evaluator over the data already in the database. It calls NO model: it is free, repeatable, and deterministic on the same input.',
+    tone: 'explain',
+    actions: [
+      'Press it after new sessions land — recommendations only change when the data does.',
+      'It cannot cost you anything, so there is no reason to ration it.',
+      'For the model-written analysis of the whole report, use the page-level Improve instead.',
+    ],
+    facts: [
+      { label: 'runs', value: 'advisor rules R1–R9 + trajeval — both local' },
+      {
+        label: 'LLM judge',
+        value: 'deliberately NOT fired here; it runs on the daemon’s 24h schedule',
+      },
+      { label: 'scope', value: 'always fleet-wide — cross-project rates would be wrong if narrowed' },
+    ],
+    doc: { slug: 'concepts', anchor: 'analyze-now' },
+  },
+
+  'retro-improve': {
+    term: 'Improve the system',
+    short:
+      'Reads the whole window, has an agent write what hurts and what to change, every claim citing its evidence. It writes nothing anywhere until you accept it.',
+    tone: 'action',
+    actions: [
+      'Read the citations, not the prose — a claim you cannot trace is one the contract should have rejected.',
+      'Accept only what you would defend; dismissing costs nothing but a re-run.',
+      'Accepting hands the change section to Planning Mode as the seed of a normal interview.',
+    ],
+    facts: [
+      { label: 'unlike Analyze now', value: 'this one does call a model, and it costs tokens' },
+      { label: 'unlike per-agent Improve', value: 'covers agents, skills, commands, hooks, processes' },
+      { label: 'rejected when', value: 'the analysis cites nothing, or cites an id the report never had' },
+      { label: 'one at a time', value: 'a second start returns "already running", not a second run' },
+    ],
+    doc: { slug: 'concepts', anchor: 'improve-the-system' },
+  },
+
+  'retro-agent-improve': {
+    term: 'Agent improve',
+    short:
+      'Generates a minimal unified diff to EXACTLY ONE agent definition file, from that agent’s own evidence. It changes nothing else — not skills, not commands, not hooks.',
+    tone: 'action',
+    actions: [
+      'Preview the evidence bundle first; the button opens on it, not on the diff.',
+      'Only one open proposal exists per agent at a time — decide the current one first.',
+      'Review the diff yourself: approving it is what applies the change.',
+    ],
+    facts: [
+      { label: 'target', value: 'one plugins/<pack>/agents/<name>.md, resolved at origin/main' },
+      { label: 'budget', value: 'the prompt demands a minimal change, ≤120 changed lines' },
+      { label: 'lifecycle', value: 'proposed → approved → applied | rejected; failed is retriable' },
+    ],
+    doc: { slug: 'concepts', anchor: 'agent-improve' },
+  },
+
+  'retro-proposals': {
+    term: 'Agent proposals',
+    short:
+      'The diffs Improve has generated but you have not decided on yet. Each is pinned to the file content it was written against, so a stale diff fails to apply rather than clobbering newer edits.',
+    tone: 'action',
+    actions: [
+      'Read the diff and the per-hunk rationale before approving.',
+      'Approving applies it against the marketplace clone, not your working tree.',
+      'A failed proposal keeps its error and can be retried without regenerating from scratch.',
+    ],
+    facts: [
+      { label: 'pinned to', value: 'sha256 of the agent file at generation time' },
+      { label: 'invariant', value: 'one open proposal per agent' },
+    ],
+    doc: { slug: 'concepts', anchor: 'agent-proposals' },
+  },
+
+  'retro-judgments': {
+    term: 'Trajectory judgments',
+    short:
+      'An LLM judge’s 1–5 scores for completed sessions across a few dimensions. Advisory only — it informs the scorecards’ success rate, it does not gate anything.',
+    tone: 'explain',
+    facts: [
+      { label: 'runs', value: 'on the daemon’s 24h schedule, never on "Analyze now"' },
+      { label: 'coverage', value: 'only sessions the judge has scored appear here' },
+    ],
+    doc: { slug: 'concepts', anchor: 'trajectory-judgments' },
+  },
+
+  'retro-friction': {
+    term: 'Friction board',
+    short:
+      'Where the system stalls rather than fails: tools that got denied, the error signatures that fire most, and how long approvals kept an agent waiting.',
+    tone: 'action',
+    actions: [
+      'A repeatedly denied tool with no rule is the cheapest fix on this page — add the rule inline.',
+      'Pending approvals are counted as of NOW, not within the window: an old one still blocks work today.',
+    ],
+    facts: [
+      {
+        label: 'denied tools',
+        value: 'tool_call / skill_use / subagent_start events with status=denied',
+      },
+      { label: 'error groups', value: 'the same folding /api/stats/errors uses' },
+      { label: 'waits', value: 'permission_requests, requested_at → resolved_at' },
+    ],
+    doc: { slug: 'concepts', anchor: 'friction-board' },
+  },
+
+  'retro-lessons': {
+    term: 'Lessons learned',
+    short:
+      'Lessons your own retrospective docs recorded, parsed out of the private workspace and joined to the tasks that produced them. Written by agents and by you — not inferred from telemetry.',
+    tone: 'explain',
+    actions: [
+      'Search it before starting similar work — this is the memory the numbers cannot hold.',
+      'An empty feed means the tasks in range wrote no retrospective, not that nothing was learned.',
+    ],
+    facts: [
+      { label: 'source', value: '09-retrospective.md docs in the private workspace' },
+      { label: 'filtered on', value: 'the task’s start date, newest first, capped at 100' },
+    ],
+    doc: { slug: 'concepts', anchor: 'lessons-learned' },
+  },
+
+  'retro-estimation': {
+    term: 'Estimation accuracy',
+    short:
+      'Estimated versus actual hours per workspace task, with the loop count and the delegation ledger beside it. Only tasks that wrote at least one artifact appear.',
+    tone: 'explain',
+    actions: [
+      'A large variance next to many loops means the task was underspecified, not underestimated.',
+      'Read re-dispatch verdicts as routing feedback: the wrong agent was picked, not a bad agent.',
+    ],
+    facts: [
+      { label: 'source', value: 'task retro docs, loop journals and the delegation ledger' },
+      { label: 'cap', value: '200 tasks, newest first' },
+    ],
+    doc: { slug: 'concepts', anchor: 'estimation-accuracy' },
+  },
+
 } satisfies Record<string, Concept>;
 
 export type ConceptId = keyof typeof RAW;

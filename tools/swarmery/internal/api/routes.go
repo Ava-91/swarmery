@@ -105,6 +105,18 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	mux.HandleFunc("GET /api/retro/tasks", h.retroTasks)
 	// phase 3: internal/advisor recommendations. The writes carry the same D4
 	// origin hardening as every other mutating endpoint.
+	// One consistent snapshot of the whole window + its deterministic digest —
+	// the evidence the improver loop reads (retro_report.go). A read, like its
+	// per-section neighbours, so no requireLocalOrigin.
+	mux.HandleFunc("GET /api/retro/report", h.retroReport)
+	// Page-level improver (retro_analysis.go): one saved, human-gated analysis
+	// of the whole system per window. The writes go through requireLocalOrigin
+	// like every other mutation here; the poll is a plain read.
+	mux.HandleFunc("POST /api/retro/analysis", requireLocalOrigin(h.startRetroAnalysis))
+	mux.HandleFunc("GET /api/retro/analysis", h.latestRetroAnalysis)
+	mux.HandleFunc("PATCH /api/retro/analysis/{id}", requireLocalOrigin(h.patchRetroAnalysis))
+	// The handoff into the EXISTING Planning Mode. Gated on status='accepted'.
+	mux.HandleFunc("POST /api/retro/analysis/{id}/plan", requireLocalOrigin(h.planFromRetroAnalysis))
 	mux.HandleFunc("GET /api/retro/recommendations", h.retroRecommendations)
 	mux.HandleFunc("PATCH /api/retro/recommendations/{id}", requireLocalOrigin(h.patchRecommendation))
 	mux.HandleFunc("POST /api/retro/advise", requireLocalOrigin(h.retroAdvise))

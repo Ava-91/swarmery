@@ -180,6 +180,187 @@ behaves byte-for-byte as it did before multi-account existed. Removing an accoun
 still point at is allowed; those projects fall back to the default account and the settings page
 shows a dismiss-only warning listing them.
 
+## Retro page
+
+The page you go to when you want the agent system to get *better*, not just to see what it did.
+Everything on it is one window — 14 local days by default — folded out of session transcripts,
+events and workspace artifacts that are already in SQLite. Nothing here is sampled or estimated
+from elsewhere.
+
+It is organised as one loop:
+
+1. **Measure.** The KPI card, the scorecards, the friction board, the lessons feed and the
+   estimation table describe the window from five angles.
+2. **Analyze.** [Analyze now](#analyze-now) re-runs a deterministic rule engine over that data.
+   No model is called.
+3. **Recommend.** The rules emit [recommendations](#advisor-recommendations) carrying the numbers
+   and sessions they fired on.
+4. **Review.** You accept or dismiss. Accepting snapshots a baseline that verification measures
+   against a week later.
+5. **Improve.** A scorecard's [Improve](#agent-improve) rewrites exactly one agent file. The
+   page-level Improve reads the whole report and writes an analysis of the system — agents,
+   skills, commands, hooks, processes — which becomes a plan only after you accept it.
+
+`GET /api/retro/report` serves every section as one consistent snapshot plus a deterministic
+markdown digest of it. That digest is what the improver reads: every evidence line in it ends in
+an `[E:kind:id]` citation marker, so an analysis can only point at things that actually happened.
+
+## Retro KPIs
+
+The lead card: what the window cost, how many runs it took, and how many of those runs hit an
+error — each with an arrow comparing it to the **previous window of the same length**. Read the
+arrow rather than the number; the absolute totals move with how much you happened to work.
+
+The orchestrator is counted separately from subagents. It never emits a `subagent_start` of its
+own, so it has no run count at all — only cost, tokens and errors. When the window overlaps
+rolled-up (pruned) days an "approximate" hint appears: per-event detail there is gone, so counts
+are lower bounds.
+
+## Agent scorecard
+
+One card per subagent in the window. `runs` are `subagent_start` events, folded across naming
+notations so `core:tech-lead` and `tech-lead` are one agent.
+
+The number worth understanding is the **error rate**. It is not error events per run. It is the
+share of distinct *runs* that carried at least one **behavior-fixable** error — the classification
+the advisor uses. One run spraying twenty tool errors counts once, and infrastructure noise (a
+dropped connection, a harness mechanic) does not count at all. What is left is the part of the
+failure surface a better prompt could plausibly move, which is why this is the grain the advisor's
+R2 rule fires on and the grain the Improve button is worth spending on.
+
+`re-dispatch` comes from the `task_delegations` ledger your retro docs wrote, not from telemetry:
+it is how often work handed to this agent had to be handed to someone else.
+
+## Advisor recommendations
+
+Conclusions from `internal/advisor`, a **deterministic rule engine** (R1–R9, no LLM) that folds
+the aggregates already in SQLite into evidenced findings. Each row carries the numbers it fired on
+and the session ids that produced them, so a recommendation is checkable rather than merely
+plausible.
+
+Identity is `rule:target`, aggregated across projects — a fleet-wide view by construction. A
+project-scoped page filters on the *evidence*, so fleet-level rules with no session attribution
+(process, config) correctly drop out of a single project's view.
+
+**Lifecycle:** `proposed → accepted | dismissed → adopted → verified`.
+
+- **accepted** is your intent, and it snapshots the metric as a baseline.
+- **dismissed** suppresses re-proposal for 30 days.
+- **adopted** is detected automatically, and only for some targets: an *agent* whose registry
+  version changed after acceptance, a *tool* that gained an enabled approval rule, a *process*
+  whose referenced improvement flipped to done. An **error group or config recommendation has no
+  detectable adoption signal and never shows "adopted"** — it verifies straight from accepted.
+- **verified** needs the metric to be at least 20% better than the baseline, at least 7 days later.
+  A post-window below the metric's activity floor never verifies: absence of data is not
+  improvement.
+
+## Analyze now
+
+Re-runs the rule engine (R1–R9) and the local trajectory evaluator over data already in the
+database, then rewrites the recommendations rail. It **calls no model**. It is free, it is
+repeatable, and on unchanged data it produces an unchanged result — so there is no reason to
+ration it, and no reason to expect a different answer from pressing it twice.
+
+It deliberately does *not* fire the LLM judge. Doing so used to spawn a burst of headless runs per
+click, which read as mystery sessions and spent tokens on what the operator experienced as a
+refresh. The judge now runs only on the daemon's 24-hour schedule.
+
+The run is always fleet-wide, even from a project-scoped page: the rules compute cross-project
+rates, and narrowing the *input* to one project would produce statistically wrong numbers.
+Narrowing happens on the read side instead.
+
+## Improve the system
+
+The page-level counterpart to [Agent improve](#agent-improve). It takes the whole window — every
+section of the report, as one consistent snapshot — renders it as a deterministic digest, and has
+an agent write an analysis in three parts: what hurts, why, and what to change. Its mandate covers
+agents, skills, commands, hooks and processes, which is exactly the ground the per-agent rewriter
+structurally cannot reach.
+
+Unlike [Analyze now](#analyze-now), **this one calls a model and costs tokens**. One analysis runs
+at a time; a second press answers "already running" rather than starting a competing one.
+
+**Citation is the contract, enforced in code.** Every evidence line in the digest carries an
+`[E:kind:id]` marker, and every claim in the analysis must end in one copied from it. An analysis
+that cites nothing, or that cites an identifier the digest never offered, is stored as **failed**
+with the reason — never as a valid proposal. Prose about a system is easy to write and hard to
+check, so unverifiable advice wearing the same badge as evidence is worse than no analysis at all.
+The rejected text is kept on the failed row, because a refusal you cannot inspect is one you
+cannot learn from.
+
+**Nothing is written until you accept.** The lifecycle is
+`running → proposed → accepted | dismissed`, and then `accepted → planned`. Only an accepted
+analysis can start a planning session, and only its "what I would change" section travels — as the
+idea for a normal [Planning Mode](#planning-mode) interview, in a project you pick explicitly. That
+choice is deliberate rather than inherited from the page scope: the changes land in the agent
+system's own repository, which is usually not the project whose sessions produced the evidence.
+
+If that project already has a planning run in flight, the card says so and links to it.
+
+## Agent improve
+
+The button on a scorecard. It generates a **minimal unified diff to exactly one agent definition
+file** — one `plugins/<pack>/agents/<name>.md`, resolved from the marketplace clone at
+`origin/main` — out of that agent's own evidence bundle. It does not touch skills, commands,
+hooks, other agents, or anything about how work is routed. Those live outside its mandate by
+design; the page-level improver is what covers them.
+
+The prompt demands a minimal change and targets 120 changed lines or fewer, because a diff a human
+will not read is a diff a human cannot approve.
+
+Opening it shows the **evidence first**, not the diff: the scorecard slice, the ledger
+assessments, open improvements and transcript excerpts the model will reason over.
+
+## Agent proposals
+
+The diffs Improve has produced and you have not yet decided on. Lifecycle:
+`proposed → approved → applied | rejected`, with `failed` terminal-but-retriable.
+
+Each proposal is pinned to the sha256 of the agent file it was generated against, so a diff that
+has gone stale fails to apply instead of quietly clobbering newer edits. One invariant keeps the
+rail honest: **one open proposal per agent** — decide the current one before generating another.
+
+Approving applies the change against the marketplace clone, not your working tree.
+
+## Trajectory judgments
+
+An LLM judge's 1–5 scores for completed sessions across a few dimensions. It is **advisory**: it
+feeds the success rate on the scorecards and informs nothing that gates or blocks. Only sessions
+the judge has actually scored appear, and it runs on the daemon's 24-hour schedule — never from
+[Analyze now](#analyze-now).
+
+## Friction board
+
+Where the system stalls rather than fails.
+
+- **Denied tools** — `tool_call` / `skill_use` / `subagent_start` events with `status=denied`,
+  with a flag for whether an enabled approval rule already covers the tool. A repeatedly denied
+  tool with no rule is usually the cheapest fix on the page, and the rule can be created inline.
+- **Top error groups** — the same folding `/api/stats/errors` uses, so the numbers agree across
+  pages.
+- **Approvals** — resolve times computed from `permission_requests`. The *pending* count is
+  deliberately **not** window-filtered: a request opened last month still blocks work today.
+
+## Lessons learned
+
+Lessons your own retrospectives recorded, parsed from `09-retrospective.md` docs in the private
+workspace and joined to the tasks that produced them. This is written knowledge — by agents and by
+you — not something inferred from telemetry, which makes it the one block on the page that can
+tell you *why*.
+
+Filtered on the task's start date, newest first, capped at 100. An empty feed means the tasks in
+range wrote no retrospective, not that nothing was learned.
+
+## Estimation accuracy
+
+Estimated versus actual hours per workspace task, with the loop count and the delegation ledger
+beside it. Only tasks that produced at least one parsed artifact (a retro doc, a loop journal or a
+ledger) appear; capped at 200, newest first.
+
+Read the columns together. A large variance next to many loops usually means the task was
+underspecified rather than underestimated. A re-dispatch verdict is routing feedback — the wrong
+agent was picked — not evidence that the agent is bad.
+
 ---
 
 Plugin and marketplace mechanics — how an enabled pack physically reaches a session, why a semver

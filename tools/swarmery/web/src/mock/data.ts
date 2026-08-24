@@ -69,6 +69,7 @@ import type {
   RetroAgentsResp,
   RetroFrictionResp,
   RetroLessonsResp,
+  RetroReportResp,
   RetroTasksResp,
   Routine,
   RoutineInput,
@@ -2258,6 +2259,33 @@ export const mockApi = {
   async retroTasks(): Promise<RetroTasksResp> {
     await delay(120);
     return { tasks: [] };
+  },
+
+  async retroReport(): Promise<RetroReportResp> {
+    await delay(120);
+    const agents = await mockApi.retroAgents();
+    const friction = await mockApi.retroFriction();
+    const lessons = await mockApi.retroLessons();
+    const tasks = await mockApi.retroTasks();
+    const recommendations = await mockApi.retroRecommendations();
+    return {
+      report: {
+        from: agents.from,
+        to: agents.to,
+        scope: '',
+        approx: false,
+        agents,
+        friction,
+        lessons,
+        tasks,
+        recommendations,
+        partial: false,
+        partialSections: [],
+      },
+      digest: '# Retro digest (mock)\n',
+      digestTruncated: false,
+      digestSha256: '',
+    };
   },
 
   // retro phase 3 — advisor recommendations (empty shell, like the retro mocks)
