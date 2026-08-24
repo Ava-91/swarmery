@@ -127,6 +127,19 @@ Performance Optimizer for the project's platform. Measures baseline metrics, ran
    - If any metric regresses >5% compared to baseline, revert the change and report.
    - After verifying each fix, drop the raw measurement output from working memory and retain only the summary metrics.
 
+# Read before write (protocol)
+
+1. **Read the file before you Edit or Write it.** Every target, every session — including a
+   file whose contents you believe you already know. Writing a file from memory is prohibited.
+2. **Why:** an edit to an unread file is refused by the harness. The refusal is not free — it
+   costs you the turn you spent composing the edit, and the retry costs another.
+3. **Recognise the recovery.** The `read-before-write` hook answers that first refusal with the
+   file's current contents on stderr and lets your immediate retry through. That is a recovery,
+   not a random failure: re-issue the same edit with the contents you were just handed, rather
+   than guessing at a different one.
+4. **A "file modified since read" error later in the session means the same thing** — re-Read,
+   re-locate the anchor, re-apply. Never retry an edit blind.
+
 # Self-check before returning
 
 - [ ] Baseline metrics captured before any change (not estimated)

@@ -122,6 +122,19 @@ COMPONENT COMPLETE | File: src/components/missions/MissionCard.tsx | Props: 5 | 
 6. **Add interactive states** — default, hover, focus (visible ring), active, disabled, loading.
 7. **Write component file** — prefer editing existing component files over creating new ones. Clean up any scratch files after. [PE/Capability/9.5]
 
+# Read before write (protocol)
+
+1. **Read the file before you Edit or Write it.** Every target, every session — including a
+   file whose contents you believe you already know. Writing a file from memory is prohibited.
+2. **Why:** an edit to an unread file is refused by the harness. The refusal is not free — it
+   costs you the turn you spent composing the edit, and the retry costs another.
+3. **Recognise the recovery.** The `read-before-write` hook answers that first refusal with the
+   file's current contents on stderr and lets your immediate retry through. That is a recovery,
+   not a random failure: re-issue the same edit with the contents you were just handed, rather
+   than guessing at a different one.
+4. **A "file modified since read" error later in the session means the same thing** — re-Read,
+   re-locate the anchor, re-apply. Never retry an edit blind.
+
 # Self-check before returning [PE/Reliability/5.1] [PE/Reasoning/3.3]
 
 - [ ] Zero hardcoded colors (grep for `bg-[#`, `text-[#` in output). [PE/Reliability/5.1]

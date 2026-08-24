@@ -3,6 +3,8 @@ package dispatch
 import (
 	"strings"
 	"testing"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 func TestBuildPromptContainsContractVerbatim(t *testing.T) {
@@ -74,4 +76,55 @@ func TestClassifySentinel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Both branches of the report paragraph must name a destination. The doc branch
+// names the lent phase doc; the docless branch used to name nothing at all, so a
+// card without a plan doc was told to report and never told where — and its
+// report landed in the reply, which the dashboard does not read.
+func TestBuildPrompt_ReportDestinationInBothBranches(t *testing.T) {
+	t.Run("doc present", func(t *testing.T) {
+		got := BuildStagePromptDoc("body", "swarm/T-1", "T-1", ".swarmery/plan/phase-2.md", nil)
+		if !strings.Contains(got, "THIS CARD HAS A PLAN DOCUMENT, lent into this worktree at .swarmery/plan/phase-2.md") {
+			t.Errorf("doc branch does not name the lent doc:\n%s", got)
+		}
+		if !strings.Contains(got, "## Completion Report") {
+			t.Errorf("doc branch does not name the report section:\n%s", got)
+		}
+		if strings.Contains(got, "NO PLAN DOCUMENT") {
+			t.Errorf("both branches rendered:\n%s", got)
+		}
+	})
+
+	t.Run("doc absent", func(t *testing.T) {
+		got := BuildStagePromptDoc("body", "swarm/T-1", "T-1", "", nil)
+		if !strings.Contains(got, "THIS CARD HAS NO PLAN DOCUMENT") {
+			t.Errorf("docless branch is missing:\n%s", got)
+		}
+		if !strings.Contains(got, worktree.ReportPath) {
+			t.Errorf("docless branch does not name a report destination (%s):\n%s", worktree.ReportPath, got)
+		}
+		// The destination is worktree-relative for the same reason TaskDoc is: the
+		// contract's first line makes the worktree the agent's one root.
+		if strings.Contains(got, "/"+worktree.ReportPath) {
+			t.Errorf("docless report destination is absolute:\n%s", got)
+		}
+		// Both branches promise the same thing in the same words, so an agent is
+		// never left guessing whether a report matters on this card.
+		if !strings.Contains(got, "ONLY summary the operator's dashboard shows for this card") {
+			t.Errorf("docless branch does not state the report is the only summary:\n%s", got)
+		}
+		if !strings.Contains(got, "blocked path") {
+			t.Errorf("docless branch does not cover the blocked path:\n%s", got)
+		}
+	})
+
+	// The failure this guards: rendering the doc branch's text with an empty path,
+	// i.e. an instruction about a file that does not exist.
+	t.Run("no empty path is ever rendered", func(t *testing.T) {
+		got := BuildStagePromptDoc("body", "swarm/T-1", "T-1", "", nil)
+		if strings.Contains(got, "lent into this worktree at  ") || strings.Contains(got, "at (relative") {
+			t.Errorf("an empty doc path was rendered into the contract:\n%s", got)
+		}
+	})
 }

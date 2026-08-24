@@ -3,6 +3,8 @@ package dispatch
 import (
 	"strings"
 	"text/template"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // contractTemplate is the EXECUTION CONTRACT appended verbatim to every
@@ -23,6 +25,7 @@ You are running unattended inside a dedicated git worktree on branch {{.Branch}}
 - Installed dependencies (node_modules, .venv, …) are LENT from the project's main checkout as symlinks, because git only materializes committed files in a worktree: build and test commands work as-is. Do NOT run a package-install command (npm ci / npm install / pip install) — it would mutate the main checkout's shared tree.
 - Do not push, do not create PRs, do not switch branches.
 {{if .TaskDoc}}- THIS CARD HAS A PLAN DOCUMENT, lent into this worktree at {{.TaskDoc}} (relative to the worktree root) — edit it there. Tick its acceptance checkboxes (- [ ] → - [x]) as you satisfy them, and fill its ` + "`## Completion Report`" + ` section before you finish: what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this card — a report left in your reply or in a scratchpad file is invisible there. Your edits to this file are copied back to the operator's workspace when the run ends, so editing it here IS how the report reaches them. Write it on the blocked path too, describing how far you got and what stopped you.
+{{else}}- THIS CARD HAS NO PLAN DOCUMENT, so write your report to {{.ReportPath}} (relative to the worktree root) — create the file — before you finish: what shipped, the files and commits, the verification output, and every deviation or deferral. That file is the ONLY summary the operator's dashboard shows for this card — a report left in your reply or in a scratchpad file is invisible there. It is read back into the card when the run ends, so writing it here IS how the report reaches the operator. Write it on the blocked path too, describing how far you got and what stopped you.
 {{end}}--- END CONTRACT ---`))
 
 // contractData is the template payload.
@@ -38,6 +41,12 @@ type contractData struct {
 	// rendering an instruction about a file that does not exist — which is what
 	// makes a mint failure genuinely non-fatal instead of merely non-crashing.
 	TaskDoc string
+	// ReportPath is the WORKTREE-RELATIVE destination the no-doc branch names.
+	// It is never blank when TaskDoc is: a card without a plan doc still owes
+	// the operator a summary, and the doc branch's text rendered with an empty
+	// path would be an instruction about a file that does not exist — the exact
+	// failure TaskDoc's comment warns about, moved one branch over.
+	ReportPath string
 }
 
 // scopeText renders a file-scope list for the contract line. Empty ⇒ the
@@ -77,10 +86,11 @@ func BuildStagePromptDoc(stageBody, branch, taskID, taskDoc string, fileScope []
 	// contract absent, which the caller would still spawn — acceptable, and
 	// unreachable).
 	_ = contractTemplate.Execute(&b, contractData{
-		Branch:    branch,
-		TaskID:    taskID,
-		FileScope: scopeText(fileScope),
-		TaskDoc:   taskDoc,
+		Branch:     branch,
+		TaskID:     taskID,
+		FileScope:  scopeText(fileScope),
+		TaskDoc:    taskDoc,
+		ReportPath: worktree.ReportPath,
 	})
 	return b.String()
 }

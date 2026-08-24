@@ -156,3 +156,66 @@ func TestReturnPlanDocToleratesAMissingCopy(t *testing.T) {
 		t.Errorf("no rel path = (%v, %v), want (false, nil)", wrote, err)
 	}
 }
+
+// ── CollectReport: the docless counterpart of ReturnPlanDoc ──
+
+func TestCollectReportReadsWhatTheAgentWrote(t *testing.T) {
+	wt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wt, filepath.Dir(ReportPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ReportPath), []byte("\n  shipped the thing\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := CollectReport(wt); got != "shipped the thing" {
+		t.Errorf("CollectReport = %q, want the trimmed report", got)
+	}
+}
+
+// A run that wrote no report still shipped its commits, so every absent case is
+// "" and never an error the caller has to handle.
+func TestCollectReportIsSilentWhenThereIsNothingToCollect(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T) string
+	}{
+		{"no worktree", func(*testing.T) string { return "" }},
+		{"no report file", func(t *testing.T) string { return t.TempDir() }},
+		{"empty report file", func(t *testing.T) string {
+			wt := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(wt, filepath.Dir(ReportPath)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(wt, ReportPath), []byte("   \n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return wt
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CollectReport(tc.setup(t)); got != "" {
+				t.Errorf("CollectReport = %q, want empty", got)
+			}
+		})
+	}
+}
+
+// result_note renders inline on the board, so a pasted build log must not land
+// there whole.
+func TestCollectReportTruncatesAPastedLog(t *testing.T) {
+	wt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wt, filepath.Dir(ReportPath)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("x", maxReportBytes*2)
+	if err := os.WriteFile(filepath.Join(wt, ReportPath), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := CollectReport(wt)
+	if len(got) >= len(big) {
+		t.Errorf("CollectReport returned %d bytes, want it capped near %d", len(got), maxReportBytes)
+	}
+	if !strings.HasSuffix(got, "(truncated)") {
+		t.Errorf("a truncated report must say so; got the tail %q", got[max(0, len(got)-20):])
+	}
+}
