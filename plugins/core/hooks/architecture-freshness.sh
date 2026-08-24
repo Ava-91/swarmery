@@ -42,9 +42,15 @@
 # scripts/tests/architecture-freshness.test.sh pins the two together.
 STALE_DAYS="${SWARMERY_MAP_STALE_DAYS:-7}"
 
+# Drain stdin FIRST, before any early exit. A hook that exits without reading
+# its payload leaves the writer holding a closed pipe: the caller takes SIGPIPE
+# and, under `pipefail`, that failure becomes the pipeline's exit status. The
+# kill switch is supposed to be invisible, so it must not be able to fail the
+# very command it is standing aside from.
+input=$(cat)
+
 [ "${SWARMERY_MAP_FRESHNESS:-1}" = "0" ] && exit 0
 
-input=$(cat)
 command -v jq >/dev/null 2>&1 || exit 0
 command -v node >/dev/null 2>&1 || exit 0
 
@@ -105,8 +111,16 @@ head_sha=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null)
 [ "$head_sha" = "$analyzed" ] && exit 0
 
 # Age in whole days from the map's mtime — the advisor's own measure.
+#
+# `stat` is two tools with one name, and the difference is a trap rather than an
+# inconvenience: BSD/macOS spells mtime `-f %m`, GNU spells it `-c %Y`, and GNU's
+# `-f` is NOT an error — it means "filesystem status" and prints a multi-line
+# `File: …` block with exit code 0. So `stat -f %m || stat -c %Y` never reaches
+# its fallback on Linux and yields that block. Neither form is trusted by its
+# exit code here: whichever produces digits wins.
 now=$(date +%s)
-mtime=$(stat -f %m "$MAP" 2>/dev/null || stat -c %Y "$MAP" 2>/dev/null)
+mtime=$(stat -c %Y "$MAP" 2>/dev/null)
+[[ "$mtime" =~ ^[0-9]+$ ]] || mtime=$(stat -f %m "$MAP" 2>/dev/null)
 [[ "$mtime" =~ ^[0-9]+$ ]] || exit 0
 age_days=$(( (now - mtime) / 86400 ))
 [ "$age_days" -ge "$STALE_DAYS" ] || exit 0
