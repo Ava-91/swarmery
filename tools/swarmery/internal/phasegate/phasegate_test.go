@@ -139,7 +139,7 @@ func TestCheck_ClosureConditions(t *testing.T) {
 			CriteriaDone: 3, CriteriaTotal: 3,
 			VerifyMode:       "off",
 			CompletionReport: goodReport,
-			LessonRecorded:   true,
+			Ran:              true,
 			ClosureRequired:  true,
 		}
 	}
@@ -177,15 +177,16 @@ func TestCheck_ClosureConditions(t *testing.T) {
 		})
 	}
 
-	t.Run("missing lesson", func(t *testing.T) {
+	// The condition binds only where the contract that demands a report was
+	// actually given: a phase the daemon RAN. A hand-executed phase was never
+	// handed that contract, and holding it to one reopened 48 of 49 finished
+	// plans in the live store and emptied the dashboard's Done tab.
+	t.Run("a phase that never ran owes no report", func(t *testing.T) {
 		in := base()
-		in.LessonRecorded = false
-		got := Check(in)
-		if got.State != StateUnreported {
-			t.Fatalf("state = %q, want unreported", got.State)
-		}
-		if !strings.Contains(strings.Join(got.Reasons, " "), "09-retrospective.md") {
-			t.Errorf("the refusal must name the existing lesson location; got %v", got.Reasons)
+		in.CompletionReport = ""
+		in.Ran = false
+		if got := Check(in); !got.Complete() {
+			t.Errorf("a hand-executed phase must still close: %v", got.Reasons)
 		}
 	})
 
@@ -208,7 +209,6 @@ func TestCheck_ClosureConditions(t *testing.T) {
 	t.Run("closure not required", func(t *testing.T) {
 		in := base()
 		in.CompletionReport = ""
-		in.LessonRecorded = false
 		in.ClosureRequired = false
 		if got := Check(in); !got.Complete() {
 			t.Errorf("with the closure gate off, an unreported phase must still close: %v", got.Reasons)
@@ -222,14 +222,14 @@ func TestCheck_OneGateManyReasons(t *testing.T) {
 	got := Check(Input{
 		CriteriaDone: 4, CriteriaTotal: 4,
 		VerifyMode:       "strict", // asked to be graded, never was
-		CompletionReport: "",       // and never reported
-		LessonRecorded:   false,    // and no lesson
+		CompletionReport: "",       // and, having run, never reported
+		Ran:              true,
 		ClosureRequired:  true,
 	})
 	if got.Complete() {
-		t.Fatal("a phase failing three conditions closed")
+		t.Fatal("a phase failing two conditions closed")
 	}
-	if len(got.Reasons) < 3 {
+	if len(got.Reasons) < 2 {
 		t.Errorf("want every reason cited at once, got %d: %v", len(got.Reasons), got.Reasons)
 	}
 	// Unconfirmed work is the more serious of the two states, so it names the row.
@@ -243,9 +243,9 @@ func TestCheck_OneGateManyReasons(t *testing.T) {
 func TestUnreportedIsDistinctFromUnverified(t *testing.T) {
 	report := "Shipped the retry budget in internal/dispatch/service.go; make test green."
 	unverified := Check(Input{CriteriaDone: 1, CriteriaTotal: 1, VerifyMode: "normal",
-		CompletionReport: report, LessonRecorded: true, ClosureRequired: true})
+		CompletionReport: report, Ran: true, ClosureRequired: true})
 	unreported := Check(Input{CriteriaDone: 1, CriteriaTotal: 1, VerifyMode: "off",
-		CompletionReport: "", LessonRecorded: true, ClosureRequired: true})
+		CompletionReport: "", Ran: true, ClosureRequired: true})
 	if unverified.State == unreported.State {
 		t.Fatalf("both read as %q — the operator cannot tell which remedy applies", unverified.State)
 	}

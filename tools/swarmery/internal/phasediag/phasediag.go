@@ -51,6 +51,10 @@ const (
 	// remedy is different: write down what happened, rather than re-run a grader.
 	KindUnreported = "unreported"
 
+	// KindNoLesson: the plan carries no lesson in the retro store. ADVISORY —
+	// it never blocks completion; see the emission site for why.
+	KindNoLesson = "no-lesson"
+
 	// KindOwnWorktree: the phase's branch holds commits AND is checked out at the
 	// worktree this daemon created for that very run. That state needs no action —
 	// a retry warm-reuses the worktree and continues the work — and the one thing
@@ -383,7 +387,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		VerifyMode:       verifyMode.String,
 		VerifyVerdict:    verdict.String,
 		CompletionReport: completionReport.String,
-		LessonRecorded:   lessonRecorded,
+		Ran:              endedAt.Valid,
 		ClosureRequired:  phasegate.ClosureGateEnabled(),
 	})
 	switch gate.State {
@@ -398,6 +402,22 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 			Kind:    KindUnreported,
 			Summary: "The work is done and unrecorded — a phase closes with a Completion Report and a lesson, not just with ticked boxes",
 			Detail:  strings.Join(gate.Reasons, "\n"),
+		})
+	}
+
+	// 5c. no-lesson — ADVISORY, and deliberately not part of the completion gate.
+	// The retrospective that carries a lesson is written after the work, so
+	// requiring one to call the work done can never be satisfied in sequence; and
+	// in the live store exactly one plan in eighty had a lesson recorded, so
+	// gating on it measured an unused convention rather than a fleet that skips
+	// lessons. It is surfaced where it is useful — beside the finished work,
+	// where the operator can still write it — and it blocks nothing.
+	if !lessonRecorded && phasegate.CriteriaMetForDisplay(d.CriteriaAfter, total) {
+		d.Blockers = append(d.Blockers, Blocker{
+			Kind:    KindNoLesson,
+			Summary: "This plan has no recorded lesson — the next retrospective will have nothing to learn from it",
+			Detail: "Add a `### Lesson N: <title>` entry under `## Lessons Learned` in the task's " +
+				"phases/09-retrospective.md, which is where the retro flow already reads lessons from.",
 		})
 	}
 

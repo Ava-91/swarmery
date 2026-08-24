@@ -288,17 +288,11 @@ func (h *Handler) derivedPlanStatus(taskID int64) (string, error) {
 // the gate is Go, and a SQL copy of it is exactly the second implementation this
 // package is trying not to have.
 func (h *Handler) phasesAllComplete(taskID int64) (bool, error) {
-	// Plan-level facts, read BEFORE the cursor opens: the pool is
-	// single-connection, so a nested query on an open cursor deadlocks.
 	closureRequired := phasegate.ClosureGateEnabled()
-	lesson, lerr := h.planHasLesson(taskID)
-	if lerr != nil {
-		return false, lerr
-	}
 	rows, err := h.DB.Query(`
 		SELECT e.checkboxes_done, e.checkboxes_total,
 		       COALESCE(e.verify_mode,''), COALESCE(e.verify_verdict,''),
-		       COALESCE(e.completion_report,''),
+		       COALESCE(e.completion_report,''), e.run_ended_at IS NOT NULL,
 		       COALESCE(bt.board_column,''), bt.archived_at IS NOT NULL
 		  FROM epic_phases e
 		  LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
@@ -313,10 +307,11 @@ func (h *Handler) phasesAllComplete(taskID int64) (bool, error) {
 			done, total         int
 			verifyMode, verdict string
 			report              string
+			ran                 bool
 			boardCol            string
 			archived            bool
 		)
-		if err := rows.Scan(&done, &total, &verifyMode, &verdict, &report, &boardCol, &archived); err != nil {
+		if err := rows.Scan(&done, &total, &verifyMode, &verdict, &report, &ran, &boardCol, &archived); err != nil {
 			return false, err
 		}
 		if !phasegate.Check(phasegate.Input{
@@ -326,7 +321,7 @@ func (h *Handler) phasesAllComplete(taskID int64) (bool, error) {
 			VerifyVerdict:    verdict,
 			LegacyDone:       boardCol == "done" || archived,
 			CompletionReport: report,
-			LessonRecorded:   lesson,
+			Ran:              ran,
 			ClosureRequired:  closureRequired,
 		}).Complete() {
 			all = false
