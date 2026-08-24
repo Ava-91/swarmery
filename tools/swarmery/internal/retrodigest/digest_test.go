@@ -123,9 +123,8 @@ func TestEveryMarkerMatchesTheValidatorGrammar(t *testing.T) {
 	}
 }
 
-func TestBuildRespectsThePlanningIdeaLimit(t *testing.T) {
-	// A report far too large for 8000 bytes: the planner's own len() check
-	// must never be the thing that catches an overflow.
+// oversized builds a report far too large for any sane budget.
+func oversized() Report {
 	r := sample()
 	for i := 0; i < 400; i++ {
 		r.Agents = append(r.Agents, Agent{
@@ -137,35 +136,112 @@ func TestBuildRespectsThePlanningIdeaLimit(t *testing.T) {
 			Detail: strings.Repeat("y", 200), Status: "proposed",
 		})
 	}
-	md, truncated := Build(r, 8000)
+	return r
+}
+
+func TestBuildRespectsThePlanningIdeaLimit(t *testing.T) {
+	// The planner's own len() check must never be the thing that catches an
+	// overflow.
+	md, truncated := Build(oversized(), 8000)
 	if !truncated {
 		t.Fatal("oversized report reported truncated=false")
 	}
 	if len(md) > 8000 {
 		t.Fatalf("digest is %d bytes, over the 8000 limit", len(md))
 	}
-	if !strings.Contains(md, "digest truncated") {
-		t.Fatalf("truncated digest carries no marker:\n%s", md)
+	if !strings.Contains(md, "omitted") {
+		t.Fatalf("nothing in the digest discloses what was left out:\n%s", md)
 	}
 }
 
-func TestBuildDropsSectionsLeastImportantFirst(t *testing.T) {
+// The regression that motivated fair shares: on a real fleet the advisor emits
+// dozens of recommendations, and rendered in full they consumed the ENTIRE
+// budget — friction, lessons and estimation vanished from every digest,
+// silently. No section may starve the others.
+func TestNoSectionStarvesTheOthers(t *testing.T) {
+	r := sample()
+	for i := 0; i < 400; i++ {
+		r.Recommendations = append(r.Recommendations, Recommendation{
+			ID: int64(100 + i), Rule: "R3", Target: fmt.Sprintf("t-%03d", i),
+			DedupKey: fmt.Sprintf("R3:t-%03d", i), Title: strings.Repeat("x", 80),
+			Detail: strings.Repeat("y", 200), Status: "proposed",
+		})
+	}
+	md, truncated := Build(r, 30720)
+	if !truncated {
+		t.Fatal("400 recommendations fit in 30KB? the fixture stopped being oversized")
+	}
+	for _, want := range []string{
+		"## Advisor recommendations", "## Agents", "## Friction",
+		"## Lessons learned", "## Estimation accuracy",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("section %q was starved out by the recommendations:\n%s", want, headOf(md))
+		}
+	}
+	// And the short sections keep their content, not just their heading.
+	for _, want := range []string{
+		cite(KindErrorGroup, "file-not-found"),
+		cite(KindLesson, "2026-08-20-thing#1"),
+		cite(KindTask, "2026-08-20-thing"),
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("evidence %s was starved out", want)
+		}
+	}
+	if !strings.Contains(md, "more recommendations omitted") {
+		t.Error("the trimmed section does not say how many it dropped")
+	}
+}
+
+// headOf keeps a failure message readable.
+func headOf(md string) string {
+	if len(md) > 1200 {
+		return md[:1200] + "\n…"
+	}
+	return md
+}
+
+func TestASlightOverflowTrimsItemsRatherThanSections(t *testing.T) {
 	r := sample()
 	full, _ := Build(r, 30720)
-	// A limit just under the full size must cost the estimation table first
-	// and keep the advisor's conclusions.
 	md, truncated := Build(r, len(full)-10)
 	if !truncated {
 		t.Fatal("expected truncation just under the full size")
 	}
+	// Dropping a whole section to save ten bytes would be a bad trade.
+	for _, want := range []string{
+		"## Advisor recommendations", "## Agents", "## Friction",
+		"## Lessons learned", "## Estimation accuracy",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("section %q was dropped for a ten-byte overflow", want)
+		}
+	}
+	if !strings.Contains(md, "omitted") {
+		t.Error("items were dropped without saying so")
+	}
+}
+
+// Only when a section cannot even render its heading does it go entirely, and
+// then the least important goes first.
+func TestATightLimitDropsSectionsLeastImportantFirst(t *testing.T) {
+	const tight = 500 // small enough that not every section can render its heading
+	md, truncated := Build(oversized(), tight)
+	if !truncated {
+		t.Fatalf("truncated=false at a %d-byte limit", tight)
+	}
+	if len(md) > tight {
+		t.Fatalf("digest is %d bytes, over the limit", len(md))
+	}
 	if strings.Contains(md, "## Estimation accuracy") {
-		t.Error("the lowest-priority section survived a one-section overflow")
+		t.Errorf("the lowest-priority section survived a hard squeeze:\n%s", md)
 	}
 	if !strings.Contains(md, "## Advisor recommendations") {
-		t.Error("the highest-priority section was dropped first")
+		t.Errorf("the highest-priority section was dropped first:\n%s", md)
 	}
-	if !strings.Contains(md, "_(digest truncated: 1 sections omitted)_") {
-		t.Errorf("omitted count is wrong:\n%s", md)
+	if !strings.Contains(md, "digest truncated:") {
+		t.Errorf("whole sections were dropped without the marker:\n%s", md)
 	}
 }
 
@@ -195,8 +271,7 @@ func TestBuildOnEmptyReport(t *testing.T) {
 	for _, want := range []string{
 		"No agent ran in this window.",
 		"The rule engine produced no open recommendation",
-		"No tool call was denied",
-		"No error fired",
+		"Nothing in this window was denied and no error fired.",
 		"No task in this window recorded a lesson.",
 		"No workspace task in this window carried a parsed artifact.",
 	} {

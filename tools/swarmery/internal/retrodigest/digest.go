@@ -164,13 +164,21 @@ type Recommendation struct {
 	Sessions []string
 }
 
-// section is one rendered block plus the priority that decides who gets
-// dropped first when the digest overflows.
+// section is one rendered block: a head that always survives, an item list
+// that can be trimmed, and the priority that decides who is dropped first when
+// even fair shares do not fit.
 type section struct {
 	name string
-	body string
 	// prio: lower is dropped first.
 	prio int
+	// head is the heading plus any per-section preamble. A section renders at
+	// all only if its head fits.
+	head string
+	// items are the evidence lines, each newline-terminated, in render order.
+	items []string
+	// empty is what the section says when it has no items — an honest "nothing
+	// happened" rather than a bare heading.
+	empty string
 }
 
 // Section priorities. Recommendations are the advisor's already-reasoned
@@ -184,7 +192,7 @@ const (
 	prioRecs     = 5
 )
 
-// truncMarker is appended verbatim when sections were dropped; %d is the
+// truncMarker is appended verbatim when whole sections were dropped; %d is the
 // number omitted. Callers grep for the "digest truncated" prefix.
 const truncMarker = "\n_(digest truncated: %d sections omitted)_\n"
 
@@ -193,6 +201,101 @@ const truncMarker = "\n_(digest truncated: %d sections omitted)_\n"
 // silently over-budget.
 const hardCutMarker = "\n_(digest truncated)_\n"
 
+// size is the section's full rendered length.
+func (sec section) size() int {
+	n := len(sec.head)
+	if len(sec.items) == 0 {
+		return n + len(sec.empty)
+	}
+	for _, it := range sec.items {
+		n += len(it)
+	}
+	return n
+}
+
+// omissionNote is the line a trimmed section ends with. Silence here would be
+// the worst outcome available: a reader would take a truncated list for the
+// whole list and conclude the rest of the fleet is fine.
+func omissionNote(name string, n int) string {
+	return fmt.Sprintf("_(%d more %s omitted)_\n", n, name)
+}
+
+// render emits the section within budget bytes, dropping trailing items if it
+// must. Reports whether anything was left out, and false-ok when not even the
+// head fits (the caller then drops the section whole).
+func (sec section) render(budget int) (out string, trimmed bool, ok bool) {
+	if budget < len(sec.head) {
+		return "", true, false
+	}
+	if len(sec.items) == 0 {
+		if budget < len(sec.head)+len(sec.empty) {
+			return sec.head, true, true
+		}
+		return sec.head + sec.empty, false, true
+	}
+	var b strings.Builder
+	b.WriteString(sec.head)
+	used := len(sec.head)
+	for i, it := range sec.items {
+		// Reserve room for the note the moment dropping becomes possible.
+		reserve := 0
+		if i < len(sec.items)-1 {
+			reserve = len(omissionNote(sec.name, len(sec.items)-i))
+		}
+		if used+len(it)+reserve > budget {
+			note := omissionNote(sec.name, len(sec.items)-i)
+			if used+len(note) <= budget {
+				b.WriteString(note)
+			}
+			return b.String(), true, true
+		}
+		b.WriteString(it)
+		used += len(it)
+	}
+	return b.String(), false, true
+}
+
+// fairShares splits budget across sections so that no single section can starve
+// the rest.
+//
+// This is the whole reason the allocation is not "render everything, then drop
+// from the bottom": on a real fleet the advisor emits dozens of
+// recommendations, and rendered in full they consume the entire budget — the
+// improver would then never see the friction board, the lessons or the
+// estimation table AT ALL, on every window, silently. A section that fits under
+// its share releases the surplus to the ones that do not, so short sections
+// stay whole and only genuinely long ones get trimmed.
+func fairShares(secs []section, budget int) map[string]int {
+	out := make(map[string]int, len(secs))
+	remaining := budget
+	pending := make([]section, 0, len(secs))
+	pending = append(pending, secs...)
+	for len(pending) > 0 {
+		share := remaining / len(pending)
+		next := pending[:0:0]
+		settled := false
+		for _, sec := range pending {
+			if sec.size() <= share {
+				out[sec.name] = sec.size()
+				remaining -= sec.size()
+				settled = true
+				continue
+			}
+			next = append(next, sec)
+		}
+		if !settled {
+			// Everyone left wants more than an equal share: split what is left.
+			share = remaining / len(next)
+			for _, sec := range next {
+				out[sec.name] = share
+			}
+			return out
+		}
+		pending = next
+	}
+	return out
+}
+
 // Build renders the report as markdown no longer than limit BYTES, and reports
 // whether anything was dropped.
 //
@@ -200,63 +303,91 @@ const hardCutMarker = "\n_(digest truncated)_\n"
 // maxPlanningIdeaLen in internal/api/planning.go, and the model's context
 // budget. A rune-based cap would silently overshoot on Cyrillic prose.
 //
-// Sections are dropped whole, least-important first, until the result fits.
+// Three stages, in order of how much they cost the reader:
+//  1. everything fits — render it all;
+//  2. fair shares — every section keeps its heading and as many items as its
+//     share allows, each trimmed section saying how many it dropped;
+//  3. whole sections, least important first — only when a section cannot even
+//     render its heading.
+//
 // The header (window, scope, partial-section warning) is never dropped: it is
 // what tells the reader which slice of reality they are looking at.
 func Build(r Report, limit int) (string, bool) {
 	header := buildHeader(r)
 	sections := []section{
-		{name: "recommendations", body: buildRecommendations(r.Recommendations), prio: prioRecs},
-		{name: "agents", body: buildAgents(r.Main, r.Agents), prio: prioAgents},
-		{name: "friction", body: buildFriction(r.Friction), prio: prioFriction},
-		{name: "lessons", body: buildLessons(r.Lessons), prio: prioLessons},
-		{name: "tasks", body: buildTasks(r.Tasks), prio: prioTasks},
+		buildRecommendations(r.Recommendations),
+		buildAgents(r.Main, r.Agents),
+		buildFriction(r.Friction),
+		buildLessons(r.Lessons),
+		buildTasks(r.Tasks),
 	}
-	// Render order is fixed and independent of drop order.
-	order := append([]section(nil), sections...)
 
-	kept := map[string]bool{}
-	for _, s := range sections {
-		kept[s.name] = true
+	full := header
+	for _, sec := range sections {
+		out, _, _ := sec.render(sec.size())
+		full += out
 	}
-	// Drop order: least important first, name as the tie-break so the order is
-	// total even if two sections ever share a priority.
-	dropOrder := append([]section(nil), sections...)
-	sort.Slice(dropOrder, func(i, j int) bool {
-		if dropOrder[i].prio != dropOrder[j].prio {
-			return dropOrder[i].prio < dropOrder[j].prio
+	if len(full) <= limit {
+		return full, false
+	}
+
+	// Stage 2: fair shares over what is left after the header.
+	kept := sections
+	for dropped := 0; ; dropped++ {
+		reserve := 0
+		if dropped > 0 {
+			reserve = len(fmt.Sprintf(truncMarker, dropped))
 		}
-		return dropOrder[i].name < dropOrder[j].name
-	})
-
-	assemble := func(kept map[string]bool, omitted int) string {
-		var b strings.Builder
-		b.WriteString(header)
-		for _, s := range order {
-			if kept[s.name] {
-				b.WriteString(s.body)
+		avail := limit - len(header) - reserve
+		if avail > 0 && len(kept) > 0 {
+			shares := fairShares(kept, avail)
+			var b strings.Builder
+			b.WriteString(header)
+			allFit := true
+			for _, sec := range kept {
+				out, _, ok := sec.render(shares[sec.name])
+				if !ok {
+					allFit = false
+					break
+				}
+				b.WriteString(out)
+			}
+			if allFit {
+				if dropped > 0 {
+					b.WriteString(fmt.Sprintf(truncMarker, dropped))
+				}
+				if out := b.String(); len(out) <= limit {
+					return out, true
+				}
 			}
 		}
-		if omitted > 0 {
-			b.WriteString(fmt.Sprintf(truncMarker, omitted))
+		// Stage 3: drop the least important remaining section and retry.
+		if len(kept) == 0 {
+			break
 		}
-		return b.String()
+		kept = withoutLeastImportant(kept)
 	}
+	// Even the header overflows: cut hard rather than hand a caller a payload
+	// its own limit check will reject.
+	return hardCut(header, limit), true
+}
 
-	out := assemble(kept, 0)
-	if len(out) <= limit {
-		return out, false
+// withoutLeastImportant removes the lowest-priority section (name as the
+// tie-break, so the order is total even if two ever share a priority).
+func withoutLeastImportant(secs []section) []section {
+	if len(secs) == 0 {
+		return secs
 	}
-	for i := 0; i < len(dropOrder); i++ {
-		delete(kept, dropOrder[i].name)
-		out = assemble(kept, i+1)
-		if len(out) <= limit {
-			return out, true
+	worst := 0
+	for i, sec := range secs {
+		if sec.prio < secs[worst].prio ||
+			(sec.prio == secs[worst].prio && sec.name < secs[worst].name) {
+			worst = i
 		}
 	}
-	// Every section is gone and the header still overflows: cut hard rather
-	// than hand a caller a payload its own limit check will reject.
-	return hardCut(out, limit), true
+	out := make([]section, 0, len(secs)-1)
+	out = append(out, secs[:worst]...)
+	return append(out, secs[worst+1:]...)
 }
 
 // hardCut trims s to at most limit bytes without splitting a UTF-8 rune,
@@ -309,15 +440,12 @@ func buildHeader(r Report) string {
 	return b.String()
 }
 
-func buildAgents(main Main, agents []Agent) string {
-	var b strings.Builder
-	b.WriteString("\n## Agents\n\n")
-	fmt.Fprintf(&b, "Orchestrator (main): $%.2f, %d tokens out, %d errors.\n\n",
+func buildAgents(main Main, agents []Agent) section {
+	sec := section{name: "agents", prio: prioAgents,
+		empty: "No agent ran in this window.\n"}
+	sec.head = fmt.Sprintf("\n## Agents\n\nOrchestrator (main): $%.2f, %d tokens out, %d errors.\n\n",
 		main.CostUSD, main.TokensOut, main.Errors)
-	if len(agents) == 0 {
-		b.WriteString("No agent ran in this window.\n")
-		return b.String()
-	}
+
 	rows := append([]Agent(nil), agents...)
 	sort.Slice(rows, func(i, j int) bool {
 		if ii, jj := rows[i].impact(), rows[j].impact(); ii != jj {
@@ -329,6 +457,7 @@ func buildAgents(main Main, agents []Agent) string {
 		return rows[i].Name < rows[j].Name
 	})
 	for _, a := range rows {
+		var b strings.Builder
 		fmt.Fprintf(&b, "- `%s` — %d runs in %d sessions, error rate %s (prev %s over %d runs), %d errors, $%.2f",
 			a.Name, a.Runs, a.Sessions, pct(a.ErrorRate), pct(a.PrevErrorRate), a.PrevRuns, a.Errors, a.CostUSD)
 		if a.SuccessRate != nil {
@@ -344,17 +473,16 @@ func buildAgents(main Main, agents []Agent) string {
 			b.WriteString(", no editable definition file")
 		}
 		fmt.Fprintf(&b, " %s\n", cite(KindAgent, a.Name))
+		sec.items = append(sec.items, b.String())
 	}
-	return b.String()
+	return sec
 }
 
-func buildRecommendations(recs []Recommendation) string {
-	var b strings.Builder
-	b.WriteString("\n## Advisor recommendations\n\n")
-	if len(recs) == 0 {
-		b.WriteString("The rule engine produced no open recommendation for this window.\n")
-		return b.String()
-	}
+func buildRecommendations(recs []Recommendation) section {
+	sec := section{name: "recommendations", prio: prioRecs,
+		head:  "\n## Advisor recommendations\n\n",
+		empty: "The rule engine produced no open recommendation for this window.\n"}
+
 	rows := append([]Recommendation(nil), recs...)
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Rule != rows[j].Rule {
@@ -366,6 +494,7 @@ func buildRecommendations(recs []Recommendation) string {
 		return rows[i].ID < rows[j].ID
 	})
 	for _, rc := range rows {
+		var b strings.Builder
 		fmt.Fprintf(&b, "- **%s** [%s] `%s` (%s) — %s %s",
 			rc.Rule, rc.Status, rc.Target, rc.TargetKind, rc.Title, cite(KindRec, itoa(rc.ID)))
 		if rc.Detail != "" {
@@ -375,71 +504,69 @@ func buildRecommendations(recs []Recommendation) string {
 			fmt.Fprintf(&b, "\n  - evidence sessions: %s", s)
 		}
 		b.WriteString("\n")
+		sec.items = append(sec.items, b.String())
 	}
-	return b.String()
+	return sec
 }
 
-func buildFriction(f Friction) string {
-	var b strings.Builder
-	b.WriteString("\n## Friction\n\n")
+// buildFriction renders three sub-blocks as ONE trimmable list. The approvals
+// summary is two lines and goes in the head, so it survives any trim: it is the
+// only figure here that describes a human being kept waiting.
+func buildFriction(f Friction) section {
+	sec := section{name: "friction lines", prio: prioFriction,
+		empty: "Nothing in this window was denied and no error fired.\n"}
 
-	b.WriteString("### Denied tools\n\n")
-	if len(f.DeniedTools) == 0 {
-		b.WriteString("No tool call was denied in this window.\n")
-	} else {
-		rows := append([]DeniedTool(nil), f.DeniedTools...)
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].Denied != rows[j].Denied {
-				return rows[i].Denied > rows[j].Denied
-			}
-			return rows[i].Tool < rows[j].Tool
-		})
-		for _, d := range rows {
-			rule := "no approval rule covers it"
-			if d.HasRule {
-				rule = "already covered by an approval rule"
-			}
-			fmt.Fprintf(&b, "- `%s` — %d of %d calls denied, %s\n", d.Tool, d.Denied, d.Calls, rule)
-		}
-	}
-
-	b.WriteString("\n### Error groups\n\n")
-	if len(f.ErrorGroups) == 0 {
-		b.WriteString("No error fired in this window.\n")
-	} else {
-		rows := append([]ErrorGroup(nil), f.ErrorGroups...)
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].Count != rows[j].Count {
-				return rows[i].Count > rows[j].Count
-			}
-			return rows[i].Key < rows[j].Key
-		})
-		for _, g := range rows {
-			fmt.Fprintf(&b, "- `%s` ×%d, last %s — %s %s",
-				g.Key, g.Count, g.LastTs, oneLine(g.Example), cite(KindErrorGroup, g.Key))
-			if s := citeSessions(g.Sessions); s != "" {
-				fmt.Fprintf(&b, "\n  - sessions: %s", s)
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	fmt.Fprintf(&b, "\n### Approvals\n\n- %d resolved, %d pending now, %.1f minutes of total wait",
+	var h strings.Builder
+	h.WriteString("\n## Friction\n\n")
+	fmt.Fprintf(&h, "Approvals: %d resolved, %d pending now, %.1f minutes of total wait",
 		f.Approvals.Resolved, f.Approvals.Pending, f.Approvals.WaitTotalMin)
 	if f.Approvals.AvgResolveSec != nil {
-		fmt.Fprintf(&b, ", %.0fs average", *f.Approvals.AvgResolveSec)
+		fmt.Fprintf(&h, ", %.0fs average", *f.Approvals.AvgResolveSec)
 	}
-	b.WriteString("\n")
-	return b.String()
+	h.WriteString("\n\n")
+	sec.head = h.String()
+
+	denied := append([]DeniedTool(nil), f.DeniedTools...)
+	sort.Slice(denied, func(i, j int) bool {
+		if denied[i].Denied != denied[j].Denied {
+			return denied[i].Denied > denied[j].Denied
+		}
+		return denied[i].Tool < denied[j].Tool
+	})
+	for _, d := range denied {
+		rule := "no approval rule covers it"
+		if d.HasRule {
+			rule = "already covered by an approval rule"
+		}
+		sec.items = append(sec.items, fmt.Sprintf("- denied tool `%s` — %d of %d calls denied, %s\n",
+			d.Tool, d.Denied, d.Calls, rule))
+	}
+
+	groups := append([]ErrorGroup(nil), f.ErrorGroups...)
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Count != groups[j].Count {
+			return groups[i].Count > groups[j].Count
+		}
+		return groups[i].Key < groups[j].Key
+	})
+	for _, g := range groups {
+		var b strings.Builder
+		fmt.Fprintf(&b, "- error group `%s` ×%d, last %s — %s %s",
+			g.Key, g.Count, g.LastTs, oneLine(g.Example), cite(KindErrorGroup, g.Key))
+		if s := citeSessions(g.Sessions); s != "" {
+			fmt.Fprintf(&b, "\n  - sessions: %s", s)
+		}
+		b.WriteString("\n")
+		sec.items = append(sec.items, b.String())
+	}
+	return sec
 }
 
-func buildLessons(lessons []Lesson) string {
-	var b strings.Builder
-	b.WriteString("\n## Lessons learned\n\n")
-	if len(lessons) == 0 {
-		b.WriteString("No task in this window recorded a lesson.\n")
-		return b.String()
-	}
+func buildLessons(lessons []Lesson) section {
+	sec := section{name: "lessons", prio: prioLessons,
+		head:  "\n## Lessons learned\n\n",
+		empty: "No task in this window recorded a lesson.\n"}
+
 	rows := append([]Lesson(nil), lessons...)
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Date != rows[j].Date {
@@ -452,22 +579,22 @@ func buildLessons(lessons []Lesson) string {
 	})
 	for _, l := range rows {
 		id := l.TaskExternalID + "#" + itoa(l.Seq)
+		var b strings.Builder
 		fmt.Fprintf(&b, "- %s (%s) — %s", l.Date, l.TaskExternalID, oneLine(l.Title))
 		if l.Action != "" {
 			fmt.Fprintf(&b, " → %s", oneLine(l.Action))
 		}
 		fmt.Fprintf(&b, " %s\n", cite(KindLesson, id))
+		sec.items = append(sec.items, b.String())
 	}
-	return b.String()
+	return sec
 }
 
-func buildTasks(tasks []Task) string {
-	var b strings.Builder
-	b.WriteString("\n## Estimation accuracy and churn\n\n")
-	if len(tasks) == 0 {
-		b.WriteString("No workspace task in this window carried a parsed artifact.\n")
-		return b.String()
-	}
+func buildTasks(tasks []Task) section {
+	sec := section{name: "tasks", prio: prioTasks,
+		head:  "\n## Estimation accuracy and churn\n\n",
+		empty: "No workspace task in this window carried a parsed artifact.\n"}
+
 	rows := append([]Task(nil), tasks...)
 	sort.Slice(rows, func(i, j int) bool {
 		// Worst overrun first; unestimated tasks sort last.
@@ -478,6 +605,7 @@ func buildTasks(tasks []Task) string {
 		return rows[i].ExternalID < rows[j].ExternalID
 	})
 	for _, t := range rows {
+		var b strings.Builder
 		fmt.Fprintf(&b, "- `%s` — %s", t.ExternalID, oneLine(t.Title))
 		if t.EstimatedHours != nil && t.ActualHours != nil {
 			fmt.Fprintf(&b, ", estimated %.1fh vs actual %.1fh", *t.EstimatedHours, *t.ActualHours)
@@ -487,8 +615,9 @@ func buildTasks(tasks []Task) string {
 		}
 		fmt.Fprintf(&b, ", %d loops, %d delegations (%d ok / %d re-dispatched) %s\n",
 			t.Loops, t.Delegations, t.VerdictOK, t.VerdictRedisp, cite(KindTask, t.ExternalID))
+		sec.items = append(sec.items, b.String())
 	}
-	return b.String()
+	return sec
 }
 
 // citeSessions renders a sorted, deduped, capped list of session citations.
