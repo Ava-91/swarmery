@@ -16,13 +16,27 @@
 # reaches the model, exit 2 to block and 0 to allow.
 #
 # WARN-MODE BURN-IN (gate-hardening rule 1, added 2026-08-24): every rule logs
-# its decision to stderr and exits 0 for ~1 week; flip BLOCK_EXIT to 2 on/after
-# 2026-08-31 if the burn-in shows no false positives. Each message carries its
-# rule id ([heredoc] / [multi-mutation] / [sleep-before-read]) so hits can be
-# counted per rule before the flip, and the tests assert the DECISION rather
-# than the exit code, so they keep passing across it.
-BLOCK_EXIT=0          # ← flip to 2 on/after 2026-08-31 to enforce
-ENFORCE_FROM="2026-08-31"
+# its decision to stderr AND to a durable per-rule counter, and exits 0 until
+# the flip. Each message carries its rule id ([heredoc] / [multi-mutation] /
+# [sleep-before-read]) so hits can be counted per rule before the flip, and the
+# tests assert the DECISION rather than the exit code, so they keep passing
+# across it.
+#
+# THE GATE IS docs/GATE-HARDENING.md, NOT THE DATE BELOW. A date cannot answer
+# "how many times did this rule fire, and how many of those were wrong?" —
+# which is the only question the flip depends on. Fill the per-rule rows of that
+# document from `scripts/guard-hits.sh` (it reads the log this hook writes),
+# review the false positives, and only then raise a rule's exit code.
+# ENFORCE_FROM is the *deadline for the review*, not an auto-enforce trigger:
+# nothing in this hook reads it to decide anything.
+BLOCK_EXIT=0          # ← 0 = warn; raise to 2 only per docs/GATE-HARDENING.md
+ENFORCE_FROM="2026-10-01"   # review deadline; see docs/GATE-HARDENING.md
+
+# Burn-in log: one JSON record per decision. Truncation cap on the command
+# text, because this file is appended to on every hit and a single command can
+# be arbitrarily large.
+LOG_BASENAME="bash-shape-guard.jsonl"
+LOG_CMD_MAX=200
 
 set -uo pipefail
 
@@ -32,14 +46,64 @@ command_text=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/de
 # Nothing to judge — a payload without a command is not this hook's business.
 [ -z "$command_text" ] && exit 0
 
+# Identity for the burn-in record. Both are optional: a payload without them
+# still gets counted, it just cannot be attributed.
+session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+
+# guard_log_file — where the burn-in log lives, resolved at runtime. A hook
+# that hard-codes a path stops working the moment it is installed anywhere
+# else, so: explicit override (tests, operators) → the project's workspace
+# metrics dir (house style, same resolution as pre-commit-test-gate.sh) →
+# $CLAUDE_PROJECT_DIR → a temp dir. The write always has somewhere to land.
+guard_log_file() {
+  if [ -n "${BASH_SHAPE_GUARD_LOG:-}" ]; then
+    printf '%s' "$BASH_SHAPE_GUARD_LOG"
+  elif [ -n "${AGENT_PROJECT:-}" ]; then
+    printf '%s/%s/workspace/metrics/%s' \
+      "${AGENT_WORKSPACE_ROOT:-$HOME/swarmery-workspace}" "$AGENT_PROJECT" "$LOG_BASENAME"
+  elif [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    printf '%s/.claude-workspace/metrics/%s' "${CLAUDE_PROJECT_DIR%/}" "$LOG_BASENAME"
+  else
+    printf '%s/swarmery-guard/%s' "${TMPDIR:-/tmp}" "$LOG_BASENAME"
+  fi
+}
+
+# log_decision <rule-id> <warn|block> — append one record, and never let that
+# append change what the hook does. Telemetry is strictly secondary to the
+# allow-or-block contract: a read-only directory, a missing jq, a full disk all
+# have to leave the exit code and the stderr text byte-identical.
+#
+# jq -c is what guarantees one decision = one line: it escapes the newlines and
+# quotes a command can legitimately contain, so no command shape can forge a
+# second record.
+log_decision() {
+  local rule="$1" decision="$2" logfile dir
+  logfile=$(guard_log_file)
+  dir=$(dirname "$logfile")
+  mkdir -p "$dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg rule "$rule" \
+    --arg decision "$decision" \
+    --arg session "$session_id" \
+    --arg cwd "$hook_cwd" \
+    --arg cmd "${command_text:0:$LOG_CMD_MAX}" \
+    '{ts:$ts,hook:"bash-shape-guard",rule:$rule,decision:$decision,session:$session,cwd:$cwd,cmd:$cmd}' \
+    >> "$logfile" 2>/dev/null || true
+  return 0
+}
+
 # refuse <rule-id> <headline> [extra lines…] — emit the decision and leave.
 # In warn mode this still exits 0; the text is identical either way so the
 # burn-in log shows exactly what enforcement would have said.
 refuse() {
   local rule="$1"; shift
   if [ "$BLOCK_EXIT" -eq 0 ]; then
+    log_decision "$rule" "warn"
     printf '⚠️  WARN (enforce from %s): [%s] %s\n' "$ENFORCE_FROM" "$rule" "$1" >&2
   else
+    log_decision "$rule" "block"
     printf '🚫 BLOCKED: [%s] %s\n' "$rule" "$1" >&2
   fi
   shift
