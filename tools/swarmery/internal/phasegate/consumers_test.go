@@ -128,7 +128,7 @@ func TestGatedConsumersFeedTheClosureInputs(t *testing.T) {
 			t.Fatalf("%s: %v", c.Path, err)
 		}
 		body := funcBody(string(src), c.Symbol)
-		feeds := strings.Contains(body, "CompletionReport:") && strings.Contains(body, "LessonRecorded:")
+		feeds := strings.Contains(body, "CompletionReport:") && strings.Contains(body, "Ran:")
 		opted := strings.Contains(body, "ClosureRequired: false")
 		reason, isExempt := closureExempt[key]
 		switch {

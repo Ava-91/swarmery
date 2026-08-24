@@ -700,10 +700,13 @@ func TestListEpics_CompletionGate(t *testing.T) {
 	}
 }
 
-// The closure half of the same gate on the wire: a fully-ticked, graded phase
-// whose Completion Report is empty reads `unreported` — not complete — and the
-// plan is not done. Composed with the verification condition rather than a
-// second gate: the DTO carries one state and every reason.
+// The closure half of the same gate on the wire: a phase the daemon RAN whose
+// Completion Report is empty reads `unreported` — not complete — and holds the
+// plan back. A phase that never ran is untouched: the contract that demands a
+// report is the dispatcher's, and a hand-executed phase was never given it.
+//
+// That second half is not a nicety. Gating every phase reopened 48 of 49
+// finished plans in the live store and emptied the dashboard's Done tab.
 func TestListEpics_ClosureGate(t *testing.T) {
 	srv, db, taskID, _ := epicFixture(t)
 	mustExec := func(q string, args ...any) {
@@ -713,6 +716,12 @@ func TestListEpics_ClosureGate(t *testing.T) {
 		}
 	}
 	mustExec(`UPDATE epic_phases SET checkboxes_done = checkboxes_total, verify_mode='off'`)
+	// Phase 1 was executed by the daemon and reported nothing; phase 2 was done by
+	// hand and owes nothing.
+	mustExec(`UPDATE epic_phases SET run_ended_at='2026-08-24T10:00:00Z', completion_report=NULL
+	           WHERE seq=1 AND workspace_task_id=?`, taskID)
+	mustExec(`UPDATE epic_phases SET run_ended_at=NULL, completion_report=NULL
+	           WHERE seq=2 AND workspace_task_id=?`, taskID)
 
 	var epics []epicDTO
 	getJSON(t, srv.URL+"/api/epics", &epics)
@@ -721,32 +730,29 @@ func TestListEpics_ClosureGate(t *testing.T) {
 		byseq[p.Seq] = p
 	}
 	if got := byseq[1].CompletionState; got != "unreported" {
-		t.Fatalf("completionState = %q, want unreported (no report, no lesson)", got)
+		t.Fatalf("a dispatched phase with no report = %q, want unreported", got)
 	}
-	if len(byseq[1].CompletionBlockers) < 2 {
-		t.Errorf("want both the report and the lesson cited at once, got %v", byseq[1].CompletionBlockers)
+	if len(byseq[1].CompletionBlockers) == 0 {
+		t.Error("an unreported phase must say what is missing")
+	}
+	if got := byseq[2].CompletionState; got != "complete" {
+		t.Errorf("a hand-executed phase = %q, want complete — it was never handed the report contract", got)
 	}
 	if epics[0].Status != "active" {
-		t.Errorf("plan status = %q, want active — an unreported phase is not done", epics[0].Status)
+		t.Errorf("plan status = %q, want active while a dispatched phase is unreported", epics[0].Status)
 	}
 
-	// Write real reports and record a lesson in the PRE-EXISTING store, and the
-	// plan closes.
+	// Writing the report closes it — no lesson required, deliberately: a
+	// retrospective is written after the work, so requiring one to call the work
+	// done can never be satisfied in sequence.
 	mustExec(`UPDATE epic_phases SET completion_report =
-		'Shipped the schema change in internal/store/migrations/0058_x.sql and the reader in internal/api/x.go; make test green.'`)
-	res, err := db.Exec(`INSERT INTO task_retros (task_id, estimated_hours, actual_hours, ingested_at)
-		VALUES (?, 1, 1, '2026-08-24T00:00:00Z')`, taskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	retroID, _ := res.LastInsertId()
-	mustExec(`INSERT INTO retro_lessons (retro_id, seq, title, body, action)
-		VALUES (?, 1, 'Lend the doc, do not point at it', 'body', 'action')`, retroID)
+		'Shipped the schema change in internal/store/migrations/0058_x.sql and the reader in internal/api/x.go; make test green.'
+		 WHERE seq=1 AND workspace_task_id=?`, taskID)
 
 	getJSON(t, srv.URL+"/api/epics", &epics)
 	for _, p := range epics[0].Phases {
 		if p.CompletionState != "complete" {
-			t.Errorf("phase %d = %q after report+lesson, want complete (%v)", p.Seq, p.CompletionState, p.CompletionBlockers)
+			t.Errorf("phase %d = %q after the report, want complete (%v)", p.Seq, p.CompletionState, p.CompletionBlockers)
 		}
 	}
 	if epics[0].Status != "done" {

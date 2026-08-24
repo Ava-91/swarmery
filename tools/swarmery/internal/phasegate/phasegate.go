@@ -95,16 +95,23 @@ type Input struct {
 	// refused an empty one, so the instruction was advice: churn was measurable
 	// for exactly two tasks in a fourteen-day window.
 	CompletionReport string
-	// LessonRecorded reports whether this phase's PLAN has at least one lesson in
-	// the pre-existing store (retro_lessons, fed from the task's
-	// phases/09-retrospective.md). Plan-level rather than phase-level on purpose:
-	// that is where the retro flow already reads lessons from, and inventing a
-	// per-phase lesson table beside it would be the second store this criterion
-	// forbids.
-	LessonRecorded bool
+	// Ran reports whether this phase was actually EXECUTED by the daemon —
+	// epic_phases.run_ended_at is set.
+	//
+	// It gates the Completion Report condition, and the reason is fairness: the
+	// contract that demands a report is the dispatcher's and phaserun's, given to
+	// an executor when the daemon runs a phase. A phase a human worked through by
+	// hand was never handed that contract, so holding it to one is not enforcing
+	// an agreement — it is inventing one retroactively, for work that is finished.
+	//
+	// This is not a hypothetical softening. Without it the gate reopened 48 of 49
+	// completed plans in the live store and emptied the dashboard's Done tab. With
+	// it, the gate bites on the three dispatched phases that genuinely shipped
+	// without a report, which is the case SC-11 exists for.
+	Ran bool
 	// ClosureRequired is the closure gate's own opt-in, resolved by the caller
-	// from ClosureGateEnabled(). Off ⇒ report and lesson are not required, which
-	// is the migration path for plans already in flight when the gate shipped.
+	// from ClosureGateEnabled(). Off ⇒ the report is not required, which is the
+	// migration path for plans already in flight when the gate shipped.
 	ClosureRequired bool
 }
 
@@ -127,6 +134,11 @@ func (in Input) VerificationRequired() bool {
 // leaf-level. phasediag.CriteriaMet remains the exported name other callers use;
 // the two must agree, and a test pins that.
 func criteriaMet(done, total int) bool { return total > 0 && done >= total }
+
+// CriteriaMetForDisplay is criteriaMet, exported for callers that need the same
+// "has this phase's work landed?" answer WITHOUT running the whole gate — an
+// advisory blocker, for instance, that should only speak about finished work.
+func CriteriaMetForDisplay(done, total int) bool { return criteriaMet(done, total) }
 
 // Check runs the gate.
 func Check(in Input) Result {
@@ -167,15 +179,21 @@ func Check(in Input) Result {
 		}
 	}
 
-	if in.ClosureRequired {
+	// The report is owed by a phase the daemon RAN — see Input.Ran.
+	//
+	// A recorded lesson is deliberately NOT a condition here, and that is a
+	// reversal of this gate's first shape, made against data: lessons live in
+	// retro_lessons, fed from a task's phases/09-retrospective.md, and across 80
+	// plans in the live store exactly ONE had an entry. Gating completion on it
+	// marked 79 plans unfinished — it was not measuring a fleet that skips
+	// lessons, it was measuring a convention the fleet does not use. It also
+	// inverts the order of work: a retrospective is written after the work is
+	// done, so requiring it to call the work done can never be satisfied in
+	// sequence. The lesson survives as an advisory blocker on the phase
+	// (phasediag) and as a measurable (advisor.Closure) — visible, not blocking.
+	if in.ClosureRequired && in.Ran {
 		if why := reportProblem(in.CompletionReport); why != "" {
 			reasons = append(reasons, why)
-		}
-		if !in.LessonRecorded {
-			reasons = append(reasons,
-				"no lesson is recorded for this plan — add a `### Lesson N: <title>` entry under "+
-					"`## Lessons Learned` in the task's phases/09-retrospective.md, which is where "+
-					"the retro flow already reads lessons from")
 		}
 	}
 
