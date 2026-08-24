@@ -38,6 +38,12 @@ anything.)
 | `heredoc` | not yet counted | not yet counted | not yet reviewed | stay in warn | — |
 | `multi-mutation` | not yet counted | not yet counted | not yet reviewed | stay in warn | — |
 | `sleep-before-read` | not yet counted | not yet counted | not yet reviewed | stay in warn | — |
+| `worktree-escape` | not yet counted | not yet counted | not yet reviewed | stay in warn | — |
+| `ambiguous-git` | not yet counted | not yet counted | not yet reviewed | stay in warn | — |
+
+`worktree-escape` and `ambiguous-git` are newer than the other three and start their own burn-in from
+scratch. Per-rule enforcement exists precisely so a new rule can burn in without the older ones
+waiting for it, and without it being dragged into blocking by them.
 
 **Why the counts are empty.** The counter shipped with this document; the burn-in window has not been
 read yet. The three rules shipped earlier in warn mode with their decisions going only to stderr,

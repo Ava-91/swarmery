@@ -1,11 +1,12 @@
 #!/bin/bash
 # Bash command-shape guard — PreToolUse hook on the Bash tool.
 #
-# Refuses three malformed command shapes BEFORE the auto-mode classifier
-# refuses them with no guidance. All three were measured, not guessed: a retro
-# window produced 39 "this bash command contains multiple operations" blocks,
-# 18 unterminated-heredoc EOF errors, and 420 minutes of wall-clock spent
-# waiting on refusals that were predictable from the command's shape alone.
+# Refuses malformed command shapes BEFORE the auto-mode classifier or the
+# sandbox refuses them with no guidance. Every rule was measured, not guessed:
+# a retro window produced 39 "this bash command contains multiple operations"
+# blocks, 18 unterminated-heredoc EOF errors, 47 refusals of an agent reaching
+# outside its worktree, and 420 minutes of wall-clock spent waiting on refusals
+# that were predictable from the command's shape alone.
 #
 # The point is not to forbid more than the classifier does. It is to say NO
 # earlier, in one line, with the alternative — instead of leaving the agent to
@@ -18,9 +19,9 @@
 # WARN-MODE BURN-IN (gate-hardening rule 1, added 2026-08-24): every rule logs
 # its decision to stderr AND to a durable per-rule counter, and exits 0 until
 # the flip. Each message carries its rule id ([heredoc] / [multi-mutation] /
-# [sleep-before-read]) so hits can be counted per rule before the flip, and the
-# tests assert the DECISION rather than the exit code, so they keep passing
-# across it.
+# [sleep-before-read] / [worktree-escape] / [ambiguous-git]) so hits can be
+# counted per rule before the flip, and the tests assert the DECISION rather
+# than the exit code, so they keep passing across it.
 #
 # THE GATE IS docs/GATE-HARDENING.md, NOT THE DATE BELOW. A date cannot answer
 # "how many times did this rule fire, and how many of those were wrong?" —
@@ -29,7 +30,26 @@
 # review the false positives, and only then raise a rule's exit code.
 # ENFORCE_FROM is the *deadline for the review*, not an auto-enforce trigger:
 # nothing in this hook reads it to decide anything.
-BLOCK_EXIT=0          # ← 0 = warn; raise to 2 only per docs/GATE-HARDENING.md
+# ── enforcement, per rule ─────────────────────────────────────────
+# ONE LINE PER RULE, and nothing else to understand: `warn` logs and allows,
+# `block` logs and refuses. Enforcement is per rule and not global because a
+# single switch couples them — the operator either blocks everything or nothing,
+# so one noisy rule keeps the clean ones toothless or drags them into blocking
+# with it. That coupling is what gets a whole guard switched off.
+#
+# Raise a rule to `block` ONLY from a filled row in docs/GATE-HARDENING.md:
+# counted hits, distinct sessions, false positives reviewed. Never from a date.
+rule_mode() {
+  case "$1" in
+    heredoc)           printf 'warn' ;;
+    multi-mutation)    printf 'warn' ;;
+    sleep-before-read) printf 'warn' ;;
+    worktree-escape)   printf 'warn' ;;
+    ambiguous-git)     printf 'warn' ;;
+    # An unknown rule id is a bug in this file, not a licence to block.
+    *)                 printf 'warn' ;;
+  esac
+}
 ENFORCE_FROM="2026-10-01"   # review deadline; see docs/GATE-HARDENING.md
 
 # Burn-in log: one JSON record per decision. Truncation cap on the command
@@ -99,11 +119,13 @@ log_decision() {
 # burn-in log shows exactly what enforcement would have said.
 refuse() {
   local rule="$1"; shift
-  if [ "$BLOCK_EXIT" -eq 0 ]; then
-    log_decision "$rule" "warn"
+  local mode exit_code
+  mode=$(rule_mode "$rule")
+  if [ "$mode" = "block" ]; then exit_code=2; else exit_code=0; fi
+  log_decision "$rule" "$mode"
+  if [ "$exit_code" -eq 0 ]; then
     printf '⚠️  WARN (enforce from %s): [%s] %s\n' "$ENFORCE_FROM" "$rule" "$1" >&2
   else
-    log_decision "$rule" "block"
     printf '🚫 BLOCKED: [%s] %s\n' "$rule" "$1" >&2
   fi
   shift
@@ -111,7 +133,7 @@ refuse() {
   for line in "$@"; do
     printf '%s\n' "$line" >&2
   done
-  exit "$BLOCK_EXIT"
+  exit "$exit_code"
 }
 
 # ── rule: heredoc ─────────────────────────────────────────────────
@@ -230,6 +252,151 @@ for seg in "${segments[@]}"; do
   if printf '%s' "$trimmed" | grep -Eq '^sleep[[:space:]]+[0-9.]+$'; then
     saw_sleep=1
   fi
+done
+
+# ── rule: worktree-escape ─────────────────────────────────────────
+# The largest single error group in the retro window: 47 refusals of the shape
+# "this agent is isolated in the worktree …" — an agent reaching for a path
+# outside its one root. The dispatcher's execution contract already says so in
+# prose ("An absolute path pointing outside this root will be refused by the
+# sandbox, so reaching for one costs you the turn"), and it happened 47 times
+# anyway. Prose in a contract is not a gate.
+#
+# Deliberately conservative in four ways, because a rule that fires on a
+# legitimate command costs the whole guard:
+#   1. It only has an opinion inside an ISOLATED worktree. An operator session
+#      in a normal checkout legitimately reads its own workspace repo, sibling
+#      repos and dotfiles; only a dispatched agent was promised one root, so
+#      only there is leaving it an error. The marker is the `worktrees/`
+#      segment the worktree manager lays every isolated tree out under.
+#   2. No root ⇒ no opinion. If the root cannot be resolved exactly, the rule
+#      says nothing rather than guessing and refusing a valid path.
+#   3. Only literal absolute paths are judged. `$HOME/x`, relative paths and
+#      URLs are left alone.
+#   4. The OS is not another project. Toolchains legitimately read /usr, /opt,
+#      the temp dir and the package-manager prefixes; the failure this targets
+#      is reaching into ANOTHER project or worktree.
+worktree_root=""
+candidate_cwd="$hook_cwd"
+[ -n "$candidate_cwd" ] || candidate_cwd="${CLAUDE_PROJECT_DIR:-}"
+case "$candidate_cwd" in
+  */worktrees/*)
+    # The cwd may be a subdirectory of the worktree; ask git for the actual
+    # root. If git cannot answer, the root is unknown — see conservatism (2).
+    if top=$(git -C "$candidate_cwd" rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ]; then
+      worktree_root="${top%/}"
+      # git answers with symlinks resolved (/private/var/… on macOS), while the
+      # agent writes paths with the prefix it was given (/var/…). Judging
+      # against only one of the two spellings refuses paths that are inside the
+      # root — so keep both. --show-prefix is the cwd's offset from the root,
+      # which turns the cwd back into the root in its unresolved spelling.
+      prefix=$(git -C "$candidate_cwd" rev-parse --show-prefix 2>/dev/null)
+      worktree_root_alt="${candidate_cwd%/}"
+      [ -n "$prefix" ] && worktree_root_alt="${worktree_root_alt%/"${prefix%/}"}"
+    fi
+    ;;
+esac
+: "${worktree_root_alt:=$worktree_root}"
+
+# is_system_path <abs-path> — a path every toolchain needs, which no isolation
+# boundary is meant to cover.
+is_system_path() {
+  case "$1" in
+    /usr/*|/bin/*|/sbin/*|/opt/*|/etc/*|/dev/*|/proc/*|/sys/*|/run/*|\
+    /tmp/*|/var/folders/*|/var/tmp/*|/var/log/*|/var/run/*|/var/cache/*|\
+    /private/tmp/*|/private/var/folders/*|/nix/*|/snap/*|\
+    /Library/*|/System/*|/Applications/*|/home/linuxbrew/*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+if [ -n "$worktree_root" ]; then
+  # Absolute paths appearing as a token, an argument value or a quoted string.
+  # The leading-context class is what keeps `https://host/path` and `s/a/b/`
+  # out: there the slash follows `:` or a letter, not whitespace or a quote.
+  escaping=""
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    case "$cand" in
+      "$worktree_root"|"$worktree_root"/*) continue ;;
+      "$worktree_root_alt"|"$worktree_root_alt"/*) continue ;;
+    esac
+    is_system_path "$cand" && continue
+    escaping="$cand"
+    break
+  done < <(printf '%s' "$command_text" |
+    grep -oE '(^|[[:space:]=:"'\''])/[A-Za-z0-9._][A-Za-z0-9._/-]*' |
+    sed -E 's/^[[:space:]=:"'\'']//')
+
+  if [ -n "$escaping" ]; then
+    refuse "worktree-escape" \
+      "this command reaches outside your worktree root." \
+      "  path: $escaping" \
+      "  root: $worktree_root" \
+      "" \
+      "That worktree is your ONE root — the sandbox refuses paths outside it, so this" \
+      "call costs you the turn and returns nothing. Everything this task needs has been" \
+      "placed INSIDE the root: the plan doc is lent in, and installed dependencies are" \
+      "symlinked in, so build and test commands work as they are." \
+      "" \
+      "Use the path inside the root instead. If what you need genuinely is not there," \
+      "that is the finding — end with: BLOCKED: <what is missing and where you expected it>."
+  fi
+fi
+
+# ── rule: ambiguous-git ───────────────────────────────────────────
+# A git command that MUTATES a repository while the working directory it acts
+# on is set by a RELATIVE `cd` in the same command. Which repository it lands in
+# then depends on where the shell happened to start, which the agent does not
+# reliably know. `git -C <path>` states the target instead of assuming it.
+#
+# Narrow on purpose: an absolute `cd` is unambiguous, an existing `-C` is
+# unambiguous, and a read-only query is harmless wherever it runs.
+git_is_mutating() {
+  case "$1" in
+    "git commit"*|"git add"*|"git push"*|"git checkout"*|"git reset"*|\
+    "git merge"*|"git rebase"*|"git tag"*|"git stash"*|"git worktree "*|\
+    "git branch -d"*|"git branch -D"*|"git rm "*|"git mv "*|"git clean"*|\
+    "git apply"*|"git cherry-pick"*|"git restore"*|"git switch"*|"git am"*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+pending_cd=""
+for seg in "${segments[@]}"; do
+  trimmed=$(trim "$seg")
+  [ -z "$trimmed" ] && continue
+
+  # Remember only a RELATIVE cd target; an absolute one removes the ambiguity.
+  if printf '%s' "$trimmed" | grep -Eq '^cd[[:space:]]+[^[:space:]]+$'; then
+    cd_target=$(printf '%s' "$trimmed" | sed -E 's/^cd[[:space:]]+//')
+    case "$cd_target" in
+      /*|'~'*|'$'*) pending_cd="" ;;
+      *) pending_cd="$cd_target" ;;
+    esac
+    continue
+  fi
+
+  [ -z "$pending_cd" ] && continue
+  printf '%s' "$trimmed" | grep -Eq '^git([[:space:]]|$)' || continue
+  # Already unambiguous.
+  printf '%s' "$trimmed" | grep -Eq '^git[[:space:]]+-C([[:space:]]|=)' && continue
+  git_is_mutating "$trimmed" || continue
+
+  git_rest=$(printf '%s' "$trimmed" | sed -E 's/^git[[:space:]]+//')
+  refuse "ambiguous-git" \
+    "this command mutates a repository from a working directory set by a relative path." \
+    "  cd target: $pending_cd" \
+    "  git call:  $trimmed" \
+    "" \
+    "Which repository that lands in depends on where the shell started, which is not" \
+    "something you can rely on knowing. State the target instead of assuming it:" \
+    "" \
+    "  git -C $pending_cd $git_rest" \
+    "" \
+    "One call, no directory change, and the repository it acts on is written down."
 done
 
 exit 0
