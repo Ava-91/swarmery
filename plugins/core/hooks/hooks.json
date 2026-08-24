@@ -6,6 +6,12 @@
         "hooks": [
           { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh" }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash-shape-guard.sh" }
+        ]
       }
     ],
     "PostToolUse": [
