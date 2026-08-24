@@ -12,10 +12,14 @@ type Vars struct {
 	TaskID              string // external card id (T-xxxxxx)
 	FileScope           string // human-rendered file scope line
 	PreviousStageOutput string // last assistant text of the prior stage ("" for stage 1)
-	// TaskDoc is the absolute path of this card's micro-plan phase doc — the file
-	// the executor ticks and writes its Completion Report into. "" when the card
-	// has no micro-plan (the feature is off, or minting failed and the run
-	// proceeded docless), and rendering an empty value is a valid substitution.
+	// TaskDoc is the WORKTREE-RELATIVE path of this card's micro-plan phase doc
+	// (worktree.LendPlanDoc lends it in) — the file the executor ticks and writes
+	// its Completion Report into. Relative, not absolute: the execution contract
+	// makes the worktree the agent's one root, and a playbook body that
+	// interpolated an out-of-tree absolute path would reintroduce exactly the
+	// contradiction the contract removed. "" when the card has no micro-plan (the
+	// feature is off, or minting failed and the run proceeded docless), and
+	// rendering an empty value is a valid substitution.
 	TaskDoc string
 }
 

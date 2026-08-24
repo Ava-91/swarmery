@@ -13,7 +13,7 @@ import (
 // of prompt-side format bugs; the literal wording below is fixed.
 var contractTemplate = template.Must(template.New("contract").Parse(
 	`--- EXECUTION CONTRACT (swarmery dispatcher) ---
-You are running unattended inside a dedicated git worktree on branch {{.Branch}}. Work ONLY here.
+You are running unattended inside a dedicated git worktree on branch {{.Branch}}. This worktree is your ONE root: every path you read or write must be inside it. An absolute path pointing outside this root will be refused by the sandbox, so reaching for one costs you the turn — everything you need has been placed inside.
 - Commit your work in logical increments. Every commit message MUST end with the trailer line:
   Swarm-Task-Id: {{.TaskID}}
 - Stay within this file scope if declared: {{.FileScope}}. If a required change falls outside it, stop and end with: BLOCKED: <what and why>.
@@ -22,7 +22,7 @@ You are running unattended inside a dedicated git worktree on branch {{.Branch}}
 - If you are genuinely blocked, end with: BLOCKED: <reason>. Never fake completion by skipping the remaining work.
 - Installed dependencies (node_modules, .venv, …) are LENT from the project's main checkout as symlinks, because git only materializes committed files in a worktree: build and test commands work as-is. Do NOT run a package-install command (npm ci / npm install / pip install) — it would mutate the main checkout's shared tree.
 - Do not push, do not create PRs, do not switch branches.
-{{if .TaskDoc}}- THIS CARD HAS A PLAN DOCUMENT at {{.TaskDoc}} — edit it in place (it is outside the repo; use the absolute path). Tick its acceptance checkboxes (- [ ] → - [x]) as you satisfy them, and fill its ` + "`## Completion Report`" + ` section before you finish: what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this card — a report left in your reply or in a scratchpad file is invisible there. Write it on the blocked path too, describing how far you got and what stopped you.
+{{if .TaskDoc}}- THIS CARD HAS A PLAN DOCUMENT, lent into this worktree at {{.TaskDoc}} (relative to the worktree root) — edit it there. Tick its acceptance checkboxes (- [ ] → - [x]) as you satisfy them, and fill its ` + "`## Completion Report`" + ` section before you finish: what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this card — a report left in your reply or in a scratchpad file is invisible there. Your edits to this file are copied back to the operator's workspace when the run ends, so editing it here IS how the report reaches them. Write it on the blocked path too, describing how far you got and what stopped you.
 {{end}}--- END CONTRACT ---`))
 
 // contractData is the template payload.
@@ -30,10 +30,13 @@ type contractData struct {
 	Branch    string
 	TaskID    string
 	FileScope string
-	// TaskDoc is the absolute path of this card's micro-plan phase doc, or "" when
-	// it has none. Empty omits the whole paragraph rather than rendering an
-	// instruction about a file that does not exist — which is what makes a mint
-	// failure genuinely non-fatal instead of merely non-crashing.
+	// TaskDoc is the WORKTREE-RELATIVE path of this card's micro-plan phase doc
+	// (worktree.LendPlanDoc lends it in), or "" when it has none. Relative, not
+	// absolute: the contract's first line says this worktree is the agent's one
+	// root, and an instruction to edit a file outside it contradicts that and is
+	// refused by the sandbox. Empty omits the whole paragraph rather than
+	// rendering an instruction about a file that does not exist — which is what
+	// makes a mint failure genuinely non-fatal instead of merely non-crashing.
 	TaskDoc string
 }
 
@@ -60,6 +63,7 @@ func BuildStagePrompt(stageBody, branch, taskID string, fileScope []string) stri
 }
 
 // BuildStagePromptDoc is BuildStagePrompt with the card's micro-plan phase doc.
+// taskDoc is WORKTREE-RELATIVE (see contractData.TaskDoc).
 // A non-empty taskDoc adds the tick-and-report paragraph — the same contract
 // internal/phaserun states for a plan phase, in the same words, because it is the
 // same promise: the doc is where the record of the work lives, and a summary left

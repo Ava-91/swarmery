@@ -64,6 +64,10 @@ type stubWt struct {
 	acquireErr error
 	commits    map[string][]string // external id → trailer-bearing commit SHAs
 	commitsErr error               // when set, the progress signal is UNREADABLE
+	// root overrides the fake "/wt" prefix with a REAL directory, for the tests
+	// that need the worktree to exist on disk (lending the plan doc into it).
+	// Left empty everywhere else so the cheap fake path stays the default.
+	root string
 }
 
 func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquired, error) {
@@ -73,8 +77,12 @@ func (w *stubWt) Acquire(repoRoot, projectSlug, taskID string) (worktree.Acquire
 		return worktree.Acquired{}, w.acquireErr
 	}
 	w.acquired = append(w.acquired, taskID)
+	base := w.root
+	if base == "" {
+		base = "/wt"
+	}
 	return worktree.Acquired{
-		Path:       filepath.Join("/wt", projectSlug, taskID),
+		Path:       filepath.Join(base, projectSlug, taskID),
 		Branch:     "swarm/" + taskID,
 		StartPoint: "deadbeef",
 	}, nil

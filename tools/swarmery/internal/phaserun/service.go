@@ -404,7 +404,17 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 	log.Printf("phaserun: start phase=%d task=%d uuid=%s worktree=%q", phaseID, info.WorkspaceTaskID, uuid, acq.Path)
 	s.notify(info.WorkspaceTaskID)
 
-	prompt := BuildPromptIn(info.DocPath, filepath.Base(info.DocPath), string(doc), info.RepoRoot, info.ProjectPath)
+	// Lend the phase doc INTO the worktree and quote it by its relative path.
+	// The contract's first line makes this worktree the agent's one root; an
+	// instruction to edit the workspace copy by absolute path contradicts that
+	// and is refused by the sandbox. A lend failure is not fatal — the run still
+	// has the doc's CONTENT inlined in the prompt below, so it degrades to the
+	// old "read-only view of the doc" rather than to no run at all.
+	docRel, lendErr := worktree.LendPlanDoc(acq.Path, info.DocPath)
+	if lendErr != nil {
+		log.Printf("warning: phaserun: phase=%d could not lend the plan doc into %s: %v", phaseID, acq.Path, lendErr)
+	}
+	prompt := BuildPromptIn(docRel, filepath.Base(info.DocPath), string(doc), info.RepoRoot, info.ProjectPath)
 	spec := RunSpec{
 		Prompt:       prompt,
 		SessionUUID:  uuid,
@@ -416,13 +426,13 @@ func (s *Service) Start(phaseID int64) (sessionUUID string, err error) {
 		log.Printf("phaserun: phase=%d inheriting project settings %s (worktree is a checkout of %s)",
 			phaseID, spec.SettingsFile, info.RepoRoot)
 	}
-	s.spawn(func() { s.runAndHandle(ctx, cancel, releaseSlot, phaseID, info, acq, spec) })
+	s.spawn(func() { s.runAndHandle(ctx, cancel, releaseSlot, phaseID, info, acq, spec, docRel) })
 	return uuid, nil
 }
 
 // runAndHandle executes the run to completion, stamps the exit state, optionally
 // verifies the work, removes the worktree (branch kept), and always releases the slot.
-func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, releaseSlot func(), phaseID int64, info phaseInfo, acq worktree.Acquired, spec RunSpec) {
+func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, releaseSlot func(), phaseID int64, info phaseInfo, acq worktree.Acquired, spec RunSpec, docRel string) {
 	// The terminal state, read by the defer below. Only a run that ENDED CLEANLY is
 	// worth grading: a cancelled or crashed executor may have left the tree mid-edit,
 	// and a verdict on that measures the interruption, not the work.
@@ -435,6 +445,13 @@ func (s *Service) runAndHandle(ctx context.Context, cancel context.CancelFunc, r
 		// sequence, and it is why verification lives in the defer at all rather than
 		// after the switch: every exit path has to pass through it in this order.
 		s.verifyRun(phaseID, info, acq, endState)
+		// Return the doc BEFORE removeWorktree deletes the only copy of it, and
+		// on EVERY exit path — done, blocked, failed, cancelled. The dashboard
+		// renders the workspace copy's `## Completion Report` and nothing else,
+		// so a report that stays in the worktree is work that shipped and reads
+		// as "no summary of the work written". A report about why a run STOPPED
+		// is the one most worth not losing.
+		worktree.ReturnPlanDocLogged(fmt.Sprintf("phaserun phase=%d", phaseID), acq.Path, docRel, info.DocPath)
 		// Worktree FIRST, slot LAST. stamp() has already moved the row off
 		// 'running', so the DB gate in Start is open; releasing the single-flight
 		// slot before the (git shell-out, tens of ms) removal opens a window where a
