@@ -6,8 +6,9 @@ import (
 )
 
 func TestBuildPrompt_InterpolatesAllFields(t *testing.T) {
+	// docPath is worktree-RELATIVE now (worktree.LendPlanDoc lends the doc in).
 	p := BuildPrompt(
-		"/ws/proj/workspace/working/2026/07/27/thing/plan/phase-2-api.md",
+		".swarmery/plan/phase-2-api.md",
 		"phase-2-api.md",
 		"# Phase 2 — API\n\n- [ ] a criterion\n")
 
@@ -15,7 +16,12 @@ func TestBuildPrompt_InterpolatesAllFields(t *testing.T) {
 		// The contract lines the executor must obey.
 		"executing ONE phase of an approved implementation plan",
 		"tick its checkbox (- [ ] → - [x])",
-		"The document lives at: /ws/proj/workspace/working/2026/07/27/thing/plan/phase-2-api.md",
+		// The doc is quoted by its WORKTREE-RELATIVE path: the contract's first
+		// line makes the worktree the agent's one root, so an absolute path
+		// outside it would contradict the fence and be refused by the sandbox.
+		"lent into this worktree at: .swarmery/plan/phase-2-api.md",
+		"This worktree is your ONE root",
+		"copied back to the operator's workspace",
 		"Do NOT push, do NOT open PRs, do NOT merge",
 		// Headless run-context: the reply that says "waiting on my helpers" is the
 		// reply that kills them, and the 0 exit code books the run as a success over

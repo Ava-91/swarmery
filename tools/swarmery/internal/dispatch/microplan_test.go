@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskdir"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
 // workspaceDirOf reads the join column between a card and the micro-plan it
@@ -19,7 +20,10 @@ func workspaceDirOf(t *testing.T, s *Service, id int64) string {
 func TestAdmit_MintsAMicroPlanAndTellsTheExecutorAboutIt(t *testing.T) {
 	db := testDB(t)
 	r := &stubRunner{}
-	s := newTestService(t, db, r, &stubWt{})
+	// A REAL worktree root: the doc is lent into the worktree before the prompt
+	// can name it, so a fake path would make this test assert the degraded
+	// docless path instead of the one it is about.
+	s := newTestService(t, db, r, &stubWt{root: t.TempDir()})
 	s.WorkspaceRoot = t.TempDir()
 	id := insertTask(t, db, "T-42", taskOpts{})
 	if _, err := db.Exec(`UPDATE tasks SET title='Fix the janitor sweep' WHERE id=?`, id); err != nil {
@@ -50,8 +54,15 @@ func TestAdmit_MintsAMicroPlanAndTellsTheExecutorAboutIt(t *testing.T) {
 		t.Fatal("no run was spawned")
 	}
 	prompt := r.spec(0).Prompt
-	if !strings.Contains(prompt, doc) {
-		t.Errorf("the prompt does not name the phase doc %q:\n%s", doc, prompt)
+	// The doc is named by its WORKTREE-RELATIVE path, not the workspace absolute
+	// one: the contract makes the worktree the agent's single root, and an
+	// instruction to edit outside it is refused by the sandbox.
+	wantRel := filepath.Join(worktree.PlanDocDir, filepath.Base(doc))
+	if !strings.Contains(prompt, wantRel) {
+		t.Errorf("the prompt does not name the lent phase doc %q:\n%s", wantRel, prompt)
+	}
+	if strings.Contains(prompt, doc) {
+		t.Errorf("the prompt still hands over the out-of-tree absolute path %q:\n%s", doc, prompt)
 	}
 	if !strings.Contains(prompt, "## Completion Report") {
 		t.Errorf("the prompt does not demand a Completion Report:\n%s", prompt)

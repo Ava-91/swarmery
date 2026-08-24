@@ -857,6 +857,23 @@ func (s *Service) failAdmission(id int64, msg string) {
 func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPlaybook, firstUUID, taskDoc string) {
 	defer s.clearActive(c.ID)
 
+	// Lend the card's micro-plan doc INTO the worktree and quote it by its
+	// relative path: the contract's first line makes this worktree the agent's
+	// one root, and telling it to edit a file outside that root contradicts the
+	// fence and is refused by the sandbox. A lend failure is non-fatal for the
+	// same reason a mint failure is — a docless run is the pre-micro-plan
+	// behaviour, and refusing to run work over a markdown file is the worse trade.
+	docRel, lendErr := worktree.LendPlanDoc(acq.Path, taskDoc)
+	if lendErr != nil {
+		log.Printf("warning: dispatch: task=%d could not lend the plan doc into %s: %v", c.ID, acq.Path, lendErr)
+	}
+	// Returned on EVERY exit path — done, blocked, review, stage failure. The
+	// dashboard renders the workspace copy's `## Completion Report` and nothing
+	// else, so a report that stays in the worktree is work that shipped reading
+	// as "no summary of the work written". The defer is what makes "every path"
+	// true without auditing each return.
+	defer worktree.ReturnPlanDocLogged(fmt.Sprintf("dispatch task=%d", c.ID), acq.Path, docRel, taskDoc)
+
 	stages := pb.stages
 
 	// The Claude account every stage of this task runs under, resolved ONCE from
@@ -887,9 +904,9 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPla
 			TaskID:              c.ExternalID,
 			FileScope:           scopeText(c.FileScope),
 			PreviousStageOutput: prevOutput,
-			TaskDoc:             taskDoc,
+			TaskDoc:             docRel,
 		}
-		prompt := BuildStagePromptDoc(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, taskDoc, c.FileScope)
+		prompt := BuildStagePromptDoc(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, docRel, c.FileScope)
 		// Model precedence, most specific first: the card's own override, then the
 		// recipe's declared model, then the global default. The middle step is what
 		// makes the `model:` frontmatter knob real — it parsed and rendered as a UI

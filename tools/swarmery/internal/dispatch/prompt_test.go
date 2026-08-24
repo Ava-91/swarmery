@@ -15,7 +15,12 @@ func TestBuildPromptContainsContractVerbatim(t *testing.T) {
 	// Contract markers + normative lines present verbatim.
 	mustContain := []string{
 		"--- EXECUTION CONTRACT (swarmery dispatcher) ---",
-		"You are running unattended inside a dedicated git worktree on branch swarm/T-abc123. Work ONLY here.",
+		"You are running unattended inside a dedicated git worktree on branch swarm/T-abc123.",
+		// The fence is now stated as a rule the agent can obey, not just a slogan:
+		// one root, and no absolute path outside it. The old wording said "Work
+		// ONLY here" and then, two lines later, handed over an out-of-tree
+		// absolute path to edit.
+		"This worktree is your ONE root: every path you read or write must be inside it.",
 		"Swarm-Task-Id: T-abc123",
 		"Stay within this file scope if declared: src/api, web/src.",
 		"End your reply with: PREMISE STALE: <evidence>.",

@@ -26,15 +26,15 @@ import (
 // text/template so the doc path/content interpolate without any prompt-side
 // format bug (idiom of planning/prompt.go).
 var promptTemplate = template.Must(template.New("phaserun").Parse(
-	`You are executing ONE phase of an approved implementation plan, headlessly, in an isolated git worktree of the project repo (your cwd).
+	`You are executing ONE phase of an approved implementation plan, headlessly, in an isolated git worktree of the project repo (your cwd). This worktree is your ONE root: every path you read or write must be inside it. An absolute path pointing outside this root will be refused by the sandbox, so reaching for one costs you the turn — everything you need has been placed inside.
 
 The phase document below is your complete contract. Follow it exactly:
 - Complete the numbered tasks / acceptance criteria of THIS phase only — do not start other phases.
-- As you complete each acceptance criterion, EDIT the phase document itself and tick its checkbox (- [ ] → - [x]). The document lives at: {{.DocPath}} — edit it in place (it is outside the repo; use the absolute path).
+- As you complete each acceptance criterion, EDIT the phase document itself and tick its checkbox (- [ ] → - [x]). The document has been lent into this worktree at: {{.DocPath}} (relative to the worktree root) — edit it there. Your edits are copied back to the operator's workspace when the run ends.
 - Run the verification commands the document specifies before declaring done.
 - Installed dependencies (node_modules, .venv, …) are LENT from the project's main checkout as symlinks, because git only materializes committed files in a worktree: build and test commands work as-is. Do NOT run a package-install command (npm ci / npm install / pip install) — it would mutate the main checkout's shared tree.
 - Commit your work in the worktree with conventional commits. Do NOT push, do NOT open PRs, do NOT merge.
-- WRITE THE PHASE SUMMARY INTO THE PHASE DOCUMENT before you finish: fill the doc's ` + "`## Completion Report`" + ` section, or append it at the end of the doc when the section does not exist yet. Cover what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this phase — a report left in your reply, in a scratchpad, or in a reports/ file is invisible there. Write it on the blocked path too, describing how far you got and what stopped you.
+- WRITE THE PHASE SUMMARY INTO THE PHASE DOCUMENT before you finish: fill the doc's ` + "`## Completion Report`" + ` section, or append it at the end of the doc when the section does not exist yet. Cover what shipped, the files and commits, the verification output, and every deviation or deferral. That section is the ONLY summary the operator's dashboard shows for this phase — a report left in your reply, in a scratchpad, or in a reports/ file is invisible there — editing the lent document IS how it reaches them. Write it on the blocked path too, describing how far you got and what stopped you.
 - ENDING YOUR TURN ENDS THIS PROCESS, and any subagent still running dies with it — while the exit code stays 0, so the run is recorded as a clean success that landed nothing. Never dispatch helpers and then reply that you are waiting on them: that reply IS the kill. Await anything you dispatch inside the same turn, or do the work yourself.
 - If the document's premises don't match the code you find, STOP and end your reply with: PHASE BLOCKED: <one-line reason>. Otherwise end with: PHASE DONE.
 
@@ -59,6 +59,11 @@ func BuildPrompt(docPath, docRelPath, docContent string) string {
 // the worktree that same file is "src/components/x.tsx"; without the note an
 // agent "fixes" the mismatch by creating a nested directory and writes the whole
 // phase into a tree nobody reads.
+// docPath is WORKTREE-RELATIVE (worktree.LendPlanDoc lends the doc in). Relative,
+// not absolute: the contract's first line says this worktree is the agent's one
+// root, and an instruction to edit a file outside it contradicts that and is
+// refused by the sandbox — which is what one retro window measured as 56
+// isolation errors and 4 plan-read refusals.
 func BuildPromptIn(docPath, docRelPath, docContent, repoRoot, projectPath string) string {
 	var b strings.Builder
 	_ = promptTemplate.Execute(&b, struct {

@@ -4,7 +4,14 @@
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh" }
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh" },
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/read-before-write.sh" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash-shape-guard.sh" }
         ]
       }
     ],
