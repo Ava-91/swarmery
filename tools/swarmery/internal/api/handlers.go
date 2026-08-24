@@ -16,6 +16,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/projectscan"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/provision"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/retroanalysis"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
 
@@ -35,6 +36,10 @@ type Handler struct {
 	// Improve is the agent-rewriter service behind the /api/retro/proposals
 	// endpoints (self-improvement phase 3).
 	Improve *improve.Service
+	// RetroAnalysis owns the page-level "analyse the whole system" runs behind
+	// /api/retro/analysis. Attached in NewServer next to Improve; nil disables
+	// the endpoints with a 503 rather than a panic.
+	RetroAnalysis *retroanalysis.Service
 	// improveGo, when non-nil, replaces the `go fn()` dispatch of the async
 	// generation pipeline — a test seam for deterministic httptest runs.
 	improveGo func(func())

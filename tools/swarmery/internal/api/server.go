@@ -12,6 +12,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/docsfs"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/improve"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/provision"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/retroanalysis"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/web"
 )
@@ -44,6 +45,14 @@ func NewServer(db *sql.DB, watching bool) (http.Handler, error) {
 			Repo: improveRepoRoot,
 			Exec: improve.OSExec{},
 		}}
+	// The page-level improver: one system analysis at a time, gated by a human
+	// before anything downstream runs. Heal rows a previous daemon left
+	// 'running' — the process that owned them is gone, so they can never
+	// finish (the same startup contract as Provision.HealStale below).
+	h.RetroAnalysis = &retroanalysis.Service{DB: db, Runner: retroanalysis.ClaudeRunner{}}
+	if err := h.RetroAnalysis.HealStale(); err != nil {
+		log.Printf("warning: retro analysis heal on startup: %v", err)
+	}
 	// Provision runs "enable pack → install + generate" jobs behind the plugin
 	// toggle. Heal in-flight rows a prior daemon left behind (restart/crash) to
 	// 'failed' so they don't dangle — best-effort, never blocks startup.

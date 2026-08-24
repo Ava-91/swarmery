@@ -10,12 +10,26 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
-// retroReportServer seeds one project with something in EVERY section the
+// retroReportServer wraps seedRetroReportDB in a full NewServer.
+func retroReportServer(t *testing.T) (*httptest.Server, *sql.DB) {
+	t.Helper()
+	db := seedRetroReportDB(t)
+	h, err := NewServer(db, false)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv, db
+}
+
+// seedRetroReportDB seeds one project with something in EVERY section the
 // report joins: a run with an error (agents + friction error groups), a denied
 // tool, a resolved and a pending approval, a task with a retro (lessons +
 // estimation) and a ledger row, and one advisor recommendation carrying
-// evidence session ids.
-func retroReportServer(t *testing.T) (*httptest.Server, *sql.DB) {
+// evidence session ids. Shared with the analysis tests, which need the same
+// evidence to have anything citable.
+func seedRetroReportDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "report.db"))
 	if err != nil {
@@ -61,13 +75,7 @@ func retroReportServer(t *testing.T) (*httptest.Server, *sql.DB) {
 		 '100% of runs failed in the window',
 		 '{"window":14,"session_ids":["sess-alpha"]}', 'proposed', 'R2:tech-lead', ?, ?)`, today, today)
 
-	h, err := NewServer(db, false)
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	return srv, db
+	return db
 }
 
 func TestRetroReportCarriesEverySection(t *testing.T) {

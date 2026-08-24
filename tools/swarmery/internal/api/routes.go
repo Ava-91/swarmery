@@ -109,6 +109,12 @@ func Routes(mux *http.ServeMux, h *Handler) {
 	// the evidence the improver loop reads (retro_report.go). A read, like its
 	// per-section neighbours, so no requireLocalOrigin.
 	mux.HandleFunc("GET /api/retro/report", h.retroReport)
+	// Page-level improver (retro_analysis.go): one saved, human-gated analysis
+	// of the whole system per window. The writes go through requireLocalOrigin
+	// like every other mutation here; the poll is a plain read.
+	mux.HandleFunc("POST /api/retro/analysis", requireLocalOrigin(h.startRetroAnalysis))
+	mux.HandleFunc("GET /api/retro/analysis", h.latestRetroAnalysis)
+	mux.HandleFunc("PATCH /api/retro/analysis/{id}", requireLocalOrigin(h.patchRetroAnalysis))
 	mux.HandleFunc("GET /api/retro/recommendations", h.retroRecommendations)
 	mux.HandleFunc("PATCH /api/retro/recommendations/{id}", requireLocalOrigin(h.patchRecommendation))
 	mux.HandleFunc("POST /api/retro/advise", requireLocalOrigin(h.retroAdvise))
