@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasegate"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
@@ -821,9 +822,17 @@ func (s *Service) unmetDeps(info phaseInfo) ([]int, error) {
 // exits 0 without ticking anything (failed precondition, refused work) is not a
 // completed phase, and treating it as one let phases start on top of empty
 // dependencies. Legacy activated board tasks still count via their column.
+//
+// The completion question itself is phasegate.Check's, not this function's — the
+// same gate the Plans page and the diagnosis modal go through, so a dependency
+// cannot read as satisfied here while reading as unverified there. Concretely: a
+// phase that ASKED to be graded and carries no verdict (the verifier never
+// started; the store holds such rows) no longer unblocks its dependents. A phase
+// that never opted into verification is unaffected.
 func (s *Service) depSatisfied(taskID int64, seq int) (bool, error) {
 	rows, err := s.DB.Query(`
 		SELECT e.checkboxes_done, e.checkboxes_total,
+		       COALESCE(e.verify_mode,''), COALESCE(e.verify_verdict,''),
 		       COALESCE(bt.board_column,''), bt.archived_at IS NOT NULL
 		  FROM epic_phases e
 		  LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
@@ -834,14 +843,22 @@ func (s *Service) depSatisfied(taskID int64, seq int) (bool, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			boardCol    string
-			done, total int
-			archived    bool
+			boardCol            string
+			verifyMode, verdict string
+			done, total         int
+			archived            bool
 		)
-		if err := rows.Scan(&done, &total, &boardCol, &archived); err != nil {
+		if err := rows.Scan(&done, &total, &verifyMode, &verdict, &boardCol, &archived); err != nil {
 			return false, err
 		}
-		if (total > 0 && done == total) || boardCol == "done" || archived {
+		gate := phasegate.Check(phasegate.Input{
+			CriteriaDone:  done,
+			CriteriaTotal: total,
+			VerifyMode:    verifyMode,
+			VerifyVerdict: verdict,
+			LegacyDone:    boardCol == "done" || archived,
+		})
+		if gate.Complete() {
 			return true, nil
 		}
 	}

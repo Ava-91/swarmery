@@ -73,6 +73,35 @@ func ParseVerdict(text string) (Verdict, string) {
 	return verdict, truncate(collectReasons(lines, inFence, verdictIdx), verdictReasonsCap)
 }
 
+// HasVerdictLine reports whether text states a verdict at all, by the same
+// fence-aware backward scan ParseVerdict uses.
+//
+// It exists because ParseVerdict's fail-safe deliberately collapses two very
+// different situations into VerdictInconclusive: "the verifier said INCONCLUSIVE"
+// and "the verifier never said anything a verdict could be read from". The
+// collapse is right for the verdict — an ambiguous parse must not become FAIL —
+// and wrong for the operator, who needs to know whether the machinery ran. The
+// caller asks this to tell them apart; ParseVerdict's contract is untouched.
+func HasVerdictLine(text string) bool {
+	lines := strings.Split(text, "\n")
+	fenceOpen := false
+	found := false
+	for _, raw := range lines {
+		t := strings.TrimSpace(raw)
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			fenceOpen = !fenceOpen
+			continue
+		}
+		if fenceOpen {
+			continue
+		}
+		if _, ok := verdictOnLine(raw); ok {
+			found = true
+		}
+	}
+	return found
+}
+
 // verdictOnLine reports whether a single line IS a verdict line and, if so, its
 // value. It tolerates leading markdown emphasis (`*`, `-`, `#`, `>`, backticks,
 // spaces) before the `VERDICT:` token and matches case-insensitively. A line

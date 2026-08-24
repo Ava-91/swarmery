@@ -93,7 +93,7 @@ function isResolvedColumn(col: BoardColumn | null): boolean {
   return col === 'done' || col === 'archived';
 }
 
-type PhaseStatus = 'pending' | 'in_progress' | 'done' | 'blocked';
+type PhaseStatus = 'pending' | 'in_progress' | 'done' | 'unverified' | 'blocked';
 
 /** Derives a phase's display status from checkbox progress, a live run, and the
  * dependency gate. The result stays a coarse LIFECYCLE state — whether a process
@@ -102,7 +102,12 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   // An activated phase whose board task is resolved is done regardless of
   // checkbox progress — the board is the source of truth once dispatched.
   if (isResolvedColumn(p.boardColumn)) return 'done';
-  if (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) return 'done';
+  // THE completion gate, computed by the daemon (internal/phasegate) — not a
+  // client-side `done === total`, which is how this file used to answer and how it
+  // came to disagree with the daemon about the same row. `unverified` means the
+  // criteria are all ticked and the verification the doc asked for never landed.
+  if (p.completionState === 'complete') return 'done';
+  if (p.completionState === 'unverified') return 'unverified';
   // The doc's own `Status: In progress` marker wins over the dependency gate —
   // an executor writing it is literally working on the phase right now.
   // (`done` must be earned by ticking every checkbox; a `done` marker alone is ignored.)
@@ -118,24 +123,22 @@ function phaseStatus(p: EpicPhase, resolvedSeqs: Set<number>): PhaseStatus {
   return 'pending';
 }
 
-/** Which seq numbers are "resolved" — their board task is done/archived OR
- * every checkbox in their doc is ticked (file-driven completion without
- * board activation) OR a headless run actually COMPLETED the phase. Renders
- * depends-on badges and feeds the phase-status derivation.
+/** Which seq numbers are "resolved" — their board task is done/archived OR the
+ * daemon's completion gate calls them complete. Renders depends-on badges and
+ * feeds the phase-status derivation.
  *
- * `runOutcome === 'completed'`, never `runState === 'done'`: a process that
- * exited 0 having ticked nothing is `noop`, and treating that as resolved is
- * the client-side twin of the dependency-gate bug the daemon removed — it let
- * a 0/7 phase mark its dependents runnable. */
+ * The gate, never a local derivation: a process that exited 0 having ticked
+ * nothing is not a completed phase, and neither is one whose criteria are all
+ * ticked while the verification it asked for never landed. Re-deriving either
+ * rule here is what let the client offer a Run button the daemon then refuses. */
 function computeResolvedSeqs(phases: EpicPhase[]): Set<number> {
   const s = new Set<number>();
   for (const p of phases) {
-    if (
-      isResolvedColumn(p.boardColumn) ||
-      (p.checkboxesTotal > 0 && p.checkboxesDone === p.checkboxesTotal) ||
-      p.runOutcome === 'completed'
-    )
-      s.add(p.seq);
+    // `completionState`, never a local checkbox comparison: the daemon's dependency
+    // gate refuses a fully-ticked phase whose verification never landed, and a
+    // client that marked it resolved would offer a Run button the daemon then
+    // rejects. One gate, one answer.
+    if (isResolvedColumn(p.boardColumn) || p.completionState === 'complete') s.add(p.seq);
   }
   return s;
 }
@@ -228,6 +231,10 @@ function PhaseActivity({
  * is reserved for a live process and is resolved by `phaseChip` below. */
 const PHASE_CHIP: Record<PhaseStatus, { label: string; cls: string }> = {
   done: { label: 'done', cls: 'border-green/40 text-green' },
+  // Every criterion ticked and the grade the doc asked for never arrived. Amber,
+  // the app's needs-a-human colour — NOT green, because nobody confirmed this, and
+  // NOT red, because nothing says the work is wrong.
+  unverified: { label: 'unverified', cls: 'border-amber/40 bg-amber/10 text-amber' },
   in_progress: { label: 'started', cls: 'border-brand/40 text-brand' },
   blocked: { label: 'blocked', cls: 'border-red/40 text-red' },
   pending: { label: 'pending', cls: 'border-line text-ink-faint' },

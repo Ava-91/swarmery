@@ -2987,7 +2987,22 @@ export interface EpicPhase {
    *  work land?" and the verdict answers "was it confirmed?" — two questions. */
   verifyVerdict: PhaseVerifyVerdict | null;
   verifyDetail: string | null;
+  /** THE completion gate's answer (server-side, internal/phasegate): may this phase
+   *  be called DONE? Read this instead of comparing checkboxesDone to
+   *  checkboxesTotal — the client used to re-derive completion and could therefore
+   *  disagree with the daemon about the same row.
+   *
+   *  `unverified` is the state that did not exist before: every criterion ticked and
+   *  the grade the doc asked for never arrived. It is deliberately distinct from
+   *  both `complete` and a failing verdict — the work may be fine, and nobody knows. */
+  completionState: PhaseCompletionState;
+  /** Why the gate refused, in the operator's words; [] when complete. A list because
+   *  one gate cites every reason it has. */
+  completionBlockers: string[];
 }
+
+/** The completion gate's states (server-side internal/phasegate). */
+export type PhaseCompletionState = 'complete' | 'unverified' | 'incomplete';
 
 /** Checkbox rollup across an epic's phases. */
 export interface EpicRollup {
@@ -2995,6 +3010,8 @@ export interface EpicRollup {
   total: number;
   /** 0..100; 0 when total===0. */
   pct: number;
+  /** How many phases the completion gate refuses. A plan reads `done` only at 0. */
+  incompletePhases: number;
 }
 
 /** One SC-tagged acceptance criterion from plan/spec.md, with the phases that

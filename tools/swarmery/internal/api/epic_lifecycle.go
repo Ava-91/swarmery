@@ -43,6 +43,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasegate"
 )
 
 var (
@@ -271,7 +273,54 @@ func (h *Handler) derivedPlanStatus(taskID int64) (string, error) {
 		Scan(&done, &total); err != nil {
 		return "", err
 	}
-	return planStatus(archivedAt.Valid, status, done, total), nil
+	// The lifecycle response and the list must never disagree about the same plan,
+	// so this walks the SAME completion gate the list does rather than deriving
+	// "done" from the checkbox rollup alone.
+	allComplete, err := h.phasesAllComplete(taskID)
+	if err != nil {
+		return "", err
+	}
+	return planStatus(archivedAt.Valid, status, done, total, allComplete), nil
+}
+
+// phasesAllComplete reports whether every phase of a plan passes the completion
+// gate (phasegate.Check). One row per phase rather than a clever SQL predicate:
+// the gate is Go, and a SQL copy of it is exactly the second implementation this
+// package is trying not to have.
+func (h *Handler) phasesAllComplete(taskID int64) (bool, error) {
+	rows, err := h.DB.Query(`
+		SELECT e.checkboxes_done, e.checkboxes_total,
+		       COALESCE(e.verify_mode,''), COALESCE(e.verify_verdict,''),
+		       COALESCE(bt.board_column,''), bt.archived_at IS NOT NULL
+		  FROM epic_phases e
+		  LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
+		 WHERE e.workspace_task_id = ?`, taskID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	all := true
+	for rows.Next() {
+		var (
+			done, total         int
+			verifyMode, verdict string
+			boardCol            string
+			archived            bool
+		)
+		if err := rows.Scan(&done, &total, &verifyMode, &verdict, &boardCol, &archived); err != nil {
+			return false, err
+		}
+		if !phasegate.Check(phasegate.Input{
+			CriteriaDone:  done,
+			CriteriaTotal: total,
+			VerifyMode:    verifyMode,
+			VerifyVerdict: verdict,
+			LegacyDone:    boardCol == "done" || archived,
+		}).Complete() {
+			all = false
+		}
+	}
+	return all, rows.Err()
 }
 
 // rewriteCardReadme applies edit to <taskDir>/README.md, backing the current

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasegate"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 )
@@ -36,6 +37,13 @@ const (
 	KindVerifyFailed = "verify-failed"
 
 	KindNoCriteria = "no-criteria"
+
+	// KindUnverified: the phase opted into verification, its criteria are all
+	// ticked, and no verdict ever landed (or the verifier could not conclude). The
+	// work may be perfectly fine — nobody knows, which is the point. Distinct from
+	// KindVerifyFailed, which is a grade AGAINST the work; this one is the ABSENCE
+	// of a grade, and it used to be silent: the phase read as done.
+	KindUnverified = "unverified"
 
 	// KindOwnWorktree: the phase's branch holds commits AND is checked out at the
 	// worktree this daemon created for that very run. That state needs no action —
@@ -178,6 +186,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		docPath    string
 		projPath   sql.NullString
 		total, don int
+		verifyMode sql.NullString
 		verdict    sql.NullString
 		vDetail    sql.NullString
 	)
@@ -185,7 +194,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		SELECT e.workspace_task_id, e.seq, e.name, e.doc_path, e.depends_on,
 		       e.checkboxes_total, e.checkboxes_done, e.run_state, e.run_session_uuid,
 		       e.run_started_at, e.run_ended_at, e.run_error, e.run_checkboxes_before,
-		       e.run_checkboxes_after, e.verify_verdict, e.verify_detail, p.path
+		       e.run_checkboxes_after, e.verify_mode, e.verify_verdict, e.verify_detail, p.path
 		  FROM epic_phases e
 		  JOIN tasks t ON t.id = e.workspace_task_id
 		  JOIN projects p ON p.id = t.project_id
@@ -193,7 +202,7 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 		&taskID, &d.Seq, &d.Name, &docPath, &depsJSON,
 		&total, &don, &runState, &uuid,
 		&startedAt, &endedAt, &runErr, &before, &after,
-		&verdict, &vDetail, &projPath)
+		&verifyMode, &verdict, &vDetail, &projPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Diagnosis{}, ErrPhaseNotFound
 	}
@@ -347,6 +356,24 @@ func Diagnose(db *sql.DB, git worktree.Git, own OwnCheckout, phaseID int64) (Dia
 			// The verifier's own reasons, verbatim: the whole value of the blocker is
 			// carrying WHY, and a summary alone would send the operator to the logs.
 			Detail: strings.TrimSpace(vDetail.String),
+		})
+	}
+
+	// 5b. unverified — the completion gate refuses this phase for want of a grade it
+	// asked for. Emitted from phasegate.Check rather than from a local rule, so the
+	// modal, the Plans list and the dependency gate cannot disagree about the same
+	// row. `fail` is deliberately NOT routed here: decision D5 keeps a failed grade
+	// as completed work with a verify-failed blocker beside it, and 5 above says so.
+	if gate := phasegate.Check(phasegate.Input{
+		CriteriaDone:  d.CriteriaAfter,
+		CriteriaTotal: total,
+		VerifyMode:    verifyMode.String,
+		VerifyVerdict: verdict.String,
+	}); gate.State == phasegate.StateUnverified {
+		d.Blockers = append(d.Blockers, Blocker{
+			Kind:    KindUnverified,
+			Summary: "Every acceptance criterion is ticked, but this phase has no verification result — it is unverified, not done",
+			Detail:  strings.Join(gate.Reasons, "\n"),
 		})
 	}
 

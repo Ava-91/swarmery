@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasegate"
 )
 
 // ── DTOs ────────────────────────────────────────────────────────────────────
@@ -93,6 +94,20 @@ type epicPhaseDTO struct {
 	VerifyMode    string  `json:"verifyMode"`
 	VerifyVerdict *string `json:"verifyVerdict"`
 	VerifyDetail  *string `json:"verifyDetail"`
+	// THE completion gate's answer: complete | unverified | incomplete
+	// (internal/phasegate). Distinct from RunOutcome, which reports whether work
+	// landed, and from VerifyVerdict, which reports the grade: this reports whether
+	// the phase may be called DONE. `unverified` is the state that did not exist
+	// before — criteria all ticked, and the grade the doc asked for never arrived.
+	//
+	// Every surface reads this instead of re-deriving `done === total`, so the list
+	// chip, the diagnosis modal, the dependency gate and the client cannot disagree
+	// about the same row.
+	CompletionState string `json:"completionState"`
+	// Why the gate refused, in the operator's words. Empty when complete. A LIST
+	// because one gate cites every reason it has, rather than several gates each
+	// refusing for its own.
+	CompletionBlockers []string `json:"completionBlockers"`
 }
 
 // epicRollupDTO is a checkbox rollup across all of an epic's phases.
@@ -100,6 +115,10 @@ type epicRollupDTO struct {
 	Done  int     `json:"done"`
 	Total int     `json:"total"`
 	Pct   float64 `json:"pct"` // 0..100, 0 when total==0 (no divide-by-zero)
+	// How many of the plan's phases the completion gate refuses (phasegate.Check).
+	// Feeds planStatus: a plan is "done" only when none of its phases is refused,
+	// so a fully-ticked plan whose grades never landed stays `active`.
+	IncompletePhases int `json:"incompletePhases"`
 }
 
 // specCriterionDTO is one SC-tagged acceptance criterion from plan/spec.md,
@@ -220,13 +239,21 @@ func (h *Handler) planUpdatedPayload(taskID int64) (*wsPlanPayload, error) {
 // rollup — an archived task is "archived" whatever its README says, a paused
 // README beats a complete rollup, and a full rollup reads "done" even before
 // the plan is archived. epicDTO.Status is always one of these four values.
-func planStatus(archived bool, taskStatus string, done, total int) string {
+//
+// allPhasesComplete is the completion gate's verdict across the plan's phases
+// (phasegate.Check per phase). A plan whose checkboxes are all ticked but whose
+// phases could not be verified reads `active`, not `done` — the four-value
+// contract is unchanged, and "done" now means what it says. The per-phase
+// `completionState` carries WHY for display; widening this enum instead would
+// have forced every consumer of a plan's status to learn a fifth value to say
+// something the phase rows already say.
+func planStatus(archived bool, taskStatus string, done, total int, allPhasesComplete bool) string {
 	switch {
 	case archived:
 		return "archived"
 	case taskStatus == "paused":
 		return "paused"
-	case phasediag.CriteriaMet(done, total):
+	case phasediag.CriteriaMet(done, total) && allPhasesComplete:
 		return "done"
 	default:
 		return "active"
@@ -338,7 +365,8 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		}
 		// Normalize the raw tasks.status (running|paused|done) into the plan
 		// lifecycle contract: active | paused | done | archived.
-		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
+		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total,
+			rollup.IncompletePhases == 0)
 	}
 	writeJSON(w, out, nil)
 }
@@ -645,6 +673,23 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		p.RunOutcome = phasediag.OutcomeFromRow(
 			p.RunState, p.CheckboxesTotal, p.CheckboxesDone,
 			runCheckboxesBefore, runCheckboxesAfter)
+		// THE gate — the same call phaserun's dependency check and the diagnosis
+		// modal make, so no surface can privately decide this row is done.
+		gate := phasegate.Check(phasegate.Input{
+			CriteriaDone:  p.CheckboxesDone,
+			CriteriaTotal: p.CheckboxesTotal,
+			VerifyMode:    p.VerifyMode,
+			VerifyVerdict: verifyVerdict.String,
+			LegacyDone:    boardCol.String == "done" || (p.BoardTaskID != nil && p.ActivatedAt != nil && boardCol.String == "archived"),
+		})
+		p.CompletionState = gate.State
+		p.CompletionBlockers = gate.Reasons
+		if p.CompletionBlockers == nil {
+			p.CompletionBlockers = []string{} // [] not null: the UI maps over it
+		}
+		if !gate.Complete() {
+			rollup.IncompletePhases++
+		}
 		rollup.Done += p.CheckboxesDone
 		rollup.Total += p.CheckboxesTotal
 		phases = append(phases, p)
