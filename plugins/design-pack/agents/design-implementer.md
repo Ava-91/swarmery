@@ -241,6 +241,21 @@ In `degraded: screenshots` mode the `Diff` line states the mode and the numbers
 are advisory only — the agent reports them and refuses the pixel-match
 confirmation (trigger 8) in the same message.
 
+# Read before write (protocol)
+
+The approved file set tells you *which* files you may touch. This tells you *how* to touch one.
+
+1. **Read the file before you Edit or Write it** — every file in the approved set, every session.
+   A component you have already re-expressed once is not exempt: your memory of it is a snapshot,
+   and the file has moved on.
+2. **Never write a component from memory.** An edit to an unread file is refused by the harness,
+   and inside an iterate-and-measure loop that refusal costs you a whole diff cycle.
+3. **The refusal hands the file back.** The `read-before-write` hook prints the current contents
+   to stderr and lets the immediate retry through — re-issue the same edit against what it gave
+   you. This is a recovery, not a STOP trigger, and it is not a reason to widen the file set.
+4. **A "file modified since read" error is the same signal** later in the run: re-Read, re-locate,
+   re-apply, never retry blind.
+
 # Self-check before returning
 
 - [ ] Every file written is a literal member of the approved file list

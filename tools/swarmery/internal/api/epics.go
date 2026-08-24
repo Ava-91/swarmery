@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasediag"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasegate"
 )
 
 // ── DTOs ────────────────────────────────────────────────────────────────────
@@ -93,6 +94,20 @@ type epicPhaseDTO struct {
 	VerifyMode    string  `json:"verifyMode"`
 	VerifyVerdict *string `json:"verifyVerdict"`
 	VerifyDetail  *string `json:"verifyDetail"`
+	// THE completion gate's answer: complete | unverified | incomplete
+	// (internal/phasegate). Distinct from RunOutcome, which reports whether work
+	// landed, and from VerifyVerdict, which reports the grade: this reports whether
+	// the phase may be called DONE. `unverified` is the state that did not exist
+	// before — criteria all ticked, and the grade the doc asked for never arrived.
+	//
+	// Every surface reads this instead of re-deriving `done === total`, so the list
+	// chip, the diagnosis modal, the dependency gate and the client cannot disagree
+	// about the same row.
+	CompletionState string `json:"completionState"`
+	// Why the gate refused, in the operator's words. Empty when complete. A LIST
+	// because one gate cites every reason it has, rather than several gates each
+	// refusing for its own.
+	CompletionBlockers []string `json:"completionBlockers"`
 }
 
 // epicRollupDTO is a checkbox rollup across all of an epic's phases.
@@ -100,6 +115,10 @@ type epicRollupDTO struct {
 	Done  int     `json:"done"`
 	Total int     `json:"total"`
 	Pct   float64 `json:"pct"` // 0..100, 0 when total==0 (no divide-by-zero)
+	// How many of the plan's phases the completion gate refuses (phasegate.Check).
+	// Feeds planStatus: a plan is "done" only when none of its phases is refused,
+	// so a fully-ticked plan whose grades never landed stays `active`.
+	IncompletePhases int `json:"incompletePhases"`
 }
 
 // specCriterionDTO is one SC-tagged acceptance criterion from plan/spec.md,
@@ -220,13 +239,21 @@ func (h *Handler) planUpdatedPayload(taskID int64) (*wsPlanPayload, error) {
 // rollup — an archived task is "archived" whatever its README says, a paused
 // README beats a complete rollup, and a full rollup reads "done" even before
 // the plan is archived. epicDTO.Status is always one of these four values.
-func planStatus(archived bool, taskStatus string, done, total int) string {
+//
+// allPhasesComplete is the completion gate's verdict across the plan's phases
+// (phasegate.Check per phase). A plan whose checkboxes are all ticked but whose
+// phases could not be verified reads `active`, not `done` — the four-value
+// contract is unchanged, and "done" now means what it says. The per-phase
+// `completionState` carries WHY for display; widening this enum instead would
+// have forced every consumer of a plan's status to learn a fifth value to say
+// something the phase rows already say.
+func planStatus(archived bool, taskStatus string, done, total int, allPhasesComplete bool) string {
 	switch {
 	case archived:
 		return "archived"
 	case taskStatus == "paused":
 		return "paused"
-	case phasediag.CriteriaMet(done, total):
+	case phasediag.CriteriaMet(done, total) && allPhasesComplete:
 		return "done"
 	default:
 		return "active"
@@ -338,7 +365,8 @@ func (h *Handler) listEpics(w http.ResponseWriter, r *http.Request) {
 		}
 		// Normalize the raw tasks.status (running|paused|done) into the plan
 		// lifecycle contract: active | paused | done | archived.
-		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total)
+		out[i].Status = planStatus(archived[i], out[i].Status, rollup.Done, rollup.Total,
+			rollup.IncompletePhases == 0)
 	}
 	writeJSON(w, out, nil)
 }
@@ -542,6 +570,17 @@ func buildEpicSpec(criteria []specCriterionDTO, covers []phaseCovers) *epicSpecD
 // is used to compute each phase's path relative to plan/ (the ?path= the doc
 // endpoints accept).
 func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epicRollupDTO, []phaseCovers, error) {
+	// The closure conditions are PLAN-level facts, resolved ONCE and BEFORE the
+	// phase cursor opens. Before, not after: the SQLite pool is single-connection,
+	// so any nested query issued while a cursor is open deadlocks — the same
+	// hazard listEpics documents about hydrating phases. Once, because asking per
+	// phase would let two phases of one plan disagree about their own plan.
+	closureRequired := phasegate.ClosureGateEnabled()
+	lessonRecorded, lerr := h.planHasLesson(taskID)
+	if lerr != nil {
+		return nil, epicRollupDTO{}, nil, lerr
+	}
+
 	rows, err := h.DB.Query(`
 		SELECT e.id, e.seq, e.name, e.doc_path, e.depends_on, e.covers,
 		       e.checkboxes_total, e.checkboxes_done, e.doc_status, e.doc_updated_at,
@@ -645,6 +684,26 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		p.RunOutcome = phasediag.OutcomeFromRow(
 			p.RunState, p.CheckboxesTotal, p.CheckboxesDone,
 			runCheckboxesBefore, runCheckboxesAfter)
+		// THE gate — the same call phaserun's dependency check and the diagnosis
+		// modal make, so no surface can privately decide this row is done.
+		gate := phasegate.Check(phasegate.Input{
+			CriteriaDone:     p.CheckboxesDone,
+			CriteriaTotal:    p.CheckboxesTotal,
+			VerifyMode:       p.VerifyMode,
+			VerifyVerdict:    verifyVerdict.String,
+			LegacyDone:       boardCol.String == "done" || (p.BoardTaskID != nil && p.ActivatedAt != nil && boardCol.String == "archived"),
+			CompletionReport: completion.String,
+			LessonRecorded:   lessonRecorded,
+			ClosureRequired:  closureRequired,
+		})
+		p.CompletionState = gate.State
+		p.CompletionBlockers = gate.Reasons
+		if p.CompletionBlockers == nil {
+			p.CompletionBlockers = []string{} // [] not null: the UI maps over it
+		}
+		if !gate.Complete() {
+			rollup.IncompletePhases++
+		}
 		rollup.Done += p.CheckboxesDone
 		rollup.Total += p.CheckboxesTotal
 		phases = append(phases, p)
@@ -653,6 +712,24 @@ func (h *Handler) epicPhases(taskID int64, planDir string) ([]epicPhaseDTO, epic
 		rollup.Pct = float64(rollup.Done) / float64(rollup.Total) * 100
 	}
 	return phases, rollup, covers, rows.Err()
+}
+
+// planHasLesson reports whether a plan's task carries at least one lesson in the
+// PRE-EXISTING store: retro_lessons, which wsingest fills from the task's
+// phases/09-retrospective.md (`### Lesson N: <title>` under `## Lessons
+// Learned`). Reusing that table is the whole point — a per-phase lesson table
+// beside it would be a second store for the same thing, and the retro feed and
+// the agent hub already read this one.
+func (h *Handler) planHasLesson(taskID int64) (bool, error) {
+	var n int
+	err := h.DB.QueryRow(`
+		SELECT COUNT(*) FROM retro_lessons l
+		  JOIN task_retros r ON r.id = l.retro_id
+		 WHERE r.task_id = ?`, taskID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // decodeIntList parses a JSON array of ints; [] on empty/garbage.

@@ -92,8 +92,15 @@ func TestAdmit_MicroPlansDisabledDegradesToTheOldBehaviour(t *testing.T) {
 	if entries, err := os.ReadDir(s.WorkspaceRoot); err != nil || len(entries) != 0 {
 		t.Errorf("the workspace was written to with the feature off: %v %v", entries, err)
 	}
-	if prompt := r.spec(0).Prompt; strings.Contains(prompt, "PLAN DOCUMENT") {
+	// No instruction about a file that does not exist — but the card still owes
+	// the operator a summary, so the docless branch must name its own in-worktree
+	// destination instead of falling silent.
+	prompt := r.spec(0).Prompt
+	if strings.Contains(prompt, "HAS A PLAN DOCUMENT") {
 		t.Errorf("the contract names a plan doc that was never created:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, worktree.ReportPath) {
+		t.Errorf("the docless contract names no report destination:\n%s", prompt)
 	}
 }
 
@@ -143,8 +150,12 @@ func TestAdmit_MintFailureIsNonFatal(t *testing.T) {
 	if r.count() != 1 {
 		t.Fatalf("runs = %d, want 1 — the run proceeds docless", r.count())
 	}
-	if prompt := r.spec(0).Prompt; strings.Contains(prompt, "PLAN DOCUMENT") {
+	prompt := r.spec(0).Prompt
+	if strings.Contains(prompt, "HAS A PLAN DOCUMENT") {
 		t.Errorf("the contract names a doc that failed to be created:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, worktree.ReportPath) {
+		t.Errorf("a failed mint must still leave a report destination:\n%s", prompt)
 	}
 }
 
@@ -239,5 +250,56 @@ func TestRunPlaybook_LinksTheSessionToTheMicroPlanToo(t *testing.T) {
 		if n != 1 {
 			t.Errorf("%s has %d explicit links to the run's session, want 1", tc.name, n)
 		}
+	}
+}
+
+// A card with NO plan doc is told to write worktree.ReportPath, so the daemon
+// has to read that file back onto the card. If it does not, the contract is
+// pointing the agent at a file nobody opens — worse than saying nothing, because
+// it costs a turn and reads as a promise.
+func TestRunPlaybook_DoclessReportLandsOnTheCard(t *testing.T) {
+	t.Setenv(microPlansEnv, "0") // no plan doc ⇒ the docless branch
+	db := testDB(t)
+	root := t.TempDir()
+	wt := &stubWt{root: root}
+	r := &stubRunner{}
+	// The agent's side of the contract: write the report inside the worktree.
+	r.run = func(spec RunSpec) (*Run, error) {
+		if err := os.MkdirAll(filepath.Join(spec.Cwd, filepath.Dir(worktree.ReportPath)), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(spec.Cwd, worktree.ReportPath),
+			[]byte("Rewired the janitor sweep; see internal/prune/sweep.go."), 0o644); err != nil {
+			return nil, err
+		}
+		return &Run{SessionUUID: spec.SessionUUID, ExitCode: 0}, nil
+	}
+	s := newTestService(t, db, r, wt)
+	id := insertTask(t, db, "T-77", taskOpts{})
+
+	s.Schedule()
+	waitFor(t, func() bool { return column(t, db, id) != "todo" })
+	waitFor(t, func() bool { return taskField(t, db, id, "result_note").String != "" })
+
+	note := taskField(t, db, id, "result_note").String
+	if !strings.Contains(note, "Rewired the janitor sweep") {
+		t.Errorf("result_note = %q, want the report the agent wrote", note)
+	}
+}
+
+// The other half: an agent that wrote no report must not blank a note that is
+// already there, and must not fail the run.
+func TestRunPlaybook_NoDoclessReportLeavesTheCardAlone(t *testing.T) {
+	t.Setenv(microPlansEnv, "0")
+	db := testDB(t)
+	r := &stubRunner{}
+	s := newTestService(t, db, r, &stubWt{root: t.TempDir()})
+	id := insertTask(t, db, "T-78", taskOpts{})
+
+	s.Schedule()
+	waitFor(t, func() bool { return column(t, db, id) != "todo" })
+
+	if e := taskField(t, db, id, "dispatch_error"); e.Valid && e.String != "" {
+		t.Errorf("a missing report became an error: %q", e.String)
 	}
 }

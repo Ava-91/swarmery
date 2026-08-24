@@ -849,6 +849,28 @@ type retroTaskDTO struct {
 
 type retroTasksDTO struct {
 	Tasks []retroTaskDTO `json:"tasks"`
+	// Closure is the window's closure measurables — how many tasks carry a filled
+	// Completion Report, and re-dispatch computed across the tasks that do.
+	//
+	// It rides on THIS endpoint rather than a new one because this is the churn
+	// table: the retro that asked for these numbers could compute churn for two
+	// tasks, and the fix is the same page answering how many tasks are reportable
+	// at all. Computed by internal/advisor.Closure, which reuses isRedispatch —
+	// so this and the digest cannot disagree about what a re-dispatch is.
+	Closure retroClosureDTO `json:"closure"`
+}
+
+// retroClosureDTO is advisor.ClosureStats on the wire.
+type retroClosureDTO struct {
+	Tasks            int64   `json:"tasks"`
+	TasksWithReport  int64   `json:"tasksWithReport"`
+	Phases           int64   `json:"phases"`
+	PhasesWithReport int64   `json:"phasesWithReport"`
+	Delegations      int64   `json:"delegations"`
+	Redispatches     int64   `json:"redispatches"`
+	ReportRate       float64 `json:"reportRate"`
+	RedispatchRate   float64 `json:"redispatchRate"`
+	Summary          string  `json:"summary"`
 }
 
 // retroTasksLimit caps the estimation table — one row per workspace task in
@@ -877,6 +899,12 @@ func (h *Handler) retroTasks(w http.ResponseWriter, r *http.Request) {
 // buildRetroTasks computes the estimation table for one resolved window and
 // scope. Split out of the handler so /api/retro/report can reuse it.
 func (h *Handler) buildRetroTasks(dr dateRange, pf string, pargs []any) (retroTasksDTO, error) {
+	// Before the cursor: single-connection pool, so a nested query on an open
+	// cursor deadlocks.
+	closure, cerr := advisor.Closure(h.DB, dr.start, dr.end)
+	if cerr != nil {
+		return retroTasksDTO{}, cerr
+	}
 
 	rows, err := h.DB.Query(`
 		SELECT t.id, t.external_id, t.title,
@@ -954,6 +982,17 @@ func (h *Handler) buildRetroTasks(dr dateRange, pf string, pargs []any) (retroTa
 		if err := vrows.Err(); err != nil {
 			return retroTasksDTO{}, err
 		}
+	}
+	out.Closure = retroClosureDTO{
+		Tasks:            closure.Tasks,
+		TasksWithReport:  closure.TasksWithReport,
+		Phases:           closure.Phases,
+		PhasesWithReport: closure.PhasesWithReport,
+		Delegations:      closure.Delegations,
+		Redispatches:     closure.Redispatches,
+		ReportRate:       closure.ReportRate(),
+		RedispatchRate:   closure.RedispatchRate(),
+		Summary:          closure.Summary(),
 	}
 	return out, nil
 }

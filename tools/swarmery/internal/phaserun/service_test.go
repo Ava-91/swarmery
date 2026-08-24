@@ -738,6 +738,58 @@ func TestStart_DepsGate(t *testing.T) {
 		}
 	})
 
+	// The verification half of the same rule. A dependency that ASKED to be graded
+	// and carries no verdict has not proven anything: the verifier may never have
+	// started (the store holds a run that died on `fork/exec …/claude: no such file
+	// or directory`), and a phase built on top of that inherits the uncertainty.
+	t.Run("fully ticked but unverified dep does not satisfy", func(t *testing.T) {
+		db, _, p1, p2 := fixture(t)
+		mustExec(t, db, `UPDATE epic_phases
+			SET checkboxes_done=2, verify_mode='normal', verify_verdict=NULL WHERE id=?`, p1)
+		s := newTestService(db, &stubRunner{}, &stubWt{})
+		_, err := s.Start(p2)
+		if !errors.Is(err, ErrDepsUnmet) {
+			t.Fatalf("err = %v, want ErrDepsUnmet (a dep that asked to be graded and was not is unverified)", err)
+		}
+	})
+
+	t.Run("fully ticked but inconclusive dep does not satisfy", func(t *testing.T) {
+		db, _, p1, p2 := fixture(t)
+		mustExec(t, db, `UPDATE epic_phases
+			SET checkboxes_done=2, verify_mode='strict', verify_verdict='inconclusive' WHERE id=?`, p1)
+		s := newTestService(db, &stubRunner{}, &stubWt{})
+		if _, err := s.Start(p2); !errors.Is(err, ErrDepsUnmet) {
+			t.Fatalf("err = %v, want ErrDepsUnmet", err)
+		}
+	})
+
+	// …and the gate must stay off every plan that never asked for verification,
+	// or this change stalls the fleet instead of protecting it.
+	t.Run("verify off means the gate is invisible", func(t *testing.T) {
+		db, _, p1, p2 := fixture(t)
+		mustExec(t, db, `UPDATE epic_phases
+			SET checkboxes_done=2, verify_mode='off', verify_verdict=NULL WHERE id=?`, p1)
+		s := newTestService(db, &stubRunner{}, &stubWt{})
+		if _, err := s.Start(p2); err != nil {
+			t.Fatalf("Start: %v — a phase that never asked to be graded must not be gated", err)
+		}
+	})
+
+	// A graded PASS satisfies, and a graded FAIL still satisfies: decision D5 keeps
+	// a failing grade as completed work with a blocker beside it, and this gate is
+	// about the ABSENCE of a grade.
+	t.Run("graded dep satisfies, pass or fail", func(t *testing.T) {
+		for _, verdict := range []string{"pass", "fail"} {
+			db, _, p1, p2 := fixture(t)
+			mustExec(t, db, `UPDATE epic_phases
+				SET checkboxes_done=2, verify_mode='normal', verify_verdict=? WHERE id=?`, verdict, p1)
+			s := newTestService(db, &stubRunner{}, &stubWt{})
+			if _, err := s.Start(p2); err != nil {
+				t.Fatalf("verdict=%s: Start: %v", verdict, err)
+			}
+		}
+	})
+
 	t.Run("met via full checkboxes", func(t *testing.T) {
 		db, _, p1, p2 := fixture(t)
 		mustExec(t, db, `UPDATE epic_phases SET checkboxes_done=2 WHERE id=?`, p1)

@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "Recurring CI/PR monitoring as a ROUTINE instead of as repeated polling inside a long session.",
+    "",
+    "Why this template exists: in one retro window, 113 CI/PR status checks were issued from inside",
+    "sessions that had already grown past $50 of cost. Each of those checks re-read the whole",
+    "accumulated context to ask a question whose answer is three lines of JSON — the advisor's",
+    "fat-session rule names exactly this and recommends 'move recurring monitoring to a routine that",
+    "reads state with a fresh small context'.",
+    "",
+    "Both steps are `command`, not `ai-prompt`, on purpose: no model is invoked at all, so the check",
+    "that used to cost a full context re-read now costs zero tokens. Read the answers in the routine's",
+    "run history on the Routines page.",
+    "",
+    "Install it against a project with:",
+    "  curl -s -X POST localhost:7777/api/routines -H 'content-type: application/json' \\",
+    "    -d @<this file with _comment removed and projectId set>",
+    "",
+    "The cron is deliberately half-hourly rather than minute-by-minute: this replaces a human-paced",
+    "'is it green yet?', and a tighter schedule would recreate the polling it is meant to remove."
+  ],
+  "name": "CI and PR watch",
+  "cronExpr": "*/30 * * * *",
+  "catchUp": "skip",
+  "timeoutSec": 300,
+  "steps": [
+    {
+      "type": "command",
+      "name": "CI runs on the default branch",
+      "continueOnFailure": true,
+      "timeoutSec": 120,
+      "command": "gh run list --limit 10 --json workflowName,headBranch,status,conclusion,url --jq '[.[] | select(.conclusion != \"success\" and .conclusion != \"skipped\")] | if length == 0 then \"CI: all recent runs green\" else \"CI NOT GREEN:\\n\" + (map(\"  \\(.workflowName) on \\(.headBranch): \\(.status)/\\(.conclusion // \"running\") \\(.url)\") | join(\"\\n\")) end'"
+    },
+    {
+      "type": "command",
+      "name": "Open PRs and their checks",
+      "continueOnFailure": true,
+      "timeoutSec": 120,
+      "command": "gh pr list --state open --json number,title,isDraft,mergeStateStatus,statusCheckRollup --jq 'if length == 0 then \"PRs: none open\" else map(\"  #\\(.number) \\(.title)\\(if .isDraft then \" [draft]\" else \"\" end): \\(.mergeStateStatus) — checks \\([.statusCheckRollup[]? | select(.conclusion != null and .conclusion != \"SUCCESS\" and .conclusion != \"NEUTRAL\" and .conclusion != \"SKIPPED\")] | length) failing\") | join(\"\\n\") end'"
+    }
+  ]
+}

@@ -394,26 +394,32 @@ func TestListEpicsEmptyForUnknownProject(t *testing.T) {
 // TestPlanStatusDerivation: planStatus precedence is zone > README > rollup.
 func TestPlanStatusDerivation(t *testing.T) {
 	cases := []struct {
-		name       string
-		archived   bool
-		taskStatus string
-		done, tot  int
-		want       string
+		name        string
+		archived    bool
+		taskStatus  string
+		done, tot   int
+		allPhasesOK bool
+		want        string
 	}{
-		{"archived wins over everything", true, "paused", 3, 3, "archived"},
-		{"archived with running readme", true, "running", 0, 3, "archived"},
-		{"paused beats a complete rollup", false, "paused", 3, 3, "paused"},
-		{"paused with open boxes", false, "paused", 1, 3, "paused"},
-		{"full rollup reads done", false, "running", 3, 3, "done"},
-		{"readme done but boxes open stays active", false, "done", 1, 3, "active"},
-		{"running with open boxes", false, "running", 1, 3, "active"},
-		{"zero checkboxes never done", false, "running", 0, 0, "active"},
+		{"archived wins over everything", true, "paused", 3, 3, true, "archived"},
+		{"archived with running readme", true, "running", 0, 3, true, "archived"},
+		{"paused beats a complete rollup", false, "paused", 3, 3, true, "paused"},
+		{"paused with open boxes", false, "paused", 1, 3, true, "paused"},
+		{"full rollup reads done", false, "running", 3, 3, true, "done"},
+		{"readme done but boxes open stays active", false, "done", 1, 3, true, "active"},
+		{"running with open boxes", false, "running", 1, 3, true, "active"},
+		{"zero checkboxes never done", false, "running", 0, 0, true, "active"},
+		// A fully-ticked plan whose phases the completion gate refuses is NOT done.
+		// Every box ticked and no grade where the doc asked for one is exactly the
+		// state that used to read as finished work.
+		{"full rollup but a phase is unverified stays active", false, "running", 3, 3, false, "active"},
+		{"archived still wins over an unverified phase", true, "running", 3, 3, false, "archived"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := planStatus(c.archived, c.taskStatus, c.done, c.tot); got != c.want {
-				t.Errorf("planStatus(%v,%q,%d,%d) = %q, want %q",
-					c.archived, c.taskStatus, c.done, c.tot, got, c.want)
+			if got := planStatus(c.archived, c.taskStatus, c.done, c.tot, c.allPhasesOK); got != c.want {
+				t.Errorf("planStatus(%v,%q,%d,%d,%v) = %q, want %q",
+					c.archived, c.taskStatus, c.done, c.tot, c.allPhasesOK, got, c.want)
 			}
 		})
 	}
@@ -630,5 +636,120 @@ func mustExecEpics(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {
 		t.Fatalf("exec %s: %v", q, err)
+	}
+}
+
+// The completion gate on the wire: every phase carries `completionState`, and a
+// fully-ticked phase whose verification never landed reads `unverified` — not
+// `complete`, and not a failure. Before the gate, that phase presented as done
+// while the store held verification rows saying the verifier never started.
+func TestListEpics_CompletionGate(t *testing.T) {
+	// This test is about the VERIFICATION condition. The closure conditions have
+	// their own test below; switching them off here keeps a failure here pointing
+	// at the thing it is testing rather than at a missing Completion Report.
+	t.Setenv("SWARMERY_CLOSURE_GATE", "0")
+	srv, db, taskID, _ := epicFixture(t)
+
+	// Tick both phases fully. Phase 1 opted into verification and was never graded;
+	// phase 2 never asked, so it must be unaffected.
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(`UPDATE epic_phases SET checkboxes_done = checkboxes_total`)
+	mustExec(`UPDATE epic_phases SET verify_mode='normal', verify_verdict=NULL WHERE seq=1 AND workspace_task_id=?`, taskID)
+	mustExec(`UPDATE epic_phases SET verify_mode='off' WHERE seq=2 AND workspace_task_id=?`, taskID)
+
+	var epics []epicDTO
+	getJSON(t, srv.URL+"/api/epics", &epics)
+	if len(epics) != 1 {
+		t.Fatalf("epics = %d, want 1", len(epics))
+	}
+	e := epics[0]
+	byseq := map[int]epicPhaseDTO{}
+	for _, p := range e.Phases {
+		byseq[p.Seq] = p
+	}
+	if got := byseq[1].CompletionState; got != "unverified" {
+		t.Errorf("phase 1 completionState = %q, want unverified", got)
+	}
+	if len(byseq[1].CompletionBlockers) == 0 {
+		t.Error("an unverified phase must say why")
+	}
+	if got := byseq[2].CompletionState; got != "complete" {
+		t.Errorf("phase 2 completionState = %q, want complete — it never asked to be graded", got)
+	}
+	// Rollup + plan status: all boxes ticked, but the plan is NOT done.
+	if e.Rollup.IncompletePhases != 1 {
+		t.Errorf("rollup.incompletePhases = %d, want 1", e.Rollup.IncompletePhases)
+	}
+	if e.Status != "active" {
+		t.Errorf("plan status = %q, want active — a plan with an unverified phase is not done", e.Status)
+	}
+
+	// Grading it closes the gate and the plan reads done.
+	mustExec(`UPDATE epic_phases SET verify_verdict='pass' WHERE seq=1 AND workspace_task_id=?`, taskID)
+	getJSON(t, srv.URL+"/api/epics", &epics)
+	if epics[0].Status != "done" {
+		t.Errorf("plan status after grading = %q, want done", epics[0].Status)
+	}
+	if epics[0].Rollup.IncompletePhases != 0 {
+		t.Errorf("rollup.incompletePhases after grading = %d, want 0", epics[0].Rollup.IncompletePhases)
+	}
+}
+
+// The closure half of the same gate on the wire: a fully-ticked, graded phase
+// whose Completion Report is empty reads `unreported` — not complete — and the
+// plan is not done. Composed with the verification condition rather than a
+// second gate: the DTO carries one state and every reason.
+func TestListEpics_ClosureGate(t *testing.T) {
+	srv, db, taskID, _ := epicFixture(t)
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(`UPDATE epic_phases SET checkboxes_done = checkboxes_total, verify_mode='off'`)
+
+	var epics []epicDTO
+	getJSON(t, srv.URL+"/api/epics", &epics)
+	byseq := map[int]epicPhaseDTO{}
+	for _, p := range epics[0].Phases {
+		byseq[p.Seq] = p
+	}
+	if got := byseq[1].CompletionState; got != "unreported" {
+		t.Fatalf("completionState = %q, want unreported (no report, no lesson)", got)
+	}
+	if len(byseq[1].CompletionBlockers) < 2 {
+		t.Errorf("want both the report and the lesson cited at once, got %v", byseq[1].CompletionBlockers)
+	}
+	if epics[0].Status != "active" {
+		t.Errorf("plan status = %q, want active — an unreported phase is not done", epics[0].Status)
+	}
+
+	// Write real reports and record a lesson in the PRE-EXISTING store, and the
+	// plan closes.
+	mustExec(`UPDATE epic_phases SET completion_report =
+		'Shipped the schema change in internal/store/migrations/0058_x.sql and the reader in internal/api/x.go; make test green.'`)
+	res, err := db.Exec(`INSERT INTO task_retros (task_id, estimated_hours, actual_hours, ingested_at)
+		VALUES (?, 1, 1, '2026-08-24T00:00:00Z')`, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retroID, _ := res.LastInsertId()
+	mustExec(`INSERT INTO retro_lessons (retro_id, seq, title, body, action)
+		VALUES (?, 1, 'Lend the doc, do not point at it', 'body', 'action')`, retroID)
+
+	getJSON(t, srv.URL+"/api/epics", &epics)
+	for _, p := range epics[0].Phases {
+		if p.CompletionState != "complete" {
+			t.Errorf("phase %d = %q after report+lesson, want complete (%v)", p.Seq, p.CompletionState, p.CompletionBlockers)
+		}
+	}
+	if epics[0].Status != "done" {
+		t.Errorf("plan status = %q, want done", epics[0].Status)
 	}
 }

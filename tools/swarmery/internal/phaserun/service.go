@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phasegate"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/repopath"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
@@ -821,10 +822,22 @@ func (s *Service) unmetDeps(info phaseInfo) ([]int, error) {
 // exits 0 without ticking anything (failed precondition, refused work) is not a
 // completed phase, and treating it as one let phases start on top of empty
 // dependencies. Legacy activated board tasks still count via their column.
+//
+// The completion question itself is phasegate.Check's, not this function's — the
+// same gate the Plans page and the diagnosis modal go through, so a dependency
+// cannot read as satisfied here while reading as unverified there. Concretely: a
+// phase that ASKED to be graded and carries no verdict (the verifier never
+// started; the store holds such rows) no longer unblocks its dependents. A phase
+// that never opted into verification is unaffected.
 func (s *Service) depSatisfied(taskID int64, seq int) (bool, error) {
 	rows, err := s.DB.Query(`
 		SELECT e.checkboxes_done, e.checkboxes_total,
-		       COALESCE(bt.board_column,''), bt.archived_at IS NOT NULL
+		       COALESCE(e.verify_mode,''), COALESCE(e.verify_verdict,''),
+		       COALESCE(e.completion_report,''),
+		       COALESCE(bt.board_column,''), bt.archived_at IS NOT NULL,
+		       EXISTS (SELECT 1 FROM retro_lessons l
+		                 JOIN task_retros r ON r.id = l.retro_id
+		                WHERE r.task_id = e.workspace_task_id)
 		  FROM epic_phases e
 		  LEFT JOIN tasks bt ON bt.id = e.activated_board_task_id
 		 WHERE e.workspace_task_id = ? AND e.seq = ?`, taskID, seq)
@@ -834,14 +847,40 @@ func (s *Service) depSatisfied(taskID int64, seq int) (bool, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			boardCol    string
-			done, total int
-			archived    bool
+			boardCol            string
+			verifyMode, verdict string
+			report              string
+			done, total         int
+			archived, lesson    bool
 		)
-		if err := rows.Scan(&done, &total, &boardCol, &archived); err != nil {
+		if err := rows.Scan(&done, &total, &verifyMode, &verdict, &report,
+			&boardCol, &archived, &lesson); err != nil {
 			return false, err
 		}
-		if (total > 0 && done == total) || boardCol == "done" || archived {
+		// ClosureRequired is deliberately FALSE here, and this is the one place
+		// the two halves of the gate are scoped differently.
+		//
+		// The closure conditions (a written Completion Report, a recorded lesson)
+		// gate what is RECORDED as complete — the dashboard, the plan's status.
+		// They must not gate what may START. A dependency whose work landed and was
+		// verified is technically finished; refusing to open the next phase because
+		// its predecessor's paperwork is unwritten stalls the DAG for a
+		// documentation reason, which is precisely the deadlock this plan warns
+		// against. Verification is different and does gate here: building on top of
+		// work nobody could confirm is a technical risk, not a bookkeeping one.
+		//
+		// report and lesson are still SELECTed above so this decision is visible
+		// beside the data it declines to use, rather than hidden as an absent column.
+		_, _ = report, lesson
+		gate := phasegate.Check(phasegate.Input{
+			CriteriaDone:    done,
+			CriteriaTotal:   total,
+			VerifyMode:      verifyMode,
+			VerifyVerdict:   verdict,
+			LegacyDone:      boardCol == "done" || archived,
+			ClosureRequired: false,
+		})
+		if gate.Complete() {
 			return true, nil
 		}
 	}

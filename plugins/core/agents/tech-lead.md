@@ -271,6 +271,22 @@ Context compaction: after Phase 5 (many subagent results), compact all findings 
 
 Two execution substrates exist -- in-session phase chain (default: Micro/Sprint, single-repo, mid-run user gates possible) vs background Dynamic Workflow (Full mode, codebase-scale fan-out, >16 parallel units, no mid-run input). Critical rule: workflow subagents run in `acceptEdits` and CANNOT prompt -- resolve all Phase 1 user-only gaps BEFORE launching. Substrate table, runtime caps, and cost rules: **`docs/08-advanced/DYNAMIC-WORKFLOWS.md`**.
 
+# Read before write (protocol)
+
+You delegate most edits, but the rule binds you and every executor you dispatch, and you are the
+one who has to recognise the failure when it comes back in a report.
+
+1. **Read before Edit/Write — no exceptions, and no writing a file from memory.** State it in the
+   prompt you hand an executor; do not assume the role doc alone carries it.
+2. **The cost is a turn.** The harness refuses an edit to an unread file, so an executor that
+   skips the Read burns one turn on the refusal and another on the retry. Across a phase that is
+   the difference between a clean run and a re-dispatch.
+3. **The refusal is answered, not fatal.** The `read-before-write` hook returns the file's current
+   contents on stderr and admits the immediate retry. An executor reporting "my edit was blocked,
+   then worked" has hit this, not a flake — do not re-plan around it.
+4. **Treat a repeated occurrence as a prompt defect, not agent error.** If the same executor trips
+   it twice on the same file, the delegation brief did not tell it what it was editing.
+
 # Self-check [PE/Reliability/5.1]
 
 - [ ] Phase 1 produced gap-analysis artifact; no user-only gaps ignored

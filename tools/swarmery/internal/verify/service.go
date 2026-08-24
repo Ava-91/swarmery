@@ -248,7 +248,7 @@ func (s *Service) VerifyTarget(ctx context.Context, t Target) error {
 	// degrades to INCONCLUSIVE, not FAIL.
 	treeHash, err := s.Trees.TreeHash(t.WorktreePath)
 	if err != nil {
-		return s.stampInconclusive(t, runID, "", "could not read worktree tree ("+err.Error()+"): worktree may have been reclaimed")
+		return s.stampInconclusive(t, runID, "", ClassUnverifiable, "could not read worktree tree ("+err.Error()+"): worktree may have been reclaimed")
 	}
 	if cached, ok, cerr := s.cacheGet(treeHash, t.Key); cerr != nil {
 		return cerr
@@ -286,7 +286,7 @@ func (s *Service) VerifyTarget(ctx context.Context, t Target) error {
 		if n, derr := s.Trees.DiffFileCount(t.WorktreePath, base); derr != nil {
 			log.Printf("verify: %s: diff size unreadable, scope gate skipped: %v", t.Key, derr)
 		} else if n > s.Cfg.MaxDiffFiles {
-			return s.stampInconclusive(t, runID, treeHash, fmt.Sprintf(
+			return s.stampInconclusive(t, runID, treeHash, ClassUnverifiable, fmt.Sprintf(
 				"diff spans %d files, above the %d-file bound for a bounded read-only pass: "+
 					"split the work or raise SWARMERY_VERIFY_MAX_DIFF_FILES", n, s.Cfg.MaxDiffFiles))
 		}
@@ -315,11 +315,11 @@ func (s *Service) VerifyTarget(ctx context.Context, t Target) error {
 	run, rerr := s.Run.Run(ctx, spec)
 	if rerr != nil {
 		// Process never ran (PATH miss/fork failure) → INCONCLUSIVE.
-		return s.stampInconclusive(t, runID, treeHash, "verifier did not run: "+rerr.Error())
+		return s.stampInconclusive(t, runID, treeHash, ClassNotStarted, "the verifier process never ran, so nothing about this work was measured: "+rerr.Error())
 	}
 	if run.TimedOut {
 		// Killed by the hard timeout → INCONCLUSIVE (could not conclude), never FAIL.
-		return s.stampInconclusive(t, runID, treeHash, "verifier timed out")
+		return s.stampInconclusive(t, runID, treeHash, ClassTimedOut, fmt.Sprintf("killed by the %s hard timeout before it reported a verdict", s.Cfg.RunTimeout))
 	}
 
 	verdict, reasons := ParseVerdict(run.Output)
@@ -336,7 +336,22 @@ func (s *Service) VerifyTarget(ctx context.Context, t Target) error {
 		}
 		return t.onFail(reasons)
 	default: // VerdictInconclusive
-		return s.stampInconclusive(t, runID, treeHash, reasons)
+		// Two different events land here, and the operator has to be able to tell
+		// them apart: a verifier that ran and declined to call it, versus one that
+		// exited without saying anything at all (the 1.1s-and-blank rows in the
+		// store). ParseVerdict returns the same fail-safe verdict for both, so the
+		// distinction has to be made from the output itself.
+		if strings.TrimSpace(run.Output) == "" {
+			return s.stampInconclusive(t, runID, treeHash, ClassNoVerdict, fmt.Sprintf(
+				"the verifier exited (code %d) having written nothing: no transcript, no verdict line. "+
+					"This is a spawn or start-up failure, not an undecided verdict", run.ExitCode))
+		}
+		if !HasVerdictLine(run.Output) {
+			return s.stampInconclusive(t, runID, treeHash, ClassNoVerdict, fmt.Sprintf(
+				"the verifier wrote %d bytes (exit code %d) but no VERDICT: line, so nothing could be read as a verdict",
+				len(run.Output), run.ExitCode))
+		}
+		return s.stampInconclusive(t, runID, treeHash, ClassCouldNotConclude, reasons)
 	}
 }
 
@@ -526,10 +541,48 @@ func (s *Service) stampVerdict(t Target, runID int64, treeHash string, v Verdict
 	return nil
 }
 
+// Inconclusive CLASSES. Every infra path degrades to INCONCLUSIVE — correctly,
+// because none of them is evidence of a real failure — but "the verifier never
+// started" and "the verifier ran and could not conclude" are different
+// operational events with different fixes, and they used to arrive as one
+// undifferentiated detail string (sometimes an EMPTY one, when a run produced no
+// parseable verdict and no reasons: the store holds such a row, 1.1s long, with
+// nothing in `detail` at all).
+//
+// So each path is labelled at the point it is taken. The prefix is stable and
+// greppable so the operator, the dashboard and a later query all read the same
+// classification instead of re-deriving it from prose.
+const (
+	// ClassNotStarted — the process never ran: PATH miss, fork failure, missing
+	// binary. Nothing about the work was measured. Fix the environment.
+	ClassNotStarted = "verifier-did-not-start"
+	// ClassTimedOut — started, killed by the hard timeout. Partial work, no verdict.
+	ClassTimedOut = "verifier-timed-out"
+	// ClassNoVerdict — started, exited, and produced no verdict line. This is the
+	// class that used to be invisible: an empty-output run and a genuinely
+	// ambiguous one were both stamped with whatever reasons happened to parse.
+	ClassNoVerdict = "verifier-produced-no-verdict"
+	// ClassUnverifiable — the run was never attempted because its input could not
+	// be read or was out of scope (worktree reclaimed, diff too large).
+	ClassUnverifiable = "not-verifiable"
+	// ClassCouldNotConclude — the verifier ran, reported, and declined to call it.
+	// The only class that is a statement about the WORK rather than the machinery.
+	ClassCouldNotConclude = "could-not-conclude"
+)
+
 // stampInconclusive is the fail-safe stamp: verdict inconclusive, run finalized,
 // NOTHING cached, NO fail follow-up. Used for every infra/ambiguity path.
-func (s *Service) stampInconclusive(t Target, runID int64, treeHash, detail string) error {
-	return s.stampVerdict(t, runID, treeHash, VerdictInconclusive, detail, false /*never cache*/)
+//
+// class is one of the Class* constants above and is REQUIRED — an unclassified
+// inconclusive is what made a dead verifier look like an undecided one.
+func (s *Service) stampInconclusive(t Target, runID int64, treeHash, class, detail string) error {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		// Never stamp an empty detail. A blank cell reads as "nothing happened",
+		// which is the one thing it never means.
+		detail = "no detail reported by the verifier"
+	}
+	return s.stampVerdict(t, runID, treeHash, VerdictInconclusive, class+": "+detail, false /*never cache*/)
 }
 
 // stampCached stamps a cache-hit verdict without spawning: it finalizes the run

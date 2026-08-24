@@ -37,6 +37,41 @@ import (
 // the contract can name it without interpolating anything.
 const PlanDocDir = ".swarmery/plan"
 
+// ReportPath is where a card WITHOUT a plan document writes its Completion
+// Report, relative to the worktree root. Same dot-prefixed directory as a lent
+// doc, and fixed for the same reason: the contract names it without
+// interpolating anything.
+//
+// A docless card used to be told nothing about where its report should go, so
+// its report landed in the reply — which the dashboard does not read. The
+// destination has to exist for the instruction to be honest, which is what
+// CollectReport is for.
+const ReportPath = ".swarmery/report.md"
+
+// maxReportBytes caps what CollectReport hands back. A Completion Report is a
+// summary; anything past this is a log the agent pasted, and it would land in a
+// board field that renders inline.
+const maxReportBytes = 8192
+
+// CollectReport reads the worktree's ReportPath and returns its trimmed
+// contents, or "" when the agent wrote nothing. Missing file, unreadable file
+// and empty file are all "" with no error: this is the docless counterpart of
+// ReturnPlanDoc, and like it, a run whose report never arrived is a run that
+// still shipped its commits.
+func CollectReport(worktreePath string) string {
+	if worktreePath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(worktreePath, ReportPath))
+	if err != nil {
+		return ""
+	}
+	if len(data) > maxReportBytes {
+		data = append(data[:maxReportBytes], []byte("\n… (truncated)")...)
+	}
+	return string(bytes.TrimSpace(data))
+}
+
 // LendPlanDoc copies docPath into the worktree at PlanDocDir/<basename> and
 // returns that path RELATIVE to the worktree root — the form the execution
 // contract quotes, so the agent never sees an absolute path outside its root.

@@ -874,6 +874,16 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPla
 	// true without auditing each return.
 	defer worktree.ReturnPlanDocLogged(fmt.Sprintf("dispatch task=%d", c.ID), acq.Path, docRel, taskDoc)
 
+	// A card WITHOUT a plan doc has no workspace file to return, so the contract
+	// points it at worktree.ReportPath instead and this reads that back onto the
+	// card. Same deal as the return trip above, and deferred for the same reason:
+	// the contract asks for a report on the blocked path too, and the report about
+	// why work stopped is the one most worth not losing. Instructing an agent to
+	// write a file nobody reads would be worse than saying nothing.
+	if docRel == "" {
+		defer s.collectDoclessReport(c.ID, acq.Path)
+	}
+
 	stages := pb.stages
 
 	// The Claude account every stage of this task runs under, resolved ONCE from
@@ -1038,6 +1048,33 @@ func stageExitMsg(run *Run, timeout time.Duration) string {
 		msg += ": " + run.Stderr
 	}
 	return msg
+}
+
+// collectDoclessReport moves the worktree's report file onto the card's
+// result_note — the field the board renders as the card's summary. Best-effort
+// by construction: an agent that wrote no report still shipped its commits, and
+// this must never be able to fail a run.
+//
+// An existing note is kept and the report appended below it, because the note
+// may already hold an honest-exit sentinel line (NO-OP:, PREMISE STALE:) which
+// is the more precise statement of what happened. The two are complementary:
+// the sentinel says how the run ended, the report says what it did.
+func (s *Service) collectDoclessReport(id int64, worktreePath string) {
+	report := worktree.CollectReport(worktreePath)
+	if report == "" {
+		return
+	}
+	if _, err := s.DB.Exec(`
+		UPDATE tasks
+		   SET result_note = CASE
+		         WHEN result_note IS NULL OR result_note = '' THEN ?
+		         ELSE result_note || char(10) || char(10) || ?
+		       END
+		 WHERE id = ?`, report, report, id); err != nil {
+		log.Printf("warning: dispatch: task=%d report not collected from %s: %v", id, worktreePath, err)
+		return
+	}
+	log.Printf("dispatch: task %d — collected %d-byte report from %s", id, len(report), worktree.ReportPath)
 }
 
 // pokeVerify triggers auto-verification for a task when a Verifier is attached.

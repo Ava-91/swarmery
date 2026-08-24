@@ -281,7 +281,41 @@ WX_LOC_QUERY="${SWARMERY_STATUSLINE_LOC-Lviv}"
 WX_SLUG="$(printf '%s' "${WX_LOC_QUERY:-auto}" | tr ' /' '__')"
 WX_CACHE="${TMPDIR:-/tmp}/agents-statusline-wx-${WX_SLUG}.txt"
 WX_FORMAT='%l|%t|%C'   # location | temp | condition
-wx_fresh() { [ -f "$WX_CACHE" ] && [ "$(( $(date +%s) - $(stat -f %m "$WX_CACHE" 2>/dev/null || echo 0) ))" -lt 600 ]; }
+
+# file_mtime <path> — epoch seconds, portable, ALWAYS numeric.
+#
+# `stat` is two different tools wearing one name: BSD/macOS spells the mtime
+# `-f %m`, GNU spells it `-c %Y`. The trap is that GNU's `-f` is not an error —
+# it means "show filesystem status" and prints a multi-line block starting
+# `File: …` with exit code 0. So the obvious `stat -f %m x || stat -c %Y x`
+# never reaches its fallback on Linux, feeds that block into `$(( ))`, and the
+# arithmetic evaluates the word `File` as a variable — which under `set -u` kills
+# the whole statusline. That is why this renders nothing on Linux the moment a
+# cache file exists.
+#
+# So neither form is trusted by its exit code: whichever produces digits wins,
+# and 0 (⇒ "infinitely old", the safe direction) when neither does.
+file_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)"
+  case "$m" in ''|*[!0-9]*) m="" ;; esac
+  if [ -z "$m" ]; then
+    m="$(stat -f %m "$1" 2>/dev/null)"
+    case "$m" in ''|*[!0-9]*) m="0" ;; esac
+  fi
+  printf '%s' "$m"
+}
+
+# sha256_hex <string> — hex digest, portable. `shasum` is the BSD/macOS spelling;
+# `sha256sum` is the GNU one. Empty when neither exists, and every caller has a
+# fallback for that.
+sha256_hex() {
+  if command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum | cut -d' ' -f1
+  fi
+}
+
+wx_fresh() { [ -f "$WX_CACHE" ] && [ "$(( $(date +%s) - $(file_mtime "$WX_CACHE") ))" -lt 600 ]; }
 if ! wx_fresh; then
   ( curl -fsS --max-time 4 "https://wttr.in/${WX_LOC_QUERY}?format=${WX_FORMAT}" -o "$WX_CACHE.tmp" 2>/dev/null \
       && mv "$WX_CACHE.tmp" "$WX_CACHE" ) >/dev/null 2>&1 &
@@ -312,12 +346,12 @@ if [ "${SWARMERY_STATUSLINE_FABLE:-0}" = "1" ]; then
   # CLAUDE_CONFIG_DIRs, and one shared file would let accounts overwrite each other's
   # numbers. Slug = the same sha256(configDir) prefix CC uses to namespace its own
   # Keychain credential item (and that fetch-fable-usage.sh uses to pick the token).
-  FB_SLUG="$(printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" | shasum -a 256 2>/dev/null | cut -c1-8)"
+  FB_SLUG="$(sha256_hex "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" | cut -c1-8)"
   FB_CACHE="${TMPDIR:-/tmp}/agents-statusline-fable-${FB_SLUG:-default}.txt"
   FB_TTL="${SWARMERY_STATUSLINE_FABLE_TTL:-300}"        # refresh cadence in seconds (default 5 min)
   FB_MAX_AGE="${SWARMERY_STATUSLINE_FABLE_MAX_AGE:-86400}"  # display cutoff: never render a cache older than this (default 24h)
   FB_AGE=""
-  [ -f "$FB_CACHE" ] && FB_AGE=$(( $(date +%s) - $(stat -f %m "$FB_CACHE" 2>/dev/null || echo 0) ))
+  [ -f "$FB_CACHE" ] && FB_AGE=$(( $(date +%s) - $(file_mtime "$FB_CACHE") ))
   if [ -z "$FB_AGE" ] || [ "$FB_AGE" -ge "$FB_TTL" ]; then
     FB_HELPER="$(dirname "${BASH_SOURCE[0]}")/fetch-fable-usage.sh"
     [ -x "$FB_HELPER" ] && ( o="$("$FB_HELPER" 2>/dev/null)"; [ -n "$o" ] && printf '%s\n' "$o" > "$FB_CACHE.tmp" && mv "$FB_CACHE.tmp" "$FB_CACHE" ) >/dev/null 2>&1 &

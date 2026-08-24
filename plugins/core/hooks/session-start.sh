@@ -104,8 +104,16 @@ if [ -d "$working_dir" ]; then
 $readmes
 EOF
   # Newest NEXT.md pointer anywhere under working/ (any layout).
+  # `stat -f '%m %N'` is the BSD/macOS spelling; GNU wants `-c '%Y %n'`. Both are
+  # tried and the one that yields "<digits> <path>" wins — GNU's -f is not an
+  # error (it prints filesystem status and exits 0), so an exit-code fallback
+  # would silently sort an unusable block instead.
   newest_next=$(find "$working_dir" -maxdepth 6 -name NEXT.md \
-    -exec stat -f '%m %N' {} \; 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    -exec stat -c '%Y %n' {} \; 2>/dev/null | grep -E '^[0-9]+ ' | sort -rn | head -1 | cut -d' ' -f2-)
+  if [ -z "$newest_next" ]; then
+    newest_next=$(find "$working_dir" -maxdepth 6 -name NEXT.md \
+      -exec stat -f '%m %N' {} \; 2>/dev/null | grep -E '^[0-9]+ ' | sort -rn | head -1 | cut -d' ' -f2-)
+  fi
 fi
 
 # ── Initialize fresh session file ─────────────────────────────────

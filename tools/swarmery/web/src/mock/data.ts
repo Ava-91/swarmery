@@ -1414,8 +1414,52 @@ const mockEpicPhase = (
   verifyMode: 'off',
   verifyVerdict: null,
   verifyDetail: null,
+  // The server computes completionState (internal/phasegate); the mock mirrors the
+  // same rule so the fixtures exercise the real chip paths. Spread AFTER `run` so a
+  // fixture that sets a verify verdict gets the gate answer that follows from it.
   ...run,
+  ...mockCompletion({ done, total, ...run }),
 });
+
+/** The client-side twin of internal/phasegate.Check, for FIXTURES ONLY. The app
+ *  itself must never derive this — it reads the server's `completionState`; a second
+ *  live implementation is exactly the drift the gate was introduced to end. */
+const mockCompletion = ({
+  done,
+  total,
+  verifyMode,
+  verifyVerdict,
+}: {
+  done: number;
+  total: number;
+  verifyMode?: EpicPhase['verifyMode'];
+  verifyVerdict?: EpicPhase['verifyVerdict'];
+}): Pick<EpicPhase, 'completionState' | 'completionBlockers'> => {
+  if (!(total > 0 && done >= total))
+    return {
+      completionState: 'incomplete',
+      completionBlockers: [
+        total === 0
+          ? 'this phase has no acceptance-criteria checkboxes, so its completion cannot be proven'
+          : `${String(done)} of ${String(total)} acceptance criteria are ticked`,
+      ],
+    };
+  const graded = verifyMode !== undefined && verifyMode !== 'off';
+  if (graded && (verifyVerdict === null || verifyVerdict === undefined))
+    return {
+      completionState: 'unverified',
+      completionBlockers: ['this phase asked to be verified and carries no verdict'],
+    };
+  if (graded && verifyVerdict === 'inconclusive')
+    return {
+      completionState: 'unverified',
+      completionBlockers: ['verification could not conclude, so the ticked criteria are unconfirmed'],
+    };
+  // Fixtures carry a Completion Report on every fully-ticked phase (see the
+  // factory above), so the mock's closure conditions are satisfied by
+  // construction; `unreported` is exercised by the Go tests, not here.
+  return { completionState: 'complete', completionBlockers: [] };
+};
 
 // Phase-run OUTCOMES cover the chip set: 1 completed (green Run done), 2 running
 // (elapsed ticks), 3 failed (error tooltip + Retry run), 4 noop — a process that
@@ -1474,7 +1518,7 @@ const mockEpics: Epic[] = [
         runCheckboxesBefore: 0,
       }),
     ],
-    rollup: { done: 10, total: 25, pct: 40 },
+    rollup: { done: 10, total: 25, pct: 40, incompletePhases: 3 },
     cardExternalId: null,
     // The union the sessions panel renders: a daemon run the ?planTask= grouping also
     // finds, and an operator's own session that ONLY the inferred link can surface.
@@ -1547,7 +1591,7 @@ const mockEpics: Epic[] = [
         runCheckboxesBefore: 1,
       }),
     ],
-    rollup: { done: 10, total: 10, pct: 100 },
+    rollup: { done: 10, total: 10, pct: 100, incompletePhases: 0 },
     // A micro-plan: this "plan" is a dispatched board card, so the list row wears a
     // `card` chip and the card's own modal wears a `plan` one.
     cardExternalId: 'T-g7h8i9',

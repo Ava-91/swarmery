@@ -1,0 +1,266 @@
+// Package phasegate is THE completion gate for a plan phase: one derivation that
+// answers "may this phase be recorded as complete?" and, when the answer is no,
+// says why.
+//
+// It exists because completion used to be decided in four places from the same
+// two columns (checkboxes_done / checkboxes_total) and nothing else — so a phase
+// whose verification never ran read exactly like one that had been graded and
+// passed. The store still holds the proof: a verification row 1.1 seconds long
+// with an empty detail, and another reading "verifier did not run: fork/exec
+// …/claude: no such file or directory". Both stamped INCONCLUSIVE, and both
+// phases presented as done.
+//
+// Design notes, so this does not get widened by accident:
+//
+//   - The gate is ONE call returning ONE state plus reasons, not a set of
+//     independent checks. An operator should see a single completion gate that can
+//     cite more than one reason, rather than several half-gates each refusing for
+//     its own cause. Later conditions (a mandatory Completion Report, a recorded
+//     lesson) belong in Input and Result.Reasons — not in a second gate beside
+//     this one.
+//   - It is PURE: no DB, no clock, no git. Callers hand it the row's fields.
+//   - It deliberately does NOT restate phasediag.Outcome. That vocabulary answers
+//     "did work land?" and is closed on purpose (decision D5 rejected a
+//     `completed-unverified` outcome, because it forks that one question in two).
+//     This package answers a different question — "may we call it done?" — and
+//     the two travel side by side.
+//   - `fail` is NOT this gate's business. A phase graded FAIL keeps the behaviour
+//     decision D5 settled: it reads as completed work with a verify-failed blocker
+//     beside it. Turning FAIL into "not complete" here would silently re-open a
+//     settled decision, and FAIL is already visible. The gate covers the case that
+//     was invisible: an ABSENT verdict.
+package phasegate
+
+import (
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
+)
+
+// Completion states. Closed set.
+const (
+	// StateComplete — every condition met; the phase may be recorded as complete.
+	StateComplete = "complete"
+	// StateUnverified — the work is there (criteria ticked) but the grade is
+	// missing or could not conclude. Distinct from complete AND from failed: the
+	// work may well be fine, and nobody knows.
+	StateUnverified = "unverified"
+	// StateIncomplete — the criteria themselves are not met. The pre-existing
+	// answer, unchanged.
+	StateIncomplete = "incomplete"
+	// StateUnreported — the work is there and (where asked for) confirmed, but the
+	// record of it is not: an empty or placeholder Completion Report, or no lesson.
+	// Separate from StateUnverified because they call for different actions —
+	// re-run the verifier versus write down what happened — and one label for both
+	// would send the operator to the wrong one half the time. When BOTH are true
+	// the state is StateUnverified: unconfirmed work is the more serious of the
+	// two, and Reasons carries the rest.
+	StateUnreported = "unreported"
+)
+
+// Verdict values as stamped on the row. Mirrors verify.Verdict without importing
+// it: phasegate must stay leaf-level so both api and phaserun can depend on it.
+const (
+	VerdictPass         = "pass"
+	VerdictFail         = "fail"
+	VerdictInconclusive = "inconclusive"
+)
+
+// VerifyOff is the verify_mode value meaning "this doc never asked to be graded".
+// A phase that did not opt in cannot be held to a verdict it never requested —
+// gating those would stall every plan that does not use verification.
+const VerifyOff = "off"
+
+// Input is one phase's completion-relevant row fields.
+type Input struct {
+	CriteriaDone  int
+	CriteriaTotal int
+	// VerifyMode is the doc's `**Verify:**` opt-in: off | normal | strict. Empty
+	// is treated as off, matching wsingest's own normalisation.
+	VerifyMode string
+	// VerifyVerdict is the stamped grade: "" (never graded) | pass | fail |
+	// inconclusive.
+	VerifyVerdict string
+	// LegacyDone marks a legacy activated board task that reached done/archived.
+	// Those predate acceptance-criteria counting and prove completion by their
+	// column; the gate honours that rather than retroactively re-opening them.
+	LegacyDone bool
+	// CompletionReport is the phase doc's `## Completion Report` body as
+	// wsingest parsed it — "" when the section is absent OR present but empty,
+	// which the parser already treats as the same thing.
+	//
+	// The contract has demanded this section in three places (the dispatcher's
+	// execution contract, phaserun's prompt, the phase-doc template) and nothing
+	// refused an empty one, so the instruction was advice: churn was measurable
+	// for exactly two tasks in a fourteen-day window.
+	CompletionReport string
+	// LessonRecorded reports whether this phase's PLAN has at least one lesson in
+	// the pre-existing store (retro_lessons, fed from the task's
+	// phases/09-retrospective.md). Plan-level rather than phase-level on purpose:
+	// that is where the retro flow already reads lessons from, and inventing a
+	// per-phase lesson table beside it would be the second store this criterion
+	// forbids.
+	LessonRecorded bool
+	// ClosureRequired is the closure gate's own opt-in, resolved by the caller
+	// from ClosureGateEnabled(). Off ⇒ report and lesson are not required, which
+	// is the migration path for plans already in flight when the gate shipped.
+	ClosureRequired bool
+}
+
+// Result is the gate's answer. Reasons is empty exactly when State is
+// StateComplete.
+type Result struct {
+	State   string
+	Reasons []string
+}
+
+// Complete reports whether the phase may be recorded as complete.
+func (r Result) Complete() bool { return r.State == StateComplete }
+
+// VerificationRequired reports whether this phase opted into being graded.
+func (in Input) VerificationRequired() bool {
+	return in.VerifyMode != "" && in.VerifyMode != VerifyOff
+}
+
+// criteriaMet is the pre-existing derivation, inlined here so this package stays
+// leaf-level. phasediag.CriteriaMet remains the exported name other callers use;
+// the two must agree, and a test pins that.
+func criteriaMet(done, total int) bool { return total > 0 && done >= total }
+
+// Check runs the gate.
+func Check(in Input) Result {
+	if in.LegacyDone {
+		return Result{State: StateComplete}
+	}
+
+	var reasons []string
+
+	if !criteriaMet(in.CriteriaDone, in.CriteriaTotal) {
+		if in.CriteriaTotal == 0 {
+			reasons = append(reasons,
+				"this phase has no acceptance-criteria checkboxes, so its completion cannot be proven")
+		} else {
+			reasons = append(reasons, fmt.Sprintf("%d of %d acceptance criteria are ticked",
+				in.CriteriaDone, in.CriteriaTotal))
+		}
+		return Result{State: StateIncomplete, Reasons: reasons}
+	}
+
+	// ONE gate, several reasons. The verification condition and the closure
+	// conditions are collected together rather than short-circuiting, so the
+	// operator sees everything standing between this phase and done in one
+	// answer instead of fixing one thing and being refused for the next.
+	verificationUnmet := false
+	if in.VerificationRequired() {
+		switch in.VerifyVerdict {
+		case "":
+			verificationUnmet = true
+			reasons = append(reasons,
+				"this phase asked to be verified (verify: "+in.VerifyMode+
+					") and carries no verdict — the grade never landed, so the ticked criteria are unconfirmed")
+		case VerdictInconclusive:
+			verificationUnmet = true
+			reasons = append(reasons,
+				"verification could not conclude, so the ticked criteria are unconfirmed — "+
+					"see the verify detail for whether the verifier ran at all")
+		}
+	}
+
+	if in.ClosureRequired {
+		if why := reportProblem(in.CompletionReport); why != "" {
+			reasons = append(reasons, why)
+		}
+		if !in.LessonRecorded {
+			reasons = append(reasons,
+				"no lesson is recorded for this plan — add a `### Lesson N: <title>` entry under "+
+					"`## Lessons Learned` in the task's phases/09-retrospective.md, which is where "+
+					"the retro flow already reads lessons from")
+		}
+	}
+
+	if len(reasons) > 0 {
+		state := StateUnreported
+		if verificationUnmet {
+			state = StateUnverified
+		}
+		return Result{State: state, Reasons: reasons}
+	}
+	return Result{State: StateComplete}
+}
+
+// substantiveReportRe is the "names something concrete" test: a path with an
+// extension or a directory separator, a git SHA, or a PR/commit reference.
+// Deliberately crude — see reportProblem.
+var substantiveReportRe = regexp.MustCompile(
+	`(?i)([\w./-]+\.(go|ts|tsx|js|jsx|py|sh|md|json|yaml|yml|sql|tf|rs|java|rb|css|html)\b|` +
+		`[\w-]+/[\w./-]+|\b[0-9a-f]{7,40}\b|#\d+)`)
+
+// minReportRunes is the length floor. "done" and "ok" are not reports; the
+// floor is low enough that a genuine two-sentence report clears it easily.
+const minReportRunes = 80
+
+// placeholderReportRe catches the stub a template leaves behind and the words
+// an agent reaches for when it has nothing to say.
+var placeholderReportRe = regexp.MustCompile(
+	`(?i)^\s*(tbd|todo|n/?a|none|pending|-{1,3}|_+|<[^>]*>|\(?to be (filled|written)[^)]*\)?|nothing to report|see (above|reply|below))\s*\.?\s*$`)
+
+// reportProblem returns "" when the Completion Report passes, else the reason.
+//
+// It gates on SUBSTANCE, not presence: an empty section, whitespace, a template
+// placeholder, or prose that names nothing concrete does not close a phase. The
+// substance test is simply "does it name a file, a commit, or a PR" — a
+// deliberately crude check, because a prose analyser here would be a
+// hard-to-explain oracle that agents learn to game in more elaborate ways.
+//
+// KNOWN LIMIT, recorded rather than engineered around: a report can satisfy this
+// by naming one file and saying nothing useful. That is not preventable at this
+// layer and trying would cost more than it saves. What the gate buys is that the
+// section can no longer be EMPTY, which is what made churn unmeasurable.
+func reportProblem(report string) string {
+	trimmed := strings.TrimSpace(report)
+	if trimmed == "" {
+		return "the phase doc's `## Completion Report` section is empty — " +
+			"write what shipped, the files and commits, the verification output, and any deviation. " +
+			"That section is the only summary the dashboard shows for this phase"
+	}
+	if placeholderReportRe.MatchString(trimmed) {
+		return "the `## Completion Report` is a placeholder (" + firstWords(trimmed, 6) + ") — " +
+			"a blocked phase still owes a real report describing how far it got and what stopped it"
+	}
+	if len([]rune(trimmed)) < minReportRunes {
+		return fmt.Sprintf(
+			"the `## Completion Report` is %d characters — too short to be a report of anything; "+
+				"name what shipped and where", len([]rune(trimmed)))
+	}
+	if !substantiveReportRe.MatchString(trimmed) {
+		return "the `## Completion Report` names nothing concrete — cite the files you changed, " +
+			"the commits you made, or the PR, so the work can be found later"
+	}
+	return ""
+}
+
+// firstWords is a short echo of the offending text for the refusal message.
+func firstWords(s string, n int) string {
+	f := strings.Fields(s)
+	if len(f) > n {
+		f = f[:n]
+	}
+	return strings.Join(f, " ")
+}
+
+// ClosureGateEnabled reports the closure conditions' kill switch:
+// SWARMERY_CLOSURE_GATE=0/false/off disables them. Default ON.
+//
+// The switch exists for one situation and is documented as such: plans already
+// in flight when the gate shipped have phases that were closed under the old
+// contract, and an operator who needs them to read as done while the reports are
+// backfilled should be able to say so explicitly — rather than discovering the
+// gate by having a finished plan reopen itself.
+func ClosureGateEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SWARMERY_CLOSURE_GATE"))) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}

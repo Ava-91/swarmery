@@ -47,11 +47,17 @@ jobs:
 
       - name: Shell tests
         run: |
-          bash scripts/tests/protect-sensitive-files.test.sh
-          bash scripts/tests/eval-gate.test.sh
-          bash scripts/tests/jira-pack-dry-run.test.sh
-          bash scripts/tests/design-pack-contract.test.sh
-          bash scripts/tests/docgen.test.sh
+          # Every suite in scripts/tests/, discovered — not listed. A hand-kept
+          # list silently stops covering the next suite someone writes, which is
+          # how bash-shape-guard.test.sh and read-before-write.test.sh sat green
+          # locally and unrun in CI.
+          set -euo pipefail
+          failed=0
+          for t in scripts/tests/*.test.sh; do
+            echo "── $t"
+            bash "$t" || failed=1
+          done
+          [ "$failed" -eq 0 ]
 
       - name: Agent frontmatter (name + description)
         run: |

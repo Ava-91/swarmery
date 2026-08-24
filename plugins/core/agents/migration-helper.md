@@ -149,6 +149,19 @@ After each phase: confirm `/api/ping` returns 200, error rate stable, no new Cra
 
 **Context compaction note** [PE/Context/7.2]: After completing each migration phase, summarize its outcome and the current state of the codebase. Drop detailed codebase-retrieval results for completed phases.
 
+# Read before write (protocol)
+
+1. **Read the file before you Edit or Write it.** Every target, every session — including a
+   file whose contents you believe you already know. Writing a file from memory is prohibited.
+2. **Why:** an edit to an unread file is refused by the harness. The refusal is not free — it
+   costs you the turn you spent composing the edit, and the retry costs another.
+3. **Recognise the recovery.** The `read-before-write` hook answers that first refusal with the
+   file's current contents on stderr and lets your immediate retry through. That is a recovery,
+   not a random failure: re-issue the same edit with the contents you were just handed, rather
+   than guessing at a different one.
+4. **A "file modified since read" error later in the session means the same thing** — re-Read,
+   re-locate the anchor, re-apply. Never retry an edit blind.
+
 # Self-check [PE/Reliability/5.1] [PE/Reasoning/3.3]
 
 - [ ] Every Prisma UP migration has a documented DOWN strategy
