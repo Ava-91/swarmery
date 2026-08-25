@@ -1074,10 +1074,14 @@ type recommendationsDTO struct {
 	Recommendations []recommendationDTO `json:"recommendations"`
 }
 
-// recStatuses is the closed status vocabulary of migration 0019.
+// recStatuses is the closed status vocabulary of migration 0019, widened by
+// 0063 with `resolved` — the condition stopped reproducing, so the advisor
+// closed the row itself. It is a terminal state like `verified` and
+// `dismissed`, and it is deliberately NOT in the actionable rail below: a row
+// nobody has to act on must not keep asking to be acted on.
 var recStatuses = map[string]bool{
 	"proposed": true, "accepted": true, "dismissed": true,
-	"adopted": true, "verified": true,
+	"adopted": true, "verified": true, "resolved": true,
 }
 
 // GET /api/retro/recommendations?status=proposed,accepted — advisor

@@ -82,11 +82,14 @@ type Stats struct {
 	Updated  int `json:"updated"`
 	Adopted  int `json:"adopted"`
 	Verified int `json:"verified"`
+	// Resolved counts recommendations closed because their condition stopped
+	// reproducing — the page's only way of saying "this was dealt with".
+	Resolved int `json:"resolved"`
 }
 
 func (s Stats) String() string {
-	return fmt.Sprintf("proposed %d, updated %d, adopted %d, verified %d",
-		s.Proposed, s.Updated, s.Adopted, s.Verified)
+	return fmt.Sprintf("proposed %d, updated %d, adopted %d, verified %d, resolved %d",
+		s.Proposed, s.Updated, s.Adopted, s.Verified, s.Resolved)
 }
 
 // baseline is the JSON snapshot stored in recommendations.baseline: written
@@ -138,12 +141,18 @@ func Run(db *sql.DB, now time.Time) (Stats, error) {
 		{"R8", func() ([]finding, error) { return r8TrajectoryAntiPatterns(db, win) }},
 		{"R9", func() ([]finding, error) { return r9FatSessions(db, win) }},
 	}
+	// fired records every (rule, target) this pass produced, so the sweep below
+	// can tell "the condition is gone" from "the rule never ran".
+	fired := map[string]bool{}
+	evaluated := make([]string, 0, len(evals))
 	for _, e := range evals {
 		fs, err := e.fn()
 		if err != nil {
 			return stats, fmt.Errorf("advisor %s: %w", e.name, err)
 		}
+		evaluated = append(evaluated, e.name)
 		for _, f := range fs {
+			fired[f.rule+"\x00"+f.target] = true
 			if err := upsert(db, f, now, &stats); err != nil {
 				return stats, fmt.Errorf("advisor %s upsert %q: %w", e.name, f.target, err)
 			}
@@ -156,7 +165,112 @@ func Run(db *sql.DB, now time.Time) (Stats, error) {
 	if err := verify(db, now, &stats); err != nil {
 		return stats, fmt.Errorf("advisor verify: %w", err)
 	}
+	// LAST, on purpose: adoption and verification get first claim on a row. Their
+	// endings carry more — who acted, and what the numbers did — and "the
+	// condition is gone" is only the right answer for what neither of them took.
+	if err := resolveVanished(db, fired, evaluated, &stats, now); err != nil {
+		return stats, fmt.Errorf("advisor resolve: %w", err)
+	}
 	return stats, nil
+}
+
+// selfCheckingRules are the rules whose finding IS its own evidence: the rule
+// re-examines the world directly, so "it did not fire" means the condition is
+// gone, full stop.
+//
+//   - R7 reads the architecture map off disk and compares it to git HEAD.
+//   - R8 and R9 name one specific agent trajectory or one session in the window.
+//
+// Every other rule (R1–R6) is a rate over stored events, where "did not fire"
+// is ambiguous: the problem may have been fixed, or the tool may simply not
+// have been used this window. metricValue already encodes that as ok=false, but
+// it uses the same flag for "no DB metric exists at all" (R7/R8/R9), so it
+// cannot be the discriminator here. Absence of data is not evidence of repair,
+// so a rate rule's ACCEPTED row is never closed by this sweep — adoption and
+// verification own those, and they will say so with numbers.
+var selfCheckingRules = map[string]bool{"R7": true, "R8": true, "R9": true}
+
+// resolveVanished closes recommendations whose condition no longer reproduces.
+//
+// WHY THIS EXISTS. Recommendations are ROWS, not a live view: a rule creates one
+// and it then sits until a human clicks Accept or Dismiss. So a page full of
+// them says only "these fired at some point" — it can never say "this was dealt
+// with". The operator's words for that were: the improvement plan was executed,
+// the page looks identical, "складається враження що імпрув не відбувся".
+//
+// They were right, and the store proved it: after the architecture maps were
+// refreshed, R7 stopped firing (a fresh pass proposed nothing) while both R7
+// rows stayed open and actionable — one of them created three weeks earlier.
+// The rule had gone quiet and the row outlived it.
+//
+// A vanished condition is now a terminal state of its own, distinct from the
+// human verbs: `dismissed` means a person judged it not worth doing, `verified`
+// means the improvement was measured against a baseline, and `resolved` means
+// the thing simply stopped happening. Collapsing the third into either of the
+// others would lose exactly the signal this page was missing.
+//
+// Three limits, each deliberate:
+//
+//   - Only rules that ACTUALLY EVALUATED in this pass are swept. A rule removed
+//     from the list, or one that failed, must not silently close its history.
+//   - A `proposed` row is closed on any rule: nobody committed to it, and if the
+//     condition returns the rule re-proposes it.
+//   - An `accepted` or `adopted` row is closed ONLY for a self-checking rule.
+//     For rate rules, silence can mean "no traffic", and closing a commitment
+//     someone made on that basis would be guessing.
+func resolveVanished(db *sql.DB, fired map[string]bool, evaluated []string, stats *Stats, now time.Time) error {
+	if len(evaluated) == 0 {
+		return nil
+	}
+	ran := map[string]bool{}
+	for _, r := range evaluated {
+		ran[r] = true
+	}
+
+	rows, err := db.Query(`
+		SELECT id, rule, target, status FROM recommendations
+		 WHERE status IN ('proposed', 'accepted', 'adopted')`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id           int64
+		rule, target string
+		status       string
+	}
+	var open []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.rule, &r.target, &r.status); err != nil {
+			rows.Close()
+			return err
+		}
+		open = append(open, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	nowS := fmtTS(now)
+	for _, r := range open {
+		if !ran[r.rule] || fired[r.rule+"\x00"+r.target] {
+			continue
+		}
+		if r.status != "proposed" && !selfCheckingRules[r.rule] {
+			continue
+		}
+		res, err := db.Exec(`
+			UPDATE recommendations SET status = 'resolved', updated_at = ?
+			 WHERE id = ? AND status IN ('proposed', 'accepted', 'adopted')`, nowS, r.id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			stats.Resolved++
+		}
+	}
+	return nil
 }
 
 // upsert applies the dedup contract to one finding.
