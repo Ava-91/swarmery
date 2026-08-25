@@ -240,6 +240,10 @@ function InsightStatusChip({ status }: { status: Recommendation['status'] }): JS
     accepted: 'border-amber/40 bg-amber/10 text-amber',
     adopted: 'border-blue/40 bg-blue/10 text-blue',
     verified: 'border-green/40 bg-green/10 text-green',
+    // The advisor closed it because the condition stopped reproducing — green
+    // like `verified` (it is a good ending) but muted: nobody measured it, the
+    // problem simply went away.
+    resolved: 'border-green/40 text-green',
     dismissed: 'border-line text-ink-faint',
   };
   return (

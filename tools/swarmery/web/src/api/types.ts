@@ -1034,13 +1034,17 @@ export interface RetroTasksResp {
 
 // --- Retro phase 3 — advisor recommendations ---------------------------------
 
-/** recommendations.status lifecycle: proposed → accepted|dismissed → adopted → verified. */
+/** recommendations.status lifecycle: proposed → accepted|dismissed → adopted → verified,
+ *  plus `resolved` — the advisor closed the row itself because its condition stopped
+ *  reproducing (migration 0063). Terminal like `verified` and `dismissed`, and never in
+ *  the actionable rail: a row nobody has to act on must not keep asking to be acted on. */
 export type RecommendationStatus =
   | 'proposed'
   | 'accepted'
   | 'dismissed'
   | 'adopted'
-  | 'verified';
+  | 'verified'
+  | 'resolved';
 
 /** recommendations.target_kind — what the recommendation is about. */
 export type RecommendationTargetKind = 'tool' | 'agent' | 'error_group' | 'process' | 'config' | 'project';

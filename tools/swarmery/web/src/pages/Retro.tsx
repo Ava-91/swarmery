@@ -315,8 +315,14 @@ function RecommendationsRail(): JSX.Element | null {
   }, []);
   useEffect(load, [load]);
 
+  // Both terminal endings, in one place. `verified` is an improvement measured
+  // against a baseline; `resolved` is the advisor closing a row because its
+  // condition stopped reproducing. Showing only the first left the second
+  // invisible — a finding that got FIXED simply vanished from the page, which is
+  // how a screen full of open recommendations came to look like nothing had been
+  // done.
   const loadVerified = useCallback((): void => {
-    fetchRecommendations('verified')
+    fetchRecommendations('verified,resolved')
       .then((r) => setVerified(r.recommendations))
       .catch(() => setVerified([]));
   }, []);
@@ -401,13 +407,13 @@ function RecommendationsRail(): JSX.Element | null {
             }}
             className="font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink"
           >
-            {verifiedOpen ? '▾' : '▸'} Verified
+            {verifiedOpen ? '▾' : '▸'} Closed
             {verified !== null ? ` (${String(verified.length)})` : ''}
           </button>
           {verifiedOpen && verified !== null && (
             <div className="mt-2 flex flex-col gap-1.5">
               {verified.length === 0 ? (
-                <Empty>nothing verified yet</Empty>
+                <Empty>nothing closed yet</Empty>
               ) : (
                 verified.map((rec) => (
                   <div
@@ -906,11 +912,19 @@ function RetroLeadCard({ data }: { data: RetroAgentsResp }): JSX.Element {
     computeRetroKpis(data);
 
   // Synthesize headline copy from the data.
-  const rescued = totalErrors > 0 ? totalErrors : 0;
+  //
+  // The two numbers are DIFFERENT UNITS and must never be phrased as a ratio.
+  // `totalRuns` counts subagent runs; `totalErrors` counts error EVENTS across
+  // the orchestrator and every agent, and one run can raise a dozen. The old
+  // copy read "shipped 15 runs — 179 needed a human rescue", which is not just
+  // wrong but impossible on its face, and it was the first line on the page.
+  //
+  // "Rescue" was wrong too: an error event is a tool call that failed, which the
+  // agent usually retries on its own. Nobody was necessarily rescued.
   const headline =
-    rescued > 0
-      ? `Your agents shipped ${String(totalRuns)} runs — ${String(rescued)} needed a human rescue.`
-      : `Your agents shipped ${String(totalRuns)} runs cleanly — no errors logged.`;
+    totalErrors > 0
+      ? `${String(totalRuns)} agent ${totalRuns === 1 ? 'run' : 'runs'} in this window, and ${String(totalErrors)} error ${totalErrors === 1 ? 'event' : 'events'} across them and the orchestrator.`
+      : `${String(totalRuns)} agent ${totalRuns === 1 ? 'run' : 'runs'} in this window, with no errors logged.`;
   const sub = `Orchestrator ${fmtCost(data.main.cost_usd)} · ${fmtTokens(data.main.tokens_out)} tokens out · agents ${fmtCost(agentCost)}`;
 
   return (
