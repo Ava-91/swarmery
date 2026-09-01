@@ -1,15 +1,11 @@
 ---
 name: debugger
 description: Perform systematic root-cause analysis and apply minimal fixes across the project stack.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Sonnet handles single-bug diagnosis and targeted fixes; Opus reserved for multi-repo orchestration.
-permissionMode: acceptEdits
 maxTurns: 25
 color: yellow
-autonomy: auto
-version: 1.1.0
-owner: platform-team
 skills:
   - code-standards
   - testing

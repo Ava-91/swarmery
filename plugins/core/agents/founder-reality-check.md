@@ -1,8 +1,8 @@
 ---
 name: founder-reality-check
 description: Investor-mode reality check on the project's current state — audits all sub-apps/products (read from project.json → apps and CLAUDE.md) and the underlying business thesis with VC-style critique. Read-only.
-model: claude-opus-5
-permissionMode: default
+model: opus
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 color: orange
 maxTurns: 30
 skills:

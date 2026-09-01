@@ -1,14 +1,10 @@
 ---
 name: design-implementer
 description: Execute the approved implementation of a design handoff — re-express the design in the project's own stack, then measure the result against the design with a pixel diff and iterate within the approved file set. Invoked only after the operator approved a Phase 4 plan; stops and returns the decision on any change outside that set.
-model: claude-opus-5
+model: opus
 effort: high
-permissionMode: acceptEdits
 maxTurns: 50
 color: purple
-autonomy: semi-auto
-version: 0.1.0
-owner: swarmery-core
 skills:
   - design-verify
 docs:

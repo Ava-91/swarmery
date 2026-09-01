@@ -1,15 +1,11 @@
 ---
 name: telemetry-processor
 description: Implement real-time telemetry streaming, WebSocket/SSE fan-out, and Google Maps visualization spanning the edge service and the web portal.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Streaming implementation is within Sonnet capability; Opus reserved for orchestration.
-permissionMode: acceptEdits
 maxTurns: 15
 color: orange
-autonomy: auto
-version: 1.1.0
-owner: swarmery-core
 skills:
   - api-integration
   - code-standards

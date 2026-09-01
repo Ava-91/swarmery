@@ -1,26 +1,20 @@
 ---
 name: implementation-agent
 description: Execute Phase 4 code changes as a leaf executor (step_file input), or orchestrate step-by-step execution of a ready workspace plan (task_dir input) with per-step verification loops.
-model: claude-opus-5
+model: opus
 # Rationale: required for complex multi-file reasoning across TypeScript/Python/infra config; justifies top-tier (Opus 5) cost. Opus 5 brings improved tool triggering (fewer skipped codebase-retrieval calls), compaction recovery, and reliable long-context edits, with adaptive thinking keeping single-file Micro edits cheap.
 effort: xhigh
 # Session-level guidance: run at xhigh for multi-file/cross-stack changes; high for single-file Micro edits. As a workflow subagent, effort is inherited from the run.
-permissionMode: acceptEdits
 memory: project
 color: blue
-autonomy: semi-auto
 maxTurns: 120
 # maxTurns raised 40 -> 120 (2026-07-21) for Plan-execution mode (~6-step plans, up to 3 verification loops per step); leaf-mode runs end long before the cap.
 isolation: worktree
-version: 1.2.0
-owner: platform-team
 skills:
-  - deployment
   - code-standards
   - functional-design
   - api-integration
   - code-search
-  - nextjs-migration
 docs:
   status: reviewed
   source_sha: cbf1cd62868f

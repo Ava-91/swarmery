@@ -1,8 +1,7 @@
 ---
 name: landing-page-specialist
 description: Landing page CRO, conversion optimization, email capture, and A/B testing.
-model: claude-sonnet-4-6
-permissionMode: acceptEdits
+model: sonnet
 color: teal
 maxTurns: 20
 skills:

@@ -1,16 +1,12 @@
 ---
 name: prompting-agent
 description: Generate structured prompts for executor agents containing objective, file paths, code examples, and falsifiable acceptance criteria.
-model: claude-sonnet-5
-# Rationale: strong reasoning for pattern extraction and prompt structuring; no code editing required. Sonnet 4.6 remains current (no 4.7); do not change this ID.
+model: sonnet
+# Rationale: strong reasoning for pattern extraction and prompt structuring; no code editing required.
 effort: medium
 # Session-level guidance: prompt structuring is template work; medium effort keeps cost low. As a workflow subagent it inherits the run effort.
-permissionMode: plan
 color: blue
-autonomy: auto
 maxTurns: 15
-version: 1.0.0
-owner: platform-team
 skills:
   - context-optimization
   - code-standards

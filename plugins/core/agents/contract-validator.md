@@ -1,16 +1,13 @@
 ---
 name: contract-validator
 description: Trace data types across the 5-layer contract chain (DB schema→Actions→Zod→API→Frontend+device) and emit VALID/WARN/FAIL verdict when orchestrator runs Phase 5 Quality Gate.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: Type-tracing across 5 layers requires methodical reasoning; Sonnet handles it at lower cost than Opus.
-permissionMode: plan
 background: true
 maxTurns: 20
 color: green
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - api-integration
   - code-standards

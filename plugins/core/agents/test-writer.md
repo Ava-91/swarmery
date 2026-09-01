@@ -1,16 +1,12 @@
 ---
 name: test-writer
 description: Write unit, integration, component, and E2E tests for the project's stacks with TDD support.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: test writing is structured work within Sonnet capability; no complex multi-file reasoning required
-permissionMode: acceptEdits
 maxTurns: 25
 color: green
-autonomy: semi-auto
 isolation: worktree
-version: 1.1.0
-owner: platform-team
 skills:
   - testing
   - test-coverage

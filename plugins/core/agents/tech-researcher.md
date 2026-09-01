@@ -1,15 +1,12 @@
 ---
 name: tech-researcher
 description: Evaluate libraries, patterns, and technologies for adoption into the project's stack (project.json → stack) with artifact-first research reports.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: Sonnet handles multi-source synthesis and structured comparison; web search and report generation are within its capability.
-permissionMode: plan
 maxTurns: 25
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
 docs:

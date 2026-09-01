@@ -1,15 +1,11 @@
 ---
 name: migration-helper
 description: Execute safe, incremental code and schema migrations with rollback at every step.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Sonnet handles step-by-step migration execution; Opus reserved for cross-repo orchestration.
-permissionMode: acceptEdits
 maxTurns: 20
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
   - migration-check

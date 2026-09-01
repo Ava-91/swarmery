@@ -1,15 +1,11 @@
 ---
 name: mavlink-specialist
 description: Implement MAVLink message parsing and generation, manage UART/UDP/TCP connections, and integrate with ArduPilot SITL for testing.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: MAVLink implementation is domain-specific but within Sonnet capability; Opus reserved for orchestration.
-permissionMode: acceptEdits
 maxTurns: 15
 color: orange
-autonomy: auto
-version: 1.0.0
-owner: swarmery-core
 skills:
   - mavlink-integration
   - code-standards

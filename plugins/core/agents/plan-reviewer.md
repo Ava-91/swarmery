@@ -1,16 +1,13 @@
 ---
 name: plan-reviewer
 description: Compare implementation against original plan; emit APPROVED/NEEDS CHANGES/REJECTED verdict.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: deviation classification (justified vs problematic) requires nuanced judgment beyond template-filling; Sonnet is cost-effective for read-only analysis
-permissionMode: plan
 background: true
 maxTurns: 25
 color: green
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
 docs:

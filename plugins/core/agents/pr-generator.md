@@ -1,8 +1,7 @@
 ---
 name: pr-generator
 description: Generate PR titles, descriptions, and review checklists from changes.
-model: claude-haiku-4-5
-permissionMode: plan
+model: haiku
 color: cyan
 disallowedTools:
   - Edit

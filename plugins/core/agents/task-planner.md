@@ -1,17 +1,11 @@
 ---
 name: task-planner
 description: Break down tasks (<1 week) into phased implementation plans with phase docs, acceptance criteria, and risk assessment.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Task decomposition requires analytical reasoning within Sonnet capability; Opus reserved for orchestration.
-permissionMode: plan
 color: blue
-autonomy: auto
 maxTurns: 30
-version: 1.3.0
-owner: platform-team
-skills:
-  - deployment
 docs:
   status: reviewed
   source_sha: 0c3e13e6a296

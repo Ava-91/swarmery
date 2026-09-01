@@ -1,14 +1,10 @@
 ---
 name: summary-generator
 description: Produce the canonical SUMMARY.md final report (Phase 8) for completed tasks with quantified metrics, cited data sources, and role-specific content.
-model: claude-haiku-4-5
+model: haiku
 # Rationale: Formatting and summarization is within Haiku capability; cost-efficient for documentation tasks.
-permissionMode: acceptEdits
 color: blue
-autonomy: semi-auto
 maxTurns: 20
-version: 1.1.0
-owner: platform-team
 skills:
   - git-commit
   - summary-templates

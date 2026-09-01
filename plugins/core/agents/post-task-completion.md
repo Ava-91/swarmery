@@ -1,15 +1,11 @@
 ---
 name: post-task-completion
 description: Detect task completion and delegate structured context payload to @task-documenter for documentation.
-model: claude-haiku-4-5
+model: haiku
 # Rationale: Thin routing trigger -- Haiku is sufficient for signal detection and payload assembly.
-permissionMode: plan
 background: true
 maxTurns: 5
 color: blue
-autonomy: highly-auto
-version: 1.0.0
-owner: platform-team
 skills: []
 docs:
   status: reviewed

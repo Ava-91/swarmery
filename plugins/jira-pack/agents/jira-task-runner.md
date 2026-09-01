@@ -1,14 +1,10 @@
 ---
 name: jira-task-runner
 description: Drive any tracker ticket end-to-end from a link — access preflight, defect-or-change classification, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition.
-model: claude-opus-5
+model: opus
 effort: high
-permissionMode: acceptEdits
 maxTurns: 60
 color: blue
-autonomy: auto
-version: 0.2.0
-owner: swarmery-core
 skills:
   - jira-config
   - jira-access-preflight

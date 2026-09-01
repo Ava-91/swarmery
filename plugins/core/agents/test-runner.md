@@ -1,16 +1,13 @@
 ---
 name: test-runner
 description: Execute test suites across the project's stacks (project.json → stack); report pass/fail counts and coverage without writing tests.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: medium
 # Rationale: failure root-cause analysis benefits from Sonnet reasoning; deterministic command execution is the primary workload
-permissionMode: plan
 background: true
 maxTurns: 20
 color: green
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - testing
   - test-coverage

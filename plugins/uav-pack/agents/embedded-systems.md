@@ -1,15 +1,11 @@
 ---
 name: embedded-systems
 description: Implement Raspberry Pi 5 edge code for the edge service -- UART, camera, GPIO, systemd, and MOCK_MODE fallbacks.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Hardware-interface code is implementation-level work within Sonnet capability; Opus reserved for orchestration.
-permissionMode: acceptEdits
 maxTurns: 15
 color: orange
-autonomy: auto
-version: 1.0.0
-owner: swarmery-core
 skills:
   - embedded-systems
   - code-standards

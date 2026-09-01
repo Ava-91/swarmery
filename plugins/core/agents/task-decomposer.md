@@ -1,10 +1,8 @@
 ---
 name: task-decomposer
 description: Break down tasks into SMART subtasks with dependency analysis.
-model: claude-sonnet-4-6
-permissionMode: plan
+model: sonnet
 color: cyan
-autonomy: auto
 disallowedTools:
   - Edit
   - Write

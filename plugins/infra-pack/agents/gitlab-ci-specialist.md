@@ -1,15 +1,11 @@
 ---
 name: gitlab-ci-specialist
 description: Design and maintain GitLab CI/CD pipelines for build, scan, deploy, promote, and rollback.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: CI pipeline design and YAML editing are within Sonnet's capability; does not require cross-repo orchestration.
-permissionMode: acceptEdits
 maxTurns: 25
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: swarmery-infra
 skills:
   - gitlab-ci-cd
   - gcp-cicd-auth

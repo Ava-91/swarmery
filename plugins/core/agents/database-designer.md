@@ -1,15 +1,11 @@
 ---
 name: database-designer
 description: Design PostgreSQL schemas, SQL migration files, and matching ORM schema definitions when orchestrator needs schema changes in Phase 3.5 or task-planner identifies DB work.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Schema design is analytical read-only work; Sonnet handles it without Opus cost.
-permissionMode: plan
 maxTurns: 25
 color: blue
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
   - migration-check
   - code-standards

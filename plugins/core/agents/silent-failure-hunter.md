@@ -1,16 +1,13 @@
 ---
 name: silent-failure-hunter
 description: Audit code for silent failures including empty catches, swallowed errors, and missing error propagation.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: Sonnet handles pattern-based code auditing well; read-only analysis within a single or dual repo scope.
-permissionMode: plan
 background: true
 maxTurns: 20
 color: orange
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
   - code-quality

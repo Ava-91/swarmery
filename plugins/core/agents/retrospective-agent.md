@@ -1,15 +1,11 @@
 ---
 name: retrospective-agent
 description: Produce Phase 9 retrospective artifact with lessons learned, bias checks, metrics, and improvement recommendations.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Cognitive bias detection and root cause analysis require analytical depth; Sonnet balances reasoning with cost.
-permissionMode: plan
 color: blue
-autonomy: highly-auto
 maxTurns: 20
-version: 1.0.0
-owner: platform-team
 skills:
   - summary-templates
   - code-quality

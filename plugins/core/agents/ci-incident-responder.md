@@ -1,17 +1,12 @@
 ---
 name: ci-incident-responder
 description: Produce CI pipeline failure forensics with three-tier remediation plans from job traces.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Sonnet handles log parsing and pattern-matching well; forensic reports do not require Opus reasoning depth.
-permissionMode: plan
 maxTurns: 10
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
-  - deployment
   - troubleshooting
 docs:
   status: reviewed

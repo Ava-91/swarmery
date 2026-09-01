@@ -1,16 +1,13 @@
 ---
 name: code-auditor
 description: Audit an inherited/live system in risk order (access & inventory → security → operational readiness → selective code). Emit a prioritized P0-P3 remediation backlog (Stop-the-bleeding → Safety-net → Structural-debt → Nice-to-have) where every finding is What→Risk/Cost→Fix→How-to-verify, plus a 1-10 health score and engineering-standards recommendations. Triages each dimension and escalates depth to @security-auditor, @sre-orchestrator, @founder-reality-check.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: analytical review and severity classification within Sonnet capability; no code editing required
-permissionMode: plan
 background: true
 maxTurns: 25
 color: green
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
   - code-quality

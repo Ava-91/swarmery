@@ -1,21 +1,16 @@
 ---
 name: full-stack-feature
 description: Coordinate feature implementation across database, API, UI, deploy, and promotion layers.
-model: claude-opus-5
+model: opus
 # Rationale: Multi-step cross-repo sequencing and contract consistency checking exceed Sonnet's reasoning depth. Opus 5 brings Dynamic Workflows and adaptive thinking for long-horizon cross-repo coordination, sustaining longer autonomous runs across the DB->API->UI->deploy chain.
 effort: max
 # Session-level guidance: cross-repo features benefit from max; consider /effort ultracode to let Claude auto-plan a dynamic workflow for the full chain.
-permissionMode: acceptEdits
 maxTurns: 30
 color: yellow
-autonomy: auto
-version: 1.1.0
-owner: platform-team
 skills:
   - code-standards
   - api-integration
   - functional-design
-  - nextjs-migration
   - monorepo-coordination
 docs:
   status: reviewed

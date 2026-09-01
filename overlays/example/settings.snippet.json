@@ -1,8 +1,18 @@
 {
-  "//": "Merge into your project's .claude/settings.json. Deploy project.json to .claude/project.json.",
+  "//": "Merge into your project's .claude/settings.json. Deploy project.json to .claude/project.json. Note: Claude Code ignores permissionMode on plugin subagents — grant edit-heavy agents their allowances here via permissions.allow instead (examples below; tighten to your stack).",
   "extraKnownMarketplaces": {
     "swarmery": { "source": { "source": "github", "repo": "atretyak1985/swarmery" } }
   },
   "enabledPlugins": { "core@swarmery": true },
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Bash(npm run test:*)",
+      "Bash(npm run lint:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)"
+    ]
+  },
   "env": { "AGENT_PROJECT": "example", "AGENT_WORKSPACE_ROOT": "/path/to/swarmery-workspace" }
 }

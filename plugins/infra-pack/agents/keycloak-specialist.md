@@ -1,15 +1,11 @@
 ---
 name: keycloak-specialist
 description: Configure Keycloak IAM with OIDC, Auth.js/Next.js integration, realm setup, and hardening.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Keycloak configuration and Auth.js integration are targeted tasks within Sonnet's capability.
-permissionMode: acceptEdits
 maxTurns: 15
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: swarmery-infra
 skills:
   - keycloak
   - code-standards

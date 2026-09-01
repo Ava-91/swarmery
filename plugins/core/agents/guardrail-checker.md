@@ -1,14 +1,11 @@
 ---
 name: guardrail-checker
 description: Validate a proposed action against risk rules and emit APPROVED/REJECTED with risk level and rollback plan, invoked cross-phase before risky operations.
-model: claude-haiku-4-5
+model: haiku
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 # Rationale: Safety checks are deterministic matrix lookups + running linters; Haiku handles this at lowest cost and highest speed.
-permissionMode: plan
 maxTurns: 10
 color: green
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
 docs:

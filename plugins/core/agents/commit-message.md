@@ -1,14 +1,10 @@
 ---
 name: commit-message
 description: Generate conventional commit messages with project-specific scopes (project.json → commitScopes) from staged changes.
-model: claude-haiku-4-5
+model: haiku
 # Rationale: Haiku is sufficient for commit message generation from git diff output; low reasoning overhead.
-permissionMode: plan
 maxTurns: 5
 color: yellow
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills: []
 docs:
   status: reviewed

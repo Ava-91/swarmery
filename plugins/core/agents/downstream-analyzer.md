@@ -1,14 +1,10 @@
 ---
 name: downstream-analyzer
 description: Find all code affected by changes (callers, tests, imports) in Phase 2 (read-only) or Phase 6 (edit-capable).
-model: claude-haiku-4-5
+model: haiku
 # Rationale: fast for search-heavy work; Phase 6 edits are mechanical (imports, types) not requiring Opus reasoning
-permissionMode: acceptEdits
 color: blue
-autonomy: auto
 maxTurns: 30
-version: 1.0.0
-owner: platform-team
 skills:
   - code-search
 docs:

@@ -1,8 +1,7 @@
 ---
 name: migration-agent
 description: Database migration safety — Prisma SQL and Prisma schema validation.
-model: claude-sonnet-4-6
-permissionMode: plan
+model: sonnet
 color: yellow
 disallowedTools:
   - Edit

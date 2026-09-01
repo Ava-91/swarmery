@@ -1,19 +1,15 @@
 ---
 name: helm-deployment
 description: Author and maintain Helm charts, multi-env config, digest-based deploys, and rollback-safe delivery across localdev, staging, and production.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Chart authoring and validation is within Sonnet capability; Opus reserved for orchestration.
-permissionMode: acceptEdits
 # Review note: kept at acceptEdits because chart authoring (Chart.yaml, values*.yaml,
 # templates/**) is this agent's core job. Safety enforced via: (a) a protect-sensitive-files hook
 # blocking values.prod.yaml + *.populated.yaml + generated output files; (b) settings.json `ask` for
 # helm install/upgrade/uninstall; (c) mandatory escalation rules for deploy on staging/prod.
 maxTurns: 15
 color: orange
-autonomy: auto
-version: 1.0.0
-owner: swarmery-infra
 skills:
   - kubernetes-deployment
   - code-standards

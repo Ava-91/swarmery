@@ -1,8 +1,7 @@
 ---
 name: i18n-specialist
 description: Manage translations (en/uk), ensure i18n coverage, validate translation keys.
-model: claude-sonnet-4-6
-permissionMode: acceptEdits
+model: sonnet
 color: teal
 maxTurns: 20
 skills:

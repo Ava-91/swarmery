@@ -1,16 +1,13 @@
 ---
 name: security-auditor
 description: Perform OWASP Top 10 checks and domain-specific STRIDE threat modeling (project.json → domainTerms.threatModelExample) when orchestrator needs security validation in Phase 5 Quality Gate.
-model: claude-opus-5
+model: opus
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: PINNED to Opus 5 -- the security gate must not be cost-routed down to Sonnet. Opus over Sonnet: honesty gains (~4x fewer unremarked flaws) matter most when auditing OWASP Top 10 / domain-specific STRIDE; pinning keeps the Phase 5 quality gate deterministic.
-permissionMode: plan
 background: true
 maxTurns: 30
 color: green
-autonomy: semi-auto
-version: 1.1.0
-owner: platform-team
 skills:
   - code-standards
   - security-audit

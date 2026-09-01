@@ -1,15 +1,11 @@
 ---
 name: verification-agent
 description: Run build/typecheck/lint/test/security checks and emit a structured PASS/FAIL/PARTIAL verdict block with artifact.
-model: claude-haiku-4-5
+model: haiku
 # Rationale: verification is deterministic command execution; Haiku is sufficient and minimizes cost
-permissionMode: plan
 background: true
 maxTurns: 15
 color: green
-autonomy: highly-auto
-version: 1.2.0
-owner: platform-team
 skills:
   - code-quality
   - browser-verification

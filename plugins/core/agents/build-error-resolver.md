@@ -1,15 +1,11 @@
 ---
 name: build-error-resolver
 description: Fix build, TypeScript, and compilation errors with minimal diffs; no refactoring.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Sonnet is sufficient for single-error diagnosis and targeted fixes; Opus not needed.
-permissionMode: acceptEdits
 maxTurns: 20
 color: red
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
   - code-quality

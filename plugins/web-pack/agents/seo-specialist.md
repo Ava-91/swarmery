@@ -1,8 +1,7 @@
 ---
 name: seo-specialist
 description: SEO optimization, meta tags, structured data, and Core Web Vitals for the project's marketing and landing sites.
-model: claude-sonnet-4-6
-permissionMode: acceptEdits
+model: sonnet
 color: teal
 maxTurns: 20
 skills:

@@ -1,16 +1,12 @@
 ---
 name: system-improver
 description: Read a retrospective digest of the whole agent system and write an evidence-cited analysis of what hurts, why, and what to change across agents, skills, commands, hooks and processes.
-model: claude-opus-5
+model: opus
 # Rationale: this is cross-cutting diagnosis over noisy aggregate evidence — the
 # reasoning is the product, and a wrong-but-fluent analysis is worse than none.
 effort: high
-permissionMode: plan
 color: purple
-autonomy: highly-auto
 maxTurns: 12
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
 ---

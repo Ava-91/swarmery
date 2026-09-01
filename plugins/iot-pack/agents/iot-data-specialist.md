@@ -1,8 +1,7 @@
 ---
 name: iot-data-specialist
 description: IoT data architecture, BLE communication, health metrics processing for pet devices.
-model: claude-sonnet-4-6
-permissionMode: acceptEdits
+model: sonnet
 color: teal
 maxTurns: 20
 skills:

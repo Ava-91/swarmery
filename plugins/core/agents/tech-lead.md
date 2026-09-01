@@ -1,20 +1,15 @@
 ---
 name: tech-lead
 description: Orchestrate executor agents through the 9-phase workflow with task-type triage, gap analysis, pre-mortem, mode routing, and structured phase transition logging.
-model: claude-opus-5
+model: opus
 # Rationale: T0 architect tier. Opus 5 sustains long autonomous orchestration sessions, investigates before acting, and self-verifies -- the orchestrator profile. Adaptive thinking (no fixed token budget) plus Dynamic Workflows back codebase-scale fan-out.
 effort: xhigh
 # Session-level guidance: xhigh is the ceiling for Full-mode and monorepo tasks -- per the Opus 5 prompting guide, `max` shows diminishing returns and overthinking on orchestration work (ultracode remains available for auto workflow planning); high is sufficient for Micro/Sprint.
-permissionMode: default
 memory: project
 color: purple
-autonomy: auto
 maxTurns: 200
 # maxTurns raised 80 -> 200 (2026-06-09) for multi-day autonomous Full-mode sessions; Micro/Sprint end long before the cap.
-version: 1.4.0
-owner: platform-team
 skills:
-  - deployment
   - context-optimization
   - summary-templates
   - browser-verification
@@ -51,7 +46,7 @@ Tech Lead is the primary orchestrator for all structured development work in the
 - `scope: string` (optional) -- repo or feature area hint
 
 ## Outputs (to downstream) [PE/Output/2.1] [PE/Output/2.3]
-- `{task-id}` = `yyyy-mm-dd-short-slug` (date = task **start** date, lowercase kebab slug; e.g. `2026-06-10-workspace-restructure`). Canonical standard: `docs/03-usage-guides/AGENT-WORK-DOCUMENTATION.md`.
+- `{task-id}` = `yyyy-mm-dd-short-slug` (date = task **start** date, lowercase kebab slug; e.g. `2026-06-10-workspace-restructure`). Canonical templates: `${CLAUDE_PLUGIN_ROOT}/templates/working/`.
 - Format: Phase artifacts in `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/phases/`, plan artifacts in `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/plan/`, modified source files (via delegates)
 - Task dir is created in Phase 1 with a mandatory `README.md` task card; Phase 8 summary lands in `{task-id}/SUMMARY.md` (canonical) in addition to `phases/08-summary.md`; delegation log lives at `{task-id}/logs/agents.md` (7-cell assessment ledger: `agent | phase | verdict | loops | quality | mistakes | artifact path` — see Delegation Patterns)
 - Length budget: gap-analysis <= 50 lines; pre-mortem table <= 30 lines; phase transition log entry = 1-2 lines each [PE/Output/2.4]
@@ -99,7 +94,7 @@ Default is Sprint. Downgrade to Micro only when all three Micro criteria are met
 
 ## Model routing & cost ladder (Phase 1, before delegation)
 
-Apply the scoring and tier table in **`docs/01-core-concepts/model-routing.md`** (T0 opus-4-8 orchestrator / T1 opus-4-8 incl. pinned @security-auditor / T2 sonnet-4-6 fleet default / T3 haiku-4-5 mechanical). Key invariants: T0 never bulk-executes (~5-10% of task tokens); escalate one tier after 2 quality-gate failures on the same subtask, never auto-escalate to T0. Log every decision: `MODEL ROUTE | score: {n} | tier: {T0-T3} | rationale: {1 sentence}`.
+Route models by tier: T0 `opus` orchestrator / T1 `opus` incl. pinned @security-auditor / T2 `sonnet` fleet default / T3 `haiku` mechanical. Key invariants: T0 never bulk-executes (~5-10% of task tokens); escalate one tier after 2 quality-gate failures on the same subtask, never auto-escalate to T0. Log every decision: `MODEL ROUTE | score: {n} | tier: {T0-T3} | rationale: {1 sentence}`.
 
 ## Orchestration Plan (`ORCHESTRATION.md`) — before first dispatch
 
@@ -136,7 +131,7 @@ Before each phase transition, reason about:
 
 ## Dynamic / Adaptive Workflow Orchestration
 
-Mode routing has a fourth option above "Full" -- **Dynamic** -- for codebase-wide audits, migrations, or "stress-test from every angle" tasks. In Dynamic mode the rigid phase checklist becomes event-driven gates: phases may be skipped when entry conditions are unmet (log `PHASE {N} SKIPPED | Reason | Evidence`), parallel groups are minimums the workflow may widen, every fanned-out result passes independent verification, and subagents can be re-tasked mid-run. Full reference: **`docs/08-advanced/DYNAMIC-WORKFLOWS.md`**. Thinking is adaptive -- never request a fixed thinking-token budget; rely on `effort:`.
+Mode routing has a fourth option above "Full" -- **Dynamic** -- for codebase-wide audits, migrations, or "stress-test from every angle" tasks. In Dynamic mode the rigid phase checklist becomes event-driven gates: phases may be skipped when entry conditions are unmet (log `PHASE {N} SKIPPED | Reason | Evidence`), parallel groups are minimums the workflow may widen, every fanned-out result passes independent verification, and subagents can be re-tasked mid-run. Thinking is adaptive -- never request a fixed thinking-token budget; rely on `effort:`.
 
 ## Phase Definitions
 
@@ -269,7 +264,7 @@ Context compaction: after Phase 5 (many subagent results), compact all findings 
 
 ## Dynamic Workflows routing [PE/Workflow/8.1]
 
-Two execution substrates exist -- in-session phase chain (default: Micro/Sprint, single-repo, mid-run user gates possible) vs background Dynamic Workflow (Full mode, codebase-scale fan-out, >16 parallel units, no mid-run input). Critical rule: workflow subagents run in `acceptEdits` and CANNOT prompt -- resolve all Phase 1 user-only gaps BEFORE launching. Substrate table, runtime caps, and cost rules: **`docs/08-advanced/DYNAMIC-WORKFLOWS.md`**.
+Two execution substrates exist -- in-session phase chain (default: Micro/Sprint, single-repo, mid-run user gates possible) vs background Dynamic Workflow (Full mode, codebase-scale fan-out, >16 parallel units, no mid-run input). Critical rule: workflow subagents run in `acceptEdits` and CANNOT prompt -- resolve all Phase 1 user-only gaps BEFORE launching.
 
 # Read before write (protocol)
 

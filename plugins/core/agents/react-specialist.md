@@ -1,19 +1,14 @@
 ---
 name: react-specialist
 description: Build and refactor React 19 / Next.js 15 components with performance budgets and accessibility gates.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Sonnet handles component implementation, accessibility checks, and performance profiling; single-repo scope.
-permissionMode: acceptEdits
 maxTurns: 15
 color: yellow
-autonomy: auto
-version: 1.1.1
-owner: platform-team
 skills:
   - code-standards
   - functional-design
-  - nextjs-migration
   - browser-verification
 docs:
   status: reviewed

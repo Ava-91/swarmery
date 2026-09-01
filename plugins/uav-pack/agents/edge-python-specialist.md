@@ -1,15 +1,11 @@
 ---
 name: edge-python-specialist
 description: Implement Python code for the edge service including picamera2, WebSocket, GPIO, and systemd.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Sonnet handles Python implementation and hardware integration patterns; focused single-repo scope.
-permissionMode: acceptEdits
 maxTurns: 15
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: swarmery-core
 skills:
   - embedded-systems
   - code-standards

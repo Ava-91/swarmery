@@ -1,15 +1,11 @@
 ---
 name: api-designer
 description: Design REST route handlers, Zod schemas, SSE endpoints, and server actions when orchestrator needs API contract design before implementation.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Design-only read analysis; Sonnet handles schema reasoning without Opus cost.
-permissionMode: plan
 maxTurns: 20
 color: cyan
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
   - api-integration
   - code-standards

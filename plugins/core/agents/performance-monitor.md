@@ -1,15 +1,12 @@
 ---
 name: performance-monitor
 description: Analyse agent and application performance metrics and produce actionable optimization reports.
-model: claude-sonnet-5
+model: sonnet
+tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent, WebFetch, WebSearch
 effort: high
 # Rationale: Sonnet handles metric analysis and report generation; read-only agent with no complex reasoning needs.
-permissionMode: plan
 maxTurns: 10
 color: yellow
-autonomy: auto
-version: 1.0.0
-owner: platform-team
 skills:
   - context-optimization
   - monitoring

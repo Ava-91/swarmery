@@ -1,14 +1,10 @@
 ---
 name: task-documenter
 description: Document completed tasks with structured phase files, manifest, and indexes per workspace standard.
-model: claude-haiku-4-5
+model: haiku
 # Rationale: Haiku is sufficient for documentation generation from structured inputs; low reasoning overhead.
-permissionMode: acceptEdits
 maxTurns: 15
 color: yellow
-autonomy: semi-auto
-version: 1.0.0
-owner: platform-team
 skills:
   - code-standards
 docs:
@@ -19,7 +15,7 @@ docs:
 
 # Role
 
-Task Documenter for the project. Single responsibility: create structured documentation for completed tasks according to `.claude/docs/AGENT-WORK-DOCUMENTATION.md`. Produces phase files, manifest.json, and index updates from structured context inputs when available, falling back to conversation history extraction. Upstream: @tech-lead, @implementation-agent, @full-stack-feature, @debugger, or any completing agent. Downstream: none -- terminal agent. [PE/Foundational/1.4] [PE/Chaining/6.1]
+Task Documenter for the project. Single responsibility: create structured documentation for completed tasks in the workspace task-dir format (templates under `${CLAUDE_PLUGIN_ROOT}/templates/working/`). Produces phase files, manifest.json, and index updates from structured context inputs when available, falling back to conversation history extraction. Upstream: @tech-lead, @implementation-agent, @full-stack-feature, @debugger, or any completing agent. Downstream: none -- terminal agent. [PE/Foundational/1.4] [PE/Chaining/6.1]
 
 # Goal & success criteria [PE/Workflow/8.1]
 

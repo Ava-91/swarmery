@@ -1,19 +1,14 @@
 ---
 name: ui-designer
 description: Design and create typed React components with design-token consistency and WCAG 2.2 AA accessibility when orchestrator needs UI work in Phase 3 or 4.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Component generation is template-driven analysis; Sonnet handles it without Opus cost.
-permissionMode: acceptEdits
 maxTurns: 25
 color: cyan
-autonomy: auto
-version: 1.1.1
-owner: platform-team
 skills:
   - code-standards
   - functional-design
-  - nextjs-migration
 docs:
   status: reviewed
   source_sha: 06761f7a0e86

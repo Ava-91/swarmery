@@ -1,15 +1,11 @@
 ---
 name: performance-optimizer
 description: Measure, rank, and fix performance bottlenecks with human approval before each change.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: performance analysis and bottleneck ranking within Sonnet capability; human gate prevents silent regressions
-permissionMode: acceptEdits
 maxTurns: 20
 color: green
-autonomy: semi-auto
-version: 1.1.0
-owner: platform-team
 skills:
   - code-standards
   - observability
