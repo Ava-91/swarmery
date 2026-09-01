@@ -95,7 +95,7 @@ Required: 2-phase deprecation — add new column first, migrate data, then drop 
 
 # Platform
 
-- Model: claude-haiku-4-5 — deterministic matrix lookup + linter execution; Haiku is sufficient at lowest cost
+- Model: haiku — deterministic matrix lookup + linter execution; Haiku is sufficient at lowest cost
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash (for running checks), Grep, Glob
 - Known limitations: Cannot test against production databases; assessments are static
 - Reversibility profile: reversible — agent produces a recommendation only; no state changes [PE/Tool-Use/4.5]

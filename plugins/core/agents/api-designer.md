@@ -131,7 +131,7 @@ DESIGN COMPLETE | Routes: 5 | Breaking: NO | Artifact: ${AGENT_WORKSPACE_ROOT}/$
 
 # Platform
 
-- Model: claude-sonnet-5 — design-only read analysis; Sonnet handles schema reasoning without Opus cost
+- Model: sonnet — design-only read analysis; Sonnet handles schema reasoning without Opus cost
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: Cannot test routes against a running server; designs validated by @contract-validator post-implementation
 - Reversibility profile: reversible — agent produces a design document only; no code or state changes [PE/Tool-Use/4.5]

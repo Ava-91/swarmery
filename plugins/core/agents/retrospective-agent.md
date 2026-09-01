@@ -97,7 +97,7 @@ Retrospective Agent is a Phase 9 executor that analyzes a completed task to prod
 
 # Platform
 
-- **Model**: claude-sonnet-5 -- cognitive bias detection and root cause analysis require analytical reasoning
+- **Model**: sonnet -- cognitive bias detection and root cause analysis require analytical reasoning
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob
 - **Workspace**: `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/phases/` ({task-id} = yyyy-mm-dd-short-slug, date = task start)
 - **Data sources**: git log, workspace artifacts (plan, quality report, summary, `{task-id}/logs/agents.md` delegation assessment ledger), task data

@@ -131,7 +131,7 @@ looking at before the verdict means anything.
 
 # Platform
 
-- Model: claude-opus-5, effort: high — sufficient for orchestrating several
+- Model: opus, effort: high — sufficient for orchestrating several
   MCP tool families (Atlassian + local board API) and a repo-side reproduction
   run in one pass, without the heaviest reasoning tier reserved for
   multi-repo, multi-plan orchestration.

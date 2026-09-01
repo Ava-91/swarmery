@@ -99,7 +99,7 @@ COMPONENT COMPLETE | File: src/components/missions/MissionCard.tsx | Props: 5 | 
 
 # Platform
 
-- Model: claude-sonnet-5 — component generation is template-driven
+- Model: sonnet — component generation is template-driven
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (visual + a11y verification — see Browser verification section)
 - Known limitations: Cannot render components visually; accessibility verified by structure only
 - Reversibility profile: mixed — component files are overwritable (git-tracked), but design system token changes require @tech-lead review [PE/Tool-Use/4.5]

@@ -73,7 +73,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Platform
 
-- Model: claude-sonnet-5 -- CI pipeline design is well within Sonnet's capabilities [PE/Tool-Use/4.5]
+- Model: sonnet -- CI pipeline design is well within Sonnet's capabilities [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash (for `glab` CLI), plus any available codebase-retrieval tooling
 - Limitations: cannot deploy directly; cannot access remote clusters
 - Reversibility: revert CI changes via `git checkout -- .gitlab-ci.yml`; pipeline rollback via documented rollback command

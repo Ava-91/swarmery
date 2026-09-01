@@ -81,7 +81,7 @@ Related: {issue IDs if present}
 
 # Platform
 
-- Model: claude-haiku-4-5 -- documentation generation from structured inputs is a lightweight task [PE/Tool-Use/4.5]
+- Model: haiku -- documentation generation from structured inputs is a lightweight task [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, Grep, Glob
 - Limitations: cannot spawn subagents; relies on structured inputs or conversation history
 - Reversibility: documentation files can be deleted or regenerated

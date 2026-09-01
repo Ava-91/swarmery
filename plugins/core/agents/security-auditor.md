@@ -109,7 +109,7 @@ SECURITY AUDIT: FAIL (1 P0) | P0: 1 | P1: 1 | P2: 0 | P3: 0 | Artifact: ${AGENT_
 
 # Platform
 
-- Model: claude-opus-5 — PINNED; the security gate must not be cost-routed to Sonnet (Opus's honesty gains matter most for OWASP/STRIDE audits)
+- Model: opus — PINNED; the security gate must not be cost-routed to Sonnet (Opus's honesty gains matter most for OWASP/STRIDE audits)
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (live DOM/auth-flow probing on AUTHORIZED targets only — see Browser verification section)
 - Known limitations: Static analysis only; cannot test for runtime timing attacks or network-level vulnerabilities
 - Reversibility profile: reversible — produces findings report only [PE/Tool-Use/4.5]

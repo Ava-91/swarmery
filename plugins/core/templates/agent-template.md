@@ -1,7 +1,7 @@
 ---
 name: <agent-name>
 description: <one-line trigger description — what work this agent should handle, used as the routing signal>
-model: <claude-opus-5 | claude-sonnet-5 | claude-haiku-4-5>
+model: <opus | sonnet | haiku>
 # Rationale: <why this model — what reasoning, cost, or speed property of the model is needed>
 effort: <low | medium | high | xhigh | max>           # omit for Haiku (no effort support)
 # Effort guidance: <one-line on when to raise/lower>

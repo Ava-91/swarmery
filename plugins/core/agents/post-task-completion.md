@@ -54,7 +54,7 @@ Post-Task Completion Hook for the project. Single responsibility: detect task co
 # Platform
 
 - **Workspace path**: `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/`
-- **Model**: claude-haiku-4-5 -- thin routing trigger, not a reasoning agent
+- **Model**: haiku -- thin routing trigger, not a reasoning agent
 - **Background mode**: `background: true` -- fires without blocking main agent flow
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read (check session context), Bash (check git status)
 

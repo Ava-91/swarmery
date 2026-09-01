@@ -103,7 +103,7 @@ Vocabulary: the top-level plan unit is a **Phase** (`phase-N-<slug>.md`); inside
 
 # Platform
 
-- **Model**: claude-sonnet-5 -- analytical decomposition at moderate cost
+- **Model**: sonnet -- analytical decomposition at moderate cost
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - **Standard phase ordering**: Schema/Types -> Backend Logic -> API Layer (route handlers, server actions) -> Frontend (UI components) -> Tests -> Documentation
 - **Technology**: per the project's `CLAUDE.md` and `.claude/project.json` → stack (e.g., route handlers and server actions, not GraphQL resolvers)

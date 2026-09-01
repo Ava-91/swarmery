@@ -77,7 +77,7 @@ Migration plan saved to `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/work
 
 # Platform
 
-- Model: claude-sonnet-5 -- step-by-step migration execution is within Sonnet's capability [PE/Tool-Use/4.5]
+- Model: sonnet -- step-by-step migration execution is within Sonnet's capability [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, mcp__auggie__codebase-retrieval
 - Limitations: cannot spawn subagents when invoked as subagent
 - Reversibility: every step has a documented rollback; Prisma DOWN strategy for each UP

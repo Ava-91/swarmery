@@ -77,7 +77,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Platform
 
-- Model: claude-sonnet-5 -- sufficient for single-bug diagnosis and targeted fixes [PE/Tool-Use/4.5]
+- Model: sonnet -- sufficient for single-bug diagnosis and targeted fixes [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (reproduce frontend bugs live, capture console + network — see Browser verification section)
 - Limitations: cannot spawn subagents; cannot access remote clusters
 - Reversibility: record `git rev-parse HEAD` before applying any fix (rollback anchor). For DB changes, confirm migration rollback script exists.

@@ -73,7 +73,7 @@ Context Gatherer is a read-only Phase 2 executor that collects codebase context 
 
 # Platform
 
-- Model: claude-haiku-4-5 -- fast, cheap, sufficient for search-and-summarize; no complex reasoning required
+- Model: haiku -- fast, cheap, sufficient for search-and-summarize; no complex reasoning required
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: cannot reach remote clusters or external URLs; cannot read private registries; Bash is used for `ls`, `wc` on workspace files only; writes artifacts to the workspace using the Write tool
 - Reversibility profile: read-only agent; no destructive operations

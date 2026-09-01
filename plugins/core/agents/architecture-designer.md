@@ -125,7 +125,7 @@ DESIGN COMPLETE | Components: 4 | Assumptions: 2 | Breaking: NO | Artifact: docs
 
 # Platform
 
-- Model: claude-sonnet-5 — architectural analysis; Opus not needed
+- Model: sonnet — architectural analysis; Opus not needed
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: Cannot test architecture on live infrastructure; designs verified on the staging environment
 - Reversibility profile: reversible — produces a design document only [PE/Tool-Use/4.5]

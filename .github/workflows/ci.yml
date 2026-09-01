@@ -75,6 +75,13 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+      - name: Component reference integrity
+        run: |
+          # Dead skills: refs, dead ${CLAUDE_PLUGIN_ROOT} paths, pinned or
+          # retired model ids, and frontmatter Claude Code ignores on plugin
+          # subagents all fail here — the 2026-09 audit's bug class, closed.
+          bash scripts/validate-agent-refs.sh
+
       - name: System item docs coverage
         run: |
           # Every registrable agent, skill and command owes its reader one

@@ -85,7 +85,7 @@ Prompting Agent is an optional Phase 3.5 executor that generates structured, sel
 
 # Platform
 
-- Model: claude-sonnet-5 -- strong reasoning for pattern extraction and prompt structuring
+- Model: sonnet -- strong reasoning for pattern extraction and prompt structuring
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: prompt quality depends on Phase 2 context quality; cannot verify prompts work without executing them
 - Reversibility profile: produces documentation only; no destructive operations

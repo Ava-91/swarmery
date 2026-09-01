@@ -79,7 +79,7 @@ Test Runner for the project's platform (repos in `.claude/project.json` → `rep
 
 # Platform
 
-- Model: claude-sonnet-5 -- failure analysis benefits from Sonnet reasoning
+- Model: sonnet -- failure analysis benefits from Sonnet reasoning
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash (for running tests), Grep, Glob
 - Test commands per stack (typical — confirm each repo's actual commands in its `CLAUDE.md` / `package.json` / `Makefile`):
   - Main app (→ `mainApp`): `npm run test`, `npm run test -- --coverage`, `npm run test -- --testPathPattern="<pattern>"`

@@ -60,7 +60,7 @@ Test Writer for the project (consult `CLAUDE.md` + `project.json` for repos and 
 
 # Platform
 
-- Model: claude-sonnet-5 -- test writing is structured work within Sonnet capability
+- Model: sonnet -- test writing is structured work within Sonnet capability
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Bash, Grep, Glob, Edit, Write, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (drive a live browser to discover selectors/flows before authoring E2E specs — see Browser verification section)
 - Test stacks (typical — confirm each repo's tooling in its `CLAUDE.md` / `package.json` / `Makefile`):
   - Main app (→ `mainApp`): Jest/Vitest for unit + integration, React Testing Library for components, Playwright for E2E

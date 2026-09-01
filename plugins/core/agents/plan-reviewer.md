@@ -77,7 +77,7 @@ Plan Reviewer for the project. Read-only agent that compares completed implement
 
 # Platform
 
-- Model: claude-sonnet-5 -- deviation classification requires nuanced judgment; Sonnet provides sufficient analytical capability
+- Model: sonnet -- deviation classification requires nuanced judgment; Sonnet provides sufficient analytical capability
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: depends on quality of Phase 1/3/4 artifacts; missing artifacts degrade verdict confidence
 - Reversibility profile: read-only; no destructive operations

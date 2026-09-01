@@ -59,7 +59,7 @@ Verification Agent for the project (consult `CLAUDE.md` + `project.json` for rep
 
 # Platform
 
-- Model: claude-haiku-4-5 -- verification is deterministic command execution; Haiku is sufficient
+- Model: haiku -- verification is deterministic command execution; Haiku is sufficient
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash (for running checks), Grep, Glob, + Playwright MCP browser tools (live smoke verification — see Browser verification section)
 - Stack detection and commands (typical — confirm each repo's actual commands in its `CLAUDE.md` / `package.json` / `Makefile`):
   | Stack | Build | Typecheck | Lint | Tests | Security |

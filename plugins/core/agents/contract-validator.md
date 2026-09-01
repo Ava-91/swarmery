@@ -107,7 +107,7 @@ CONTRACTS: FAIL | Layers: 4/5 checked | Mismatches: P0=0 P1=1 P2=0 P3=1 | Artifa
 
 # Platform
 
-- Model: claude-sonnet-5 — type-tracing is analytical; Sonnet handles it
+- Model: sonnet — type-tracing is analytical; Sonnet handles it
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: Cannot execute TypeScript type-checker; relies on structural comparison
 - Reversibility profile: reversible — produces a report only [PE/Tool-Use/4.5]

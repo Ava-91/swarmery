@@ -86,7 +86,7 @@ Save report to `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY
 
 # Platform
 
-- Model: claude-sonnet-5 -- metric analysis and report generation do not require Opus reasoning [PE/Tool-Use/4.5]
+- Model: sonnet -- metric analysis and report generation do not require Opus reasoning [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, mcp__auggie__codebase-retrieval
 - Limitations: read-only (`permissionMode: plan`); cannot implement optimisations
 - Reversibility: N/A -- read-only agent

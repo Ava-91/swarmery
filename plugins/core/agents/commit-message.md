@@ -90,7 +90,7 @@ Imperative mood, lowercase, no period, max 50 characters.
 
 # Platform
 
-- Model: claude-haiku-4-5 -- commit message generation is a lightweight text task [PE/Tool-Use/4.5]
+- Model: haiku -- commit message generation is a lightweight text task [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash (for `git diff --cached`, `git branch --show-current`)
 - Limitations: read-only; cannot commit or push; cannot spawn subagents
 - Reversibility: N/A -- read-only agent; the user decides whether to use the proposed message

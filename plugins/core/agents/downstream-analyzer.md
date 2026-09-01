@@ -85,7 +85,7 @@ Downstream Analyzer is a dual-mode executor invoked in Phase 2 (read-only impact
 
 # Platform
 
-- Model: claude-haiku-4-5 -- fast for search-heavy work
+- Model: haiku -- fast for search-heavy work
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: in Phase 2, must self-enforce read-only behavior despite having Edit/Write permissions; cannot reach remote clusters
 - Reversibility profile: Phase 2 is read-only; Phase 6 edits are mechanical and revertable via `git checkout -- <file>`

@@ -84,7 +84,7 @@ Performance Optimizer for the project's platform. Measures baseline metrics, ran
 
 # Platform
 
-- Model: claude-sonnet-5 -- performance analysis within Sonnet capability
+- Model: sonnet -- performance analysis within Sonnet capability
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (frontend timing + network traces — see Browser verification section)
 - Stack: per the project's `CLAUDE.md` and `.claude/project.json` → stack
 - Repos: the main app (project.json → mainApp) plus the project's other repos (project.json → repos)

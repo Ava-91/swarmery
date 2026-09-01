@@ -70,7 +70,7 @@ Post-mortem candidate: <yes/no + proposed failure-modes.md entry>
 
 # Platform
 
-- Model: claude-sonnet-5 -- log parsing and pattern matching are well within Sonnet's capabilities [PE/Tool-Use/4.5]
+- Model: sonnet -- log parsing and pattern matching are well within Sonnet's capabilities [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash (for `glab` CLI), mcp__auggie__codebase-retrieval
 - Limitations: read-only (`permissionMode: plan`); cannot edit files or run deploys
 - Reversibility: N/A -- read-only agent; remediation plans are handed off to other agents

@@ -116,7 +116,7 @@ This is a **triage agent**: it sweeps four dimensions shallow-but-broad and esca
 
 # Platform
 
-- Model: claude-sonnet-5 -- analytical review within Sonnet capability; cost-effective for read-only pattern matching
+- Model: sonnet -- analytical review within Sonnet capability; cost-effective for read-only pattern matching
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: cannot reach remote clusters or external URLs; LLM-based severity assessment is subjective -- mitigated by >80% confidence threshold
 - Reversibility profile: read-only agent; no destructive operations possible

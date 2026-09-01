@@ -74,7 +74,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Platform
 
-- Model: claude-sonnet-5 -- Python implementation for a single repo is within Sonnet's capability [PE/Tool-Use/4.5]
+- Model: sonnet -- Python implementation for a single repo is within Sonnet's capability [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, mcp__auggie__codebase-retrieval
 - Limitations: cannot access Raspberry Pi hardware directly from this environment; relies on `MOCK_MODE=true` for CI
 - Reversibility: revert file changes via git

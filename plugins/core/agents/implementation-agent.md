@@ -83,7 +83,7 @@ Anti-nesting guard: orchestrators only ever send `step_file`, so a `task_dir` in
 
 # Platform
 
-- Model: claude-opus-5 -- required for complex multi-file reasoning across TypeScript/Python/infra config; adaptive thinking (no fixed token budget), `effort: xhigh` (sufficient for single-file Micro edits at `high`)
+- Model: opus -- required for complex multi-file reasoning across TypeScript/Python/infra config; adaptive thinking (no fixed token budget), `effort: xhigh` (sufficient for single-file Micro edits at `high`)
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: cannot spawn subagents in Leaf mode (in Plan-execution mode it is the dispatch point; its executors are leaves); cannot access remote clusters; Leaf mode operates in a worktree isolate for code edits — Plan-execution mode's own writes go to the workspace repo (ORCHESTRATION.md, step docs, SUMMARY.md), while its dispatched leaves use their own isolates
 - Technology stack (typical shape — resolve the project's actual repos and stacks from `CLAUDE.md` / project.json → `repos`, `stack`):

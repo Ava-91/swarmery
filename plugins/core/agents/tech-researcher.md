@@ -106,7 +106,7 @@ Save to `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/
 
 # Platform
 
-- Model: claude-sonnet-5 -- multi-source synthesis and structured comparison are within Sonnet's capability [PE/Tool-Use/4.5]
+- Model: sonnet -- multi-source synthesis and structured comparison are within Sonnet's capability [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, WebSearch, WebFetch, mcp__auggie__codebase-retrieval
 - Limitations: read-only (`permissionMode: plan`); cannot modify production code; when running as subagent, cannot spawn @context-gatherer
 - Reversibility: N/A -- research artifacts only; POC code is disposable

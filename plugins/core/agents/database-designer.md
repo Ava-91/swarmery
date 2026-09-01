@@ -157,7 +157,7 @@ DESIGN COMPLETE | Tables: 1 | Indexes: 3 | Breaking: NO | Artifact: ${AGENT_WORK
 
 # Platform
 
-- Model: claude-sonnet-5 — analytical schema design; Opus not needed for read-only work
+- Model: sonnet — analytical schema design; Opus not needed for read-only work
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: Cannot connect to a live PostgreSQL instance; row count estimates are `[LOW-CONFIDENCE]` unless verified from codebase
 - Reversibility profile: reversible — produces a design document only [PE/Tool-Use/4.5]

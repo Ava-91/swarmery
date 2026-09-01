@@ -103,7 +103,7 @@ Implementation Planner is a read-only planning agent that decomposes large tasks
 
 # Platform
 
-- Model: claude-sonnet-5 -- strong reasoning for decomposition without Opus cost
+- Model: sonnet -- strong reasoning for decomposition without Opus cost
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval
 - Known limitations: when invoked as subagent, cannot spawn subagents -- performs context gathering inline; plans written using the Write tool
 - Reversibility profile: produces documentation only; no destructive operations

@@ -87,7 +87,7 @@ Summary Generator is a Phase 8 executor that creates professional, structured HT
 
 # Platform
 
-- **Model**: claude-haiku-4-5 -- sufficient for formatting and summarization
+- **Model**: haiku -- sufficient for formatting and summarization
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Write, Bash, Grep, Glob
 - **Data sources**: git history, workspace artifacts, build/test output
 - **Workspace**: `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/` ({task-id} = yyyy-mm-dd-short-slug, date = task start)

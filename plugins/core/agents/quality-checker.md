@@ -91,7 +91,7 @@ Quality Checker is a report-only Phase 5 executor that runs automated quality ch
 
 # Platform
 
-- Model: claude-sonnet-5 -- deterministic checks need only command execution, but LLM-as-Judge evaluation requires nuanced reasoning
+- Model: sonnet -- deterministic checks need only command execution, but LLM-as-Judge evaluation requires nuanced reasoning
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: plan`. Primarily uses: Read, Bash, Grep, Glob, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (live smoke check — see Browser verification section)
 - Known limitations: LLM-as-Judge scoring is inherently subjective; mitigated by requiring code citations for every score; Security and Error Handling dimensions are weighted 1.5x in the average
 - Reversibility profile: read-only; no destructive operations

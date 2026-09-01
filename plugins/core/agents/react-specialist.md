@@ -79,7 +79,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Platform
 
-- Model: claude-sonnet-5 -- component implementation and accessibility checks are within Sonnet's capability [PE/Tool-Use/4.5]
+- Model: sonnet -- component implementation and accessibility checks are within Sonnet's capability [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, Grep, Glob, mcp__auggie__codebase-retrieval, + Playwright MCP browser tools (live UI verification — see Browser verification section)
 - Limitations: cannot run Lighthouse in this environment; reports estimated values or defers to CI
 - Reversibility: revert component changes via git

@@ -68,7 +68,7 @@ Update `COMPLETION-SUMMARY.md`: change `- [ ] Step N.M` to `- [x] Step N.M {YYYY
 
 # Platform
 
-- Model: claude-sonnet-5 -- targeted single-error fixes do not require Opus-level reasoning [PE/Tool-Use/4.5]
+- Model: sonnet -- targeted single-error fixes do not require Opus-level reasoning [PE/Tool-Use/4.5]
 - Tools: inherits all available tools (no `tools:`/`disallowedTools:` in frontmatter); actions bounded by `permissionMode: acceptEdits`. Primarily uses: Read, Edit, Write, Bash, mcp__auggie__codebase-retrieval
 - Limitations: cannot spawn subagents; cannot access remote clusters
 - Reversibility: each fix is a small diff; revert with `git checkout -- <file>` if a fix introduces new errors
