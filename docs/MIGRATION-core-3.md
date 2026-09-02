@@ -102,6 +102,16 @@ still works): `code-quality`, `deps-check`, `env-check`, `migration-check`,
   once-per-session budget warning remain).
 - `pre-commit-test-gate.sh` and `memory-drift-check.sh` are documented
   opt-ins, not wired by default.
+- `subagent-stop.sh` now writes the delegation ledger row itself (3.0.2). It
+  derives agent, phase, verdict, loops and artifact from the SubagentStop
+  payload — `last_assistant_message` carries the subagent's final text, so the
+  `VERDICT:` line and reported artifact are read rather than retyped — and
+  appends a 7-cell row to `{task-dir}/logs/agents.md` in the shape
+  `internal/wsingest` already parses. `quality` and `mistakes` stay empty:
+  they are the orchestrator's judgment. `@tech-lead` no longer instructs the
+  model to write the row by hand. The task dir comes from `AGENT_TASK_ID` when
+  set, otherwise from `transcript_path`, the same way `session-summary.sh`
+  attributes a session to a task.
 
 ## Domain packs
 

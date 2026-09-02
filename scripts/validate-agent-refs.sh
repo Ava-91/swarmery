@@ -41,6 +41,17 @@ import glob, os, re, sys
 root = os.environ['AGENT_REFS_ROOT']
 allow = {e.strip() for e in os.environ.get('CROSS_PLUGIN_ALLOW', '').split() if e.strip()}
 
+# Plugin-shipped agents accept a NARROWER field set than project/user agents:
+# name, description, model, effort, maxTurns, tools, disallowedTools, skills,
+# memory, background, isolation. `hooks`, `mcpServers` and `permissionMode` are
+# unsupported for plugin agents *for security reasons* — the plugins reference
+# says so explicitly. That is why the general subagent docs listing
+# permissionMode does not contradict this rule: that list covers project and
+# user agents, not plugin ones. (Verified 2026-09-02 against
+# code.claude.com/docs/en/plugins-reference — re-check before relaxing.)
+# `docs` is ours, not Claude Code's: the provenance block scripts/docgen/ and
+# internal/sysscan read. `color` is listed for subagents generally; harmless
+# either way since an unread key changes no behaviour.
 AGENT_KEYS = {'name', 'description', 'model', 'tools', 'disallowedTools',
               'skills', 'memory', 'isolation', 'background', 'color',
               'maxTurns', 'docs', 'effort'}
