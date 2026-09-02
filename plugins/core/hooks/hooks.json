@@ -4,19 +4,28 @@
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh"
+          }
         ]
       },
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash-shape-guard.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bash-shape-guard.sh"
+          }
         ]
       },
       {
         "matcher": "Agent",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/architecture-freshness.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/architecture-freshness.sh"
+          }
         ]
       }
     ],
@@ -24,20 +33,32 @@
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/code-formatter.sh" },
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/type-checker.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/code-formatter.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/type-checker.sh"
+          }
         ]
       },
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_bash_index_check.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_bash_index_check.sh"
+          }
         ]
       },
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-observe.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-observe.sh"
+          }
         ]
       }
     ],
@@ -45,29 +66,108 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh" },
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/task-session-log.sh" },
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/architecture-digest.sh" }
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/task-session-log.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/architecture-digest.sh"
+          }
         ]
       }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.sh" } ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.sh"
+          }
+        ]
+      }
     ],
     "SubagentStart": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.sh" } ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.sh"
+          }
+        ]
+      }
     ],
     "SubagentStop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.sh" } ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.sh"
+          }
+        ]
+      }
     ],
     "PreCompact": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.sh" } ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.sh"
+          }
+        ]
+      }
     ],
     "PostCompact": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact.sh" } ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-compact.sh"
+          }
+        ]
+      }
     ],
     "Notification": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-completion.sh" } ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/notify-completion.sh"
+          }
+        ]
+      }
+    ],
+    "PreModelSwitch": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-model-switch.sh"
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-model-switch.sh"
+          }
+        ]
+      }
     ]
   }
 }

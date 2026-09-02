@@ -122,6 +122,39 @@ still works): `code-quality`, `deps-check`, `env-check`, `migration-check`,
   set, otherwise from `transcript_path`, the same way `session-summary.sh`
   attributes a session to a task.
 
+## The model-switch gate (3.1.0)
+
+Core now ships `PreModelSwitch` and `PostModelSwitch` hooks. **`PreModelSwitch`
+is the only hook in core that blocks**, and it blocks on a definite negative
+only:
+
+| Situation | Result |
+|---|---|
+| The daemon has a `pass` verdict for the target model | allowed |
+| Verdict is `fail` or `inconclusive` | **blocked** |
+| The model has no recorded verdict | **blocked** — unknown is not the same as fine |
+| The daemon is unreachable, or the payload is malformed | allowed, with a warning |
+| Same model (a resume restoring it) | allowed — not a switch |
+| `SWARMERY_ALLOW_UNVALIDATED_MODEL=1` | allowed, and logged |
+
+The override is **not** a loophole, it is the validation path. Trajectories on
+a new model cannot exist until somebody runs on it, so: switch deliberately
+with the override, work normally, then run `swarmery modeleval --model <id>` —
+those runs are the evidence, and the gate opens on its own.
+
+The verdict itself is **relative**, not an absolute quality bar: a model fails
+when it scores materially below the best model you already run. An absolute bar
+was tried first and failed every model including the incumbent, which is an
+outage rather than a gate.
+
+`PostModelSwitch` never blocks. It records the switch for the daemon and warns
+once when the new model is missing from `config/pricing.json` — an unpriced
+model costs NULL silently, which is how a new generation hides from the cost
+layer.
+
+If you do not run the swarmery daemon, the gate is inert by design: it allows
+every switch and says so.
+
 ## Domain packs
 
 Packs were patch-bumped (stale model pins → aliases, frontmatter cleanup,
