@@ -26,9 +26,15 @@ func summarizeTrajectory(evs []event) string {
 	return b.String()
 }
 
+// RubricPreamble is the first line of every judge prompt. It doubles as the
+// marker that identifies a judge run's own transcript: ClaudeRunner executes
+// with cwd ~/.swarmery, so ingest records each scoring call as an ordinary
+// session, and without this the judge ends up scoring its own output.
+const RubricPreamble = "You are an expert reviewer scoring one AI coding agent's execution trajectory."
+
 // buildRubricPrompt asks for a strict-JSON verdict on the 4-dimension rubric.
 func buildRubricPrompt(summary string) string {
-	return `You are an expert reviewer scoring one AI coding agent's execution trajectory.
+	return RubricPreamble + `
 Score each dimension from 1 (worst) to 5 (best). Higher is always better.
 
 - end_result: did the run reach a correct, complete outcome?

@@ -200,3 +200,53 @@ func TestJudgedWithin(t *testing.T) {
 		t.Error("other model only: want false")
 	}
 }
+
+// The judge must not grade its own scoring runs. ClaudeRunner executes with
+// cwd ~/.swarmery so its transcripts are readable, which means ingest records
+// every scoring call as an ordinary session — and left in the candidate pool
+// the judge scores its own output. Those transcripts hold no work trajectory,
+// so they score at the floor: measured on the live corpus, 29 such rows
+// averaged 1.20 against 3.01 for real work, and 27 of them landed on one
+// model, making it look catastrophic on evidence that was never about a model.
+func TestSelectCandidatesSkipsJudgeOwnSessions(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "selfjudge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mk := func(id int64, uuid, text string) {
+		if _, err := db.Exec(
+			`INSERT OR IGNORE INTO projects (id, path, slug, name, first_seen)
+			 VALUES (1,'/p','p','p','2026-09-01T00:00:00Z')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO sessions (id, project_id, session_uuid, started_at)
+			 VALUES (?, 1, ?, '2026-09-01T00:00:00Z')`, id, uuid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO turns (session_id, seq, role, started_at, text)
+			 VALUES (?, 1, 'user', '2026-09-01T00:00:00Z', ?)`, id, text); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO trajectory_scores (session_id, agent, first_pass, computed_at)
+			 VALUES (?, 'main', 1, '2026-09-01T00:00:00Z')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mk(1, "real", "Please refactor the telemetry sender.")
+	mk(2, "judge", RubricPreamble+"\nScore each dimension from 1 (worst)...")
+
+	cands, err := selectCandidates(db, "claude-sonnet-5", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 || cands[0].sessionID != 1 {
+		t.Fatalf("candidates = %+v, want only the real session: the judge's own "+
+			"scoring transcript must never be a candidate", cands)
+	}
+}
