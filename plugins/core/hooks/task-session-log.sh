@@ -7,11 +7,15 @@
 # control-plane workspace ingester reads (only uuid-shaped values are
 # trustworthy there; this hook is the writer that makes them so).
 #
-# Writes ONLY when AGENT_TASK_ID is set; otherwise it exits untouched.
+# Task selection: $AGENT_TASK_ID when the caller exports it, otherwise the one
+# task whose README says it is active — the same "in-flight" rule session-start.sh
+# renders in its banner. Nothing in the fleet actually exports AGENT_TASK_ID, so
+# for years the guard here meant this hook wrote nothing at all, leaving
+# wsingest's explicit task<->session link with no writer (its heuristic carried
+# everything). If two tasks are active the hook does nothing: writing the link
+# onto the wrong card is worse than leaving it to the heuristic.
 # Never fails session start: every error path exits 0.
 set -u
-
-[ -n "${AGENT_TASK_ID:-}" ] || exit 0
 
 # Session uuid comes from the hook's stdin JSON ({"session_id": "..."}).
 input=$(cat 2>/dev/null || true)
@@ -30,11 +34,33 @@ fi
 # Task dir: working/YYYY/MM/DD/<slug> derived from the canonical task id
 # (yyyy-mm-dd-slug), with agent-work.sh's find-by-slug fallback for cards
 # that predate the dated layout.
-task_id="$AGENT_TASK_ID"
-y="${task_id:0:4}" m="${task_id:5:2}" d="${task_id:8:2}" slug="${task_id:11}"
-task_dir="${working_dir}/${y}/${m}/${d}/${slug}"
-if [ ! -d "$task_dir" ]; then
-  task_dir=$(find "$working_dir" -type d -path "*/${slug}" 2>/dev/null | head -1)
+task_dir=""
+if [ -n "${AGENT_TASK_ID:-}" ]; then
+  task_id="$AGENT_TASK_ID"
+  y="${task_id:0:4}" m="${task_id:5:2}" d="${task_id:8:2}" slug="${task_id:11}"
+  task_dir="${working_dir}/${y}/${m}/${d}/${slug}"
+  if [ ! -d "$task_dir" ]; then
+    task_dir=$(find "$working_dir" -type d -path "*/${slug}" 2>/dev/null | head -1)
+  fi
+else
+  # Exactly one active task, by the same README "Status:" rule session-start.sh
+  # uses. Zero or several → stay out of it.
+  active=""
+  count=0
+  while IFS= read -r readme; do
+    [ -n "$readme" ] || continue
+    status_val=$(grep -m1 'Status:' "$readme" 2>/dev/null \
+      | sed 's/^.*Status:[*]*[[:space:]]*//')
+    case "$status_val" in
+      active*|Active*|ACTIVE*|in-progress*|in_progress*|"in progress"*|IN_PROGRESS*) ;;
+      *) continue ;;
+    esac
+    active=$(dirname "$readme")
+    count=$((count + 1))
+  done <<EOF
+$(find "$working_dir" -mindepth 5 -maxdepth 5 -name README.md 2>/dev/null | head -50)
+EOF
+  [ "$count" -eq 1 ] && task_dir="$active"
 fi
 [ -n "$task_dir" ] && [ -d "$task_dir" ] || exit 0
 
@@ -42,7 +68,15 @@ log="${task_dir}/logs/sessions.md"
 mkdir -p "${task_dir}/logs" 2>/dev/null || exit 0
 
 append_row() {
-  [ -f "$log" ] || printf '| Дата | Сесія | Тривалість | Активність |\n|---|---|---|---|\n' > "$log"
+  # Header must match session-summary.sh, the SessionEnd writer of this same
+  # file — otherwise whichever hook runs first decides what column 3 means.
+  #
+  # -s, not -f: on Linux the flock branch below opens fd 9 with `exec 9>>"$log"`,
+  # which CREATES the file before this runs. An -f test therefore sees it as
+  # existing and skips the header forever, appending rows to a headerless table.
+  # macOS has no flock(1) and takes the mkdir path, so this only ever failed on
+  # Linux — caught by CI, invisible locally.
+  [ -s "$log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$log"
   # Resume/clear re-fires SessionStart — one row per session uuid is enough.
   grep -q "$session_id" "$log" 2>/dev/null && return 0
   printf '| %s | %s | | |\n' "$(date +%Y-%m-%d)" "$session_id" >> "$log"

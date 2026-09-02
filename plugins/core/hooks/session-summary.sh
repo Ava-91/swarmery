@@ -287,10 +287,21 @@ if [ -n "$WS_ROOT" ]; then
     [ -d "$task_dir" ] || continue
     task_log="${task_dir}/logs/sessions.md"
     mkdir -p "${task_dir}/logs" 2>/dev/null || true
-    [ -f "$task_log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$task_log"
-    grep -q "| $$ |" "$task_log" 2>/dev/null && continue   # one row per session pid
+    # -s, not -f: same reason as task-session-log.sh — a file that exists but
+    # is empty still needs its header.
+    [ -s "$task_log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$task_log"
+    # Column 2 must hold the session UUID, not $$. internal/wsingest only
+    # trusts values matching a uuid or a >=8-hex prefix — its own comment
+    # records that 20/21 legacy cells held junk 5-digit ids, which is exactly
+    # what a pid looks like. Writing $$ here fills the column with rows the
+    # ingester is guaranteed to discard. Fall back to $$ only when no uuid was
+    # observed, so the row still reads for a human.
+    sess_uuid=$(jq -r '.session_id // empty' "$SESSION_FILE" 2>/dev/null \
+      | grep -m1 -E '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' || true)
+    sess_cell="${sess_uuid:-$$}"
+    grep -q "| ${sess_cell} |" "$task_log" 2>/dev/null && continue   # one row per session
     printf '| %s | %s | %s | edits:%s bash:%s reads:%s writes:%s agents:%s |\n' \
-      "$human_date" "$$" "${total:-?}" "${edit_n:-0}" "${bash_n:-0}" "${read_n:-0}" "${write_n:-0}" "${agent_n:-0}" \
+      "$human_date" "$sess_cell" "${total:-?}" "${edit_n:-0}" "${bash_n:-0}" "${read_n:-0}" "${write_n:-0}" "${agent_n:-0}" \
       >> "$task_log" 2>/dev/null || true
   done < <(jq -r 'select(.file != "") | .file' "$SESSION_FILE" 2>/dev/null \
             | grep -oE '/working/[0-9]{4}/[0-9]{2}/[0-9]{2}/[a-z0-9][a-z0-9-]*/|/working/([0-9]{4}/[0-9]{2}/)?[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+/' \

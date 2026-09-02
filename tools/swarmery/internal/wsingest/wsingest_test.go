@@ -284,3 +284,58 @@ func TestParseCardPaused(t *testing.T) {
 		t.Errorf("archive-zone paused card status = %q, want done (zone override wins)", c.status)
 	}
 }
+
+// TestExplicitRefsHookWrittenRow pins the sessions.md row shape the two core
+// hooks write — plugins/core/hooks/task-session-log.sh on SessionStart and
+// session-summary.sh on SessionEnd.
+//
+// Both used to be unusable here: task-session-log.sh gated on AGENT_TASK_ID,
+// which nothing exports, so it never wrote at all; session-summary.sh put $$
+// in the session column, and a pid is exactly the "junk 5-digit id" the
+// >=8-hex filter throws away. The explicit task<->session link therefore had
+// no working writer. If this test goes red, that state has returned.
+func TestExplicitRefsHookWrittenRow(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const uuid = "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+	doc := "| Дата | Сесія | Тулзи | Активність |\n" +
+		"|---|---|---|---|\n" +
+		"| 2026-09-02 | " + uuid + " | | |\n" + // SessionStart writer
+		"| 2026-09-02 | " + uuid + " | 412 | edits:9 bash:31 |\n" + // SessionEnd writer
+		"| 2026-09-02 | 48213 | 12 | legacy pid row |\n" // must be ignored
+	if err := os.WriteFile(filepath.Join(dir, "logs", "sessions.md"), []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	refs := explicitRefs(dir)
+
+	// explicitRefs deliberately also emits >=8-hex substrings, so a card that
+	// only ever logged a short prefix still links; those extras match no
+	// session and are harmless. The contract worth pinning is narrower.
+	var sawUUID bool
+	for _, r := range refs {
+		if r == uuid {
+			sawUUID = true
+		}
+		if r == "48213" {
+			t.Errorf("explicitRefs returned the pid row %q — the >=8-hex filter "+
+				"is what keeps junk ids out of the task<->session link", r)
+		}
+	}
+	if !sawUUID {
+		t.Fatalf("explicitRefs = %v, want it to contain the hook-written uuid %s", refs, uuid)
+	}
+	// Both writers logged the same session; the ref must not be duplicated.
+	var n int
+	for _, r := range refs {
+		if r == uuid {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("uuid appears %d times, want 1 — SessionStart and SessionEnd "+
+			"rows for one session must dedupe", n)
+	}
+}
