@@ -70,7 +70,13 @@ mkdir -p "${task_dir}/logs" 2>/dev/null || exit 0
 append_row() {
   # Header must match session-summary.sh, the SessionEnd writer of this same
   # file — otherwise whichever hook runs first decides what column 3 means.
-  [ -f "$log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$log"
+  #
+  # -s, not -f: on Linux the flock branch below opens fd 9 with `exec 9>>"$log"`,
+  # which CREATES the file before this runs. An -f test therefore sees it as
+  # existing and skips the header forever, appending rows to a headerless table.
+  # macOS has no flock(1) and takes the mkdir path, so this only ever failed on
+  # Linux — caught by CI, invisible locally.
+  [ -s "$log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$log"
   # Resume/clear re-fires SessionStart — one row per session uuid is enough.
   grep -q "$session_id" "$log" 2>/dev/null && return 0
   printf '| %s | %s | | |\n' "$(date +%Y-%m-%d)" "$session_id" >> "$log"

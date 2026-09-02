@@ -27,6 +27,23 @@ mk_task() { # mk_task <slug> <status>
 }
 run() { printf '{"session_id":"%s"}' "$UUID" | AGENT_WORKSPACE_ROOT="$TMP/ws" AGENT_PROJECT=proj bash "$HOOK" >/dev/null 2>&1 || true; }
 
+# The hook has two locking branches: flock(1) where it exists (Linux) and an
+# atomic-mkdir spin lock where it does not (macOS). They are NOT equivalent --
+# the flock branch opens the log with `exec 9>>`, which CREATES the file before
+# the header check runs. A header guard of `[ -f ]` therefore silently skips the
+# header on Linux only, which is exactly how this shipped and was caught by CI
+# rather than locally. Both branches are forced here so the host cannot hide it.
+FLOCK_STUB="$TMP/bin-flock"
+mkdir -p "$FLOCK_STUB"
+printf '#!/bin/sh\nexit 0\n' > "$FLOCK_STUB/flock"
+chmod +x "$FLOCK_STUB/flock"
+run_with_flock() {
+  printf '{"session_id":"%s"}' "$1" \
+    | PATH="$FLOCK_STUB:$PATH" AGENT_WORKSPACE_ROOT="$TMP/ws" AGENT_PROJECT=proj \
+      bash "$HOOK" >/dev/null 2>&1 || true
+}
+
+
 # ── 1. one active task, AGENT_TASK_ID unset → the link IS written ──────
 # This is the whole point: nothing in the fleet exports AGENT_TASK_ID, so
 # before the fix this hook wrote nothing, ever.
@@ -86,6 +103,22 @@ fi
 rc=0
 printf 'not json' | AGENT_WORKSPACE_ROOT="$TMP/ws" AGENT_PROJECT=proj bash "$HOOK" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 0 ] && ok "malformed stdin exits 0" || bad "malformed stdin" "rc=$rc"
+
+# ── 8. the header survives the flock branch, on every host ────────────
+# Case 2 already covered whichever branch this host takes natively (mkdir on
+# macOS, flock on Linux). This forces the flock branch everywhere, because that
+# is the one that regressed: `exec 9>>` pre-creates the log, so an `[ -f ]`
+# header guard skips the header for good. macOS could never have shown it.
+rm -rf "$TMP/ws/proj/workspace/working/2026/09/02/bravo"          # single active again
+rm -rf "$TMP/ws/proj/workspace/working/2026/09/02/alpha/logs"
+mkdir -p "$TMP/ws/proj/workspace/working/2026/09/02/alpha/logs"
+run_with_flock "1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9"
+L="$TMP/ws/proj/workspace/working/2026/09/02/alpha/logs/sessions.md"
+if head -1 "$L" 2>/dev/null | grep -q '| Дата | Сесія | Тулзи | Активність |'; then
+  ok "header written on the flock branch (forced on every host)"
+else
+  bad "header on flock branch" "got: $(head -1 "$L" 2>/dev/null || echo '<no file>')"
+fi
 
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

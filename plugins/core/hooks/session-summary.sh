@@ -287,7 +287,9 @@ if [ -n "$WS_ROOT" ]; then
     [ -d "$task_dir" ] || continue
     task_log="${task_dir}/logs/sessions.md"
     mkdir -p "${task_dir}/logs" 2>/dev/null || true
-    [ -f "$task_log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$task_log"
+    # -s, not -f: same reason as task-session-log.sh — a file that exists but
+    # is empty still needs its header.
+    [ -s "$task_log" ] || printf '| Дата | Сесія | Тулзи | Активність |\n|---|---|---|---|\n' > "$task_log"
     # Column 2 must hold the session UUID, not $$. internal/wsingest only
     # trusts values matching a uuid or a >=8-hex prefix — its own comment
     # records that 20/21 legacy cells held junk 5-digit ids, which is exactly
