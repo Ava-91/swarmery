@@ -8,7 +8,8 @@ A local-first control plane for Claude Code sessions. One Go binary, no cloud, n
 Ships with a versioned plugin marketplace so your agents live in one place and every
 project pulls them with `/plugin update`.
 
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![Framework: Apache-2.0](https://img.shields.io/badge/framework-Apache--2.0-blue)](LICENSE)
+[![Control plane: PolyForm NC](https://img.shields.io/badge/control%20plane-PolyForm%20NC%201.0.0-blue)](tools/swarmery/LICENSE)
 [![Marketplace CI](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml)
 [![Control plane CI](https://github.com/atretyak1985/swarmery/actions/workflows/swarmery-ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/swarmery-ci.yml)
 ![Local only](https://img.shields.io/badge/data-100%25%20local-brightgreen)
@@ -371,5 +372,5 @@ Further reading: [docs/ONBOARDING.md](docs/ONBOARDING.md) ·
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — free for personal, educational, and open-source use;
-commercial use prohibited.
+- Plugins, scripts, overlays and docs — **Apache-2.0** ([`LICENSE`](LICENSE)). Use them anywhere, including commercially.
+- The control plane (`tools/swarmery/`) — **PolyForm Noncommercial 1.0.0** ([`tools/swarmery/LICENSE`](tools/swarmery/LICENSE)). Free for personal, educational and open-source use.

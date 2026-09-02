@@ -115,6 +115,8 @@ tense. Fill in the pull-request template: what changed, the gates you ran with t
 output, the semver bump, screenshots for UI changes. Every real routing bug or
 output-contract regression should also become a case in `evals/`.
 
-Contributions are accepted under the repository's license,
-[PolyForm Noncommercial 1.0.0](LICENSE). Report security issues through
+Contributions are accepted under the license of the region you touch:
+[Apache-2.0](LICENSE) everywhere except `tools/swarmery/`, and
+[PolyForm Noncommercial 1.0.0](tools/swarmery/LICENSE) inside it — see
+[`NOTICE`](NOTICE). Report security issues through
 [`SECURITY.md`](SECURITY.md), never in a public issue.
