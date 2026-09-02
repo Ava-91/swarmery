@@ -75,6 +75,19 @@ project-local components override plugin ones by design.
   retro template's "Improvement Recommendations" heading was never matched by
   the ingester, which wants `## Process Improvements`.
 
+## Supported-version policy
+
+- **Floor: Claude Code ≥ 2.1.160**, enforced at runtime by
+  `plugins/core/hooks/session-start.sh` (a warning, never a block) and pinned
+  at its boundary by `scripts/tests/cc-version-floor.test.sh` in CI.
+- **`plugin.json` cannot express this.** The manifest has a fixed field list,
+  and Claude Code *"ignores top-level fields it does not recognize"* — so a
+  `requiredMinimumVersion` there would look like a constraint and enforce
+  nothing. That is the `permissionMode` failure a third time, and CI now fails
+  if such a field appears in any plugin manifest.
+- The comparison is `sort -V`, not lexical: `2.1.16` sorts *after* `2.1.160`
+  as a string, which is precisely the version pair a naive check gets wrong.
+
 ## Minimum Claude Code version
 
 **Core 3.0 requires Claude Code ≥ 2.1.160.** The release deliberately hands
@@ -121,6 +134,39 @@ still works): `code-quality`, `deps-check`, `env-check`, `migration-check`,
   model to write the row by hand. The task dir comes from `AGENT_TASK_ID` when
   set, otherwise from `transcript_path`, the same way `session-summary.sh`
   attributes a session to a task.
+
+## The model-switch gate (3.1.0)
+
+Core now ships `PreModelSwitch` and `PostModelSwitch` hooks. **`PreModelSwitch`
+is the only hook in core that blocks**, and it blocks on a definite negative
+only:
+
+| Situation | Result |
+|---|---|
+| The daemon has a `pass` verdict for the target model | allowed |
+| Verdict is `fail` or `inconclusive` | **blocked** |
+| The model has no recorded verdict | **blocked** — unknown is not the same as fine |
+| The daemon is unreachable, or the payload is malformed | allowed, with a warning |
+| Same model (a resume restoring it) | allowed — not a switch |
+| `SWARMERY_ALLOW_UNVALIDATED_MODEL=1` | allowed, and logged |
+
+The override is **not** a loophole, it is the validation path. Trajectories on
+a new model cannot exist until somebody runs on it, so: switch deliberately
+with the override, work normally, then run `swarmery modeleval --model <id>` —
+those runs are the evidence, and the gate opens on its own.
+
+The verdict itself is **relative**, not an absolute quality bar: a model fails
+when it scores materially below the best model you already run. An absolute bar
+was tried first and failed every model including the incumbent, which is an
+outage rather than a gate.
+
+`PostModelSwitch` never blocks. It records the switch for the daemon and warns
+once when the new model is missing from `config/pricing.json` — an unpriced
+model costs NULL silently, which is how a new generation hides from the cost
+layer.
+
+If you do not run the swarmery daemon, the gate is inert by design: it allows
+every switch and says so.
 
 ## Domain packs
 

@@ -8,6 +8,9 @@ import "net/http"
 // below, so branches never conflict in one spot.
 func Routes(mux *http.ServeMux, h *Handler) {
 	// ── core: vertical slice (this file's owner) ──
+	// The PreModelSwitch gate's only read: has this model a recorded verdict?
+	mux.HandleFunc("GET /api/models/{id}/validation", h.modelValidation)
+
 	mux.HandleFunc("GET /api/projects", h.listProjects)
 	// week-over-week health rows (cost/error-rate/duration) — literal segment,
 	// so it wins over the {id} wildcard below.

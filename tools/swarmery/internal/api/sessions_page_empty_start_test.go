@@ -10,8 +10,8 @@ import (
 )
 
 // TestSessionsCursorWalkPastEmptyStartedAt pins the pagination half of the
-// phantom-session bug: sessions.started_at is NOT NULL but may be '' (a row
-// minted before any record carried a timestamp), '' sorts LAST under
+// phantom-session bug: sessions.started_at is NOT NULL but may be ” (a row
+// minted before any record carried a timestamp), ” sorts LAST under
 // `ORDER BY started_at DESC`, so a page boundary can land exactly on it. The
 // cursor encoder then emitted "|<id>" and the decoder rejected it as
 // malformed — the Sessions page answered "load more" with a hard 400 and the
