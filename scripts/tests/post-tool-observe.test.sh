@@ -1,20 +1,23 @@
 #!/bin/bash
-# Behavioral tests for plugins/core/hooks/session-budget.sh.
+# Behavioral tests for plugins/core/hooks/post-tool-observe.sh — the merged
+# unmatched-PostToolUse hook (activity log + session budget in one process).
 #
 # Same framework-free style as the other hook suites: feed a PostToolUse payload
 # on stdin and assert what came back. Every case also asserts the hook's hard
-# contract — valid JSON, exit 0 — because a budget is advice about how to spend a
-# session, never a reason to fail a tool call mid-flight.
+# contract — valid JSON, exit 0 — because observation and budget advice must
+# never fail a tool call mid-flight.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HOOK="$ROOT/plugins/core/hooks/session-budget.sh"
+HOOK="$ROOT/plugins/core/hooks/post-tool-observe.sh"
 
 TESTDIR=$(mktemp -d)
 trap 'rm -rf "$TESTDIR"' EXIT
 # Markers land under TMPDIR; point it at the sandbox so a real session's marker
-# can neither be read nor written by this suite.
+# can neither be read nor written by this suite. The activity log is likewise
+# sandboxed so the suite never appends to a real session's shared file.
 export TMPDIR="$TESTDIR"
+export SWARMERY_SESSION_FILE="$TESTDIR/session.jsonl"
 
 pass=0
 fail=0
@@ -120,5 +123,25 @@ else
   bad "the budget default ($hook_default) must be at or below the advisor's R9ContextTokens ($r9)"
 fi
 
-printf 'session-budget: %d passed, %d failed\n' "$pass" "$fail"
+# ── activity log: one compact line per tool call ──────────────────
+rm -f "$SWARMERY_SESSION_FILE"
+out=$(jq -nc '{tool_name:"Bash",tool_input:{command:"ls -la"},session_id:"sess-log"}' | bash "$HOOK" 2>/dev/null)
+if [ -f "$SWARMERY_SESSION_FILE" ] \
+   && jq -e 'select(.tool=="Bash" and .cmd=="ls -la")' "$SWARMERY_SESSION_FILE" >/dev/null 2>&1; then
+  ok
+else
+  bad "a Bash tool call did not append a {tool,cmd} line to the activity log"
+fi
+
+# An Agent dispatch whose observed model differs from the requested one logs a
+# ModelFallback event — the routing/cost report's raw signal.
+rm -f "$SWARMERY_SESSION_FILE"
+jq -nc '{tool_name:"Agent",tool_input:{model:"opus"},tool_response:{model:"sonnet"},session_id:"sess-fb"}' | bash "$HOOK" >/dev/null 2>&1
+if jq -e 'select(.tool=="ModelFallback")' "$SWARMERY_SESSION_FILE" >/dev/null 2>&1; then
+  ok
+else
+  bad "a requested-vs-observed model mismatch did not log a ModelFallback event"
+fi
+
+printf 'post-tool-observe: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

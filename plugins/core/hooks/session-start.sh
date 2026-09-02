@@ -117,7 +117,7 @@ EOF
 fi
 
 # ── Initialize fresh session file ─────────────────────────────────
-# Don't clear previous — activity-tracker appends to it
+# Don't clear previous — post-tool-observe appends to it
 # Just mark session start
 echo "{\"ts\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\",\"tool\":\"_session_start\",\"file\":\"\",\"cmd\":\"\"}" >> "$prev_session"
 

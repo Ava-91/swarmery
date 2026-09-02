@@ -59,12 +59,11 @@ for f in "${protected_files[@]}"; do
   fi
 done
 
-# Block edits to credential material. Extended 2026-08-24 alongside
-# read-before-write.sh: that hook echoes a file's CONTENTS to stderr so the
-# agent's retry succeeds, and it defers to this list to decide what must never
-# be echoed. Anything reachable here is therefore both un-editable AND
-# un-quotable — the two properties have to be decided in one place, or the
-# recovery path quietly becomes a disclosure path.
+# Block edits to credential material. Extended 2026-08-24. Historical note:
+# the retired read-before-write.sh hook echoed a refused file's CONTENTS to
+# stderr and deferred to this list to decide what must never be echoed; the
+# hook is gone (the check is native now), but this list remains the single
+# place deciding what is both un-editable and un-quotable.
 if [[ "$base_name" == *.pem || "$base_name" == *.key || "$base_name" == *.p12 || \
       "$base_name" == *.pfx || "$base_name" == *.jks || "$base_name" == *.keystore || \
       "$base_name" == id_rsa* || "$base_name" == id_ed25519* || "$base_name" == id_ecdsa* || \
@@ -98,7 +97,7 @@ if [[ "$base_name" == values.prod.yaml || "$base_name" == values.prod.yml ]]; th
   echo "🚫 BLOCKED: Cannot modify production values file: $file_path" >&2
   echo "Protected pattern: values.prod.{yaml,yml}" >&2
   echo "" >&2
-  echo "Production values changes require joint specialist + @sre-orchestrator review" >&2
+  echo "Production values changes require specialist review with the sre-operations skill" >&2
   echo "and explicit user approval per rules/ASK.md." >&2
   echo "If this is a legitimate change, edit manually outside of an agent session." >&2
   exit 2

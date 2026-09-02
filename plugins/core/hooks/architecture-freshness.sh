@@ -64,11 +64,15 @@ session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
 # for a stale map in broad search. An implementer working from a plan is NOT
 # research-shaped: it has been told where to go.
 #
-# The name is matched with any plugin prefix stripped (`core:context-gatherer` →
-# `context-gatherer`), because the same agent is spawned under both spellings.
+# The name is matched with any plugin prefix stripped (`core:researcher` →
+# `researcher`), because the same agent is spawned under both spellings.
+# Pre-consolidation names (context-gatherer, tech-researcher, code-auditor,
+# downstream-analyzer, architecture-designer, silent-failure-hunter) stay in the
+# list so transcripts from legacy sessions still classify correctly.
 is_research_agent() {
   case "${1##*:}" in
     general-purpose|general|explore|Explore|\
+    researcher|code-reviewer|architect|\
     context-gatherer|tech-researcher|code-auditor|downstream-analyzer|\
     architecture-designer|silent-failure-hunter)
       return 0 ;;

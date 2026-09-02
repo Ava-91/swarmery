@@ -65,9 +65,12 @@ RECENT=$(repo 1 no)           # behind head, but younger than the stale bar
 
 # ── the gate fires on research-shaped spawns against a stale map ──
 expect REFUSE "general-purpose against a stale map" "$(decision "$STALE" s1 general-purpose)"
-expect REFUSE "plugin-prefixed context-gatherer"    "$(decision "$STALE" s2 core:context-gatherer)"
+expect REFUSE "plugin-prefixed researcher"          "$(decision "$STALE" s2 core:researcher)"
 expect REFUSE "Explore"                             "$(decision "$STALE" s3 Explore)"
-expect REFUSE "tech-researcher"                     "$(decision "$STALE" s4 core:tech-researcher)"
+expect REFUSE "code-reviewer"                       "$(decision "$STALE" s4 core:code-reviewer)"
+# Pre-consolidation names stay recognised so legacy-session transcripts classify.
+expect REFUSE "legacy context-gatherer"             "$(decision "$STALE" s4a core:context-gatherer)"
+expect REFUSE "legacy tech-researcher"              "$(decision "$STALE" s4b core:tech-researcher)"
 # An unrecognised agent is judged by what it was asked to do.
 expect REFUSE "unknown agent asked to explore" "$(decision "$STALE" s5 my-local-agent 'Explore the payments module')"
 
@@ -76,7 +79,7 @@ expect REFUSE "unknown agent asked to explore" "$(decision "$STALE" s5 my-local-
 # cases that prove the scope is narrow.
 expect ALLOW "implementation-agent"       "$(decision "$STALE" s6 core:implementation-agent)"
 expect ALLOW "test-writer"                "$(decision "$STALE" s7 core:test-writer)"
-expect ALLOW "commit-message"             "$(decision "$STALE" s8 core:commit-message)"
+expect ALLOW "debugger"                   "$(decision "$STALE" s8 core:debugger)"
 expect ALLOW "unknown agent implementing" "$(decision "$STALE" s9 my-local-agent 'Implement the retry budget')"
 
 # ── and not when the map is current ───────────────────────────────

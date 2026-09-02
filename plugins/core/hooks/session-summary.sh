@@ -172,7 +172,7 @@ fi
 
 # ── Structured diff log (.swarmery/sessions/<date>.json) ───────────
 # Audit trail: which repos changed, what file list, diff stats. Used by
-# retrospective-agent and founder-reality-check. Best-effort; never blocks the hook.
+# the session-closeout and founder-reality-check skills. Best-effort; never blocks the hook.
 SESSIONS_DIR="${CLAUDE_PROJECT_DIR:-.}/.swarmery/sessions"
 if mkdir -p "$SESSIONS_DIR" 2>/dev/null; then
   diff_json_file="${SESSIONS_DIR}/${today}-$$.json"
