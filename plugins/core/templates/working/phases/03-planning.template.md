@@ -1,7 +1,7 @@
 # Phase 3: Planning
 
 **Task**: {{TASK_NAME}}
-**Agent**: @task-planner
+**Agent**: @planner
 **Started**: {{PHASE_START}}
 **Completed**: {{PHASE_END}}
 **Duration**: {{PHASE_DURATION}}
@@ -72,6 +72,6 @@ graph TD
 
 ## Next Phase
 
-→ Phase 3.5: Prompt Generation (@prompting-agent) [if complex]
+→ Phase 3.5: Prompt Generation (@planner) [if complex]
 → Phase 4: Implementation (@implementation-agent) [if simple/medium]
 

@@ -48,5 +48,5 @@
 
 ## Next Phase
 
-→ Phase 8: Summary (@summary-generator) - **MANDATORY**
+→ Phase 8: Summary (the session-closeout skill) - **MANDATORY**
 

@@ -1,7 +1,7 @@
 # Phase 6: Downstream Changes
 
 **Task**: {{TASK_NAME}}
-**Agent**: @downstream-analyzer
+**Agent**: @researcher
 **Started**: {{PHASE_START}}
 **Completed**: {{PHASE_END}}
 **Duration**: {{PHASE_DURATION}}

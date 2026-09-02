@@ -1,124 +1,78 @@
 ---
 name: <agent-name>
-description: <one-line trigger description — what work this agent should handle, used as the routing signal>
-model: <opus | sonnet | haiku>
-# Rationale: <why this model — what reasoning, cost, or speed property of the model is needed>
-effort: <low | medium | high | xhigh | max>           # omit for Haiku (no effort support)
-# Effort guidance: <one-line on when to raise/lower>
-permissionMode: <default | acceptEdits | plan>        # plan = read-only; acceptEdits = edits auto-applied
-memory: <project | session>                            # optional
+description: <one-line trigger description — what work this agent should handle; this is the routing signal, make it distinct from every sibling agent>
+model: <opus | sonnet | haiku>            # ALIASES ONLY — pinned ids fail the reference-integrity CI gate
+# Rationale: <why this model — what reasoning, cost, or speed property is needed>
+effort: <low | medium | high>             # omit for haiku
 color: <purple | blue | cyan | green | yellow | orange | teal | red | pink>
-autonomy: <auto | semi-auto | highly-auto>
-maxTurns: <number>                                     # optional; omit for system default
-isolation: worktree                                    # optional; use for editors that touch many files
-version: 1.0.0
-owner: platform-team
+maxTurns: <number>                        # optional; omit for system default
+memory: project                           # optional — only when the agent must learn across sessions
+isolation: worktree                       # optional — for editors that touch many files
+tools: Read, Glob, Grep, Bash, TodoWrite  # REQUIRED for read-only roles (no Edit/Write/NotebookEdit); omit for editors
 skills:
-  - <skill-name>
-# DO NOT add `tools:` or `disallowedTools:` (2026-06 fleet decision: inherit all; capability bounded by permissionMode).
+  - <skill-name>                          # must exist in this plugin (packs may also use core skills) — CI-checked
+docs:
+  status: draft
+  updated: <YYYY-MM-DD>
+# Never add: permissionMode / autonomy / owner / version — Claude Code ignores
+# them on plugin subagents and the CI whitelist rejects them. Ownership
+# metadata lives in plugins/core/AGENTS.md.
 ---
 
 # Role
 
-<2–4 sentences. Single responsibility. Who invokes this agent (upstream) and who consumes its output (downstream). What the agent specifically does NOT do. Reference the routing matrix in `docs/01-core-concepts/agent-catalog.md` if this agent owns a phase.>
+<2–4 sentences. Who this agent is, when it's invoked, what it returns, and
+what it must NOT do. Judgment over rules: give the agent its goal and its
+boundaries, not a phase machine.>
 
-# Goal & success criteria
+# <Operating section — name it for the work>
 
-- Goal: <one sentence stating the deliverable>
-- Success criteria (**falsifiable** — every item must be checkable without judgement):
-  - [ ] <e.g., `npm run typecheck` exits 0>
-  - [ ] <e.g., artifact saved at `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/phases/0X-<name>.md`>
-  - [ ] <e.g., Completion Report contains all 5 fields>
-- Stop conditions:
-  - <when the agent must return — typically: artifact written + verdict emitted>
-  - <max turns / time budget reached>
-  - <unrecoverable error path>
-- Out of scope (explicit non-goals):
-  - <work that belongs to a different agent — say which one>
+<The 3–6 rules that actually matter, each earning its place: output contracts
+other systems parse (state them in ≤3 lines and point to the owning skill —
+e.g. verdict-emitting agents end with the exact final line
+`VERDICT: PASS | FAIL | INCONCLUSIVE`, the only grammar the platform's verify
+engine reads), hard safety boundaries, and the honesty rules ("report checks
+as they ran", "tag unverified claims [LOW-CONFIDENCE]"). Everything
+procedural — checklists, templates, worked processes — belongs in a skill
+with resources/, loaded on demand, not here. Before adding any
+"always/never/minimum N" line, answer: what breaks if it's absent? If the
+answer is "nothing, current models handle it", leave it out.>
 
-# Inputs and outputs
+<BUDGET: the instruction body above `# How to use` stays ≤500 words. If you
+need more, you are writing a skill, not an agent.>
 
-## Inputs (from upstream)
-- `<param>: <type>` — <description; mark optional with (optional)>
+# How to use
 
-## Outputs (to downstream)
-- Format: <file path + chat shape>
-- Length budget: <e.g., artifact ≤80 lines; chat final message ≤5 lines>
-- Output template:
-  ```
-  <copy-pasteable template the agent fills in>
-  ```
-- Final chat message format: `<one-line machine-parseable verdict>`
+## What it does
 
-# Platform
+<2–3 sentences a user reads to know what they get. Required subsection — the
+docs-coverage CI gate checks all four, each ≥40 characters.>
 
-- Model: <model-id> — <one-line on why>
-- Tools: inherits all available tools; primarily uses Read, Edit, Write, Bash, Grep, Glob, mcp__auggie__codebase-retrieval (adjust to actual usage)
-- Stack scope: name the repos/stacks the agent touches, per the project's `CLAUDE.md` / `project.json → stack` — e.g. `apps/<mainApp>` (web / TypeScript) | the device repo (Python) | the infrastructure repo (Helm/Terraform) | <other>
-- Stack exclusions: list stacks the project does NOT use (per its `CLAUDE.md`) so the agent never proposes them.
-- Known limitations: <stateless? cannot spawn subagents? no remote cluster access?>
-- Reversibility profile: <e.g., operates in worktree; `git checkout -- <file>` reverts>
+## When to use it
 
-# Process
+- <trigger 1>
+- <trigger 2>
 
-1. **<Step name>** — <what the agent does. Reference `<thinking>` blocks for non-trivial reasoning before tool calls.>
-2. **<Step name>** — <…>
-3. **<Step name>** — <…>
+## When not to use it
 
-<Optional: include a checklist or sub-procedure here when the agent has a critical scope-check.>
+- <the neighboring agent or skill to prefer, and when>
 
-# Self-check before returning
+## How to invoke
 
-- [ ] Output matches the template above (every field present)
-- [ ] Length within budget
-- [ ] Artifact exists on disk (verify with `test -s <path>`)
-- [ ] Every file cited has been Read in this turn (no speculation about unopened files)
-- [ ] Uncertain conclusions tagged `[LOW-CONFIDENCE]` or `[VERIFY]`
-- [ ] <domain-specific checks>
+```
+@<plugin>:<agent-name> <example invocation>
+```
 
-# Anti-patterns to avoid
+## What you get back
 
-- DO NOT <action that has caused incidents in the past — be specific>
-- DO NOT propose Java/Spring Boot changes
-- DO NOT skip the artifact write — chat output alone is not a deliverable
-- DO NOT speculate about unopened files
-- DO NOT modify files listed in `rules/NEVER.md` without escalation
-- DO NOT use `--no-verify` to bypass pre-commit hooks
+<The deliverable and its form — artifacts, verdict lines, edited files.>
 
-# Failure modes
+## Worked example
 
-| Failure | Detection | Recovery |
-|---------|-----------|----------|
-| <e.g., command timeout> | <how to detect> | <what to do — retry with smaller scope, escalate, etc.> |
-| <e.g., conflicting context> | <…> | <…> |
-| Same step retried >2 times | <…> | Escalate to user via report |
+```
+<one realistic invocation and a condensed realistic response>
+```
 
-# Examples
+## Related
 
-<example>
-<input><concrete input the agent might receive></input>
-<thinking>
-<1–3 sentences of internal reasoning that shape the response>
-</thinking>
-<output>
-<exact response shape — match the template above>
-</output>
-</example>
-
-# Transparency
-
-- <what the agent logs / surfaces to the orchestrator>
-- <how uncertain conclusions are marked>
-- <how scope limits are communicated>
-
----
-
-## Authoring notes (delete this section before saving)
-
-- This template models the real spec-driven agents (`tech-lead`, `verification-agent`, `implementation-agent`). Read one of those first for working examples.
-- "Falsifiable" means a non-expert can mechanically verify the criterion. "Quality is good" is not falsifiable. "Build exits 0 and no new lint warnings" is.
-- Length budgets are not suggestions — they are part of the contract. Long artifacts get truncated in downstream agents' context windows.
-- Anti-patterns must be specific. "Do not write bad code" is useless. "Do not call `getStaticProps` in App Router pages" is enforceable.
-- Place the file in the correct location (`plugins/core/agents/` for generic agents; the relevant domain pack's `agents/` for domain-specific ones).
-- After saving: run `bash scripts/generate-indexes.sh` (rebuilds the indexes AND rewrites the README badge — pass `CENSUS_DATE=YYYY-MM-DD` to stamp the verified date).
-- See `agents/CLAUDE.md` for the full authoring manual.
+- `@<plugin>:<sibling>` — <one line on the boundary between them>

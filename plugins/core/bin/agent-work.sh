@@ -324,7 +324,7 @@ EOF
     # Phase 9 nudge (non-blocking): the retrospective feeds the control plane's
     # lessons pipeline — a completed task without one is a lost feedback loop.
     if [ ! -f "${task_dir}/phases/09-retrospective.md" ]; then
-        log_info "phases/09-retrospective.md відсутній — lessons з цієї таски не потраплять у ретро-аналітику (@retrospective-agent, фаза 9)"
+        log_info "phases/09-retrospective.md відсутній — lessons з цієї таски не потраплять у ретро-аналітику (session-closeout skill, фаза 9)"
     fi
 
     # Archive mirrors working: group by the task's own start date (from its id), not today.

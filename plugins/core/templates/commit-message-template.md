@@ -2,7 +2,7 @@
 
 **Purpose**: Quick reference for conventional commit messages with emojis
 
-**When to Use**: When writing commit messages manually or using `@commit-message` agent
+**When to Use**: When writing commit messages manually or using the `git-commit` skill
 
 **Full details**: See `.claude/skills/git-commit/SKILL.md`
 
@@ -241,15 +241,15 @@ feat(client): ✨ add vendor registration form
 
 ---
 
-## Using @commit-message Agent
+## Using the git-commit Skill
 
-**Instead of writing manually, use the agent:**
+**Instead of writing manually, load the skill:**
 
 ```
-@commit-message
+/git-commit
 ```
 
-**The agent will:**
+**The skill will:**
 1. Analyze your staged changes
 2. Determine type and scope
 3. Generate commit message
@@ -258,9 +258,9 @@ feat(client): ✨ add vendor registration form
 
 **Example:**
 ```
-User: @commit-message
+User: /git-commit
 
-Agent: I analyzed your staged changes:
+Claude: I analyzed your staged changes:
 
 📁 Files changed:
 - src/modules/vendors/vendor.service.ts (modified)
@@ -326,7 +326,6 @@ feat(api): ✨ add vendor registration
 ## Resources
 
 - **Full skill**: `.claude/skills/git-commit/SKILL.md`
-- **Agent**: `.claude/agents/commit-message.md`
 - **Conventional Commits**: https://www.conventionalcommits.org/
 
 ---

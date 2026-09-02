@@ -47,21 +47,19 @@ Called from two places:
 5. `jira-triage` classified the ticket `too-large` at triage time, before any
    reproduction attempt.
 
-# Step 1 — choose the planner
+# Step 1 — brief the planner
 
-- **`@task-planner`** (`plugins/core/agents/task-planner.md`) — scope under
-  roughly a week, 3-5 phases. The default choice for a single defect or
-  small feature that simply exceeded the *autonomous* budget, not the
-  underlying complexity budget.
-- **`@implementation-planner`** (`plugins/core/agents/implementation-planner.md`)
-  — scope over a week, or the ticket is genuinely multi-phase (an epic,
-  a cross-repo migration). Use this when triage's `too-large` reason names
-  something bigger than "this needs a human to review a few extra files."
+**`@planner`** (`plugins/core/agents/planner.md`) handles both scopes: a
+single defect or small feature that simply exceeded the *autonomous* budget
+gets a compact 3-5 phase plan, while a genuinely multi-phase ticket (an
+epic, a cross-repo migration) gets a full multi-phase plan. State the scope
+signal in the brief — triage's `too-large` reason, roughly how long the work
+looks — so the planner sizes the plan deliberately.
 
-Either planner writes its own `README.md` + `phase-N-<slug>.md` tree; this
-skill's job is choosing which one and handing it the ticket's context
-(summary, description, the evidence bundle so far — including any partial
-diagnosis from an escalated `@debugger` or `@verification-agent` run).
+The planner writes its own `README.md` + `phase-N-<slug>.md` tree; this
+skill's job is handing it the ticket's context (summary, description, the
+evidence bundle so far — including any partial diagnosis from an escalated
+`@debugger` or `@verification-agent` run).
 
 # Step 2 — the plan lives in the private workspace, never in a code repo
 
@@ -151,11 +149,11 @@ consistency with the rest of the pack's `--dry-run` contract, since
 out of the run") has to hold for this skill too:
 
 - The planner invocation itself is **not** run in `--dry-run` — the same
-  budget rationale as `jira-delivery` skipping delegation: `@task-planner`/
-  `@implementation-planner` are real multi-turn agent calls, and the mode
-  exists to check the contour, not spend that budget. Print instead:
+  budget rationale as `jira-delivery` skipping delegation: `@planner` is a
+  real multi-turn agent call, and the mode exists to check the contour, not
+  spend that budget. Print instead:
   ```
-  DRY-RUN plan <task-planner|implementation-planner> for <KEY>
+  DRY-RUN plan planner for <KEY>
   ```
 - The Jira comment and the board-card move are suppressed exactly like
   `jira-writeback`'s own dry-run pattern:
@@ -174,8 +172,8 @@ out of the run") has to hold for this skill too:
 # Self-check before returning
 
 - [ ] Exactly one of the five triggers is cited as the reason for escalating
-- [ ] The planner choice (`@task-planner` vs `@implementation-planner`) is
-      justified against scope, not defaulted blindly
+- [ ] The plan's scale (compact vs multi-phase) is justified against the
+      ticket's scope in the brief handed to `@planner`, not defaulted blindly
 - [ ] The plan was written under
       `<workspace>/<project>/workspace/working/{YYYY}/{MM}/{DD}/{slug}/plan/`
       — never under `docs/`, a repo root, or any in-repo phase-history tree
@@ -212,13 +210,12 @@ out of the run") has to hold for this skill too:
 # Related
 
 - `plugins/jira-pack/skills/jira-triage/SKILL.md` — source of the
-  `too-large` verdict (trigger 5) and the evidence bundle handed to the
-  chosen planner.
+  `too-large` verdict (trigger 5) and the evidence bundle handed to
+  `@planner`.
 - `plugins/jira-pack/skills/jira-delivery/SKILL.md` — source of triggers
   1-4, and the branch/worktree this skill cleans up when it hands off
   mid-attempt.
-- `plugins/core/agents/task-planner.md` / `plugins/core/agents/implementation-planner.md`
-  — the two planners Step 1 chooses between.
+- `plugins/core/agents/planner.md` — the planner Step 1 briefs.
 - `plugins/jira-pack/templates/comment-too-large.md` — the template this
   skill renders and posts directly (not via `jira-writeback`).
 - `plugins/jira-pack/skills/swarmery-board-card/SKILL.md` — moves the card

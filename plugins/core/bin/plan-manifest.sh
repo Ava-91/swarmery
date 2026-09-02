@@ -2,7 +2,8 @@
 # plan-manifest.sh <plan-dir>
 #
 # Emit a machine-readable execution manifest (JSON, stdout) for a plan produced by
-# @implementation-planner (phase-N-*.md) or @task-planner (step-NN-*.md).
+# @planner (phase-N-*.md); legacy step-NN-*.md plans (old task-planner output) are
+# still detected for read-compat.
 #
 # Resolution order:
 #   1. <plan-dir>/manifest.json exists  -> validate and print it (planner-emitted, authoritative).
@@ -107,7 +108,7 @@ manifest = {
     "task": os.path.basename(os.path.dirname(plan_dir)),
     "plan_dir": plan_dir,
     "source": "derived",  # planner-emitted manifests say "planner"
-    "planner": "implementation-planner" if files[0].startswith("phase") else "task-planner",
+    "planner": "planner" if files[0].startswith("phase") else "task-planner",  # step-NN plans are legacy task-planner output
     "phases": phases,
 }
 missing = [p["file"] for p in phases if not p["has_prompt"]]

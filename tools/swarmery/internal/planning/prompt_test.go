@@ -26,8 +26,7 @@ func TestBuildPrompt(t *testing.T) {
 		"PLAN SAVED:",                         // unambiguous completion signal
 		"workspace/working/<YYYY>/<MM>/<DD>/<slug>/plan/README.md", // literal scanner-visible path template (#188)
 		"workspace/plans/",        // the frozen tree is explicitly forbidden (#188)
-		"@task-planner",           // small-scope agent
-		"@implementation-planner", // large-scope agent
+		"@planner", // core 3.0 consolidated planning agent
 		"fenced json block",       // structured-output contract
 		"runningPlan",             // running plan required every turn
 		"plan/spec.md",            // spec artifact required in PHASE B

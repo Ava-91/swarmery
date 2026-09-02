@@ -68,5 +68,5 @@ Based on complexity assessment:
 
 ## Next Phase
 
-→ Phase 2: Context Gathering (@context-gatherer)
+→ Phase 2: Context Gathering (@researcher)
 

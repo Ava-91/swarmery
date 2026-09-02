@@ -1,58 +1,78 @@
-# Core agents — metadata registry
+# Core agents — roster and metadata registry
 
-Frontmatter in `agents/*.md` is limited to fields Claude Code actually consumes
-(`name`, `description`, `model`, `tools`, `disallowedTools`, `skills`, `memory`,
-`isolation`, `maxTurns`, `color`, plus the docgen `docs:` provenance block that
-`scripts/docgen/` and the control plane's system registry read). Ownership and
-lifecycle metadata evicted from frontmatter in the 2026-09 audit remediation
-lives here instead.
+Core 3.0.0 consolidated the roster from 42 overconstrained agents (~94k words)
+to 13 judgment-style agents (2026-09 audit remediation). Agent frontmatter is
+limited to fields Claude Code actually consumes (`name`, `description`,
+`model`, `effort`, `tools`, `disallowedTools`, `skills`, `memory`,
+`isolation`, `maxTurns`, `color`, plus the docgen `docs:` provenance block).
+Ownership/lifecycle metadata lives here, not in frontmatter.
 
-`permissionMode` is recorded for history only: Claude Code ignores it on plugin
+`permissionMode` was removed everywhere: Claude Code ignores it on plugin
 subagents, so it never had runtime effect. Consumers grant allowances via
 `permissions.allow` in their project `.claude/settings.json` — see
 `overlays/example/settings.snippet.json`.
 
-| Agent | Owner | Version | Autonomy | Historical permissionMode |
-|---|---|---|---|---|
-| api-designer | platform-team | 1.0.0 | auto | plan |
-| architecture-designer | platform-team | 1.1.0 | auto | plan |
-| build-error-resolver | platform-team | 1.0.0 | auto | acceptEdits |
-| ci-incident-responder | platform-team | 1.0.0 | auto | plan |
-| code-auditor | platform-team | 1.0.0 | semi-auto | plan |
-| commit-message | platform-team | 1.0.0 | semi-auto | plan |
-| context-gatherer | platform-team | 1.0.0 | auto | plan |
-| contract-validator | platform-team | 1.0.0 | semi-auto | plan |
-| database-designer | platform-team | 1.0.0 | auto | plan |
-| debugger | platform-team | 1.1.0 | auto | acceptEdits |
-| downstream-analyzer | platform-team | 1.0.0 | auto | acceptEdits |
-| founder-reality-check | — | — | — | default |
-| full-stack-feature | platform-team | 1.1.0 | auto | acceptEdits |
-| guardrail-checker | platform-team | 1.0.0 | semi-auto | plan |
-| implementation-agent | platform-team | 1.2.0 | semi-auto | acceptEdits |
-| implementation-planner | platform-team | 1.3.0 | auto | plan |
-| migration-agent | — | — | — | plan |
-| migration-helper | platform-team | 1.0.0 | auto | acceptEdits |
-| performance-monitor | platform-team | 1.0.0 | auto | plan |
-| performance-optimizer | platform-team | 1.1.0 | semi-auto | acceptEdits |
-| plan-reviewer | platform-team | 1.0.0 | semi-auto | plan |
-| post-task-completion | platform-team | 1.0.0 | highly-auto | plan |
-| pr-generator | — | — | — | plan |
-| prompting-agent | platform-team | 1.0.0 | auto | plan |
-| quality-checker | platform-team | 1.1.0 | semi-auto | plan |
-| react-specialist | platform-team | 1.1.1 | auto | acceptEdits |
-| retrospective-agent | platform-team | 1.0.0 | highly-auto | plan |
-| security-auditor | platform-team | 1.1.0 | semi-auto | plan |
-| silent-failure-hunter | platform-team | 1.0.0 | semi-auto | plan |
-| sprint-review | platform-team | 1.0.0 | auto | plan |
-| sre-orchestrator | platform-team | 1.0.0 | semi-auto | plan |
-| summary-generator | platform-team | 1.1.0 | semi-auto | acceptEdits |
-| system-improver | platform-team | 1.0.0 | highly-auto | plan |
-| task-decomposer | — | — | auto | plan |
-| task-documenter | platform-team | 1.0.0 | semi-auto | acceptEdits |
-| task-planner | platform-team | 1.3.0 | auto | plan |
-| tech-lead | platform-team | 1.4.0 | auto | default |
-| tech-researcher | platform-team | 1.0.0 | auto | plan |
-| test-runner | platform-team | 1.0.0 | semi-auto | plan |
-| test-writer | platform-team | 1.1.0 | semi-auto | acceptEdits |
-| ui-designer | platform-team | 1.1.1 | auto | acceptEdits |
-| verification-agent | platform-team | 1.2.0 | highly-auto | plan |
+## Roster (13)
+
+| Agent | Class | Model | Role in one line |
+|---|---|---|---|
+| tech-lead | orchestrator | opus | Understand → route by size → independent review gate → close with summary |
+| planner | planning | opus | Workspace plans: phase docs, falsifiable criteria, executor prompts |
+| architect | design | opus | System/API/data design with trade-offs, migration safety, rollout |
+| researcher | read-only | sonnet | Tech evaluation, impact analysis, context synthesis with citations |
+| implementation-agent | executor | opus | Leaf code execution (step_file) or plan-execution orchestration (task_dir) |
+| ui-developer | executor | sonnet | Frontend components with type/token/a11y/state gates |
+| debugger | executor | sonnet | Root cause first, minimal proven fix (bugs, builds, CI, perf) |
+| test-writer | executor | sonnet | Behavior-pinning tests in the project's stack |
+| test-runner | read-only | haiku | Execute suites, report faithfully, VERDICT line |
+| code-reviewer | read-only | opus | Multi-lens review (correctness, silent failures, contracts, plan, quality), VERDICT line |
+| security-auditor | read-only | opus | OWASP + STRIDE with attack paths, VERDICT line |
+| verification-agent | read-only | haiku | Deterministic checks (build/type/lint/test), VERDICT line |
+| system-improver | meta | opus | Evidence-cited diagnosis of the whole agent system from a retro digest |
+
+Read-only-class agents carry a `tools:` allowlist without Edit/Write/NotebookEdit.
+Verdict-emitting agents end with the platform grammar `VERDICT: PASS | FAIL |
+INCONCLUSIVE` (the only grammar `tools/swarmery/internal/verify` parses).
+
+## Where the removed 34 went (2.x → 3.0 mapping)
+
+| Removed agent | Now |
+|---|---|
+| full-stack-feature | @tech-lead (routing judgment) |
+| prompting-agent | @planner (executor prompts are part of the plan) |
+| task-planner, implementation-planner, task-decomposer | @planner |
+| architecture-designer, api-designer, database-designer | @architect |
+| migration-agent, migration-helper | @architect (design/safety) + @implementation-agent (execution); checklist in `migration-check` skill |
+| tech-researcher, context-gatherer, downstream-analyzer | @researcher (context breadth → built-in Explore) |
+| react-specialist, ui-designer | @ui-developer |
+| build-error-resolver, ci-incident-responder, performance-monitor, performance-optimizer | @debugger |
+| quality-checker, code-auditor, plan-reviewer, contract-validator, silent-failure-hunter | @code-reviewer |
+| summary-generator, task-documenter, post-task-completion, retrospective-agent | `session-closeout` skill |
+| guardrail-checker | `guardrails` skill (APPROVED/REJECTED contract preserved) |
+| commit-message | `git-commit` skill |
+| pr-generator | `pr-generator` skill |
+| sprint-review | `sprint-review` skill |
+| founder-reality-check | `founder-reality-check` skill |
+| sre-orchestrator | `sre-operations` skill |
+
+A consumer that depended on a removed agent name can pin the old definition
+project-locally (`.claude/agents/<name>.md`) — project-local components
+override plugin ones by design.
+
+## Metadata
+
+| Agent | Owner | Since |
+|---|---|---|
+| tech-lead | platform-team | 1.0 (rewritten 3.0) |
+| implementation-agent | platform-team | 1.0 (rewritten 3.0) |
+| debugger | platform-team | 1.0 (rewritten 3.0) |
+| security-auditor | platform-team | 1.0 (rewritten 3.0) |
+| verification-agent | platform-team | 1.0 (rewritten 3.0) |
+| test-writer | platform-team | 1.0 (rewritten 3.0) |
+| test-runner | platform-team | 1.0 (rewritten 3.0) |
+| system-improver | platform-team | 2.20 |
+| code-reviewer | platform-team | 3.0 |
+| researcher | platform-team | 3.0 |
+| planner | platform-team | 3.0 |
+| architect | platform-team | 3.0 |
+| ui-developer | platform-team | 3.0 |

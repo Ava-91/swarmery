@@ -163,10 +163,8 @@ const defaultRules: AlertRule[] = [
 ## Related Agents
 
 **Works with:**
-- `@architecture-designer` — system-level IoT architecture
-- `@api-designer` — REST API for device data ingestion
-- `@database-designer` — schema for health data storage
-- `@full-stack-feature` — end-to-end feature implementation
+- `@architect` — system-level IoT architecture, REST API design for device data ingestion, and schema design for health data storage
+- `@tech-lead` — end-to-end feature implementation
 - `@security-auditor` — IoT security review
 
 **Delegates to:** None — Executor agent
@@ -183,10 +181,10 @@ const defaultRules: AlertRule[] = [
    file whose contents you believe you already know. Writing a file from memory is prohibited.
 2. **Why:** an edit to an unread file is refused by the harness. The refusal is not free — it
    costs you the turn you spent composing the edit, and the retry costs another.
-3. **Recognise the recovery.** The `read-before-write` hook answers that first refusal with the
-   file's current contents on stderr and lets your immediate retry through. That is a recovery,
-   not a random failure: re-issue the same edit with the contents you were just handed, rather
-   than guessing at a different one.
+3. **Recognise the recovery.** The harness's native read-before-edit check refuses the first
+   attempt and admits a retry once the file has been Read. That is a recovery, not a random
+   failure: Read the file, then re-issue the edit against what you actually saw, rather than
+   guessing at a different one.
 4. **A "file modified since read" error later in the session means the same thing** — re-Read,
    re-locate the anchor, re-apply. Never retry an edit blind.
 
@@ -205,10 +203,8 @@ This agent designs the data side of a connected-device product: what a sensor re
 
 ## When not to use it
 
-- For the REST endpoints that receive the uploaded batches — use `@core:api-designer`.
-- For the storage schema and indexes once the data model is settled — use `@core:database-designer`.
+- For the REST endpoints that receive the uploaded batches, the storage schema and indexes once the data model is settled, or system-wide component boundaries beyond the data path — use `@core:architect`.
 - For encryption, key handling, and a threat model of the device fleet — use `@core:security-auditor`.
-- For system-wide component boundaries beyond the data path — use `@core:architecture-designer`.
 
 ## How to invoke
 
@@ -242,6 +238,5 @@ handful of transmissions instead of nine hundred.
 
 ## Related
 
-- `@core:database-designer` — once the reading schema is agreed and you need the storage layout.
-- `@core:api-designer` — for the ingestion endpoints the mobile client posts batches to.
-- `@core:full-stack-feature` — when you want the design carried through to working code across layers.
+- `@core:architect` — once the reading schema is agreed and you need the storage layout, or for the ingestion endpoints the mobile client posts batches to.
+- `@core:tech-lead` — when you want the design carried through to working code across layers.

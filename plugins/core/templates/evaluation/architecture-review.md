@@ -2,7 +2,7 @@
 
 **Feature**: [feature name]  
 **Architect**: @[username]  
-**Reviewer**: @architecture-designer  
+**Reviewer**: @architect  
 **Date**: [YYYY-MM-DD]
 
 ---
@@ -218,7 +218,7 @@ Example:
 
 ---
 
-**Reviewed by**: @quality-checker  
+**Reviewed by**: @code-reviewer  
 **Review Date**: [YYYY-MM-DD]  
 **Review Duration**: [X] minutes
 

@@ -1,7 +1,7 @@
 # Phase 8: Summary
 
 **Task**: {{TASK_NAME}}
-**Agent**: @summary-generator
+**Produced by**: the session-closeout skill
 **Started**: {{PHASE_START}}
 **Completed**: {{PHASE_END}}
 **Duration**: {{PHASE_DURATION}}
@@ -83,5 +83,5 @@
 
 ## Next Phase
 
-→ Phase 9: Retrospective (@retrospective-agent) - **MANDATORY**
+→ Phase 9: Retrospective (the session-closeout skill) - **MANDATORY**
 

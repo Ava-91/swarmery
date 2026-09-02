@@ -246,9 +246,9 @@ The approved file set tells you *which* files you may touch. This tells you *how
    and the file has moved on.
 2. **Never write a component from memory.** An edit to an unread file is refused by the harness,
    and inside an iterate-and-measure loop that refusal costs you a whole diff cycle.
-3. **The refusal hands the file back.** The `read-before-write` hook prints the current contents
-   to stderr and lets the immediate retry through — re-issue the same edit against what it gave
-   you. This is a recovery, not a STOP trigger, and it is not a reason to widen the file set.
+3. **The refusal is recoverable.** The harness's native read-before-edit check refuses the first
+   attempt and admits a retry once the file has been Read — Read it, then re-issue the edit against
+   what you saw. This is a recovery, not a STOP trigger, and it is not a reason to widen the file set.
 4. **A "file modified since read" error is the same signal** later in the run: re-Read, re-locate,
    re-apply, never retry blind.
 
