@@ -1,0 +1,19 @@
+# Blank issues stay on: the two forms below cover the common cases, and a report
+# that fits neither is still worth more than the friction of forcing it into one.
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea
+    url: https://github.com/atretyak1985/swarmery/discussions
+    about: >
+      "How do I…", "should this work like…", and half-formed ideas belong in
+      Discussions. Issues are for defects and concrete proposals.
+  - name: Security vulnerability
+    url: https://github.com/atretyak1985/swarmery/blob/main/SECURITY.md
+    about: >
+      Report privately, following SECURITY.md. Never open a public issue for a
+      vulnerability.
+  - name: How to test a plugin change locally
+    url: https://github.com/atretyak1985/swarmery/blob/main/CONTRIBUTING.md
+    about: >
+      Local plugin edits are not what your session runs — CONTRIBUTING.md explains
+      --plugin-dir, the cache, and every gate a PR must pass.

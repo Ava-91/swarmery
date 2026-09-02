@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in the control plane or a plugin does not behave as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions and "how do I…" belong in
+        [Discussions](https://github.com/atretyak1985/swarmery/discussions).
+        Security issues go through [SECURITY.md](../blob/main/SECURITY.md) — never here.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      description: The two halves of this repo fail in very different ways.
+      options:
+        - Control plane (tools/swarmery — the daemon, the dashboard, the CLI)
+        - Plugin (agents, skills, commands or hooks under plugins/**)
+        - Scripts (scripts/install.sh, agent-work.sh, docgen, hooks)
+        - Docs or landing page
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >
+        Control plane: `curl -s localhost:7777/api/health` (the `build` field), or the
+        release tag you installed. Plugin: the `version` in that pack's
+        `.claude-plugin/plugin.json`, or `/plugin` output.
+      placeholder: "swarmery v0.2.0 / core 3.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Claude Code version
+      description: "`sw_vers -productVersion` or `uname -a`, plus `claude --version`."
+      placeholder: "macOS 15.6 (arm64), Claude Code 2.1.160"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The exact commands or clicks, and what you saw.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: If a document says otherwise, link it — a doc/behaviour mismatch is a bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >
+        Daemon logs, hook output, or the failing CI step. Redact paths and identifiers
+        you do not want public — this repo indexes real project sessions.
+      render: shell
+    validations:
+      required: false
