@@ -95,6 +95,17 @@ make_agent "$R" core alpha 'model: sonnet'
 echo 'tier table: sonnet-4-6 fleet default' >> "$R/plugins/core/agents/alpha.md"
 expect_fail "retired model id in body" "$R" 'retired model id'
 
+# scoped permission syntax in tools: — valid in settings.json permissions.allow,
+# silently NOT a grant in subagent frontmatter. The permissionMode failure mode
+# wearing a new hat, so it gets its own gate.
+R="$TMP/scoped-tools"; make_agent "$R" core scoped 'model: sonnet' 'tools: Read, Grep, Bash(git diff:*)'
+expect_fail "scoped tools syntax" "$R" 'is not a bare tool name'
+
+# ...while the shapes tools: really does accept must keep passing, including
+# Agent(a, b) whose internal comma must not be split into two entries.
+R="$TMP/valid-tools"; make_agent "$R" core valid 'model: sonnet' 'tools: Read, Grep, Bash, mcp__github__*, Agent(worker, researcher)'
+expect_pass "valid tool-name shapes" "$R"
+
 # 8. pinned current id in an agent body fails
 R="$TMP/pinnedbody"
 make_agent "$R" core alpha 'model: sonnet'

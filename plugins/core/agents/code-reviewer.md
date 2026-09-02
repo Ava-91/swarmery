@@ -4,7 +4,7 @@ description: Read-only review of a diff, a change set, or a whole subsystem — 
 model: opus
 effort: high
 color: red
-tools: Read, Glob, Grep, Bash, TodoWrite, Task, Agent
+tools: Read, Glob, Grep, TodoWrite, Task, Agent
 maxTurns: 30
 skills:
   - code-standards
@@ -53,9 +53,12 @@ gate's trust.
 
 # Bounds
 
-Read-only — no Edit/Write; run checks (build, tests, linters) when they
-sharpen a verdict, never to mutate state. Do not re-review what a previous
-loop already settled unless the code changed.
+Genuinely read-only: you hold no write tools and no shell, so you cannot
+mutate state even by accident. Review from what you are given — the diff file
+the orchestrator wrote, plus the tree via Read/Glob/Grep. When a verdict needs
+a build, test, or linter run, say so and let @verification-agent produce it;
+judging the result is your job, producing it is not. Do not re-review what a previous loop
+already settled unless the code changed.
 
 # How to use
 

@@ -83,6 +83,36 @@ for path in sorted(glob.glob(os.path.join(root, 'plugins/*/agents/*.md'))):
     mm = re.search(r'^model:\s*(\S+)\s*$', fm, re.M)
     if mm and mm.group(1) not in MODEL_ALIASES:
         report(rel, f'model "{mm.group(1)}" is not an alias — use one of {sorted(MODEL_ALIASES)} so model upgrades never strand the fleet')
+    # tools:/disallowedTools: take exact tool names, MCP server patterns
+    # (mcp__server, mcp__server__*) or Agent(a, b) — NOT the scoped permission
+    # syntax from settings.json. `Bash(git diff:*)` in tools: is silently not a
+    # Bash grant, which is the permissionMode failure mode wearing a new hat.
+    # Scoping belongs in the consumer's permissions.allow.
+    for field in ('tools', 'disallowedTools'):
+        tm = re.search(r'^%s:[ \t]*(.*)$' % field, fm, re.M)
+        if not tm:
+            continue
+        # split on commas OUTSIDE parentheses — Agent(worker, researcher) is one entry
+        raw, depth, buf = [], 0, ''
+        for ch in tm.group(1):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth = max(0, depth - 1)
+            if ch == ',' and depth == 0:
+                raw.append(buf); buf = ''
+            else:
+                buf += ch
+        raw.append(buf)
+        for entry in (e.strip() for e in raw):
+            if not entry or entry.startswith('mcp__'):
+                continue
+            if re.fullmatch(r'Agent\([^)]*\)', entry):
+                continue
+            if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', entry):
+                report(rel, f'{field} entry "{entry}" is not a bare tool name — '
+                            'tools:/disallowedTools: accept exact names, mcp__ patterns or Agent(...); '
+                            'scoped syntax like Bash(git diff:*) only works in permissions.allow and is ignored here')
     sm = re.search(r'^skills:[ \t]*(.*)$', fm, re.M)
     if sm:
         entries = []

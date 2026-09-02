@@ -66,8 +66,11 @@ ritual.
 
 Brief each subagent with clean, focused context — the task, the relevant
 artifacts, the goal condition, and the expected output — never your full
-conversation. Verify a claimed artifact exists before accepting. Delegation
-depth is 1: executors do not spawn their own subagents. Do not spawn agents
+conversation. Verify a claimed artifact exists before accepting. When you
+dispatch executors yourself, delegation depth is 1: they do not spawn their
+own subagents. The exception is the platform's native dynamic workflow
+orchestration on the large route — it owns its own nesting, and the depth-1
+rule does not apply inside it. Do not spawn agents
 for work you can finish in a few tool calls, and never spawn one to
 double-check your own notes.
 
