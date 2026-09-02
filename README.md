@@ -4,23 +4,23 @@
 
 **Run your Claude Code agents like a fleet — not like a pile of terminal tabs.**
 
-A local-first control plane for Claude Code sessions. One Go binary, no cloud, no account.
-Ships with a versioned plugin marketplace so your agents live in one place and every
-project pulls them with `/plugin update`.
+A local-first control plane for Claude Code sessions. One Go binary, no cloud, no account. Ships with
+a versioned plugin marketplace so your agents live in one place and every project pulls them with `/plugin update`.
 
-[![Framework: Apache-2.0](https://img.shields.io/badge/framework-Apache--2.0-blue)](LICENSE)
-[![Control plane: PolyForm NC](https://img.shields.io/badge/control%20plane-PolyForm%20NC%201.0.0-blue)](tools/swarmery/LICENSE)
-[![Marketplace CI](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml)
-[![Control plane CI](https://github.com/atretyak1985/swarmery/actions/workflows/swarmery-ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/swarmery-ci.yml)
-![Local only](https://img.shields.io/badge/data-100%25%20local-brightgreen)
-![Go](https://img.shields.io/badge/Go-1.25-00ADD8)
-![React](https://img.shields.io/badge/React-19-61DAFB)
+[![Framework: Apache-2.0](https://img.shields.io/badge/framework-Apache--2.0-blue)](LICENSE) [![Control plane: PolyForm NC](https://img.shields.io/badge/control%20plane-PolyForm%20NC%201.0.0-blue)](tools/swarmery/LICENSE) [![Marketplace CI](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml) [![Control plane CI](https://github.com/atretyak1985/swarmery/actions/workflows/swarmery-ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/swarmery-ci.yml) ![Local only](https://img.shields.io/badge/data-100%25%20local-brightgreen) ![Go](https://img.shields.io/badge/Go-1.25-00ADD8) ![React](https://img.shields.io/badge/React-19-61DAFB)
+
+</div>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/atretyak1985/swarmery/main/scripts/install.sh | bash
+swarmery serve                            # listens on :7777
+```
+
+<div align="center">
 
 ![Swarmery demo](docs/screenshots/demo.gif)
 
 </div>
-
----
 
 ## Install
 
