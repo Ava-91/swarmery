@@ -4,8 +4,9 @@
 
 **Run your Claude Code agents like a fleet — not like a pile of terminal tabs.**
 
-A local-first control plane for Claude Code sessions, plus a versioned plugin marketplace
-that ships one shared agent framework to every project on your machine.
+A local-first control plane for Claude Code sessions. One Go binary, no cloud, no account.
+Ships with a versioned plugin marketplace so your agents live in one place and every
+project pulls them with `/plugin update`.
 
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 [![Marketplace CI](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml)
