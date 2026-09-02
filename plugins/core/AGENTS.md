@@ -19,18 +19,33 @@ subagents, so it never had runtime effect. Consumers grant allowances via
 | tech-lead | orchestrator | opus | Understand → route by size → independent review gate → close with summary |
 | planner | planning | opus | Workspace plans: phase docs, falsifiable criteria, executor prompts |
 | architect | design | opus | System/API/data design with trade-offs, migration safety, rollout |
-| researcher | read-only | sonnet | Tech evaluation, impact analysis, context synthesis with citations |
+| researcher | no-edit | sonnet | Tech evaluation, impact analysis, context synthesis with citations |
 | implementation-agent | executor | opus | Leaf code execution (step_file) or plan-execution orchestration (task_dir) |
 | ui-developer | executor | sonnet | Frontend components with type/token/a11y/state gates |
 | debugger | executor | sonnet | Root cause first, minimal proven fix (bugs, builds, CI, perf) |
 | test-writer | executor | sonnet | Behavior-pinning tests in the project's stack |
-| test-runner | read-only | haiku | Execute suites, report faithfully, VERDICT line |
+| test-runner | no-edit | haiku | Execute suites, report faithfully, VERDICT line |
 | code-reviewer | read-only | opus | Multi-lens review (correctness, silent failures, contracts, plan, quality), VERDICT line |
 | security-auditor | read-only | opus | OWASP + STRIDE with attack paths, VERDICT line |
-| verification-agent | read-only | haiku | Deterministic checks (build/type/lint/test), VERDICT line |
+| verification-agent | no-edit | haiku | Deterministic checks (build/type/lint/test), VERDICT line |
 | system-improver | meta | opus | Evidence-cited diagnosis of the whole agent system from a retro digest |
 
-Read-only-class agents carry a `tools:` allowlist without Edit/Write/NotebookEdit.
+**Two restricted classes, named honestly.** `code-reviewer` and
+`security-auditor` are **read-only**: no write tools and no `Bash` at all, so
+they cannot mutate state even by accident. They review from what they are given
+(the diff file the orchestrator wrote) plus the tree via Read/Glob/Grep, and
+defer any build/test/scanner run to `@verification-agent` or the caller.
+
+`researcher`, `test-runner` and `verification-agent` are **no-edit**, not
+read-only: no write tools, but `Bash` is unscoped, because running suites and
+builds is their job. An unscoped `Bash` is a write channel, so "no-edit" is the
+honest label. `tools:` cannot express scoping — it takes exact tool names,
+`mcp__*` patterns, or `Agent(...)`, and the scoped `Bash(git diff:*)` form only
+works in `permissions.allow`. A consumer who wants a hard boundary rather than
+a prompt-level one scopes or denies `Bash` in their own project settings; a
+validator rule fails the build if the scoped form ever appears in `tools:`.
+
+The other eight agents declare no `tools:` and inherit the session's full set.
 Verdict-emitting agents end with the platform grammar `VERDICT: PASS | FAIL |
 INCONCLUSIVE` (the only grammar `tools/swarmery/internal/verify` parses).
 

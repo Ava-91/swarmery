@@ -49,6 +49,18 @@ project-local components override plugin ones by design.
   `VERDICT: PASS | FAIL | INCONCLUSIVE` — the line the control plane's verify
   engine parses. The 2.x bespoke tokens (`VERIFICATION:`, `CONTRACTS:`,
   `## Verdict:`) are gone.
+- **Restricted agents, named honestly.** `code-reviewer` and
+  `security-auditor` are **read-only**: no write tools and no `Bash`, so they
+  cannot mutate state at all. They review what they are given plus the tree via
+  Read/Glob/Grep, and defer build/test/scanner runs to `@verification-agent` or
+  the caller. `researcher`, `test-runner` and `verification-agent` are
+  **no-edit**: no write tools, but unscoped `Bash`, because running suites and
+  builds is their job. An unscoped `Bash` is a write channel — if you need a
+  hard boundary, scope or deny `Bash` in your project's own `permissions`.
+  Note that `tools:` frontmatter **cannot** express scoping: it accepts exact
+  tool names, `mcp__*` patterns and `Agent(...)` only, so a `Bash(git diff:*)`
+  entry there is not a narrow grant — it is not a grant at all. The
+  reference-integrity gate now fails on that shape.
 - **Frontmatter.** `permissionMode`, `autonomy`, `owner`, `version` removed
   everywhere (the first was always ignored on plugin subagents; consumers
   grant allowances via `permissions.allow` — see
@@ -62,6 +74,17 @@ project-local components override plugin ones by design.
 - **Retrospectives**: the `session-closeout` skill fixes a 2.x bug — the
   retro template's "Improvement Recommendations" heading was never matched by
   the ingester, which wants `## Process Improvements`.
+
+## Minimum Claude Code version
+
+**Core 3.0 requires Claude Code ≥ 2.1.160.** The release deliberately hands
+work back to the harness: native read-before-edit (which is why
+`read-before-write.sh` could be deleted), the `Agent` hook matcher, and dynamic
+workflow orchestration on `@tech-lead`'s large route. On an older build none of
+those raise an error — they are simply absent, so the guarantees quietly stop
+holding. `session-start.sh` prints a warning when it detects an older build; it
+never blocks. `plugin.json` has no minimum-version field to declare this in, so
+the check lives in the hook and in this note.
 
 ## Commands → skills
 

@@ -163,4 +163,22 @@ echo -e "${CYAN}${BOLD}│${RST}"
 echo -e "${CYAN}${BOLD}└──────────────────────────────────────────────────────┘${RST}"
 echo ""
 
+# ── Minimum Claude Code version ───────────────────────────────────
+# core 3.0 leans on native harness behaviour that older builds lack:
+# the Agent hook matcher, native read-before-edit (which replaced this
+# plugin's own read-before-write.sh), and dynamic workflow orchestration
+# on tech-lead's large route. Warn, never block — a stale build still
+# works, it just silently loses those guarantees.
+CORE_MIN_CC="2.1.160"
+cc_ver=$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+if [ -n "$cc_ver" ]; then
+  older=$(printf '%s\n%s\n' "$CORE_MIN_CC" "$cc_ver" | sort -V | head -1)
+  if [ "$cc_ver" != "$CORE_MIN_CC" ] && [ "$older" = "$cc_ver" ]; then
+    echo -e "${YELLOW}⚠  Claude Code ${cc_ver} is older than core 3.0's minimum ${CORE_MIN_CC}.${RST}"
+    echo -e "${DIM}   Native read-before-edit, the Agent hook matcher and dynamic${RST}"
+    echo -e "${DIM}   workflow routing may be missing — see docs/MIGRATION-core-3.md.${RST}"
+    echo ""
+  fi
+fi
+
 exit 0
