@@ -1,0 +1,30 @@
+swarmery
+Copyright 2026 Andrii Tretiak
+
+This repository is published under two licenses, split by directory.
+
+1. The plugin framework — Apache License 2.0
+   Covers everything except `tools/swarmery/`, including:
+     plugins/     the plugin marketplace and all agent packs
+     scripts/     bootstrap, gate and docgen scripts
+     overlays/    the consumer overlay schema and reference overlay
+     docs/        project documentation
+     site/        the project site
+     the repository root manifests and documentation
+   License text: ./LICENSE
+   Use, modification and redistribution are permitted, including commercially,
+   under the terms of the Apache License 2.0.
+
+2. The control plane — PolyForm Noncommercial License 1.0.0
+   Covers `tools/swarmery/` in full: the Go daemon, its embedded React SPA and
+   everything else under that directory.
+   License text: ./tools/swarmery/LICENSE
+   Free for personal, educational, research and open-source use. Commercial use
+   is not granted by that license.
+
+Where a file falls under both descriptions, the more specific one wins: anything
+inside `tools/swarmery/` is PolyForm Noncommercial, everything else is
+Apache-2.0.
+
+Portions of the Apache-2.0 region were contributed by third parties and are
+included with their authors' agreement to that license.

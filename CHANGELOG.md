@@ -67,6 +67,10 @@ Two things ship from this repository on separate clocks:
 
 ### Changed
 
+- **License split.** The plugin framework (`plugins/`, `scripts/`, `overlays/`,
+  `docs/`, `site/` and the repository root) is now **Apache-2.0**; the control
+  plane under `tools/swarmery/` stays **PolyForm Noncommercial 1.0.0**, with its
+  text moved to `tools/swarmery/LICENSE`. The root `NOTICE` names both regions.
 - **`core` 3.0.0 (breaking).** Forty-two agents consolidated into thirteen
   judgment-style agents; eight duplicate commands retired; skills moved to
   progressive disclosure. See `docs/MIGRATION-core-3.md`.
