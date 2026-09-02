@@ -1,0 +1,60 @@
+name: Pack idea
+description: Propose a new domain pack, or a component that should graduate into one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [the graduation rule](../blob/main/docs/EXTENDING.md) first. Components are
+        born project-local and move **up**: to a pack when a second project needs them,
+        to `core` when every project does. `core` is not the default destination.
+
+  - type: input
+    id: domain
+    attributes:
+      label: Which domain?
+      description: The vocabulary this pack would own — the thing `core` must stay ignorant of.
+      placeholder: "e.g. data pipelines, mobile release engineering, robotics simulation"
+    validations:
+      required: true
+
+  - type: textarea
+    id: projects
+    attributes:
+      label: Which projects would enable it?
+      description: >
+        Name at least two, or say honestly that it is one today. One project is a
+        project-local component, not a pack — that is fine, say so.
+    validations:
+      required: true
+
+  - type: textarea
+    id: components
+    attributes:
+      label: What would it carry?
+      description: >
+        The agents, skills and commands you have in mind, one per line, with a sentence
+        each. Rough is fine; this is a shape check, not a spec.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-not-core
+    attributes:
+      label: Why does this not belong in core?
+      description: >
+        Domain vocabulary in `core` is a neutrality violation
+        ([docs/NEUTRALITY.md](../blob/main/docs/NEUTRALITY.md)). Say what makes this
+        domain-specific rather than universal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Project config it would need
+      description: >
+        Anything the pack cannot work without goes in its `requirements.json` and must
+        match `overlays/_schema/project.schema.json`. List the keys, or say "none".
+    validations:
+      required: false
