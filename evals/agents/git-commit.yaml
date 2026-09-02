@@ -1,0 +1,29 @@
+# git-commit skill conventional-commit contract suite (was the commit-message
+# agent — converted to a skill in core 3.0; the SKILL.md is the system prompt).
+# Hard assert: regex for conventional-commit subject prefix
+# Soft assert: llm-rubric for fix type, imperative mood, length
+
+- description: git-commit skill produces a conventional-commit subject
+  vars:
+    system: file://../../plugins/core/skills/git-commit/SKILL.md
+    task: >
+      Staged diff: added a null check in the telemetry parser that previously
+      crashed on empty payloads. Produce the commit message.
+  assert:
+    - type: regex
+      value: '(?m)^(feat|fix|refactor|chore|docs|test|perf|build|ci)(\(.+\))?!?:'   # hard — (?m): match the subject at line start even if a preamble precedes it
+    - type: llm-rubric                                                              # soft
+      value: subject uses the fix type, is imperative mood, and is under ~72 chars
+
+- description: git-commit skill derives scopes from project config
+  vars:
+    system: file://../../plugins/core/skills/git-commit/SKILL.md
+    task: >
+      Staged change: modified apps/web-app/src/pages/pricing.tsx (copy tweaks).
+      project.json commitScopes: ["web-app","marketing-site","docs","infra"].
+      Write the commit message.
+  assert:
+    - type: regex
+      value: "(?m)^[a-z]+\\((web-app)\\):"    # hard — scope must come from the provided commitScopes list
+    - type: llm-rubric
+      value: a conventional commit message with a type, the web-app scope, and an imperative subject line

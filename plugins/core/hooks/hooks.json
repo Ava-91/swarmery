@@ -4,8 +4,7 @@
       {
         "matcher": "Edit|Write",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh" },
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/read-before-write.sh" }
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/protect-sensitive-files.sh" }
         ]
       },
       {
@@ -38,8 +37,7 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/activity-tracker.sh" },
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-budget.sh" }
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-observe.sh" }
         ]
       }
     ],

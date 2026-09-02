@@ -1,7 +1,7 @@
 # Phase 5: Quality Check
 
 **Task**: {{TASK_NAME}}
-**Agents**: @quality-checker + @verification-agent (parallel)
+**Agents**: @code-reviewer + @verification-agent (parallel)
 **Started**: {{PHASE_START}}
 **Completed**: {{PHASE_END}}
 **Duration**: {{PHASE_DURATION}}
@@ -102,5 +102,5 @@
 
 ## Next Phase
 
-→ Phase 6: Downstream Changes (@downstream-analyzer)
+→ Phase 6: Downstream Changes (@researcher)
 

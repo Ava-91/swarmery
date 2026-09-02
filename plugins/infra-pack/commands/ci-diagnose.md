@@ -67,7 +67,7 @@ Wraps:
 - `glab ci trace <job-name>`
 - Regex scan against the pattern table above
 
-For structured output, consider calling the `ci-incident-responder`
+For structured output, consider calling the `debugger`
 agent when multiple hypotheses need weighing.
 
 ## When to use
@@ -79,7 +79,7 @@ agent when multiple hypotheses need weighing.
 ## Related
 
 - `/env-check` — broader environment configuration snapshot
-- `@ci-incident-responder` — multi-hypothesis agent
+- `@debugger` — multi-hypothesis root-cause agent
 - `troubleshooting` skill — fuller treatment of the patterns above
 
 # How to use
@@ -98,7 +98,7 @@ When a pipeline fails, this command does the log-reading for you. It finds the f
 ## When not to use it
 
 - You want a picture of environment configuration rather than one failed run — use `/env-check`.
-- Several competing hypotheses need weighing against each other — hand it to the `ci-incident-responder` agent.
+- Several competing hypotheses need weighing against each other — hand it to the `debugger` agent.
 - You are learning the failure patterns themselves rather than triaging one run — read the `troubleshooting` skill.
 
 ## How to invoke
@@ -144,5 +144,5 @@ You end up knowing that retrying is pointless and which repository to fix.
 ## Related
 
 - `/env-check` — prefer it for a broad environment configuration snapshot.
-- `@core:ci-incident-responder` — prefer it when one run has several plausible causes.
+- `@core:debugger` — prefer it when one run has several plausible causes.
 - `troubleshooting` skill — fuller treatment of the failure patterns behind this command.

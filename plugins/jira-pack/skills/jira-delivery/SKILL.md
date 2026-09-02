@@ -264,12 +264,10 @@ scope rather than inventing one.
 Push the branch (`git -C <worktree> push`) — the empty push already happened
 in Step 1, so this is a fast-forward of real commits onto the same ref.
 
-Open the PR through **`@pr-generator`** for the title/description/review
-checklist text, then **`gh pr create`** for the actual open —
-`plugins/core/agents/pr-generator.md` runs with `permissionMode: plan` and
-`disallowedTools: [Edit, Write, NotebookEdit]`; it generates PR text and
-literally cannot open a PR itself. The orchestrator (this skill, via `gh`) is
-the one that performs the write. The PR body includes a link to the ticket.
+Generate the title/description/review checklist text with **the pr-generator
+skill**, then **`gh pr create`** for the actual open — the skill produces PR
+text only; the orchestrator (this skill, via `gh`) is the one that performs
+the write. The PR body includes a link to the ticket.
 
 # Step 5 — back to Jira
 
@@ -341,8 +339,8 @@ diff.
       before any re-dispatch
 - [ ] Budget exhausted (attempts, files, or a `@debugger`-style internal
       escalation) handed off to `jira-escalation` with the worktree/branch path
-- [ ] `gh pr create` was never attempted directly by `@pr-generator` (it only
-      generated text)
+- [ ] `gh pr create` was never issued as part of the pr-generator skill's
+      text-generation step (that step only produced text)
 - [ ] Dry-run fired zero git/gh calls and skipped delegation entirely
 
 # Common mistakes to avoid
@@ -358,8 +356,8 @@ diff.
   session.
 - Treating a `PASS` verdict alone as sufficient to publish — the file-count
   budget is a second, independent gate.
-- Asking `@pr-generator` to open the PR — it cannot; it has no `Edit`/`Write`
-  and `permissionMode: plan`. The orchestrator calls `gh` itself.
+- Letting the pr-generator skill's step open the PR — it produces text only.
+  The orchestrator calls `gh` itself.
 - Re-dispatching the executor past `jira.budget.maxAttempts` "because the
   last failure looked close to passing" — the budget is a hard ceiling, not
   a judgment call.
@@ -375,9 +373,8 @@ diff.
   fix-spiral escalation this skill treats as budget-exhausted.
 - `plugins/core/agents/verification-agent.md` — the `PASS`/`FAIL`/`PARTIAL`
   verdict format this skill gates every publish action on.
-- `plugins/core/agents/pr-generator.md` — generates PR text only
-  (`permissionMode: plan`, no `Edit`/`Write`); this skill's `gh pr create`
-  call is the actual open.
+- the pr-generator skill — generates PR text only; this skill's
+  `gh pr create` call is the actual open.
 - `plugins/jira-pack/skills/jira-triage/SKILL.md` — source of the `needs-fix`
   verdict and the evidence bundle this skill's executor prompt is built from.
 - `plugins/jira-pack/skills/jira-writeback/SKILL.md` — owns the

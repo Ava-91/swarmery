@@ -1,9 +1,14 @@
 #!/bin/bash
-# Pre-commit Test Gate
+# Pre-commit Test Gate — OPT-IN hook (not wired into hooks.json by default).
 #
 # PreToolUse(Bash) hook. Detects `git commit` invocations and runs the
 # repo's stack-appropriate test/typecheck suite against staged files.
 # Exit 2 = BLOCK the commit; exit 0 = allow.
+#
+# Deliberately unwired: it adds a full test run to every commit, which is the
+# right trade only for some projects. To enable, add to the PreToolUse "Bash"
+# matcher in the consuming project's hooks config:
+#   { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-commit-test-gate.sh" }
 #
 # Detection is robust to the real ways `git commit` gets invoked:
 #   git commit …            command git commit …      FOO=1 git commit …
@@ -111,7 +116,7 @@ repo_name=""
 # Recognise SKIP_COMMIT_TEST_GATE=1 as an inline command token OR in the
 # hook's own env — a command-line env prefix never reaches the hook process
 # env, so both must be checked. Record every bypass for retrospective audit
-# (@retrospective-agent flags an un-corrected bypass as a violation pattern).
+# (the session-closeout skill flags an un-corrected bypass as a violation pattern).
 bypass=0
 [ "${SKIP_COMMIT_TEST_GATE:-0}" = "1" ] && bypass=1
 if echo "$cmd" | grep -qE '(^|[[:space:]])SKIP_COMMIT_TEST_GATE=1([[:space:]]|$)'; then
@@ -357,7 +362,7 @@ fi
 
 # ── 9c. Flyway-style SQL migration naming ───────────────────────
 # Convention: V{major}.{minor}.{patch}__description.sql.
-# Hook only checks NAMING; semantic safety is on @migration-helper.
+# Hook only checks NAMING; semantic safety is on @architect's migration safety review.
 flyway_sql=$(echo "$staged" | grep -E '/backendMigration/.*\.sql$|/migrations/V[0-9].*\.sql$' || true)
 if [ -n "$flyway_sql" ]; then
   ran_any=1

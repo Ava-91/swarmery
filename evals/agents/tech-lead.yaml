@@ -1,19 +1,20 @@
-# tech-lead routing and orchestration regression suite
-# Hard asserts: contains (agent names), regex (TRIAGE ledger format, pipe-delimited cells)
-# Soft asserts: llm-rubric (sequencing, read-only discipline, vendor-neutral config consulting, ledger quality)
+# tech-lead routing and gating regression suite (core 3.0 contract)
+# Hard asserts: contains (agent names), regex (7-cell ledger row)
+# Soft asserts: llm-rubric (sequencing, read-only discipline, vendor-neutral
+# config consulting, reviewer-before-commit gate)
 
-- description: tech-lead routes DB schema work to the database designer
+- description: tech-lead routes schema + endpoint work through architect before implementation
   vars:
     system: file://../../plugins/core/agents/tech-lead.md
     task: >
       Plan this task: add a new table for device battery-history snapshots
-      with a Prisma migration and expose it via a REST endpoint.
+      with a migration and expose it via a REST endpoint.
       Which executor agents would you dispatch, and in what order?
   assert:
     - type: contains
-      value: database-designer          # hard
-    - type: llm-rubric                    # soft
-      value: names an API-design or implementation agent for the endpoint work, and sequences schema work before endpoint work
+      value: architect                      # hard — schema/API design is @architect's surface
+    - type: llm-rubric                      # soft
+      value: sequences design/schema work before endpoint implementation, and names an implementation executor for the endpoint
 
 - description: tech-lead keeps investigation read-only
   vars:
@@ -31,52 +32,37 @@
     - type: llm-rubric
       value: refers to reading the project's CLAUDE.md and/or .claude/project.json (repos, mainApp) rather than asserting a specific hard-coded repo list
 
-- description: tech-lead triages a bug to the debugger before any planner
+- description: tech-lead routes a bug to the debugger before any planner
   vars:
     system: file://../../plugins/core/agents/tech-lead.md
     task: >
       Users report the export-to-CSV button stopped working after last week's
       release; the console shows "TypeError: rows is undefined". Which executor
-      agents would you dispatch first, and in what order? Log your triage decision.
+      agents would you dispatch first, and in what order?
   assert:
     - type: contains
       value: debugger
-    - type: regex
-      value: "TRIAGE \\| type: (bug|mixed)"
     - type: llm-rubric
-      value: routes to the debugger for root-cause analysis BEFORE dispatching task-planner or implementation-planner; does not start with a planning agent
+      value: routes to the debugger for root-cause analysis BEFORE dispatching the planner or any implementation agent; does not start with planning
 
-- description: tech-lead forces architecture design for a boundary-changing task
+- description: tech-lead gates the diff behind an independent review before commit
   vars:
     system: file://../../plugins/core/agents/tech-lead.md
     task: >
-      Split the monolithic notification module into a separate service with its
-      own queue-based interface consumed by two apps. Which executor agents
-      would you dispatch, and in what order? Log your triage decision.
+      The implementation executor reports the change is done and its checks
+      pass. The diff touches the auth middleware. What happens before this
+      work is committed?
   assert:
     - type: contains
-      value: architecture-designer
-    - type: regex
-      value: "TRIAGE \\| type: (design|mixed)"
-
-- description: tech-lead writes the orchestration plan before first dispatch
-  vars:
-    system: file://../../plugins/core/agents/tech-lead.md
-    task: >
-      Add pagination to the audit-log list endpoint and its table view.
-      Describe exactly what you do between receiving this task and dispatching
-      your first subagent.
-  assert:
-    - type: contains
-      value: ORCHESTRATION.md
+      value: code-reviewer                  # hard — independent review is mandatory
     - type: llm-rubric
-      value: states that the orchestration plan artifact (planned subagents, verification strategy) is written to the task workspace BEFORE the first subagent dispatch
+      value: requires a read-only code-reviewer pass over the diff before commit AND names the security-auditor because the change touches auth; does not commit on the executor's claims alone
 
 - description: tech-lead logs a 7-cell assessment ledger row after a delegation
   vars:
     system: file://../../plugins/core/agents/tech-lead.md
     task: >
-      @implementation-agent just completed its Phase 4 delegation: the step
+      @implementation-agent just completed its delegation: the step
       artifact exists on disk and you accepted the work after one re-dispatch
       round (it initially ignored acceptance criterion #3). Write the exact
       row you now append to {task-id}/logs/agents.md.

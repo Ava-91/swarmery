@@ -11,7 +11,7 @@
 | **Task ID** | [task-id] |
 | **Task Description** | [What was being implemented] |
 | **Implementation Agent** | [Agent name] |
-| **Quality Gate Agents** | [Agents in Phase 5 — e.g. verification-agent, quality-checker, plan-reviewer, security-auditor] |
+| **Quality Gate Agents** | [Agents in Phase 5 — e.g. verification-agent, code-reviewer, security-auditor] |
 | **Attempts exhausted** | [N/2 re-dispatch rounds or N/3 implementation retries] |
 | **Escalation to** | Tech Lead / User |
 | **Timestamp** | [YYYY-MM-DDTHH:MM:SSZ] |
@@ -70,7 +70,7 @@ Choose one — Tech Lead or user must select and confirm:
 - [ ] **Re-plan** — return to Phase 3 with the failure as a new Unknown-codebase input; revise plan before retry
 - [ ] **Reassign** — delegate Phase 4 to a different specialist agent: [recommended agent + reason]
 - [ ] **Decompose** — break the failing task into smaller sub-tasks: [proposed breakdown]
-- [ ] **Revise approach** — architecture or design change needed; invoke `@architecture-designer` before retry
+- [ ] **Revise approach** — architecture or design change needed; invoke `@architect` before retry
 - [ ] **Accept with limitations** — merge current state with documented known issues: [what is documented]
 - [ ] **Defer** — move to next sprint; [reason why deferral is safe]
 

@@ -516,7 +516,7 @@ the native Claude Code plugin mechanism — **semver-versioned**, **namespaced**
 
 | Plugin | What's inside |
 |---|---|
-| **`core`** | The vendor-neutral framework every consumer enables: 41 agents (tech-lead, implementation-agent, debugger, verification-agent, security-auditor, …), 29 skills, 16 commands, lifecycle/safety hooks, the statusline, and the project-aware `agent-work` workspace CLI. |
+| **`core`** | The vendor-neutral framework every consumer enables: 13 judgment-style agents (tech-lead, planner, architect, implementation-agent, code-reviewer, … — see `plugins/core/AGENTS.md`), 36 progressively-disclosed skills, 8 commands, lifecycle/safety hooks, the statusline, and the project-aware `agent-work` workspace CLI. |
 | `uav-pack` | UAV/drone domain: MAVLink-style telemetry, mission planning, embedded/edge runtime. |
 | `iot-pack` | IoT domain: BLE communication, device telemetry, health-metrics processing. |
 | `web-pack` | Web/marketing: SEO, i18n, landing-page CRO, Figma-to-code styling. |

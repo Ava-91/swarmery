@@ -1,0 +1,42 @@
+# planner plan-format contract — the top-level plan unit is a Phase
+# (phase-N-<slug>.md), never step-NN files; the README must carry the
+# platform-parseable `| # | Phase | Doc | Depends on |` sequencing table; and
+# every phase doc ends with an empty `## Completion Report` stub.
+
+- description: planner names new plan docs phase-N and emits the parseable sequencing table
+  vars:
+    system: file://../../plugins/core/agents/planner.md
+    task: >
+      Plan a small feature: add a "favorite" toggle to order line items
+      (Medium complexity, single repo, context available at
+      phases/02-context.md). List the plan directory layout you will write
+      (exact doc filenames) and show the README.md phase sequencing table.
+  assert:
+    - type: regex                           # hard: new docs use phase-N naming
+      value: "phase-\\d+-[a-z0-9-]+\\.md"
+    - type: not-regex                       # hard: no step-NN doc FILENAMES for new plans (scoped to listed files so merely mentioning the legacy rule doesn't fail)
+      value: "(^|\\n)\\s*(plan/)?step-\\d{2}-[a-z0-9-]*\\.md"
+    - type: regex                           # hard: parseable table header row (whitespace-tolerant)
+      value: "\\|\\s*#\\s*\\|\\s*Phase\\s*\\|\\s*Doc\\s*\\|\\s*Depends on\\s*\\|"
+
+- description: planner ends every phase doc with the Completion Report stub
+  vars:
+    system: file://../../plugins/core/agents/planner.md
+    task: >
+      Show the section skeleton (headings only) of one phase doc you would
+      write for a two-phase plan, exactly in order.
+  assert:
+    - type: contains                        # hard: the dashboard renders exactly this heading
+      value: "## Completion Report"
+    - type: llm-rubric
+      value: places the Completion Report as the LAST section of the phase doc and includes acceptance criteria as checkboxes
+
+- description: planner asks user-only questions before planning around guesses
+  vars:
+    system: file://../../plugins/core/agents/planner.md
+    task: >
+      Plan: "add rate limiting to the public API". Nothing else is specified.
+      What do you do first?
+  assert:
+    - type: llm-rubric
+      value: identifies at least one question only the user can answer (e.g. limits per key vs per IP, thresholds) and reads the code before writing phases — it does not emit a finished plan built on unstated assumptions

@@ -16,15 +16,18 @@ providers:
 defaultTest:
   options:
     provider:
-      # judge for llm-rubric assertions
-      id: anthropic:messages:claude-sonnet-4-6
+      # judge for llm-rubric assertions — promptfoo needs a concrete model id,
+      # not an alias; bump this deliberately when the fleet's judge tier moves
+      # (the reference-integrity CI gate bans retired ids in plugins/**, and
+      # this file is the one sanctioned pin outside it).
+      id: anthropic:messages:claude-sonnet-5
 
 tests:
   - file://agents/tech-lead.yaml
-  - file://agents/task-planner.yaml
+  - file://agents/planner.yaml
   - file://agents/verification-agent.yaml
   - file://agents/implementation-agent.yaml
   - file://agents/security-auditor.yaml
-  - file://agents/commit-message.yaml
-  - file://agents/guardrail-checker.yaml
+  - file://agents/git-commit.yaml
+  - file://agents/guardrails.yaml
   - file://agents/jira-task-runner.yaml

@@ -79,5 +79,5 @@
 
 ## Next Phase
 
-→ Phase 5: Quality Check (@quality-checker)
+→ Phase 5: Quality Check (@code-reviewer)
 

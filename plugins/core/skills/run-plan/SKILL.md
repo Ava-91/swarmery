@@ -1,6 +1,6 @@
 ---
 name: run-plan
-description: "EXECUTES an existing @implementation-planner/@task-planner plan -- parses the phase DAG, dispatches per-phase implement+review loops, preserving ASK gates. NOT for creating plans; NOT usable from inside a subagent."
+description: "EXECUTES an existing @planner plan -- parses the phase DAG, dispatches per-phase implement+review loops, preserving ASK gates. NOT for creating plans; NOT usable from inside a subagent."
 version: "1.2.0"
 owner: "swarmery-core"
 docs:
@@ -11,239 +11,76 @@ docs:
 
 # Purpose
 
-Turn a finished plan directory into shipped code with one command. The main-session
-agent acts as **controller**: it parses the plan's phase DAG, picks an execution route
-per the triage table, dispatches executor subagents with the plan's own copy-paste
-prompts, reviews each result, and keeps durable progress. The plan is the spec; this
-skill is the runner.
+Turn a finished plan directory into shipped code with one command. The main
+session acts as **controller**: it parses the phase DAG, picks a route, dispatches
+executors with the plan's own prompts, reviews each result, and keeps durable
+progress. The plan is the spec; this skill is the runner.
 
-**Hard constraint — main session only.** Subagents cannot spawn subagents, so this
-playbook can never be delegated to an agent. It is invoked via `/run-plan` (or when
-the user says "run the plan") and executed by the main loop.
+**Main session only.** Subagents cannot spawn subagents, so this playbook can
+never be delegated.
 
-# Step 0 — Locate and load the plan
+# Rules (never violate)
 
-1. Plan dir = `$ARGUMENTS` if given; otherwise the newest `working/**/{slug}/plan/`
-   under the project workspace. If more than one plausible candidate exists, ask.
-2. Parse the DAG: run `${CLAUDE_PLUGIN_ROOT}/bin/plan-manifest.sh <plan-dir>`.
-   It prints `manifest.json` if the planner emitted one (authoritative), else a
-   best-effort derivation (`"source": "derived"`) from the phase docs + README
-   sequencing table. On a derived manifest, sanity-check `depends_on` against the
-   README's table before trusting parallelism.
-3. Read the plan README fully (risks, Definition of Done). Do NOT bulk-read all
-   phase docs into context — each phase's content travels to its executor as a
-   file reference, not as pasted text.
-4. **Pre-flight review** (from superpowers:subagent-driven-development, which this
-   skill follows where the two overlap): scan once for phases that contradict each
-   other or the plan's constraints. Present all conflicts as ONE batched question
-   before execution; if clean, proceed without comment.
+1. **Read the ledger first** — phases marked reviewed-clean in
+   `<task-dir>/logs/run-ledger.md` are DONE; never re-dispatch them.
+2. **Tick as you verify** — flip each satisfied criterion `- [ ]` → `- [x]`
+   immediately, never in a batch; unsatisfied criteria stay unticked.
+3. **Write the `## Completion Report`** into the phase doc itself — the only
+   per-phase summary the platform surfaces; a `reports/` file is no substitute.
+4. **Executors never commit** — commits, pushes, MRs, migrations, and deploys are
+   ASK-gated controller business.
+5. **Never skip the re-review** after a fix dispatch; review the reconciled tree,
+   never the agent's own worktree.
+6. One worktree per concurrent implementer on route P — parallel edits to one
+   checkout corrupt each other.
 
-# Step 1 — Triage: pick the route
+# Resources
 
-| Plan shape (from manifest) | Route |
-|---|---|
-| All phases sequential (every `parallel_group` null) | **S — sequential loop** (default; most plans) |
-| 2–4 phases share a `parallel_group` | **P — parallel group dispatch** |
-| ≥5 independent same-shaped items (audit/migration/sweep) | **W — Workflow script** |
-
-**Hand-off alternative:** a strictly-sequential flat plan (task-planner output —
-`phase-N` docs; legacy `step-NN` plans read the same way)
-can instead be given whole to `@implementation-agent` in its Plan-execution mode
-(`task_dir` input, direct user invocation — see its Mode selection): it orchestrates
-per-step leaf dispatch + verification loops itself. Prefer that when the user asked
-for that agent or the plan is a simple step list; prefer /run-plan when the plan has
-phases, parallel groups, multiple repos, or needs the manifest DAG / worktree
-reconciliation machinery below. Never both at once for the same plan.
-
-Route modifiers, any route:
-- `kind: quality-gate` phases dispatch **@verification-agent** (or the plan's named
-  gate owner), never an implementer.
-- `manual_legs: true` steps (browser checks, live-env probes) run in the **main
-  session** — subagents and workflow agents cannot drive interactive environments
-  or answer permission prompts. Execute them yourself after the phase's automated
-  part returns, or explicitly defer them with a `DEFERRED` ledger note.
-- Mixed plans mix routes per phase group: a plan with phases 1‖2 parallel then 3
-  sequential runs P for the group, then S.
-
-# Step 2 — Isolation and branching (before first dispatch)
-
-- Branch per the phase Header (the planner names branch + base). Create it with the
-  project's branch flow (e.g. `/new-feature-branch`) — base-branch updates (`git
-  pull`) and pushes are ASK-gated; surface them, don't bury them in a subagent.
-- **Controller creates worktrees, not the Agent tool.** In multi-repo workspaces the
-  workspace root is often not a git repo, so Agent-level `isolation: "worktree"`
-  has nothing to act on. Instead: `git -C <repo> worktree add <workspace-scratch>/wt-<task>-p<N> <branch>`
-  and pass the worktree path in the dispatch prompt. One worktree per concurrent
-  implementer is MANDATORY on route P (parallel edits to one checkout corrupt each
-  other); on route S a single worktree for the whole run is enough.
-- Remove worktrees (`git worktree remove`) at run end; list them in the ledger so a
-  resumed session can clean up.
-- **The harness may force-isolate the executor anyway** (its own `agent-*` worktree,
-  with writes to controller-prepared paths and the workspace dir blocked). Plan for
-  it: (a) state the required base commit in the dispatch so both trees share it;
-  (b) tell the executor that if its report path is write-blocked it writes to its
-  scratchpad and returns the exact path; (c) on return, verify the agent worktree's
-  base matches, then reconcile — copy the changed files onto the plan-branch
-  worktree, confirm `git status` shows exactly the expected paths — and run review
-  and verification against the RECONCILED tree, never the agent's.
-
-# Step 3 — Execute
-
-## Route S — sequential loop (per phase, in DAG order)
-
-1. Record `BASE=$(git -C <worktree> rev-parse HEAD)`.
-2. Dispatch **@implementation-agent** with:
-   - the phase doc path, introduced as "read §4 Copy-paste agent prompt first —
-     it is your task, verbatim; §3 Design is your reference"
-   - the worktree path (work HERE, not the main checkout)
-   - interfaces/decisions from earlier phases the doc cannot know (≤10 lines)
-   - the report contract: write a full report to
-     `<task-dir>/reports/phase-<N>-report.md`; final message ≤2k tokens (status:
-     DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED, files+LOC, test counts,
-     deviations). **Do not commit** — implement, test, leave the tree dirty; the
-     controller owns commits (they are ASK-gated). That reports/ file is the long
-     form for you, NOT the operator's summary — see the Summary contract below.
-3. Review: produce a diff file (`git -C <worktree> diff BASE` plus `--stat` to
-   `<task-dir>/reports/phase-<N>-diff.txt`) and dispatch a fresh reviewer subagent
-   (spec compliance against the phase's §5 Acceptance criteria + code quality; two
-   verdicts required). Critical/Important findings → dispatch a fix subagent →
-   re-review. Never skip the re-review.
-4. Tick the phase doc's satisfied acceptance-criteria checkboxes (Edit, in the
-   workspace plan dir) — "review clean" INCLUDES this tick; the ledger line
-   `phase N: review clean …` may only be written after the tick is on disk.
-5. Write the phase's `## Completion Report` into the same phase doc (Summary
-   contract below) — also part of "review clean", also before the ledger line.
-6. Ledger line (see Durable progress), then next phase.
-
-## Route P — parallel group
-
-1. One worktree + branch per phase in the group (branch suffix `-p<N>`).
-2. Dispatch all implementers of the group **in one message** (concurrent), each with
-   its own phase doc + worktree, same contract as Route S. Blind independence: no
-   agent sees another's draft.
-3. As each returns, review it in its own worktree (same loop as S.3).
-4. **Integrate in DAG order, not arrival order**: merge each reviewed branch into
-   the integration branch sequentially; after each merge run the plan's
-   verification commands; a conflict is resolved by a dedicated fix dispatch, never
-   by hand-editing both branches.
-
-## Route W — wide fan-out
-
-Only when the fan-out is **closed-scope**: no `manual_legs`, no mid-run human input,
-no ASK-gated operations inside the items (workflow subagents cannot prompt). Write a
-Workflow script — `pipeline(items, implement, verify)` with `isolation: 'worktree'`
-per item only if items mutate files. Anything open-scope stays outside the workflow
-on route S/P.
-
-# Durable progress
-
-Append one line per event to `<task-dir>/logs/run-ledger.md`:
-
-```
-phase 1: dispatched wt=<path> base=<sha7>
-phase 1: review clean (spec ✅ quality ✅) head=<sha7>
-phase 2: [MANUAL] browser leg DEFERRED — env down
-```
-
-On invocation, **read the ledger first**: phases marked reviewed-clean are DONE —
-never re-dispatch them (re-dispatching completed work is the most expensive known
-failure after context compaction). Trust ledger + `git log` over recollection.
-
-**Progress contract (hard gate).** A phase is NOT complete until every satisfied
-acceptance criterion in its phase doc is flipped `- [ ]` → `- [x]` (Edit tool,
-plan doc in the workspace task dir). Tick immediately after verification of each
-criterion — not in a batch at the end. When you accept delegated work from a
-subagent, YOU tick the boxes as part of acceptance. The platform derives all
-plan progress from these checkboxes; untracked completion = invisible completion.
-Criteria that were NOT satisfied stay unticked — never tick to "close out" a phase.
-
-**Summary contract (hard gate).** Ticks say WHICH criteria are met; they never say
-what was built. The prose account goes into the phase doc's own
-`## Completion Report` section — fill the planner's stub, or append the section at
-the end of the doc when the plan has no stub. Contents: what shipped, files and
-commits (SHAs), verification output, deviations from the plan's design, and
-anything DEFERRED. Keep it under ~50 lines.
-
-That section is the ONLY per-phase summary the platform surfaces: it parses
-`## Completion Report` out of the doc and renders it as the phase's Summary tab.
-A report living in `<task-dir>/reports/phase-<N>-report.md`, in the run ledger, or
-in a subagent's final message is invisible there — the operator sees "no summary
-of the work written" over a phase that shipped. Write both: the reports/ file is
-the long form and the working record, the doc section is the summary. When you
-accept a subagent's work, YOU write the doc section as part of acceptance, the
-same way you own the ticks. A phase without a Completion Report is not done.
-
-# Invariants (all routes)
-
-- ASK gates are the controller's: commits, pushes, MRs, migrations, deploys are
-  surfaced to the user with the plan's own rollback notes. Executors never commit.
-- The plan is authority for WHAT; this skill is authority for HOW-to-run. An
-  executor deviating from the plan's design must say so in its report; a plan step
-  that turns out wrong goes back to the user (or the planner), not silently "fixed".
-- Every dispatch carries the 4-field brief (objective, output format + length
-  budget, tools/skills guidance, boundaries) per the delegation contract.
-- After the last phase: final whole-branch review (fresh reviewer, full branch
-  diff), then SUMMARY.md at the task root (via @summary-generator or inline),
-  then worktree cleanup. Only then report done.
-
-# Failure modes
-
-| Failure | Detection | Recovery |
-|---|---|---|
-| Implementer BLOCKED / NEEDS_CONTEXT | status in report | Missing context → supply and re-dispatch; task too large → split; plan wrong → escalate to user |
-| Review loop stuck (>2 fix rounds) | ledger shows 3rd re-review | Stop; present the disagreement to the user |
-| Derived manifest mis-reads DAG | README table absent/odd | Treat plan as fully sequential (safe default); note in ledger |
-| Merge conflict on route P integration | git merge fails | Dedicated fix dispatch in the integration worktree; re-run phase verification |
-| Context compacted mid-run | ledger has entries you don't remember | Resume from ledger + `git log`; never restart phase 1 |
-| Plan cites files that no longer exist | executor reports drift | Halt phase; send plan back for revision (planner or user) |
-| Phase shipped but its Summary tab is empty | dashboard shows "no summary of the work written" | The doc has no `## Completion Report`; write it now from `reports/phase-<N>-report.md` + the phase's commits — do not leave it for the end of the run |
+- Read `resources/execution-routes.md` at the start of a run: locating and
+  parsing the plan, the pre-flight review, the route triage table and hand-off
+  alternative, worktree isolation and reconciliation, and the S / P / W routes.
+- Read `resources/progress-contracts.md` before accepting a phase: ledger format,
+  the progress and summary hard gates, invariants, and failure modes.
 
 # How to use
 
 ## What it does
 
-Turns a finished plan directory into shipped code. Your main session becomes the controller: it parses the plan's phase graph, picks an execution route, dispatches executor subagents with the plan's own copy-paste prompts, reviews every result, and keeps a durable ledger so a compacted or interrupted session can resume without redoing finished work.
+Executes a plan directory, keeping a durable ledger so a compacted or interrupted
+session resumes without redoing finished work.
 
 ## When to use it
 
-- You have a written plan directory with phase docs and want it executed end to end.
-- The plan has parallel groups, several repositories, or a dependency graph that needs real routing.
-- A previous run stopped partway and you want to pick up from the ledger instead of starting over.
-- The plan needs branch and worktree isolation so concurrent implementers do not overwrite each other.
+- A plan directory with phase docs is ready to execute.
+- The plan has parallel groups, several repositories, or a real dependency graph.
+- A previous run stopped partway and should resume from the ledger.
+- The plan needs worktree isolation so implementers cannot collide.
 
-## When not to use it
-
-- You do not have a plan yet — write one first with a planner agent.
-- You are inside a subagent: subagents cannot spawn subagents, so this must run in the main session.
-- The plan is a flat, strictly sequential step list — hand it whole to the implementation agent instead.
+Not for: writing the plan (`@planner`); running inside a subagent; or a flat
+sequential step list, which goes whole to `@implementation-agent` in its
+plan-execution mode.
 
 ## How to invoke
-
-```
-Skill(skill: "core:run-plan")
-```
-
-Pass the plan directory as the argument. Without one, it finds the newest plan directory under the project workspace and asks you if several look plausible.
-
-## Inputs
-
-- Plan directory — path to a folder holding `README.md` and `phase-N-<slug>.md` docs — optional; inferred when omitted.
-- Your answers to gated questions — branch creation, base-branch pulls, commits, pushes, migrations, and deploys are all surfaced to you — required at those points.
-
-## What you get back
-
-Code on a branch, one reviewed phase at a time. Each phase doc gets its satisfied acceptance-criteria checkboxes ticked and a `## Completion Report` section written into it — that section is the only per-phase summary a dashboard will show. Long-form reports and diffs land under `reports/`, a running event log under `logs/run-ledger.md`, and a `SUMMARY.md` at the task root after the final whole-branch review.
-
-## Worked example
 
 ```
 Skill(skill: "core:run-plan") ~/workspace/working/2026/08/06/orders-line-items/plan/
 ```
 
-It reads the plan README, derives the phase graph, and sees phases 1 and 2 are independent. It creates a worktree per phase, dispatches both implementers at once, reviews each diff against that phase's acceptance criteria, then merges them in dependency order and runs the plan's verification commands. Phase 3 runs sequentially after. You approve each commit and push. You end with a reviewed branch, ticked checkboxes, a completion report in every phase doc, and cleaned-up worktrees.
+The plan directory is optional — without one it finds the newest under the project
+workspace, asking when several look plausible. Branch creation, pulls, commits,
+pushes, migrations, and deploys come back to you as gated questions.
+
+## Worked example
+
+For the plan above it derives the phase graph and sees phases 1 and 2 are
+independent: a worktree per phase, both implementers dispatched at once, each diff
+reviewed against that phase's criteria, then merged in dependency order with the
+plan's verification commands run after each merge. Phase 3 follows sequentially.
+You end with a reviewed branch, ticked checkboxes, a Completion Report in every
+phase doc, reports under `reports/`, a `SUMMARY.md`, and cleaned-up worktrees.
 
 ## Related
 
-- `core:implementation-planner` and `core:task-planner` — use these to produce the plan this skill consumes.
-- `core:implementation-agent` — prefer it when the plan is a simple sequential step list with no parallel groups.
-- `core:verification-agent` — dispatched automatically for quality-gate phases; invoke it directly for a one-off check.
+- `@planner` — produces the plan this skill consumes.
+- `@implementation-agent` — for a simple sequential step list.
+- `@verification-agent` — dispatched automatically for quality-gate phases.

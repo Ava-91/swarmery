@@ -709,6 +709,5 @@ The command reads the OrderCard frame, extracts its tokens, and compares them wi
 
 ## Related
 
-- **react-specialist** (`@core:react-specialist`) — prefer it when you are inventing the interface rather than reproducing an existing design.
+- **ui-developer** (`@core:ui-developer`) — prefer it when you are inventing the interface rather than reproducing an existing design, or when the work is building typed components against tokens you already have, with no Figma source involved.
 - **design-implement** — prefer it when you have a full design handoff export and want a measured pixel diff of the result.
-- **ui-designer** — prefer it when the work is building typed components against tokens you already have, with no Figma source involved.

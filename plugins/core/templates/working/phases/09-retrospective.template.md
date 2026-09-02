@@ -1,7 +1,7 @@
 # Phase 9: Retrospective
 
 **Task**: {{TASK_NAME}}
-**Agent**: @retrospective-agent
+**Produced by**: the session-closeout skill
 **Started**: {{PHASE_START}}
 **Completed**: {{PHASE_END}}
 **Duration**: {{PHASE_DURATION}}

@@ -1,14 +1,10 @@
 ---
 name: jira-task-runner
 description: Drive any tracker ticket end-to-end from a link — access preflight, defect-or-change classification, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition.
-model: claude-opus-5
+model: opus
 effort: high
-permissionMode: acceptEdits
 maxTurns: 60
 color: blue
-autonomy: auto
-version: 0.2.0
-owner: swarmery-core
 skills:
   - jira-config
   - jira-access-preflight
@@ -38,8 +34,8 @@ to relay. Runs with `autonomy: auto`
 (`plugins/jira-pack/commands/jira-fix.md`) only — this agent is never invoked
 directly from a plan phase or another orchestrator's routing table. Downstream
 (Phase 7 fork only, `needs-fix` / `too-large` branches): `@test-writer`,
-`@debugger`, `@implementation-agent`, `@verification-agent`, `@pr-generator`,
-`@task-planner`, `@implementation-planner`.
+`@debugger`, `@implementation-agent`, `@verification-agent`, `@planner`,
+plus the pr-generator skill.
 
 # Goal & success criteria
 
@@ -135,7 +131,7 @@ looking at before the verdict means anything.
 
 # Platform
 
-- Model: claude-opus-5, effort: high — sufficient for orchestrating several
+- Model: opus, effort: high — sufficient for orchestrating several
   MCP tool families (Atlassian + local board API) and a repo-side reproduction
   run in one pass, without the heaviest reasoning tier reserved for
   multi-repo, multi-plan orchestration.
@@ -148,8 +144,8 @@ looking at before the verdict means anything.
   `class: change` — for the absence proof that the requested behavior is not
   in the codebase yet), and — in
   the Phase 7 fork only — subagent dispatch to `@test-writer`, `@debugger`,
-  `@implementation-agent`, `@verification-agent`, `@pr-generator`,
-  `@task-planner`, `@implementation-planner`.
+  `@implementation-agent`, `@verification-agent`, `@planner`, plus the
+  pr-generator skill.
 - `maxTurns: 60` — a full run threads through four-plus skills and, on the
   `needs-fix` path, an entire delegate → verify → publish cycle; the budget is
   sized for that, not for a single skill invocation.
@@ -193,9 +189,9 @@ comment does so **before** it ever attempts a transition (see `jira-writeback`)
 | `already-fixed` | `jira-writeback`: comment (`comment-already-fixed.md`) + QA transition attempt | `done` |
 | `cannot-reproduce` | `jira-writeback`: comment (`comment-cannot-reproduce.md`) + QA transition attempt | `done` |
 | `needs-info` | `jira-writeback`: comment (`comment-needs-info.md`) only — **no transition is attempted at all** | `in_review` |
-| `needs-fix`, `class: defect` | `jira-delivery`: isolated worktree branch `fix/<KEY>-<slug>` from fresh main → delegate to `@debugger`/`@test-writer` per its delegation table → `@verification-agent` `PASS` as the sole gate on push/PR/comment/transition → commit `fix(...)` + PR via `@pr-generator` (text) + `gh` (open) → **then** `jira-writeback`: comment (`comment-fix-summary.md`) + QA transition attempt. `FAIL`/`PARTIAL` once `jira.budget.maxAttempts` is exhausted, or a diff over `jira.budget.maxFiles` even after `PASS`, hands off to `jira-escalation` instead of publishing anything. | `in_review` (gains the PR link on success; gains the escalation reason on hand-off) |
+| `needs-fix`, `class: defect` | `jira-delivery`: isolated worktree branch `fix/<KEY>-<slug>` from fresh main → delegate to `@debugger`/`@test-writer` per its delegation table → `@verification-agent` `PASS` as the sole gate on push/PR/comment/transition → commit `fix(...)` + PR via the pr-generator skill (text) + `gh` (open) → **then** `jira-writeback`: comment (`comment-fix-summary.md`) + QA transition attempt. `FAIL`/`PARTIAL` once `jira.budget.maxAttempts` is exhausted, or a diff over `jira.budget.maxFiles` even after `PASS`, hands off to `jira-escalation` instead of publishing anything. | `in_review` (gains the PR link on success; gains the escalation reason on hand-off) |
 | `needs-fix`, `class: change` | `jira-delivery`: isolated worktree branch `feat/<KEY>-<slug>` → **`@test-writer` first, and the test must be observed failing** against current code (a first-run pass is `already-fixed` or `needs-info`, never something to implement over) → `@implementation-agent` drives it green → same `@verification-agent` gate, plus a check that this test is still in the diff and green → commit `feat(...)` + PR → **then** `jira-writeback`: comment (`comment-change-summary.md`) + QA transition attempt. Same budget/escalation triggers as the defect row. | `in_review` (gains the PR link on success; gains the escalation reason on hand-off) |
-| `too-large` | `jira-escalation`: choose `@task-planner` (<~1 week / ≤3 phases) or `@implementation-planner` otherwise → plan saved to the private workspace per hard-rule §11 (never this repo) → full plan text posted via `comment-too-large.md` (posted directly by `jira-escalation`, not `jira-writeback`) — **no** transition; any branch/worktree `jira-delivery` already created before this fired is removed together with it | `in_review` (gains the escalation reason) |
+| `too-large` | `jira-escalation`: dispatch `@planner` (it scales the plan to the task — flat phases for <~1 week / ≤3 phases, a multi-phase plan otherwise) → plan saved to the private workspace per hard-rule §11 (never this repo) → full plan text posted via `comment-too-large.md` (posted directly by `jira-escalation`, not `jira-writeback`) — **no** transition; any branch/worktree `jira-delivery` already created before this fired is removed together with it | `in_review` (gains the escalation reason) |
 
 `needs-fix` and `too-large` are fully implemented as of this phase:
 `jira-delivery` and `jira-escalation` are both in this agent's `skills:`
@@ -262,10 +258,10 @@ policy for ad-hoc queries, one broad always-auto policy scoped to an explicit
    file whose contents you believe you already know. Writing a file from memory is prohibited.
 2. **Why:** an edit to an unread file is refused by the harness. The refusal is not free — it
    costs you the turn you spent composing the edit, and the retry costs another.
-3. **Recognise the recovery.** The `read-before-write` hook answers that first refusal with the
-   file's current contents on stderr and lets your immediate retry through. That is a recovery,
-   not a random failure: re-issue the same edit with the contents you were just handed, rather
-   than guessing at a different one.
+3. **Recognise the recovery.** The harness's native read-before-edit check refuses the first
+   attempt and admits a retry once the file has been Read. That is a recovery, not a random
+   failure: Read the file, then re-issue the edit against what you actually saw, rather than
+   guessing at a different one.
 4. **A "file modified since read" error later in the session means the same thing** — re-Read,
    re-locate the anchor, re-apply. Never retry an edit blind.
 

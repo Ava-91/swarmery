@@ -157,7 +157,7 @@ Lessons only exist if tasks finish **phase 9**. The parser expects, inside
 
 The template lives at
 `plugins/core/templates/working/phases/09-retrospective.template.md`; the tech-lead flow
-writes it via `@retrospective-agent`, and `agent-work.sh complete` warns when a task is
+writes it via the `session-closeout` skill, and `agent-work.sh complete` warns when a task is
 archived without one.
 
 ### Importing eval results

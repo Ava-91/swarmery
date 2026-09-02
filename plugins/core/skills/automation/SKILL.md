@@ -12,296 +12,34 @@ docs:
 
 # Purpose
 
-You convert manual operational procedures (runbooks) into parameterized, idempotent scripts with safety gates, and optionally graduate them to self-healing controllers. You also design and produce chaos experiments against the project's cloud infrastructure (see `.claude/project.json` -> `cloud.*`) with mandatory environment guards. All output is executable shell scripts or Python automation code with dry-run, confirmation, and rollback steps. The examples below use Kubernetes/kubectl -- adapt commands to the project's runtime (`cloud.runtime`). Related skills: `code-standards` (for script quality), `api-integration` (if the runbook touches the main app's APIs).
+Convert manual runbooks into parameterized, idempotent scripts with safety gates, optionally graduating them to self-healing controllers, and design chaos experiments against the project's cloud infrastructure (`.claude/project.json` -> `cloud.*`) with mandatory environment guards. Output is executable shell or Python automation with dry-run, confirmation, and rollback. Examples use Kubernetes/kubectl — adapt to `cloud.runtime`.
 
-# When to use
+# Rules (never violate)
 
-- Trigger A -- A manual runbook exists (documented or ad-hoc) that is executed more than twice per week
-- Trigger B -- An operational task involves restarting pods, flushing caches, scaling deployments, or rotating secrets
-- Trigger C -- A chaos experiment is needed to validate system resilience (pod kill, network partition, resource exhaustion)
-- Trigger D -- A toil reduction analysis is requested for a specific operational area
+- Zero hardcoded namespaces, deployment names, hostnames, or credentials — everything is a parameter or environment variable.
+- Every script: `set -euo pipefail` (or equivalent), a `--dry-run` flag skipping all destructive operations, timestamped logging, and a rollback per destructive step.
+- Chaos experiments require `ALLOW_CHAOS=true` and reject any namespace containing "prod"; never against production without explicit written confirmation.
+- Scripts go to `devops/scripts/<runbook-name>.sh` (or `.py`) via the Write tool — never echoed through Bash — and are PR-reviewed before cluster execution.
+- STOP and ask on ambiguous runbooks, PVC/StatefulSet data deletion, or restart-loop risk; refuse credential rotation without a secrets manager.
 
-# When NOT to use
+# Resources
 
-- Writing or modifying CI/CD pipelines (GitLab CI, GitHub Actions) -- use `deployment`
-- Authoring or updating deployment manifests or infrastructure templates -- use `deployment`
-- Writing application code (TypeScript, Python) for the main app or the device/edge repo -- use appropriate application skills
-- Ad-hoc debugging of a production incident -- use `troubleshooting`
-- Updating Prometheus alerting rules or Grafana dashboards -- use `monitoring`
-
-# Required environment
-
-- Runtime: `.claude/skills/automation/SKILL.md`
-- Tools: Read, Write, Bash
-- File system assumptions:
-  - `kubectl` (or the runtime's equivalent CLI -- `.claude/project.json` -> `cloud.runtime`) is configured with the appropriate context
-  - The target namespace is passed as a parameter (never hardcoded)
-  - Chaos experiments require explicit `ALLOW_CHAOS=true` environment variable
-- Canonical script storage path: `devops/scripts/<runbook-name>.sh` (or `.py`). All produced scripts are saved here and referenced in a pull request for review before cluster execution.
-
-# Inputs
-
-- `runbook_name: string` -- name of the runbook to automate (e.g., "restart-device-gateway", "flush-redis")
-- `target_namespace: string` -- target namespace (e.g., "app", "edge")
-- `target_deployment: string` -- deployment name (e.g., "device-gateway", "web-app")
-- `automation_level: "script" | "self-healing" | "chaos"` -- what to produce
-
-# Outputs
-
-- Format: executable shell script (`.sh`) or Python module (`.py`) with inline documentation
-- Length budget: scripts under 100 lines; self-healing modules under 200 lines
-- Storage: saved to `devops/scripts/<runbook-name>.sh` (or `.py`) using the Write tool
-
-# Procedure
-
-1. **Review the manual runbook** -- Read the existing documentation or user description of the manual steps using the Read tool.
-   **Checkpoint:** Manual steps are understood and can be listed sequentially.
-
-2. **Confidence gate** -- If the runbook steps are ambiguous, contradictory, or incomplete, STOP and ask the user for clarification before proceeding. Do not write or execute scripts against a live cluster without at least one human confirmation step.
-   **Checkpoint:** Runbook steps are unambiguous and complete.
-
-3. **Identify safety requirements** -- For each step, determine:
-   - Is it destructive (deletes data, restarts services, modifies state)?
-   - Does it require confirmation?
-   - Can it be rolled back?
-   - Is a dry-run possible?
-   **Checkpoint:** Every destructive step has a safety gate identified.
-
-4. **Parameterize all environment-specific values** -- Replace hardcoded namespaces, deployment names, hostnames, and credentials with script parameters or environment variables.
-   **Checkpoint:** Zero hardcoded cluster-specific values remain.
-
-5. **Write the automated script** -- Use the Write tool to save the script to `devops/scripts/<runbook-name>.sh` (or `.py`). Apply these mandatory rules:
-   - Every destructive kubectl command must be preceded by a `--dry-run=client` step
-   - Every script must accept `--dry-run` flag that skips all destructive operations
-   - Every script must log what it does with timestamps
-   - Every script must use `set -euo pipefail` (bash) or equivalent error handling
-   - Chaos experiments must check `ALLOW_CHAOS=true` before executing
-   - Chaos experiments must check that the target namespace is NOT a production namespace
-   - All parameters must have defaults documented in usage text
-   **Checkpoint:** Script saved to canonical path.
-
-6. **Add rollback procedure** -- Document or script the rollback for each destructive step.
-   **Checkpoint:** Rollback is either scripted or documented with exact commands.
-
-7. **Test with dry-run** -- Use the Bash tool to execute the script with `--dry-run` flag and verify output. Include the dry-run output in your response.
-   **Checkpoint:** Dry-run completes without errors and shows what would happen.
-
-8. **Final acceptance check** -- Script is parameterized, has safety gates, has rollback, and dry-run passes.
-   **Checkpoint:** All self-check items pass.
-
-# Self-check before returning
-
-- [ ] Zero hardcoded namespaces -- all namespace values come from parameters or environment variables
-- [ ] Zero hardcoded deployment names -- all deployment names come from parameters
-- [ ] Every destructive command has a preceding `--dry-run=client` step or equivalent
-- [ ] Script accepts a `--dry-run` flag that prevents all destructive operations
-- [ ] Chaos experiments check `ALLOW_CHAOS=true` environment variable before executing
-- [ ] Chaos experiments reject production namespaces (any namespace containing "prod")
-- [ ] Script uses `set -euo pipefail` or equivalent error handling
-- [ ] Every operation is logged with a timestamp
-- [ ] Rollback procedure is documented or scripted for every destructive step
-- [ ] Script is saved to `devops/scripts/` using the Write tool
-
-# Common mistakes to avoid
-
-- DO NOT hardcode `-n app` or any namespace -- always use a `$NAMESPACE` variable with the namespace passed as a required parameter
-- DO NOT hardcode deployment names like `deployment/device-gateway` -- accept them as parameters
-- DO NOT run chaos experiments without an environment guard that blocks production
-- DO NOT use `kubectl delete pod` without a preceding dry-run and confirmation prompt
-- DO NOT use `asyncio.sleep()` without a cancellation mechanism in self-healing code -- use `asyncio.wait_for()` with a timeout
-- DO NOT reference non-existent Python modules (e.g., `import disconnect_device`) -- only use modules that exist in the repository
-- DO NOT schedule recurring chaos experiments (cron-based Chaos Mesh) without explicit human approval and a documented kill switch
-- DO NOT write scripts by echoing content through Bash -- always use the Write tool to create script files
-
-# What to surface to the user
-
-- The complete script with inline comments explaining each step
-- Dry-run output showing what the script would do
-- Rollback procedure (scripted or documented)
-- Estimated toil reduction (time saved per execution * frequency)
-- Any assumptions about cluster state or prerequisites
-
-# Escalation
-
-- Stop and ask when: the runbook involves deleting PersistentVolumeClaims or StatefulSet data
-- Stop and ask when: the chaos experiment targets a namespace that might be production (any namespace not explicitly marked as non-prod)
-- Stop and ask when: the self-healing controller would automatically restart a deployment more than 3 times in 10 minutes (restart loop risk)
-- Refuse and explain when: asked to automate a runbook that includes credential rotation without a secrets manager integration
-- Refuse and explain when: asked to run chaos experiments against a production cluster without explicit written confirmation
-
-# Examples
-
-<example name="restart-device-connection-runbook">
-**Manual runbook:**
-1. Check device-gateway logs for the disconnected device
-2. Restart the device-gateway pod
-3. Verify the device reconnects
-
-**Automated script (saved to `devops/scripts/restart-device-connection.sh`):**
-
-```bash
-#!/usr/bin/env bash
-# restart-device-connection.sh
-# Restarts the device-gateway deployment to recover a disconnected device.
-#
-# Usage: ./restart-device-connection.sh --namespace <ns> --deployment <deploy> [--dry-run]
-# Example: ./restart-device-connection.sh --namespace app --deployment device-gateway
-
-set -euo pipefail
-
-NAMESPACE=""
-DEPLOYMENT=""
-DRY_RUN=false
-
-usage() {
-  echo "Usage: $0 --namespace <ns> --deployment <deploy> [--dry-run]"
-  exit 1
-}
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --namespace) NAMESPACE="$2"; shift 2 ;;
-    --deployment) DEPLOYMENT="$2"; shift 2 ;;
-    --dry-run) DRY_RUN=true; shift ;;
-    *) usage ;;
-  esac
-done
-
-[[ -z "$NAMESPACE" || -z "$DEPLOYMENT" ]] && usage
-
-log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"; }
-
-log "Checking pods for deployment/$DEPLOYMENT in namespace $NAMESPACE..."
-kubectl get pods -n "$NAMESPACE" -l "app=$DEPLOYMENT" --no-headers
-
-log "Dry-run: rollout restart deployment/$DEPLOYMENT -n $NAMESPACE"
-kubectl rollout restart "deployment/$DEPLOYMENT" -n "$NAMESPACE" --dry-run=client
-
-if $DRY_RUN; then
-  log "DRY RUN complete. No changes made."
-  exit 0
-fi
-
-read -rp "Proceed with restart? (y/N): " confirm
-[[ "$confirm" != "y" && "$confirm" != "Y" ]] && { log "Aborted."; exit 0; }
-
-log "Restarting deployment/$DEPLOYMENT in namespace $NAMESPACE..."
-kubectl rollout restart "deployment/$DEPLOYMENT" -n "$NAMESPACE"
-
-log "Waiting for rollout to complete..."
-kubectl rollout status "deployment/$DEPLOYMENT" -n "$NAMESPACE" --timeout=120s
-
-log "Post-restart pod status:"
-kubectl get pods -n "$NAMESPACE" -l "app=$DEPLOYMENT" --no-headers
-
-log "Restart complete."
-
-# Rollback: kubectl rollout undo deployment/$DEPLOYMENT -n $NAMESPACE
-```
-</example>
-
-<example name="chaos-kill-pod">
-```bash
-#!/usr/bin/env bash
-# chaos-kill-pod.sh
-# Kills a random pod in the target deployment to test resilience.
-#
-# Usage: ALLOW_CHAOS=true ./chaos-kill-pod.sh --namespace <ns> --deployment <deploy>
-# Safety: blocked in production namespaces; requires ALLOW_CHAOS=true
-
-set -euo pipefail
-
-NAMESPACE=""
-DEPLOYMENT=""
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --namespace) NAMESPACE="$2"; shift 2 ;;
-    --deployment) DEPLOYMENT="$2"; shift 2 ;;
-    *) echo "Unknown arg: $1"; exit 1 ;;
-  esac
-done
-
-[[ -z "$NAMESPACE" || -z "$DEPLOYMENT" ]] && { echo "Missing required args"; exit 1; }
-
-if [[ "${ALLOW_CHAOS:-}" != "true" ]]; then
-  echo "ERROR: ALLOW_CHAOS=true is required."
-  exit 1
-fi
-
-if [[ "$NAMESPACE" == *prod* || "$NAMESPACE" == *production* ]]; then
-  echo "ERROR: Chaos experiments are blocked in production namespaces ('$NAMESPACE')."
-  exit 1
-fi
-
-log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"; }
-
-POD=$(kubectl get pods -n "$NAMESPACE" -l "app=$DEPLOYMENT" \
-  --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-
-if [[ -z "$POD" ]]; then
-  log "No running pods found for deployment/$DEPLOYMENT in $NAMESPACE"
-  exit 1
-fi
-
-log "Target pod: $POD"
-log "Deleting pod $POD in namespace $NAMESPACE..."
-kubectl delete pod "$POD" -n "$NAMESPACE"
-
-log "Waiting for replacement pod..."
-kubectl rollout status "deployment/$DEPLOYMENT" -n "$NAMESPACE" --timeout=60s
-
-log "Post-chaos pod status:"
-kubectl get pods -n "$NAMESPACE" -l "app=$DEPLOYMENT" --no-headers
-
-log "Chaos experiment complete. Verify telemetry and connectivity."
-```
-</example>
-
-# Failure modes
-
-| Failure | Detect | Fix |
-|---------|--------|-----|
-| Script fails because kubectl context is wrong | "error: context not found" in output | Add `kubectl config current-context` check at script start |
-| Rollout restart hangs because new pod fails health checks | `kubectl rollout status` times out | Script catches the timeout and suggests `kubectl rollout undo` |
-| Chaos experiment accidentally targets production | Namespace contains "prod" | Environment guard blocks execution and exits with error |
-
-# Toil measurement
-
-When automating a runbook, document the toil reduction:
-
-```
-Manual time per execution: X minutes
-Automated time per execution: Y minutes
-Frequency: Z times per week
-Weekly savings: (X - Y) * Z minutes
-```
-
-# Related skills
-
-- `code-standards` -- defer to for script quality and style conventions
-- `api-integration` -- compose when a runbook step involves calling the main app's API endpoints
-- `code-quality` -- defer to for complexity and maintainability analysis of automation scripts
+- Read `resources/script-requirements.md` when producing a script — procedure, safety rules, self-check, common mistakes, escalation, failure modes, toil measurement.
+- Read `resources/example-scripts.md` for full reference scripts — a gated restart runbook and a guarded chaos pod-kill.
 
 # How to use
 
 ## What it does
 
-This skill turns a manual operations runbook — restart a deployment, flush a cache, scale a service, rotate a key — into a parameterized, idempotent script you can review in a pull request before anyone runs it against a cluster. It can also produce a chaos experiment with hard guards. Every script it writes takes its namespace and target as parameters, supports `--dry-run`, logs with timestamps, and carries a rollback command.
+Turns a manual operations runbook — restart a deployment, flush a cache, scale a service — into a parameterized, idempotent script reviewable in a pull request before anyone runs it against a cluster. It can also produce a guarded chaos experiment. Every script takes its targets as parameters, supports `--dry-run`, logs with timestamps, and carries a rollback.
 
 ## When to use it
 
-- A manual runbook is executed more than twice a week and the steps are stable enough to write down.
+- A manual runbook runs more than twice a week with stable steps.
 - The task restarts pods, flushes caches, scales deployments, or rotates secrets.
-- You want a chaos experiment (pod kill, network partition, resource exhaustion) that refuses to run outside a non-production namespace.
-- Someone asks how much toil a given operational area costs and what automating it would save.
+- You want a guarded chaos experiment, or a toil-reduction analysis of an operational area.
 
-## When not to use it
-
-- Writing or changing CI/CD pipelines and deployment manifests — use `deployment`.
-- Debugging a live incident right now — use `troubleshooting`.
-- Adding alert rules or dashboards — use `monitoring`.
-- Writing application code for your services — use the matching application skill.
+Not for CI/CD pipelines or deployment manifests (the project's infra pack skills), live incident debugging (`troubleshooting`), or alert rules and dashboards (`monitoring`).
 
 ## How to invoke
 
@@ -309,33 +47,19 @@ This skill turns a manual operations runbook — restart a deployment, flush a c
 Skill(skill: "core:automation")
 ```
 
-Invoke it with the runbook description in the same request. If the steps are ambiguous or contradictory, the skill stops and asks you before writing anything.
-
-## Inputs
-
-- `runbook_name` — the runbook to automate, e.g. `restart-api-gateway` — required.
-- `target_namespace` — the namespace to act on, e.g. `<envAlias>` — required.
-- `target_deployment` — the deployment name — required.
-- `automation_level` — `script`, `self-healing`, or `chaos` — required.
-
-## What you get back
-
-A script saved to `devops/scripts/<runbook-name>.sh` (or `.py`) — under 100 lines for a script, under 200 for a self-healing module — plus the dry-run output from actually executing it, the rollback command for each destructive step, and an estimate of time saved per week. Chaos scripts additionally require `ALLOW_CHAOS=true` and exit with an error on any namespace containing `prod`.
+Include the runbook description plus `runbook_name`, `target_namespace`, `target_deployment`, and `automation_level` (`script`, `self-healing`, or `chaos`). Ambiguous steps make the skill stop and ask before writing.
 
 ## Worked example
 
 ```
 Skill(skill: "core:automation")
-
 "Automate our restart runbook: check gateway logs, restart the
  deployment, verify it comes back. Namespace orders, deployment
  line-items-api, automation_level: script."
 ```
 
-You get `devops/scripts/restart-line-items-api.sh`: `set -euo pipefail`, `--namespace` and `--deployment` as required flags, a `--dry-run` flag that exits before any change, a client-side dry run and a `y/N` prompt ahead of the restart, `kubectl rollout status` with a timeout, and `kubectl rollout undo …` documented as the rollback. The reply includes the dry-run transcript so you can see what it would have done.
+You get `devops/scripts/restart-line-items-api.sh`: required `--namespace`/`--deployment` flags, a `--dry-run` flag exiting before any change, a client-side dry run and `y/N` prompt ahead of the restart, rollout status with a timeout, and `kubectl rollout undo` documented as rollback — plus the dry-run transcript.
 
 ## Related
 
-- `code-standards` — prefer it for style and quality review of the script once it exists.
-- `code-quality` — prefer it for complexity and maintainability analysis of automation code.
-- `api-integration` — compose with it when a runbook step calls your application's API.
+- `code-standards` — script style; `code-quality` — maintainability; `api-integration` — runbook steps calling the app's API.

@@ -1,15 +1,11 @@
 ---
 name: telemetry-processor
 description: Implement real-time telemetry streaming, WebSocket/SSE fan-out, and Google Maps visualization spanning the edge service and the web portal.
-model: claude-sonnet-5
+model: sonnet
 effort: high
 # Rationale: Streaming implementation is within Sonnet capability; Opus reserved for orchestration.
-permissionMode: acceptEdits
 maxTurns: 15
 color: orange
-autonomy: auto
-version: 1.1.0
-owner: swarmery-core
 skills:
   - api-integration
   - code-standards
@@ -115,10 +111,10 @@ Context compaction: if conversation exceeds 60% context window, save streaming s
    file whose contents you believe you already know. Writing a file from memory is prohibited.
 2. **Why:** an edit to an unread file is refused by the harness. The refusal is not free — it
    costs you the turn you spent composing the edit, and the retry costs another.
-3. **Recognise the recovery.** The `read-before-write` hook answers that first refusal with the
-   file's current contents on stderr and lets your immediate retry through. That is a recovery,
-   not a random failure: re-issue the same edit with the contents you were just handed, rather
-   than guessing at a different one.
+3. **Recognise the recovery.** The harness's native read-before-edit check refuses the first
+   attempt and admits a retry once the file has been Read. That is a recovery, not a random
+   failure: Read the file, then re-issue the edit against what you actually saw, rather than
+   guessing at a different one.
 4. **A "file modified since read" error later in the session means the same thing** — re-Read,
    re-locate the anchor, re-apply. Never retry an edit blind.
 

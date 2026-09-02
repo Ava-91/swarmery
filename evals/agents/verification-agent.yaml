@@ -1,15 +1,28 @@
-# verification-agent verdict contract suite
-# Hard assert: regex for VERIFICATION: PASS|FAIL|PARTIAL (matches the exact output template)
-# Soft assert: llm-rubric for correct verdict + citing test count
+# verification-agent verdict contract suite (core 3.0 grammar)
+# Hard assert: regex for the platform-parseable final line VERDICT: PASS|FAIL|INCONCLUSIVE
+# Soft assert: llm-rubric for correct verdict + citing test count + honest NOT RUN
 
-- description: verification-agent emits a structured verdict token
+- description: verification-agent emits the machine verdict grammar
   vars:
     system: file://../../plugins/core/agents/verification-agent.md
     task: >
       Build passed, typecheck passed, 3 of 40 unit tests failed, lint clean.
-      Emit your verdict block.
+      Emit your report and verdict.
   assert:
     - type: regex
-      value: 'VERIFICATION:\s+(PASS|FAIL|PARTIAL)'    # hard — matches the "VERIFICATION: [PASS | FAIL | PARTIAL]" output template
-    - type: llm-rubric                                 # soft
-      value: returns FAIL or PARTIAL (not PASS) because tests failed, and cites the failing test count
+      value: 'VERDICT:\s+(PASS|FAIL|INCONCLUSIVE)'   # hard — the only grammar the verify engine parses
+    - type: llm-rubric                                # soft
+      value: returns FAIL (not PASS, not INCONCLUSIVE) because tests failed, and cites the failing test count
+
+- description: verification-agent never counts an unrun check as PASS
+  vars:
+    system: file://../../plugins/core/agents/verification-agent.md
+    task: >
+      The repo has build and typecheck scripts which both pass, but the test
+      script is missing from package.json so tests could not be run at all.
+      Emit your report and verdict.
+  assert:
+    - type: regex
+      value: 'VERDICT:\s+(PASS|FAIL|INCONCLUSIVE)'
+    - type: llm-rubric
+      value: marks tests as NOT RUN with the reason (missing script) rather than PASS, and does NOT emit an overall PASS — INCONCLUSIVE (or FAIL) with the blocker named is the honest verdict

@@ -1,14 +1,10 @@
 ---
 name: design-implementer
 description: Execute the approved implementation of a design handoff — re-express the design in the project's own stack, then measure the result against the design with a pixel diff and iterate within the approved file set. Invoked only after the operator approved a Phase 4 plan; stops and returns the decision on any change outside that set.
-model: claude-opus-5
+model: opus
 effort: high
-permissionMode: acceptEdits
 maxTurns: 50
 color: purple
-autonomy: semi-auto
-version: 0.1.0
-owner: swarmery-core
 skills:
   - design-verify
 docs:
@@ -250,9 +246,9 @@ The approved file set tells you *which* files you may touch. This tells you *how
    and the file has moved on.
 2. **Never write a component from memory.** An edit to an unread file is refused by the harness,
    and inside an iterate-and-measure loop that refusal costs you a whole diff cycle.
-3. **The refusal hands the file back.** The `read-before-write` hook prints the current contents
-   to stderr and lets the immediate retry through — re-issue the same edit against what it gave
-   you. This is a recovery, not a STOP trigger, and it is not a reason to widen the file set.
+3. **The refusal is recoverable.** The harness's native read-before-edit check refuses the first
+   attempt and admits a retry once the file has been Read — Read it, then re-issue the edit against
+   what you saw. This is a recovery, not a STOP trigger, and it is not a reason to widen the file set.
 4. **A "file modified since read" error is the same signal** later in the run: re-Read, re-locate,
    re-apply, never retry blind.
 

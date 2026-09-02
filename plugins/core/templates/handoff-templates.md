@@ -14,7 +14,7 @@
 
 ## 1. QA PASS
 
-Use when Phase 5 (`@verification-agent`, `@quality-checker`, `@plan-reviewer`, `@security-auditor`) all return green.
+Use when Phase 5 (`@verification-agent`, `@code-reviewer`, `@security-auditor`) all return green (each ends with a `VERDICT: PASS` line).
 
 ```markdown
 # QA Verdict: PASS ✅

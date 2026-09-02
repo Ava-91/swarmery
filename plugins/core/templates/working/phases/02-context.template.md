@@ -1,7 +1,7 @@
 # Phase 2: Context Gathering
 
 **Task**: {{TASK_NAME}}
-**Agent**: @context-gatherer
+**Agent**: @researcher
 **Started**: {{PHASE_START}}
 **Completed**: {{PHASE_END}}
 **Duration**: {{PHASE_DURATION}}
@@ -78,5 +78,5 @@
 
 ## Next Phase
 
-→ Phase 3: Planning (@task-planner)
+→ Phase 3: Planning (@planner)
 

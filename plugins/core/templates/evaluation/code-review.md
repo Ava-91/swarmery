@@ -2,7 +2,7 @@
 
 **PR**: #[number]  
 **Author**: @[username]  
-**Reviewer**: @code-auditor  
+**Reviewer**: @code-reviewer  
 **Date**: [YYYY-MM-DD]
 
 ---
@@ -204,7 +204,7 @@
 
 ---
 
-**Reviewed by**: @quality-checker  
+**Reviewed by**: @code-reviewer  
 **Review Date**: [YYYY-MM-DD]  
 **Review Duration**: [X] minutes
 

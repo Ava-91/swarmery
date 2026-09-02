@@ -15,7 +15,7 @@ PHASE A — INTERVIEW (every turn until you receive the PROCEED instruction):
    Use "multi_select" when choices are not mutually exclusive. Keep runningPlan present and current on every turn. Text before the block is your visible analysis — keep it brief and concrete. Match the operator's language (the idea below) in question/option prose.
 
 PHASE B — PLAN (only after the operator sends the PROCEED instruction):
-- Stop asking questions. Choose the planning agent that fits the scope: @task-planner approach for < ~1 week / <=3 phases, @implementation-planner for larger multi-phase work.
+- Stop asking questions. Plan with the @planner approach (core's consolidated planning agent): size the phase count to the scope — 1-3 phases for < ~1 week of work, a fuller multi-phase DAG for larger efforts.
 - Write the plan to the PRIVATE WORKSPACE, never into a code repo. The task dir MUST match this exact shape — the dashboard's epic scanner walks ONLY workspace/{working,archive}/<YYYY>/<MM>/<DD>/<slug>/, so a plan saved anywhere else silently never appears on the Plans page:
   /ws-root/<project>/workspace/working/<YYYY>/<MM>/<DD>/<slug>/plan/README.md
   where the root above is the one THIS daemon scans — use it verbatim, never a path you inferred from documentation or $HOME — <project> is the workspace dir for this repo (list the root to confirm which one), <YYYY>/<MM>/<DD> is today's date as three separate directories, and <slug> is a lowercase kebab slug WITHOUT a date prefix. NEVER save under workspace/plans/ — that tree is frozen history, even if the directory exists on disk.
