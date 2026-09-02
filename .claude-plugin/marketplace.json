@@ -32,7 +32,7 @@
     {
       "name": "infra-pack",
       "source": "./plugins/infra-pack",
-      "description": "Infrastructure & delivery domain pack: Kubernetes/Helm, GitOps promotion, IaC, GitLab CI, GCP CI auth, Keycloak. Opt-in; requires core."
+      "description": "Infrastructure & delivery domain pack: Kubernetes/Helm, GitOps promotion, IaC, GitLab CI, cloud CI auth (GCP + AWS), Keycloak. Opt-in; requires core."
     },
     {
       "name": "lsp-pack",
@@ -57,7 +57,7 @@
     {
       "name": "jira-pack",
       "source": "./plugins/jira-pack",
-      "description": "Issue-tracker pack: /jira-fix drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition. Opt-in; requires core."
+      "description": "Issue-tracker pack: /jira-fix drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition. Opt-in; requires core and an Atlassian MCP provider enabled on the machine."
     },
     {
       "name": "accounts-pack",

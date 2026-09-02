@@ -56,7 +56,7 @@ A component in a project's own `.claude/` **wins** over a plugin component with 
 
 ## core — the mandatory baseline
 
-**What it is.** The vendor-neutral agent-development framework: a 13-agent judgment-style fleet, 36 progressively-disclosed skills, 8 commands, 16 hooks, plus the project-aware `agent-work` workspace CLI and the statusline.
+**What it is.** The vendor-neutral agent-development framework: a 13-agent judgment-style fleet, 36 progressively-disclosed skills, 8 commands, 18 hooks, plus the project-aware `agent-work` workspace CLI and the statusline.
 
 **What it can do.**
 - **Orchestration** — `@tech-lead` routes work by size (understand → plan → implement → independent review → close) across a 13-agent fleet: `planner`, `architect`, `researcher`, `implementation-agent`, `ui-developer`, `debugger`, `test-writer`, `test-runner`, `code-reviewer`, `security-auditor`, `verification-agent`, `system-improver` (see `plugins/core/AGENTS.md`).

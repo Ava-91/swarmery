@@ -525,18 +525,22 @@ pile up, files drift, every improvement has to be ported N times. Swarmery repla
 the native Claude Code plugin mechanism — **semver-versioned**, **namespaced** (`core:tech-lead`),
 **updatable** (`/plugin update`). Projects pin a known-good version and adopt on bump.
 
+<!-- BEGIN generated:packs -->
 | Plugin | What's inside |
 |---|---|
 | **`core`** | The vendor-neutral framework every consumer enables: 13 judgment-style agents (tech-lead, planner, architect, implementation-agent, code-reviewer, … — see `plugins/core/AGENTS.md`), 36 progressively-disclosed skills, 8 commands, lifecycle/safety hooks, the statusline, and the project-aware `agent-work` workspace CLI. |
-| `uav-pack` | UAV/drone domain: MAVLink-style telemetry, mission planning, embedded/edge runtime. |
-| `iot-pack` | IoT domain: BLE communication, device telemetry, health-metrics processing. |
-| `web-pack` | Web/marketing: SEO, i18n, landing-page CRO, Figma-to-code styling. |
-| `infra-pack` | Infrastructure & delivery: Kubernetes/Helm, GitOps promotion, IaC, GitLab CI, cloud CI auth, Keycloak. |
-| `lsp-pack` | Semantic code navigation via the Serena LSP MCP server (needs the `serena` binary). |
-| `claude-eng-pack` | Claude-engineering: agent architecture, tool/MCP design, prompt engineering, Claude Code config, context reliability. |
-| `graphify-pack` | `/graphify` — repo → persistent knowledge graph with query/path/affected tools (needs the `graphify` CLI). |
-| `architecture-pack` | `/architecture-map` — machine-readable architecture JSON + a self-contained HTML viewer, freshness-stamped per commit. |
-| `jira-pack` | `/jira-fix` — drives a Jira ticket end-to-end: access preflight, reproduction, delegated fix, evidence comment, QA transition. Opt-in; requires an Atlassian MCP provider enabled on the machine. |
+| `uav-pack` | UAV/drone domain pack: MAVLink-style telemetry, mission planning, embedded/edge runtime. |
+| `iot-pack` | IoT domain pack: BLE communication, device telemetry, health-metrics processing. |
+| `web-pack` | Web/marketing domain pack: SEO, i18n, landing-page CRO, Figma-to-code styling. |
+| `infra-pack` | Infrastructure & delivery domain pack: Kubernetes/Helm, GitOps promotion, IaC, GitLab CI, cloud CI auth (GCP + AWS), Keycloak. |
+| `lsp-pack` | Semantic code-navigation pack: Serena LSP MCP server. Requires the serena binary (uv) on the machine. |
+| `claude-eng-pack` | Claude-engineering pack: skills for building/auditing Claude agent systems — agent architecture, tool/MCP design, prompt engineering, Claude Code config, context reliability. |
+| `graphify-pack` | Knowledge-graph pack: the /graphify skill — repo/folder → persistent knowledge graph with query/path/affected tools and HTML/JSON/Neo4j exports. Requires the graphify CLI on the machine. |
+| `architecture-pack` | Repo-wide architecture map: /architecture-map generates a machine-readable JSON contract (layers, modules, file-anchored flows) + self-contained HTML viewer, freshness-stamped per commit; the swarmery dashboard serves both on its Architecture page. |
+| `jira-pack` | Issue-tracker pack: /jira-fix drives any Jira ticket end-to-end — access preflight, defect-or-change triage, reproduction or test-first evidence, delegated fix/implementation, evidence comment, QA transition. Requires an Atlassian MCP provider enabled on the machine. |
+| `accounts-pack` | Multi-account pack: bind a project to one of several Claude Code accounts and run every session under it — /account, a shell wrapper, an optional shell function, and a wrong-account warning. Requires the swarmery CLI. |
+| `design-pack` | Design-handoff pack: /design-implement takes an exported design and re-expresses it in the project's stack pixel-accurately — computed-style token inventory, reuse-vs-create recon, an approval gate, and a measured pixel diff as the completion criterion. |
+<!-- END generated:packs -->
 
 Every pack requires `core` and is opt-in per project.
 

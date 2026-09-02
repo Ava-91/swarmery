@@ -101,6 +101,16 @@ jobs:
           # ratchet — never raise this above the live number.
           bash scripts/docgen/check-coverage.sh
 
+      - name: Counts are current
+        run: |
+          # Every published count — the pack table in README.md, both stat rows
+          # on the landing page — is spliced in from the corpus itself by
+          # scripts/docgen/counts.sh. This regenerates them into a throwaway copy
+          # and diffs. It bites when a pack, an agent or a skill lands and the
+          # numbers are left behind, which is the only way they have ever gone
+          # wrong: every one of them was correct on the day it was typed.
+          bash scripts/docgen/apply-counts.sh --check
+
       - name: Flavor scan (neutrality ratchet)
         env:
           FLAVOR_BRAND: ${{ vars.FLAVOR_BRAND }}
