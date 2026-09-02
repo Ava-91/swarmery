@@ -262,3 +262,46 @@ func TestLedgerAssessmentIngest(t *testing.T) {
 		t.Errorf("malformed row mistakes = %q, want kept", got[2].mistakes.String)
 	}
 }
+
+// TestParseLedgerHookEmittedRow pins the row shape plugins/core/hooks/
+// subagent-stop.sh writes. That hook derives the mechanical cells (agent,
+// phase, verdict, loops, artifact) from the SubagentStop payload so the
+// orchestrator prompt no longer has to hand-write them; quality and mistakes
+// are left for the human/orchestrator judgment pass.
+//
+// If parseLedger's cell contract ever moves, this fails here rather than
+// silently dropping every hook-written delegation on the floor.
+func TestParseLedgerHookEmittedRow(t *testing.T) {
+	// Verbatim output of emit_ledger_row(), including the empty quality cell
+	// and the em-dash placeholders it uses for absent values.
+	const doc = `| agent | phase | verdict | loops | quality | mistakes | artifact |
+|---|---|---|---|---|---|---|
+| @code-reviewer | phase-2 | FAIL | 1 |  | — | reports/phase-2-review.md |
+| @implementation-agent | phase-4 | — | 1 |  | — | — |
+`
+	got := parseLedger(doc)
+	if len(got) != 2 {
+		t.Fatalf("parseLedger = %+v, want 2 rows", got)
+	}
+
+	r := got[0]
+	if r.agent != "code-reviewer" || r.phase != "phase-2" || r.verdict != "FAIL" ||
+		r.artifact != "reports/phase-2-review.md" {
+		t.Errorf("hook row = %+v, want the four mechanical cells populated", r)
+	}
+	if !intPtrEq(r.loops, 1) {
+		t.Errorf("loops = %v, want 1 — the hook counts prior dispatches", r.loops)
+	}
+	if r.quality != nil {
+		t.Errorf("quality = %v, want nil: the hook deliberately leaves judgment empty", r.quality)
+	}
+	if r.mistakes != "" {
+		t.Errorf("mistakes = %q, want empty — the em-dash placeholder must fold", r.mistakes)
+	}
+
+	// An executor that emits no VERDICT line: the hook writes an em-dash
+	// rather than inventing a pass, and the row must still ingest.
+	if r = got[1]; r.agent != "implementation-agent" || r.verdict != "—" {
+		t.Errorf("verdict-less row = %+v, want it ingested with an em-dash verdict", r)
+	}
+}

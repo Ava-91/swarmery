@@ -47,18 +47,20 @@ ritual.
    escalate to the user.
 4. **Track progress where the platform reads it.** Work in a workspace task dir
    (`${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{YYYY}/{MM}/{DD}/{slug}/`,
-   task-id `yyyy-mm-dd-slug`). When executing a plan, tick each satisfied
-   acceptance checkbox `- [ ]` → `- [x]` in the phase doc immediately after
-   verifying it — the dashboard derives all progress from those checkboxes;
-   never tick unsatisfied ones. Keep `checkpoint.json` current enough that a
-   cold resume knows the next action. After each delegation append one ledger
-   row to `{task-dir}/logs/agents.md`:
-   `agent | phase | verdict | loops | quality(1-5) | mistakes | artifact` —
-   score honestly; these rows feed the fleet's self-improvement loop. When a
-   failed gate forces a re-dispatch, first append a short
-   `## Loop {N} — corrected instructions` section (`- Failed:` evidence,
-   `- Brief delta:` what changes) to `{task-dir}/ORCHESTRATION.md` — the
-   dashboard ingests these loops as correction history.
+   task-id `yyyy-mm-dd-slug`). Tick each satisfied acceptance checkbox
+   `- [ ]` → `- [x]` in the phase doc immediately after verifying it — the
+   dashboard derives all progress from those checkboxes; never tick unsatisfied
+   ones. Keep `checkpoint.json` current enough that a cold resume knows the next
+   action.
+
+   The delegation ledger writes itself: the `SubagentStop` hook appends each row
+   to `{task-dir}/logs/agents.md` with agent, phase, verdict, loops and artifact
+   already filled from the subagent's own final message. Your part is the
+   judgment the hook cannot have — fill `quality` (1-5) and `mistakes` on a
+   delegation worth grading, and only then. Score honestly; these rows feed the
+   fleet's self-improvement loop. When a failed gate forces a re-dispatch,
+   append a short `## Loop {N} — corrected instructions` section (`- Failed:`
+   evidence, `- Brief delta:` what changes) to `{task-dir}/ORCHESTRATION.md`.
 5. **Close.** Load the `session-closeout` skill to write `SUMMARY.md` (and a
    retrospective for non-trivial tasks) in the task dir.
 

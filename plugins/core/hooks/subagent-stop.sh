@@ -78,6 +78,90 @@ jq -c -n \
   --arg duration_s "${diff_s:-}" \
   '{ts: $ts, tool: "AgentDone", file: "", cmd: $cmd, parent_id: $parent_id, session_id: $session_id, model_observed: $model_observed, duration_s: $duration_s}' >> "$SESSION_FILE"
 
+# ── Ledger row (mechanical cells only) ────────────────────────────
+# The 7-cell delegation ledger internal/wsingest reads
+# (logs/agents.md → task_delegations). Four of the seven cells are
+# mechanically derivable from this payload, so the model should not be
+# hand-writing them: agent and loops are counted here, verdict and artifact
+# are read out of the subagent's own final message. quality(1-5) and mistakes
+# stay empty — those are the orchestrator's judgment, and judgment is the only
+# thing worth spending prompt budget on.
+#
+# Row shape must match parseLedger() in internal/wsingest/artifacts.go:
+#   | agent | phase | verdict | loops | quality | mistakes | artifact |
+# It tolerates a short row, but 7 cells is what carries loops/quality.
+emit_ledger_row() {
+  local ws_root working_dir task_dir task_id y m d slug log transcript
+  if [ -n "${AGENT_PROJECT:-}" ]; then
+    ws_root="${AGENT_WORKSPACE_ROOT:-$HOME/swarmery-workspace}"
+    working_dir="${ws_root}/${AGENT_PROJECT}/workspace/working"
+  else
+    working_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}/.claude-workspace/working"
+  fi
+  [ -d "$working_dir" ] || return 0
+
+  # Which task dir? AGENT_TASK_ID when the caller exports it, but nothing in
+  # the fleet does today — so the working path is the transcript fallback:
+  # the most recent working/YYYY/MM/DD/{slug}/ path this session touched, the
+  # same resolution session-summary.sh uses to attribute a session to a task.
+  task_id="${AGENT_TASK_ID:-}"
+  if [ -z "$task_id" ]; then
+    transcript=$(printf '%s' "$input" | jq -r '.transcript_path // ""' 2>/dev/null || true)
+    if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+      task_id=$(grep -oE '/working/[0-9]{4}/[0-9]{2}/[0-9]{2}/[a-z0-9][a-z0-9-]*/' "$transcript" 2>/dev/null \
+        | sed -E 's|.*/working/([0-9]{4})/([0-9]{2})/([0-9]{2})/([a-z0-9-]+)/$|\1-\2-\3-\4|' \
+        | tail -1 || true)
+    fi
+  fi
+  [ -n "$task_id" ] || return 0
+
+  y="${task_id:0:4}"; m="${task_id:5:2}"
+  d="${task_id:8:2}"; slug="${task_id:11}"
+  [ -n "$slug" ] || return 0
+  task_dir="${working_dir}/${y}/${m}/${d}/${slug}"
+  if [ ! -d "$task_dir" ]; then
+    task_dir=$(find "$working_dir" -type d -path "*/${slug}" 2>/dev/null | head -1)
+  fi
+  [ -n "$task_dir" ] && [ -d "$task_dir" ] || return 0
+
+  local final verdict artifact phase loops
+  final=$(printf '%s' "$input" | jq -r '.last_assistant_message // ""' 2>/dev/null || true)
+
+  # Verdict: the platform grammar internal/verify parses. Absent for executors
+  # that emit none — an empty cell is honest, a guessed PASS is not.
+  verdict=$(printf '%s' "$final" \
+    | grep -oE 'VERDICT:[[:space:]]*(PASS|FAIL|INCONCLUSIVE)' \
+    | head -1 | sed -E 's/.*(PASS|FAIL|INCONCLUSIVE).*/\1/' || true)
+
+  # Artifact: a workspace-relative path the agent says it wrote. Report and
+  # phase docs only — a bare source path is a file it edited, not its artifact.
+  artifact=$(printf '%s' "$final" \
+    | grep -oE '(reports|phases|logs)/[A-Za-z0-9._/-]+\.(md|txt|json|html)' \
+    | head -1 || true)
+
+  phase="${AGENT_PHASE:-}"
+  if [ -z "$phase" ] && [ -n "$artifact" ]; then
+    phase=$(printf '%s' "$artifact" | grep -oE 'phase-[0-9]+' | head -1 || true)
+  fi
+
+  log="${task_dir}/logs/agents.md"
+  mkdir -p "${task_dir}/logs" 2>/dev/null || return 0
+  if [ ! -f "$log" ]; then
+    printf '| agent | phase | verdict | loops | quality | mistakes | artifact |\n' > "$log"
+    printf '|---|---|---|---|---|---|---|\n' >> "$log"
+  fi
+
+  # loops = how many times THIS agent already ran for THIS phase, +1. Counting
+  # beats asking the model to remember across a compaction boundary.
+  loops=$(grep -c "^| *@\?${agent_type} *| *${phase} *|" "$log" 2>/dev/null || true)
+  [ -n "$loops" ] || loops=0
+  loops=$((loops + 1))
+
+  printf '| @%s | %s | %s | %s |  | — | %s |\n' \
+    "$agent_type" "${phase:-—}" "${verdict:-—}" "$loops" "${artifact:-—}" >> "$log"
+}
+emit_ledger_row || true
+
 # ── Print ─────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}┌─ ✅ AGENT DONE ────────────────────────────────────────${RST}"
