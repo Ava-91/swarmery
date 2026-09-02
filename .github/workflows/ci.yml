@@ -82,6 +82,16 @@ jobs:
           # subagents all fail here — the 2026-09 audit's bug class, closed.
           bash scripts/validate-agent-refs.sh
 
+      - name: Claude Code version floor (boundary behaviour)
+        run: |
+          # core 3.0 leans on native harness behaviour older builds lack, and
+          # session-start.sh warns below the floor. The comparison is sort -V,
+          # not lexical, because 2.1.16 < 2.1.160 is exactly the case a string
+          # compare gets backwards. plugin.json cannot express a minimum
+          # version — Claude Code silently ignores unknown top-level fields —
+          # so this check and the hook are where the floor actually lives.
+          bash scripts/tests/cc-version-floor.test.sh
+
       - name: System item docs coverage
         run: |
           # Every registrable agent, skill and command owes its reader one

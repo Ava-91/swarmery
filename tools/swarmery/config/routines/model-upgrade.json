@@ -1,0 +1,58 @@
+{
+  "name": "model-upgrade",
+  "cron": "0 9 1 * *",
+  "enabled": true,
+  "catchUp": "run_one",
+  "timeoutSec": 3600,
+  "steps": [
+    {
+      "type": "command",
+      "name": "claude version",
+      "command": "claude --version || echo 'claude CLI not on PATH'",
+      "timeoutSec": 60,
+      "continueOnFailure": true
+    },
+    {
+      "type": "ai-prompt",
+      "name": "changelog digest",
+      "prompt": "Summarise what changed in Claude Code over the last month that affects an agent framework: new or changed hook events, subagent frontmatter fields, permission semantics, and any behaviour that moved from plugin responsibility into the harness. Six bullets maximum. For each, say plainly whether swarmery core already relies on it, already reimplements it, or is unaffected. If you are unsure about an item, say so rather than guessing — a confident wrong entry here costs more than a missing one.",
+      "timeoutSec": 600,
+      "continueOnFailure": true
+    },
+    {
+      "type": "command",
+      "name": "component reference integrity",
+      "command": "bash scripts/validate-agent-refs.sh && bash scripts/docgen/check-coverage.sh",
+      "timeoutSec": 300,
+      "continueOnFailure": true
+    },
+    {
+      "type": "ai-prompt",
+      "name": "prompt audit (audit 6.5)",
+      "prompt": "For each agent in plugins/core/agents/, list every instruction containing 'always', 'never', or a minimum count. For each one answer: what actually breaks if this instruction is removed on the model the fleet runs today? Report ONLY the instructions where the honest answer is 'nothing'. This is the rule that took the roster from 42 agents to 13; running it monthly is what stops the debt accumulating again. Cite agent and line for every item, and report nothing you have not read.",
+      "timeoutSec": 900,
+      "continueOnFailure": true
+    },
+    {
+      "type": "command",
+      "name": "recost",
+      "command": "swarmery recost",
+      "timeoutSec": 600,
+      "continueOnFailure": true
+    },
+    {
+      "type": "command",
+      "name": "model eval",
+      "command": "swarmery modeleval --model \"$(swarmery economics --current-model 2>/dev/null || echo claude-opus-5)\"",
+      "timeoutSec": 900,
+      "continueOnFailure": true
+    },
+    {
+      "type": "create-task",
+      "name": "file a card when something drifted",
+      "taskTitle": "Monthly model-upgrade review",
+      "taskPrompt": "The monthly model-upgrade routine finished. Read its routine_runs detail, then triage: (1) does the changelog digest name anything core relies on or reimplements? (2) did the prompt audit find instructions that no longer earn their place? (3) did modeleval return anything other than pass? Close this card with either the changes made or an explicit 'no drift this month' — an unanswered card is the failure mode this routine exists to prevent.",
+      "boardColumn": "triage"
+    }
+  ]
+}

@@ -75,6 +75,19 @@ project-local components override plugin ones by design.
   retro template's "Improvement Recommendations" heading was never matched by
   the ingester, which wants `## Process Improvements`.
 
+## Supported-version policy
+
+- **Floor: Claude Code ≥ 2.1.160**, enforced at runtime by
+  `plugins/core/hooks/session-start.sh` (a warning, never a block) and pinned
+  at its boundary by `scripts/tests/cc-version-floor.test.sh` in CI.
+- **`plugin.json` cannot express this.** The manifest has a fixed field list,
+  and Claude Code *"ignores top-level fields it does not recognize"* — so a
+  `requiredMinimumVersion` there would look like a constraint and enforce
+  nothing. That is the `permissionMode` failure a third time, and CI now fails
+  if such a field appears in any plugin manifest.
+- The comparison is `sort -V`, not lexical: `2.1.16` sorts *after* `2.1.160`
+  as a string, which is precisely the version pair a naive check gets wrong.
+
 ## Minimum Claude Code version
 
 **Core 3.0 requires Claude Code ≥ 2.1.160.** The release deliberately hands

@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -98,6 +99,8 @@ func main() {
 		err = cmdRecost(os.Args[2:])
 	case "modeleval":
 		err = cmdModelEval(os.Args[2:])
+	case "routine":
+		err = cmdRoutine(os.Args[2:])
 	case "stale":
 		err = cmdStale(os.Args[2:])
 	case "economics":
@@ -462,6 +465,48 @@ func cmdModelEval(args []string) error {
 	if res.Verdict == "fail" {
 		return fmt.Errorf("model %s failed the golden set", res.Model)
 	}
+	return nil
+}
+
+// cmdRoutine currently carries one subcommand: `seed`, which installs a routine
+// definition shipped in the repo. A routine that lives only in one machine's
+// SQLite is a local habit, not part of the system — and catching drift is
+// exactly what local habits fail at.
+func cmdRoutine(args []string) error {
+	if len(args) == 0 || args[0] != "seed" {
+		return fmt.Errorf("usage: swarmery routine seed --from <file> [--db <path>]")
+	}
+	fs := flag.NewFlagSet("routine seed", flag.ExitOnError)
+	dbPath := dbFlag(fs)
+	from := fs.String("from", "", "path to the routine definition JSON (required)")
+	fs.Parse(args[1:])
+	if *from == "" || fs.NArg() != 0 {
+		return fmt.Errorf("usage: swarmery routine seed --from <file> [--db <path>]")
+	}
+
+	sf, err := routines.LoadSeedFile(*from)
+	if err != nil {
+		return err
+	}
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// nil Runner/TaskCreator: seeding writes the definition, it never executes
+	// a step. The daemon wires the real ones when it schedules.
+	svc := routines.NewService(db, nil, nil, true)
+	r, created, err := svc.Seed(sf, sql.NullInt64{})
+	if err != nil {
+		return err
+	}
+	verb := "updated"
+	if created {
+		verb = "created"
+	}
+	fmt.Printf("routine %s %s (id %s, cron %q, %d steps)\n", sf.Name, verb, r.ID, r.CronExpr, len(sf.Steps))
 	return nil
 }
 
