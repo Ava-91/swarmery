@@ -367,3 +367,120 @@ func TestLoadGoldenSetRejectsBadManifests(t *testing.T) {
 		}
 	}
 }
+
+// A judgment must be weighted once, not once per turn. The join in gather()
+// multiplies each judgment by its session's matching turns, so a plain AVG
+// grades long sessions louder than short ones. Measured on the live corpus,
+// one model read 1.62 turn-weighted and 1.27 judgment-weighted — a difference
+// large enough to move a verdict.
+func TestGatherIsJudgmentWeightedNotTurnWeighted(t *testing.T) {
+	db := openDB(t)
+
+	// Incumbent: six ordinary one-turn sessions at 3.0.
+	for i := 0; i < 6; i++ {
+		seedMain(t, db, int64(1200+i), "claude-opus-5", 3.0)
+	}
+	// Candidate: one LONG session scored 5.0 and five short ones scored 1.0.
+	// Judgment-weighted that is (5+1*5)/6 = 1.67. Turn-weighted, the long
+	// session's extra turns would drown the rest and push it toward 5.
+	seedMain(t, db, 1300, "claude-opus-6", 5.0)
+	for i := 0; i < 40; i++ {
+		if _, err := db.Exec(
+			`INSERT INTO turns (session_id, seq, role, started_at, model, agent_name)
+			 VALUES (1300, ?, 'assistant', '2026-09-01T00:00:00Z', 'claude-opus-6', NULL)`,
+			10+i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		seedMain(t, db, int64(1310+i), "claude-opus-6", 1.0)
+	}
+
+	res, err := Evaluate(db, mkSet(t, "core:tech-lead"), "claude-opus-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Trajectories != 6 {
+		t.Fatalf("trajectories = %d, want 6 judgments (not turns)", res.Trajectories)
+	}
+	if res.Score > 2.0 {
+		t.Errorf("score = %.2f, want ~1.67: one 41-turn session must not outvote "+
+			"five short ones", res.Score)
+	}
+}
+
+// 21% of judged sessions in the live corpus ran on more than one model.
+// Counting such a judgment once per model credits every model for work the
+// others did, in both directions.
+func TestGatherIgnoresMixedModelSessions(t *testing.T) {
+	db := openDB(t)
+	for i := 0; i < 6; i++ {
+		seedMain(t, db, int64(1400+i), "claude-opus-5", 3.0)
+	}
+	for i := 0; i < 6; i++ {
+		seedMain(t, db, int64(1500+i), "claude-opus-6", 4.0)
+	}
+	// A seventh candidate session that ALSO carries turns on another model:
+	// excellent score, but the work is not attributable to either model alone.
+	seedMain(t, db, 1599, "claude-opus-6", 5.0)
+	if _, err := db.Exec(
+		`INSERT INTO turns (session_id, seq, role, started_at, model, agent_name)
+		 VALUES (1599, 99, 'assistant', '2026-09-01T00:00:00Z', 'claude-sonnet-5', NULL)`); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Evaluate(db, mkSet(t, "core:tech-lead"), "claude-opus-6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Trajectories != 6 {
+		t.Errorf("trajectories = %d, want 6 — the mixed-model session must not "+
+			"count for either model", res.Trajectories)
+	}
+}
+
+// The baseline must be the fleet's TYPICAL performance, not its best. Taking
+// the maximum makes the bar a one-way ratchet and hands the most authority to
+// the smallest sample: on the live corpus a model with 24 judgments set a bar
+// the model with 179 failed, which would have blocked the model in daily use.
+func TestBaselineIsVolumeWeightedNotMax(t *testing.T) {
+	db := openDB(t)
+
+	// A thin, lucky model: 6 judgments at 4.5.
+	for i := 0; i < 6; i++ {
+		seedMain(t, db, int64(1600+i), "claude-lucky-1", 4.5)
+	}
+	// The workhorse: 40 judgments at 2.9 — this is what the fleet really does.
+	for i := 0; i < 40; i++ {
+		seedMain(t, db, int64(1700+i), "claude-workhorse-1", 2.9)
+	}
+	// The candidate, at the workhorse's level.
+	for i := 0; i < 8; i++ {
+		seedMain(t, db, int64(1800+i), "claude-candidate-1", 2.9)
+	}
+
+	res, err := Evaluate(db, mkSet(t, "core:tech-lead"), "claude-candidate-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// max baseline would be 4.5 -> candidate fails by 1.6.
+	// volume-weighted is (4.5*6 + 2.9*40)/46 = 3.11 -> candidate passes.
+	if res.Verdict != "pass" {
+		t.Errorf("verdict = %q (%s): a candidate performing exactly like the "+
+			"workhorse must not fail because one thin sample scored high",
+			res.Verdict, res.Detail)
+	}
+
+	// And a genuinely bad candidate must still fail against that same baseline.
+	for i := 0; i < 8; i++ {
+		seedMain(t, db, int64(1900+i), "claude-bad-1", 1.5)
+	}
+	bad, err := Evaluate(db, mkSet(t, "core:tech-lead"), "claude-bad-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bad.Verdict != "fail" {
+		t.Errorf("verdict = %q (%s): 1.5 against a ~3.0 baseline is a regression",
+			bad.Verdict, bad.Detail)
+	}
+}

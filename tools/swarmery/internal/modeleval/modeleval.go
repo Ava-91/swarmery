@@ -40,46 +40,75 @@ import (
 // that question calibrates itself as the judge and the fleet both drift.
 const RegressionMargin = 0.35
 
-// BaselineModels is how many established models form the comparison baseline.
-// The baseline is the best mean among models that already have enough judged
-// trajectories, so one bad incumbent cannot drag the bar down to nothing.
-const BaselineModels = 3
+// The baseline is the VOLUME-WEIGHTED mean across every model that already has
+// enough judged trajectories — the fleet's typical measured performance, not
+// its best day.
+//
+// Taking the maximum instead was tried and is wrong twice over. It is a
+// one-way ratchet: the luckiest model ever measured sets a bar nothing can
+// fall back below. And it hands the most authority to the SMALLEST sample —
+// measured on the live corpus, a model with 24 judgments (3.44) set a bar the
+// model with 179 (2.83) failed by 0.61, which would have blocked the model in
+// daily use on the strength of the thinnest evidence available.
+//
+// Weighting by judgment count makes the bar reflect the models actually in
+// service, and a candidate materially below typical is what a regression is.
 
 // MinTrajectories is the fewest judged trajectories that can support a pass or
 // a fail. Below it the verdict is inconclusive: one lucky or unlucky run is not
 // evidence about a model.
 const MinTrajectories = 5
 
-// baseline returns the best mean among models that already carry enough judged
-// trajectories, excluding the candidate itself. ok=false when nothing is
-// established yet — the first model ever evaluated has nothing to regress from.
+// baseline returns the volume-weighted mean across models that already carry
+// enough judged trajectories, excluding the candidate itself, plus a short
+// description of what went into it. ok=false when nothing is established yet —
+// the first model ever evaluated has nothing to regress from.
 func baseline(db *sql.DB, exclude string) (float64, string, bool, error) {
+	// Same two corrections as gather(): dedupe before averaging, and count a
+	// judgment only for a session that ran on a single model.
 	rows, err := db.Query(`
-		SELECT t.model, AVG(tj.overall) AS mean, COUNT(DISTINCT tj.id) AS n
-		  FROM trajectory_judgments tj
-		  JOIN turns t
-		    ON t.session_id = tj.session_id
-		   AND ( (tj.agent = 'main' AND t.agent_name IS NULL)
-		      OR  t.agent_name = tj.agent )
-		 WHERE t.model IS NOT NULL AND t.model <> '' AND t.model <> ?
-		 GROUP BY t.model
-		 HAVING n >= ?
-		 ORDER BY mean DESC
-		 LIMIT ?`, exclude, MinTrajectories, BaselineModels)
+		WITH scoped AS (
+		  SELECT tj.id, tj.overall, MIN(t.model) AS model
+		    FROM trajectory_judgments tj
+		    JOIN turns t
+		      ON t.session_id = tj.session_id
+		     AND ( (tj.agent = 'main' AND t.agent_name IS NULL)
+		        OR  t.agent_name = tj.agent )
+		   WHERE t.model IS NOT NULL AND t.model <> ''
+		   GROUP BY tj.id, tj.overall
+		  HAVING COUNT(DISTINCT t.model) = 1
+		)
+		SELECT model, AVG(overall) AS mean, COUNT(*) AS n
+		  FROM scoped
+		 WHERE model <> ?
+		 GROUP BY model
+		HAVING n >= ?
+		 ORDER BY mean DESC`, exclude, MinTrajectories)
 	if err != nil {
 		return 0, "", false, err
 	}
 	defer rows.Close()
-	if !rows.Next() {
-		return 0, "", false, rows.Err()
+
+	var sum float64
+	var total, models int
+	for rows.Next() {
+		var model string
+		var mean float64
+		var n int
+		if err := rows.Scan(&model, &mean, &n); err != nil {
+			return 0, "", false, err
+		}
+		sum += mean * float64(n)
+		total += n
+		models++
 	}
-	var model string
-	var mean float64
-	var n int
-	if err := rows.Scan(&model, &mean, &n); err != nil {
+	if err := rows.Err(); err != nil {
 		return 0, "", false, err
 	}
-	return mean, model, true, rows.Err()
+	if total == 0 {
+		return 0, "", false, nil
+	}
+	return sum / float64(total), fmt.Sprintf("%d models, %d trajectories", models, total), true, nil
 }
 
 // Case is one golden-set selector: which agent, graded how, weighted what.
@@ -160,15 +189,35 @@ type evidence struct {
 // change here.
 func gather(db *sql.DB, model string) (evidence, error) {
 	ev := evidence{byAgent: map[string]bool{}}
+	// Two things this query must NOT do, both found by auditing its own first
+	// version against the live corpus:
+	//
+	//  1. Average AFTER the join. The join multiplies each judgment by the
+	//     number of matching turns, so a plain AVG weights a judgment by how
+	//     long its session was. Measured: one model read 1.62 turn-weighted and
+	//     1.27 judgment-weighted. Hence the inner DISTINCT.
+	//
+	//  2. Attribute a mixed session to every model in it. 21% of judged
+	//     sessions ran on more than one model; counting such a judgment once
+	//     per model credits (or blames) each for work the others did. Hence the
+	//     HAVING COUNT(DISTINCT model) = 1 — a judgment counts for a model only
+	//     when that agent ran on exactly that one model for the whole session.
 	rows, err := db.Query(`
-		SELECT tj.agent, AVG(tj.overall) AS mean, COUNT(DISTINCT tj.id) AS n
-		  FROM trajectory_judgments tj
-		  JOIN turns t
-		    ON t.session_id = tj.session_id
-		   AND ( (tj.agent = 'main' AND t.agent_name IS NULL)
-		      OR  t.agent_name = tj.agent )
-		 WHERE t.model = ?
-		 GROUP BY tj.agent`, model)
+		WITH scoped AS (
+		  SELECT tj.id, tj.agent, tj.overall, MIN(t.model) AS model
+		    FROM trajectory_judgments tj
+		    JOIN turns t
+		      ON t.session_id = tj.session_id
+		     AND ( (tj.agent = 'main' AND t.agent_name IS NULL)
+		        OR  t.agent_name = tj.agent )
+		   WHERE t.model IS NOT NULL AND t.model <> ''
+		   GROUP BY tj.id, tj.agent, tj.overall
+		  HAVING COUNT(DISTINCT t.model) = 1
+		)
+		SELECT agent, AVG(overall) AS mean, COUNT(*) AS n
+		  FROM scoped
+		 WHERE model = ?
+		 GROUP BY agent`, model)
 	if err != nil {
 		return ev, err
 	}

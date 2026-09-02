@@ -145,6 +145,13 @@ type candidate struct {
 // sessions, so judging newest-first is what makes verdicts visible instead
 // of draining the pool oldest-first.
 func selectCandidates(db *sql.DB, model string, capN int) ([]candidate, error) {
+	// The judge must not score its own scoring runs. ClaudeRunner executes with
+	// cwd ~/.swarmery, so every judge call is ingested as an ordinary 2-turn
+	// session; left in the candidate pool the judge grades its own output, and
+	// since those transcripts contain no work trajectory it rates them at the
+	// floor. Measured before this exclusion: 29 such rows averaged 1.20 against
+	// 3.01 for real work, and 27 of them landed on one model, making that model
+	// look catastrophically bad on evidence that was never about the model.
 	rows, err := db.Query(`
 		SELECT s.session_id, s.agent
 		FROM trajectory_scores s
@@ -152,11 +159,15 @@ func selectCandidates(db *sql.DB, model string, capN int) ([]candidate, error) {
 		LEFT JOIN trajectory_judgments j
 		  ON j.session_id = s.session_id AND j.agent = s.agent AND j.model = ?
 		WHERE j.id IS NULL
+		  AND NOT EXISTS (
+		        SELECT 1 FROM turns t
+		         WHERE t.session_id = s.session_id
+		           AND t.text LIKE ? || '%')
 		ORDER BY
 		  (SELECT COUNT(*) FROM trajectory_findings f WHERE f.score_id = s.id) DESC,
 		  sess.started_at DESC,
 		  s.session_id DESC, s.agent
-		LIMIT ?`, model, capN)
+		LIMIT ?`, model, RubricPreamble, capN)
 	if err != nil {
 		return nil, err
 	}
