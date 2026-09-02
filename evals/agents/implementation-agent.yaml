@@ -32,5 +32,5 @@
   assert:
     - type: regex                           # hard: an action verb (flip|tick|mark) near [x] — quoting the contract alone must not pass
       value: "(flip|tick|mark)(s|ed|ing)?[^\\n]*\\[x\\]|(flip|tick|mark)(s|ed|ing)? the (satisfied )?(acceptance[- ]criteria )?(check)?box"
-    - type: llm-rubric                      # soft: tick happens BEFORE the STEP 02 COMPLETE ledger line
-      value: ticks the checkboxes in the phase doc (Edit) first, and only then logs the STEP 02 COMPLETE ledger line — not the other way around, and not batched at close-out
+    - type: llm-rubric                      # soft: ticks + Completion Report land in the phase doc before the ledger row / moving on
+      value: ticks the checkboxes in the phase doc first and writes that doc's "## Completion Report" section, and only then appends the logs/agents.md ledger row and advances — not the other way around, and not batched at close-out

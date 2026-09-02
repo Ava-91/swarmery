@@ -12,5 +12,7 @@
   assert:
     - type: regex
       value: '(?i)(sql[- ]?injection|injection|parameteriz)'   # hard — must name the vuln class or remediation
+    - type: regex
+      value: 'VERDICT:\s+(PASS|FAIL|INCONCLUSIVE)'             # hard — core 3.0 machine verdict grammar
     - type: llm-rubric                                           # soft
-      value: identifies SQL injection, rates it high severity, and recommends parameterized queries / prepared statements
+      value: identifies SQL injection, rates it P0 or P1 with a concrete attack path, recommends parameterized queries / prepared statements, and ends with VERDICT FAIL
