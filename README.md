@@ -4,8 +4,9 @@
 
 **Run your Claude Code agents like a fleet — not like a pile of terminal tabs.**
 
-A local-first control plane for Claude Code sessions, plus a versioned plugin marketplace
-that ships one shared agent framework to every project on your machine.
+A local-first control plane for Claude Code sessions. One Go binary, no cloud, no account.
+Ships with a versioned plugin marketplace so your agents live in one place and every
+project pulls them with `/plugin update`.
 
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
 [![Marketplace CI](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml/badge.svg)](https://github.com/atretyak1985/swarmery/actions/workflows/ci.yml)
@@ -45,18 +46,18 @@ each project keeps its own isolated workspace and config, while shared agents li
 
 ---
 
-## Quickstart
-
-**Prerequisites:** git, Go ≥ 1.25 (older Go auto-downloads the pinned toolchain), Node ≥ 22,
-and the `claude` CLI.
-
-### 1 — Build and serve the control plane
+## Install
 
 ```bash
-git clone https://github.com/atretyak1985/swarmery.git
-cd swarmery
-bash scripts/install-swarmery.sh          # build the single embedded binary
-./tools/swarmery/swarmery serve           # listens on :7777
+curl -fsSL https://raw.githubusercontent.com/atretyak1985/swarmery/main/scripts/install.sh | bash
+swarmery serve                            # listens on :7777
+```
+
+Prefer to read what you run (recommended — a piped script executes whatever the server returns):
+
+```bash
+url=https://raw.githubusercontent.com/atretyak1985/swarmery/main/scripts/install.sh
+curl -fsSL "$url" -o install.sh && less install.sh && bash install.sh
 ```
 
 ```bash
@@ -65,11 +66,22 @@ open http://localhost:7777
 ```
 
 Sessions you have already run show up immediately — the daemon backfills from the JSONL
-transcripts Claude Code already writes under `~/.claude/projects/`. Nothing to instrument.
+transcripts Claude Code already writes under `~/.claude/projects/`. Nothing to instrument,
+no account, nothing leaves the machine.
+
+The installer downloads the release binary for your platform (macOS and Linux, amd64 and
+arm64), verifies it against `SHA256SUMS`, and drops it in `~/.local/bin`
+(`SWARMERY_INSTALL_DIR` to change that, `SWARMERY_VERSION` to pin a release). Prebuilt
+binaries are on the [Releases](https://github.com/atretyak1985/swarmery/releases) page;
+building from source is under [Working on swarmery itself](#working-on-swarmery-itself).
 
 On macOS, `swarmery install` registers a launchd service so the daemon starts with your machine.
 
-### 2 — Onboard a project
+The `claude` CLI is what swarmery watches — install it separately if you have not already.
+
+## Quickstart
+
+### 1 — Onboard a project
 
 From any repo, one idempotent command writes its `.claude/` config and carves a workspace
 namespace:
@@ -81,16 +93,15 @@ swarmery onboard <project-slug> [pack ...]
 #          claude-eng-pack | graphify-pack | architecture-pack | jira-pack
 ```
 
-The binary lives at `<swarmery>/tools/swarmery/swarmery` — put it on `PATH`, run
-`swarmery install` (macOS), or call it by full path. Then open a fresh Claude Code session,
-accept the `swarmery` marketplace trust prompt, and the project is live in the dashboard.
+Then open a fresh Claude Code session, accept the `swarmery` marketplace trust prompt,
+and the project is live in the dashboard.
 (`scripts/init.sh` is the pure-bash twin of this command.)
 
 Work artifacts — plans, task dirs, retrospectives — land under `$HOME/swarmery-workspace`
 by default; point it anywhere with `SWARMERY_WORKSPACE_ROOT` (daemon) / `AGENT_WORKSPACE_ROOT`
 (plugins).
 
-### 3 — Route permission prompts to the dashboard (optional)
+### 2 — Route permission prompts to the dashboard (optional)
 
 ```bash
 swarmery hooks install       # installs the PreToolUse / Stop hook shim
@@ -674,6 +685,15 @@ Stated plainly, so nothing here surprises you later:
 ---
 
 ## Working on swarmery itself
+
+**Prerequisites:** git, Go ≥ 1.25 (older Go auto-downloads the pinned toolchain), Node ≥ 22.
+
+```bash
+git clone https://github.com/atretyak1985/swarmery.git
+cd swarmery
+bash scripts/install-swarmery.sh          # build the single embedded binary
+./tools/swarmery/swarmery serve           # listens on :7777
+```
 
 ```bash
 cd tools/swarmery
