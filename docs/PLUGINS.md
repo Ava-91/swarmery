@@ -56,10 +56,10 @@ A component in a project's own `.claude/` **wins** over a plugin component with 
 
 ## core — the mandatory baseline
 
-**What it is.** The vendor-neutral agent-development framework: 41 agents, 29 skills, 16 commands, 16 hooks, plus the project-aware `agent-work` workspace CLI and the statusline.
+**What it is.** The vendor-neutral agent-development framework: a 13-agent judgment-style fleet, 36 progressively-disclosed skills, 8 commands, 16 hooks, plus the project-aware `agent-work` workspace CLI and the statusline.
 
 **What it can do.**
-- **Orchestration** — `@tech-lead` drives the 9-phase workflow (gap analysis → plan → implement → verify → retro) with executor agents: `implementation-agent`, `verification-agent`, `quality-checker`, `plan-reviewer`, `task-planner` / `implementation-planner`, `retrospective-agent`, and more.
+- **Orchestration** — `@tech-lead` routes work by size (understand → plan → implement → independent review → close) across a 13-agent fleet: `planner`, `architect`, `researcher`, `implementation-agent`, `ui-developer`, `debugger`, `test-writer`, `test-runner`, `code-reviewer`, `security-auditor`, `verification-agent`, `system-improver` (see `plugins/core/AGENTS.md`).
 - **Everyday commands** — `/search`, `/find`, `/impact` (graph-aware with ripgrep fallback), `/code-quality`, `/test-coverage`, `/security-audit`, `/deps-check`, `/env-check`, `/migration-check`, `/refactor-plan`, `/run-plan`, `/new-feature-branch`, `/dashboard`, `/land`.
 - **Guardrails** — hooks for sensitive-file protection, approvals/liveness wiring for the control plane, and the graduation rule tooling that keeps components flowing project → pack → core.
 

@@ -1,67 +1,74 @@
 # The agent workflow
 
 swarmery's `core` isn't a single chatbot — it's an **orchestrated fleet**. `@tech-lead`
-is the only agent you invoke directly; it drives a **9-phase workflow** (Understanding →
-Documentation) by delegating to specialized executor agents and gating risky steps back to
-you. This is what the control plane's session **Timeline** is showing you: phase transitions,
-parallel groups, and the tool calls each delegate makes.
+is the agent you invoke directly; it understands the task, surfaces the questions only
+you can answer, routes the work to executors sized to the job, gates the result behind
+an independent review, and closes with a summary in your workspace. This is what the
+control plane's session **Timeline** is showing you: delegations, review verdicts, and
+the tool calls each delegate makes.
 
-> [!NOTE]
-> Methodology background: the [Agentsway paper](https://arxiv.org/html/2510.23664v1).
+Since core 3.0 the fleet is **13 judgment-style agents** (down from 42 rule-machines);
+each agent's role is a page, not a rulebook, and the "how" lives in progressively
+disclosed skills. The old→new mapping is in `plugins/core/AGENTS.md`.
 
-## Activation modes (chosen before Phase 1)
+## Routing by size (judgment, not ceremony)
 
-`@tech-lead` sizes the task first and runs only the phases that scope warrants:
+| Task shape | Route |
+|---|---|
+| **Bug** | `@debugger` root-causes BEFORE anyone plans a fix |
+| **Small** — single file, well understood | `@implementation-agent` with one focused brief |
+| **Medium** — a few files, needs sequencing | `@planner` writes a short plan → 2–3 executors run it |
+| **Large** — multi-repo, schema changes | `@architect` designs first; native dynamic-workflow orchestration for codebase-wide fan-out |
 
-| Mode | Scope | Phases |
+Every route ends the same way: an independent read-only **`@code-reviewer`** pass over
+the diff before commit (plus `@security-auditor` when the change touches auth, input
+handling, secrets, or infra), then closing artifacts via the `session-closeout` skill.
+
+## The fleet (13)
+
+| Agent | Class | What it does |
 |---|---|---|
-| **Micro** | <30 LOC, <30 min, single file | 1 · 3.6 · 4 · 5 (verify only) · 8+9 · 10 |
-| **Sprint** *(default)* | 30–500 LOC, <8h | all phases |
-| **Full** | >500 LOC, monorepo, schema changes | all phases **+ 3.5 Design** |
-| **Dynamic** | codebase-wide audit / migration / "from every angle" | event-driven gates; fan out 10s–100s of subagents with adversarial verification |
+| `@tech-lead` | orchestrator | routes, delegates, gates, closes |
+| `@planner` | planning | workspace plans: phase docs, criteria, executor prompts |
+| `@architect` | design | system/API/data design, migration safety, rollout |
+| `@researcher` | read-only | tech evaluation, impact analysis, context synthesis |
+| `@implementation-agent` | executor | code execution (leaf) or plan-execution orchestration |
+| `@ui-developer` | executor | frontend with type/token/a11y/state gates |
+| `@debugger` | executor | root cause first, minimal proven fix |
+| `@test-writer` | executor | behavior-pinning tests |
+| `@test-runner` | read-only | run suites, report faithfully |
+| `@code-reviewer` | read-only | multi-lens review, `VERDICT:` line |
+| `@security-auditor` | read-only | OWASP + STRIDE with attack paths |
+| `@verification-agent` | read-only | deterministic checks (build/type/lint/test) |
+| `@system-improver` | meta | evidence-cited diagnosis of the whole system |
 
-## The phases
-
-| Phase | Owner / delegates | What happens |
-|---|---|---|
-| **1 Understanding** | `@tech-lead` | Gap analysis — partitions unknowns into Known / Unknown-codebase / Unknown-research / Unknown-user. **User-only gaps must be resolved before Phase 3.** |
-| **2 Context** | parallel trio: `@context-gatherer` · `@tech-researcher` · `@downstream-analyzer` | Gather code + research context for the gaps found in Phase 1. |
-| **3 Planning** | `@task-planner` (<1 wk) or `@implementation-planner` (>1 wk) | Break the task into phased step files with acceptance criteria. |
-| **3.5 Design** | `@architecture-designer` · `@api-designer` · `@database-designer` · `@ui-designer` | *Full mode only.* Produce contracts the implementer consumes. |
-| **3.6 Pre-mortem** | `@tech-lead` | Self-correction: Risk / Likelihood / Impact / Mitigation table; iterate the plan at least once. |
-| **4 Implementation** | `@implementation-agent` (or a specialist) | Execute the plan against the correct repo. |
-| **5 Quality gate** | parallel quartet: `@verification-agent` · `@quality-checker` · `@security-auditor` · `@contract-validator` | Build/typecheck/lint/test, LLM-as-judge review, security, contract tracing. |
-| **6 Downstream** | `@downstream-analyzer` (edit-capable) | Fix callers, tests, and imports the change affected. |
-| **7 Tracking** | `@tech-lead` | Update task state and the delegation log. |
-| **8 + 9 Closing** | parallel pair: `@summary-generator` · `@retrospective-agent` | Canonical `SUMMARY.md`; lessons-learned + bias check. |
-| **10 Documentation** | `@task-documenter` | Structured phase files, manifest, indexes. |
-
-Independent phases run **in parallel, launched in a single message** (the Phase 2 trio, Phase 5
-quartet, Phase 8+9 pair). Dependent phases never parallelize (3→2, 4→3, 6→4, 10→8+9).
+Read-only agents carry `tools:` allowlists without Edit/Write. Verdict-emitting agents
+end with the machine grammar `VERDICT: PASS | FAIL | INCONCLUSIVE` — the same line the
+control plane's verify engine parses.
 
 ## Model tiers (the cost ladder)
 
-Each agent runs on the cheapest tier that fits the job — you can see the mix on the **Analytics**
-page and in each session's cost header.
+Each agent runs on the cheapest tier that fits — visible on the **Analytics** page and
+in each session's cost header. Models are always aliases (`opus`/`sonnet`/`haiku`), so
+model rotations never strand the fleet.
 
 | Tier | Model | Role |
 |---|---|---|
-| **T0** | Opus | orchestrator (`@tech-lead`) — never bulk-executes; ~5–10% of task tokens |
-| **T1** | Opus | complex reasoning / judgment (incl. pinned `@security-auditor`) |
-| **T2** | Sonnet | fleet default — design, analysis, most execution |
-| **T3** | Haiku | fast mechanical checks, context gathering, commit messages |
-
-Escalate one tier after **two** quality-gate failures on the same subtask; never auto-jump to T0.
+| **T0/T1** | Opus | orchestration, planning, design, review judgment |
+| **T2** | Sonnet | fleet default — execution, debugging, research |
+| **T3** | Haiku | fast mechanical checks and reporting |
 
 ## Human-in-the-loop gates
 
-The workflow pauses for you — surfaced in the control plane's **Approvals** queue — before:
-git commits/pushes · database migrations · breaking API changes · security-sensitive changes ·
-production deployments. In Dynamic mode, subagents run non-interactively (`acceptEdits`) and
-**cannot** prompt, so every user-only gap must be resolved in Phase 1 before the fan-out starts.
+The workflow pauses for you — surfaced in the control plane's **Approvals** queue —
+before: git commits/pushes · database migrations · breaking API changes ·
+security-sensitive changes · production deployments. Risky actions get a structured
+go/no-go from the `guardrails` skill (Impact × Reversibility; Critical never
+auto-approves). Autonomous runs resolve user-only questions BEFORE the fan-out starts.
 
 ## Where this lives
 
-`@tech-lead` and every delegate ship in `core` — enable it and the workflow is available in any
-project. Project-local agents with the same name override the core ones (see
-[extending](extending)); per-project flavor comes from `project.json` (see [neutrality](neutrality)).
+`@tech-lead` and every delegate ship in `core` — enable it and the workflow is
+available in any project. Project-local agents with the same name override the core
+ones (see [extending](extending)); per-project flavor comes from `project.json` (see
+[neutrality](neutrality)).
