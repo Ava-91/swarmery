@@ -11,218 +11,34 @@ docs:
 
 # Purpose
 
-You are a supply-chain security auditor for the project's platform. You evaluate the container image lifecycle -- from build through promotion -- against four baseline controls (scanning, SBOM, immutable digests, rollback retention) and two roadmap controls (image signing, provenance attestation). You produce gap reports with current-state assessments, remediation steps, and prioritized action items.
+Audit the container image lifecycle — build through promotion — against four baseline controls (image scanning, SBOM generation, immutable digest promotion, rollback retention) and two roadmap controls (image signing, provenance attestation), producing a gap report with current-state assessments and prioritized remediation. Application code vulnerabilities belong to `security-audit`; pipeline YAML structure to the project's infra pack skills. Done when every baseline control has a current-state description, gap assessment, and remediation, with unsafe patterns cited by file.
 
-**Scope boundary:** This skill addresses the CI/CD pipeline and container image lifecycle. It does NOT cover application-level code vulnerabilities (injection, auth bypass, secrets in source) -- those belong to `security-audit`. For pipeline YAML structure or stage ordering, use `deployment`.
+# Rules (never violate)
 
-Done when: all baseline controls have current-state descriptions, gap assessments, and remediation steps; unsafe patterns are cited with file paths; and the report distinguishes "already implemented" from "needs implementation."
+1. Read-only audit: never install or configure scanners, or edit pipeline config, without team approval.
+2. Roadmap items (signing, provenance) are future work, never blockers.
+3. Only `@sha256:...` is immutable — `:v1.2.3` and `:main` are mutable tags; never confuse them.
+4. A scanner without a blocking severity threshold is a gap — finding a scanner is not enough.
+5. CVE exemptions require a documented rationale and expiry date.
+6. Container CI/CD only — SSH device deploys and Terraform state are out of scope.
 
-| Domain | This skill | security-audit | deployment |
-|--------|-----------|---------------|--------------|
-| Image scanning (Trivy, registry-native) | Yes | No | No |
-| SBOM generation (CycloneDX) | Yes | No | No |
-| Digest-based promotion | Yes | No | No |
-| Rollback retention policies | Yes | No | No |
-| Image signing / provenance | Yes (roadmap) | No | No |
-| Pipeline YAML structure/stages | No | No | Yes |
-| OWASP Top 10 code audit | No | Yes | No |
-| Hardcoded secrets in source | No | Yes | No |
-| `npm audit` / `pip-audit` | No | Yes | No |
+# Resources
 
-# When to use
-
-- User asks to "harden the CI/CD supply chain" or "make image promotion more secure"
-- User asks about image scanning, SBOM generation, or immutable digests
-- User asks "should we sign our Docker images?" or "how do we audit image promotion?"
-- Reviewing a CI pipeline specifically for supply-chain control gaps (scanning, SBOM, digest, retention)
-- Evaluating whether deployments use mutable tags vs. digests
-- Setting up or reviewing image retention policies
-
-# When NOT to use
-
-- **Pipeline YAML structure, stage ordering, or job configuration** -- use `deployment`. This skill only checks whether supply-chain controls exist in the pipeline, not whether the pipeline structure is correct
-- **Application code vulnerability scanning** (OWASP, injection, auth) -- use `security-audit`
-- **Running `npm audit` or `pip-audit`** -- those are dependency-level checks in `security-audit`
-- **Deployment configuration or the deploy itself** -- use `deployment`
-- **Terraform state management or IaC changes** -- use `infrastructure-as-code`
-- **Edge-device direct SSH deployments** (project.json -> `device`) -- this skill applies to container-based CI/CD only; an SSH deploy path has a different security model
-- **npm/pip package publishing** -- this skill covers container image supply chain, not library publishing
-
-# Required environment
-
-- Runtime: `.claude/skills/supply-chain-security/SKILL.md`
-- Read access to CI/CD pipeline configuration (e.g., `.gitlab-ci.yml` or `.github/workflows/*.yml`)
-- Read access to deployment values and the version-pinning promotion files (e.g., `general/versions`), if the project uses them
-- No write access needed for auditing; pipeline changes require CI/CD config editing privileges
-
-# Inputs
-
-| Input | Required | Description |
-|-------|----------|-------------|
-| Scope | Yes | Which pipeline or repo to audit (e.g., the main app's CI, the device repo's CI, full pipeline) |
-| Depth | No | `baseline` (four baseline controls) or `roadmap` (baseline + signing/provenance). Default: `baseline` |
-
-# Outputs
-
-Length budget: gap report max 150 lines. Each control row max 3 lines. Recommendations section max 20 lines.
-
-<output-template>
-## Supply-Chain Security Gap Report
-
-**Scope:** [pipeline/repo]
-**Date:** [ISO date]
-**Depth:** [baseline|roadmap]
-
-### Current State vs. Target
-
-| Control | Target State | Current State | Gap | Remediation |
-|---------|-------------|---------------|-----|-------------|
-| Image scanning | Scan after build, block on critical CVE | [describe current] | [yes/no] | [steps] |
-| SBOM generation | CycloneDX attached to build artifact | [describe current] | [yes/no] | [steps] |
-| Immutable digests | Promote and deploy by digest | [describe current] | [yes/no] | [steps] |
-| Rollback retention | Preserve N-1 digest until promotion window expires | [describe current] | [yes/no] | [steps] |
-| Image signing | [roadmap] Cosign after build | [describe current] | [yes/no] | [steps] |
-| Provenance attestation | [roadmap] SLSA L2 provenance | [describe current] | [yes/no] | [steps] |
-
-### Unsafe Patterns Detected
-[List with file:line citations]
-
-### Recommendations
-[Prioritized action items]
-</output-template>
-
-# Procedure
-
-1. **Read the CI pipeline configuration.** Open the project's CI config (`.gitlab-ci.yml` / `.github/workflows/*.yml`) and identify all build, scan, and publish jobs.
-   Checkpoint: list of relevant jobs with line numbers extracted.
-
-2. **Audit image scanning.** Verify a scan stage exists, the scanner has severity thresholds that block the pipeline (not just warn), and scan runs after `docker build` and before promotion.
-   Checkpoint: scan control assessed -- pass, fail, or not present.
-
-3. **Audit SBOM generation.** Check for SBOM generation in the pipeline. Verify format (CycloneDX preferred) and that the artifact is attached to the build or release metadata.
-   Checkpoint: SBOM control assessed -- pass, fail, or not present.
-
-4. **Audit immutable deployment references.** Check that promoted images use SHA digests, not mutable tags (`:latest`, `:main`, `:v1.2.3`). Verify the promotion files reference digests. Confirm the same digest is reused from the project's staging environment (project.json -> `cloud.envAlias`) through later environments.
-   Checkpoint: digest control assessed -- pass, fail, or not present.
-
-5. **Audit rollback retention.** Verify that previous image digests are preserved until the promotion window expires. Check that no inline deletion of prior digests occurs in the deploy path. Confirm retention policies are scheduled (e.g., a registry cleanup policy), not ad-hoc.
-   Checkpoint: retention control assessed -- pass, fail, or not present.
-
-6. **Verify recommended flow.** Confirm the pipeline follows: build -> scan (block on threshold) -> generate SBOM -> publish and capture digest -> verify deployment -> promote digest. Flag deviations.
-   Checkpoint: flow compliance assessed.
-
-7. **Audit roadmap controls (if depth=roadmap).** Check for Cosign or similar signing tool. Check for SLSA provenance metadata. Document as roadmap items, not blockers.
-   Checkpoint: roadmap controls assessed.
-
-8. **Compile gap report.** Fill the output template. Cite file:line for every finding. Mark roadmap items as future work.
-   Checkpoint: report matches output template and does not exceed length budget.
-
-Steps 2, 3, 4, and 5 can run their file reads in parallel since they examine independent controls.
-
-# Self-check
-
-Before returning, verify every item:
-
-- [ ] All four baseline controls (scan, SBOM, digest, retention) were evaluated
-- [ ] Each control has a current-state description, gap assessment, and remediation if applicable
-- [ ] Unsafe patterns are cited with file paths and line numbers (e.g., `.gitlab-ci.yml:42`)
-- [ ] Roadmap items are labeled as future work, not blockers
-- [ ] The report distinguishes between "already implemented" and "needs implementation"
-- [ ] No false positives (e.g., flagging a digest reference as "mutable tag")
-- [ ] `general/versions` promotion format was checked for digest vs. tag references
-- [ ] Report does not exceed 150 lines
-
-# Common mistakes
-
-- DO NOT treat roadmap items as blockers -- signing and provenance are enhancements; do not block current delivery on them
-- DO NOT skip scanner threshold configuration -- finding a scanner is not enough; verify it has severity thresholds that block promotion
-- DO NOT leave CVE exemptions undocumented -- if a CVE is exempted, the exemption must have a rationale and expiry date
-- DO NOT confuse mutable tags with digests -- `:v1.2.3` is still a mutable tag (it can be re-pushed); only `@sha256:...` is immutable
-- DO NOT apply this skill to non-container deployments -- edge-device SSH deployments and Terraform state are out of scope
-- DO NOT review pipeline YAML structure (stage ordering, job dependencies, rules) -- that belongs to `deployment`
-
-# Escalation
-
-- **Scanner not configured and no team decision on tooling:** Report the gap; recommend Trivy as default (free, integrates with common CI systems and registries); do not install or configure scanners without team approval
-- **Mutable tags used in production promotion:** Flag as high-priority gap; this breaks "build once, deploy everywhere"
-- **Retention policy deletes digests before rollback window:** Flag as high-priority; rollback capability is at risk
-- **Cannot determine pipeline state** (no access to the CI config or CI settings): Report as blocked; ask for read access
-
-# Examples
-
-<example>
-**Scenario: Audit the main app's CI pipeline (baseline depth)**
-
-Input: "Is our main app's CI pipeline supply-chain hardened?"
-
-Process:
-1. Read the CI config -- found build-and-publish job at line 24, no scan stage
-2. Search for SBOM generation -- none found
-3. Check the promotion files -- found `image: web-app:main` (mutable tag, not digest)
-4. Check retention -- no cleanup policy configured in pipeline; registry policy unknown
-
-Output:
-| Control | Current | Gap | Remediation |
-|---------|---------|-----|-------------|
-| Image scanning | No scan stage | Yes | Add Trivy scan job after build, set `--severity CRITICAL,HIGH --exit-code 1` |
-| SBOM | Not generated | Yes | Add `trivy image --format cyclonedx` step, attach as artifact |
-| Immutable digests | Mutable tag `:main` in promotion files | Yes | Change promotion to use `@sha256:...` digest |
-| Rollback retention | Unknown | Yes | Configure a registry cleanup policy with 30-day retention |
-</example>
-
-<example>
-**Scenario: Evaluate readiness for image signing**
-
-Input: "Should we start signing our Docker images?"
-Depth: `roadmap`
-
-Process: Audit baseline controls first. If all four pass, recommend signing as next step. If baseline gaps exist, recommend fixing those before adding signing complexity.
-</example>
-
-<example>
-**Scenario: Review after adding Trivy to CI**
-
-Input: "I just added Trivy scanning -- did I configure it correctly?"
-
-Process: Read the CI config -> verify Trivy runs after build -> verify severity threshold blocks pipeline -> verify scan results are stored as artifacts -> report findings
-</example>
-
-# Failure modes
-
-| Failure | Recovery |
-|---------|----------|
-| No access to CI pipeline configuration | Report as blocked; request read access to the CI config |
-| Pipeline uses a scanner not documented here | Evaluate against the same criteria (severity threshold, block-on-failure, artifact storage) |
-| `general/versions` format is unfamiliar | Read the file to understand the promotion format; check for digest vs. tag references |
-| Cannot determine if retention policy exists | Check the container registry settings or ask the user about their cleanup configuration |
-
-# Related skills
-
-- `security-audit` -- application-level vulnerability scanning (OWASP, injection, secrets)
-- `deployment` -- CI pipeline YAML structure, stage ordering, and job configuration
-- the cloud pack's CI/CD auth skill -- registry authentication for image push and secret access in CI
-- `release-promotion` -- the `general/versions` promotion workflow
-- `monorepo-coordination` -- when supply-chain changes span multiple repos
+- Read `resources/gap-audit-procedure.md` when running the audit: the skill-boundary scope table, the 8-step procedure with checkpoints, the gap-report template and length budgets, self-check, mistakes, escalation, worked examples, and failure modes.
 
 # How to use
 
 ## What it does
 
-This skill audits the container image lifecycle in your CI/CD pipeline against four baseline controls — image scanning, SBOM generation, immutable digest promotion, and rollback retention — plus two roadmap controls (image signing and provenance attestation). You get back a gap report that says, for each control, what you have today, whether there is a gap, and exactly what to change.
+Audits your CI/CD pipeline's container image lifecycle against four baseline supply-chain controls plus two roadmap controls, returning a gap report that says, per control, what you have today, whether there is a gap, and what to change — every finding cited to `file:line`.
 
 ## When to use it
 
-- You want to know whether your pipeline blocks a build on a critical CVE, and where the scan runs.
-- Your deployments reference mutable tags like `:main` or `:v1.2.3` and you want to move to `@sha256:` digests.
-- Someone asks "should we start signing our images?" and you need a readiness answer, not an opinion.
-- You just added a scanner to CI and want the configuration checked — threshold, ordering, artifact storage.
+- Does the pipeline block a build on a critical CVE, and where does the scan run?
+- Deployments reference mutable tags like `:main` and you want `@sha256:` digests.
+- "Should we sign our images?" needs a readiness answer; a newly added scanner needs its threshold, ordering, and artifact storage checked.
 
-## When not to use it
-
-- Application code vulnerabilities (injection, auth bypass, secrets in source) — use `security-audit`.
-- Pipeline YAML structure, stage ordering, or job dependencies — use `deployment`.
-- Dependency-level checks like `npm audit` or `pip-audit` — those live in `security-audit`.
-- Deployments that ship over SSH to `<device>` rather than as container images — the security model is different and out of scope.
+Not for: application code vulnerabilities or `npm audit`/`pip-audit` (`security-audit`), pipeline YAML structure or the deploy itself (the project's infra pack skills), SSH-based device deploys, or package publishing.
 
 ## How to invoke
 
@@ -230,18 +46,7 @@ This skill audits the container image lifecycle in your CI/CD pipeline against f
 Skill(skill: "core:supply-chain-security")
 ```
 
-Say what you want audited and, if you want the roadmap controls included, ask for `roadmap` depth.
-
-## Inputs
-
-- **Scope** — required — which pipeline or repository to audit, for example `apps/<mainApp>` CI or the full promotion path.
-- **Depth** — optional — `baseline` covers the four baseline controls; `roadmap` adds signing and provenance. Defaults to `baseline`.
-
-You also need read access to the CI configuration and, if your project pins promoted versions in files, read access to those.
-
-## What you get back
-
-A single gap report, capped at 150 lines. It opens with scope, date, and depth, then a table with one row per control: target state, current state, gap yes/no, and remediation steps. Below that comes a list of unsafe patterns with `file:line` citations, then prioritized recommendations. Roadmap items are labeled future work, never blockers. Nothing is written or changed — the audit is read-only.
+State the scope (pipeline or repo) and optionally depth: `baseline` (default) or `roadmap` (adds signing/provenance). Requires read access to the CI config and any promotion files.
 
 ## Worked example
 
@@ -250,11 +55,8 @@ Skill(skill: "core:supply-chain-security")
 "Is the CI pipeline for apps/<mainApp> supply-chain hardened?"
 ```
 
-The skill reads your CI config and finds a build-and-publish job with no scan stage, no SBOM step, a promotion entry using the mutable tag `:main`, and no retention policy. You get back a four-row table: add a scanner after build with `--severity CRITICAL,HIGH --exit-code 1`, emit a CycloneDX SBOM as an artifact, switch promotion to a `@sha256:` digest, and configure a registry cleanup policy with a 30-day window — each cited to the line that proves it.
+The skill reads the CI config: a build-and-publish job with no scan stage, no SBOM step, promotion on the mutable tag `:main`, no retention policy. The four-row gap table says: add a scanner after build with `--severity CRITICAL,HIGH --exit-code 1`, emit a CycloneDX SBOM artifact, promote by `@sha256:` digest, configure a 30-day registry cleanup policy — each cited to the proving line.
 
 ## Related
 
-- `security-audit` — reach for it when the question is about application code or secrets rather than images.
-- `deployment` — reach for it when the pipeline's structure, not its controls, is what needs review.
-- `release-promotion` — reach for it when you are changing the promotion workflow itself.
-- `monorepo-coordination` — reach for it when a supply-chain fix has to land across several repositories at once.
+`security-audit` (application code and secrets), the project's infra pack skills (pipeline structure, promotion workflow), `monorepo-coordination` (fixes spanning repos).

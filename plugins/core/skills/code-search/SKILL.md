@@ -13,229 +13,35 @@ docs:
 
 # Purpose
 
-Selects the most efficient search tool (Grep for exact symbol lookup, Glob for file-name pattern matching, codebase-retrieval for semantic/architectural queries) to locate code across the project's repositories (see `.claude/project.json` → `repos`). Produces a list of matching file paths with line numbers and context. This is a read-only, tool-selection skill.
+Selects the most efficient search tool — Grep for exact symbol lookup, Glob for file-name patterns, codebase-retrieval for semantic/architectural questions — to locate code across the project's repositories (`.claude/project.json` → `repos`). Produces matching file paths with line numbers and context. Read-only, tool-selection skill. Placeholders: `<mainApp>`, `<device>`, `<infrastructure-repo>` come from project.json.
 
-Placeholders: `<mainApp>` = `project.json → mainApp` (the main web app); `<device>` = `project.json → device` (the device/edge repo, if the project has one); `<infrastructure-repo>` = the project's infrastructure/deployment repo.
+# Rules (never violate)
 
-# When to use / When NOT to use
+- Grep for exact symbols, Glob for name patterns, codebase-retrieval for "how does X work?" — never swap them.
+- Every result carries a `file:line` citation, never a bare file path; max 50 results per search.
+- Verify the top 2 codebase-retrieval results with Read; anything mismatched is marked `[POTENTIALLY-STALE]`, never presented as authoritative.
+- No hardcoded absolute paths, never search the filesystem root — scope to the workspace; repo names come from `.claude/project.json` → `repos`.
+- Zero-result searches report the alternatives attempted before saying "not found".
+- Refuse searches outside the project workspace; stop and ask on >50 results or an ambiguous query.
 
-**Use when:**
-- Need to find all occurrences of a specific function, type, or variable name
-- Need to locate files matching a naming pattern (e.g., all route handlers, all test files)
-- Need to understand how a feature or data flow is implemented across repos (semantic search)
-- Starting a new task and need orientation on where relevant code lives
+# Resources
 
-**Do NOT use when:**
-- Creating new files or implementing features (use `api-integration` or relevant implementation skill)
-- Reviewing code for quality, conventions, or security (use `code-quality`, `code-standards`)
-- Running a known command or script (the search is not needed if you already know the path)
-- Answering conceptual questions about the device protocol or deployment architecture (use documentation, not code search)
-
-# Required environment
-
-- Runtime: `.claude/skills/code-search/SKILL.md`
-- Tools: Grep, Glob, Read, mcp__auggie__codebase-retrieval (MCP tool, not listed in allowed-tools because it is an external MCP server tool; it is available at runtime)
-- Frontmatter flag `disable-model-invocation: true` keeps this skill user/agent-explicit (it does not auto-trigger on matching phrases). As a knowledge module it never dispatches subagents in any case; depth control lives at the agent layer (see ARCHITECTURE.md -> Delegation depth).
-- File system assumptions:
-  - The project's monorepo or worktree is at the current working directory
-  - Repository paths are relative to the workspace root (e.g., `apps/<mainApp>/`, `<device>/`, `<infrastructure-repo>/`)
-
-# Inputs
-
-- `query: string` -- what to search for (symbol name, file pattern, or natural language question)
-- `search_type: "exact" | "pattern" | "semantic"` -- determines which tool to use
-- `scope: string` -- optional path restriction (e.g., `apps/<mainApp>/src/`)
-
-# Outputs
-
-- **Format:** list of matches with `file:line` citations and surrounding context (3 lines)
-- **Length budget:** max 50 results per search; paginate or narrow scope if more
-- **Downstream handoff:** When passing results to a downstream skill (`code-quality`, `api-contract`, `code-standards`), format as a list of `file:line:snippet` tuples that the downstream skill can consume directly.
-
-# Tool Selection Guide
-
-| Need | Tool | When to use | Example |
-|------|------|-------------|---------|
-| Find ALL occurrences of a symbol | Grep | You know the exact name (function, class, variable, import) | `Grep("getDb", glob: "*.ts", path: "apps/<mainApp>/src")` |
-| Find files by name pattern | Glob | You know the file naming convention | `Glob("apps/<mainApp>/src/app/api/**/route.ts")` |
-| Understand what code does | codebase-retrieval | You have a natural language question about architecture or data flow | `"How does telemetry flow from the device service to the browser?"` |
-| Read a known file section | Read with offset/limit | You know the file and approximate line range | `Read("src/lib/db/schema.ts", offset: 40, limit: 30)` |
-
-# Procedure
-
-1. **Classify the query** -- Determine whether the user needs exact symbol lookup (Grep), file pattern matching (Glob), or semantic understanding (codebase-retrieval). Checkpoint: tool selected.
-
-2. **Determine scope** -- If no scope is specified, default to the repository most likely to contain the result based on the query content:
-   - TypeScript/React/Next.js terms -> `apps/<mainApp>/`
-   - Python/device/hardware terms -> `<device>/`
-   - Deployment/chart terms -> `<infrastructure-repo>/`
-   - SQL/migration/infrastructure terms -> `<infrastructure-repo>/`
-   Checkpoint: scope determined.
-
-3. **Execute the search** -- Run the selected tool with the query and scope. **For codebase-retrieval results:** after receiving results, verify the top 2 returned file paths exist and contain the cited content by running Read on them. Flag any result whose file path does not exist or whose content does not match as `[POTENTIALLY-STALE]`. Checkpoint: results returned and verified.
-
-4. **Handle zero results** -- If the search returns no results:
-   a. Broaden the scope (remove path restriction)
-   b. Try an alternative tool (e.g., switch from Grep to codebase-retrieval)
-   c. Try variant spellings (camelCase vs snake_case vs PascalCase)
-   d. If all attempts fail, report "no results found" with the queries attempted
-   Checkpoint: either results found or all alternatives exhausted.
-
-5. **Format results** -- Present each match with `file:line` and 3 lines of surrounding context. Sort by relevance (exact matches first, then partial matches). Checkpoint: formatted output ready.
-
-6. **Final acceptance check** -- Results have `file:line` citations, search tool and query are documented, no `[POTENTIALLY-STALE]` results are presented as authoritative.
-
-# Grep Patterns by Repository
-
-### Main app (TypeScript)
-```
-Grep("getDb\\(\\)", glob: "*.ts", path: "apps/<mainApp>/src")
-Grep("export default|export function", glob: "*.tsx", path: "apps/<mainApp>/src/app")
-Grep("EventSource|useTelemetry", glob: "*.{ts,tsx}", path: "apps/<mainApp>/src")
-```
-
-### Device repo (Python)
-```
-Grep("async def", glob: "*.py", path: "<device>/src")
-Grep("telemetry", glob: "*.py", path: "<device>")
-```
-
-### Deployment config
-```
-Grep("image:", glob: "*.yaml", path: "<infrastructure-repo>/charts")
-Grep("nodePort:", glob: "*.{yaml,tpl}", path: "<infrastructure-repo>")
-```
-
-### Cross-Repo
-```
-Grep("DeviceService", path: ".")
-Grep("/ws/", path: ".", glob: "*.{py,ts,yaml,tpl}")
-```
-
-# Glob Patterns
-
-```
-# API route handlers
-Glob("apps/<mainApp>/src/app/api/**/route.ts")
-
-# React components
-Glob("apps/<mainApp>/src/components/**/*.tsx")
-
-# Test files
-Glob("<device>/test/**/*.py")
-Glob("apps/<mainApp>/src/**/*.test.{ts,tsx}")
-
-# Deployment values
-Glob("<infrastructure-repo>/**/values*.yaml")
-
-# Database migrations
-Glob("<infrastructure-repo>/files/backendMigration/*.sql")
-```
-
-# Self-check before returning
-
-- [ ] Every result includes a `file:line` citation (not just a file path)
-- [ ] The search tool used is documented (Grep, Glob, or codebase-retrieval)
-- [ ] The query executed is documented (exact string or natural language)
-- [ ] Zero-result searches include the alternatives attempted before reporting "not found"
-- [ ] No hardcoded absolute paths (all paths are relative to workspace root)
-- [ ] Results are sorted by relevance (exact matches first)
-- [ ] codebase-retrieval results have been spot-checked with Read (top 2 verified)
-- [ ] No `[POTENTIALLY-STALE]` result is presented without that marker
-
-# Common mistakes to avoid
-
-- DO NOT use hardcoded absolute paths like `/absolute/path/to/project` -- use relative paths from the workspace root or the current working directory
-- DO NOT use Grep for semantic questions ("how does X work?") -- use codebase-retrieval instead
-- DO NOT use codebase-retrieval for exact symbol lookup ("find all uses of getDb") -- use Grep instead
-- DO NOT return file paths without line numbers -- always include the line where the match occurs
-- DO NOT search `/` (filesystem root) -- always scope to the workspace or a specific repository
-- DO NOT assume stale repository names -- use the current canonical repo names from `.claude/project.json` → `repos`
-- DO NOT present codebase-retrieval results as authoritative without verifying at least the top 2 with Read
-
-# Escalation
-
-- **Stop and ask when:** the search returns more than 50 results and narrowing the scope is not obvious
-- **Stop and ask when:** the query is ambiguous and could match multiple unrelated concepts (e.g., "service" could mean a deployment Service or a TypeScript service class)
-- **Refuse and explain when:** asked to search external repositories or filesystems outside the project workspace
-
-# Examples
-
-<example>
-## Worked example: finding all uses of the telemetry emitter
-
-**Input:** `query: "telemetryEmitter"`, `search_type: "exact"`, `scope: "apps/<mainApp>/src/"`
-
-**Step 1:** Classify as exact symbol lookup -> Grep
-
-**Step 2:** Execute
-```
-Grep("telemetryEmitter", glob: "*.ts", path: "apps/<mainApp>/src")
-```
-
-**Results:**
-```
-apps/<mainApp>/src/lib/telemetry/ws-client.ts:5  export const telemetryEmitter = new EventEmitter();
-apps/<mainApp>/src/lib/telemetry/ws-client.ts:12   telemetryEmitter.emit(`telemetry:${deviceId}`, parsed.data);
-apps/<mainApp>/src/app/api/telemetry/stream/route.ts:2  import { telemetryEmitter } from '@/lib/telemetry/ws-client';
-apps/<mainApp>/src/app/api/telemetry/stream/route.ts:11   telemetryEmitter.on(`telemetry:${deviceId}`, handler);
-apps/<mainApp>/src/app/api/telemetry/stream/route.ts:14     telemetryEmitter.off(`telemetry:${deviceId}`, handler);
-```
-
-**Summary:** 5 occurrences in 2 files. Defined in `ws-client.ts:5`, consumed in `stream/route.ts`.
-</example>
-
-<example>
-## Worked example: semantic search for a feature flow
-
-**Input:** `query: "How does order creation work end to end?"`, `search_type: "semantic"`
-
-**Step 1:** Classify as semantic question -> codebase-retrieval
-
-**Step 2:** Execute
-```
-codebase-retrieval("How does order creation work in the main app, from route handler to database?", directory_path: "apps/<mainApp>")
-```
-
-**Step 3:** Verify top 2 results with Read -- confirmed `src/app/api/orders/route.ts` exists and contains POST handler at returned line number.
-
-**Results:** codebase-retrieval returns relevant snippets from:
-- `src/app/api/orders/route.ts` (POST handler)
-- `src/lib/db/schema.ts` (orders table definition)
-- `src/app/(dashboard)/orders/new/page.tsx` (order creation form)
-</example>
-
-# Failure modes
-
-- **Mode 1:** Grep returns false positives from comments or string literals -- detect: matches are in comment or string context; fix: add surrounding context and let the user filter, or refine the regex to exclude comment lines
-- **Mode 2:** codebase-retrieval returns stale results after recent file changes -- detect: Read verification shows file content does not match returned snippet; fix: mark as `[POTENTIALLY-STALE]` and re-search with Grep instead
-- **Mode 3:** Glob pattern misses files due to incorrect nesting depth -- detect: known file not in results; fix: use `**` for recursive matching and verify the path prefix is correct
-
-# Related skills
-
-- `code-quality` -- compose when search results need to be audited for structural quality (search first, then audit); pass results as `file:line:snippet` tuples
-- `api-contract` -- compose when search results reveal API layer files that need contract verification; pass results as `file:line:snippet` tuples
-- `code-standards` -- compose when search results reveal code that needs convention review; pass results as `file:line:snippet` tuples
+- Read `resources/search-procedure.md` when running a search — tool selection table, procedure, scope defaults, self-check, mistakes, escalation, failure modes.
+- Read `resources/query-patterns.md` when composing queries — per-repo Grep/Glob patterns and two worked examples.
 
 # How to use
 
 ## What it does
 
-This skill picks the right search tool for a lookup and runs it, so you stop guessing between exact match, file-name pattern, and "how does this work?" It classifies your query, scopes it to the repository most likely to hold the answer, runs Grep, Glob, or a semantic retrieval tool, and hands back matches with `file:line` citations and surrounding context. It only reads code — it never edits anything.
+Picks the right search tool for a lookup and runs it, so you stop guessing between exact match, file-name pattern, and "how does this work?". It classifies your query, scopes it to the most likely repository, runs Grep, Glob, or semantic retrieval, and returns matches with `file:line` citations and surrounding context. It never edits anything.
 
 ## When to use it
 
-- You need every occurrence of a function, type, or variable name across the workspace.
-- You need files that follow a naming convention: all route handlers, all test files, all deployment values files.
-- You are starting a task cold and need orientation on where the relevant code lives.
-- You have a natural-language question about a data flow that spans more than one repository.
+- You need every occurrence of a function, type, or variable across the workspace.
+- You need files following a naming convention: route handlers, test files, values files.
+- You are starting a task cold, or have a natural-language question about a cross-repo data flow.
 
-## When not to use it
-
-- You are writing new code or implementing a feature — use `api-integration` or the matching implementation skill.
-- You want the code judged, not located — use `code-quality` or `code-standards`.
-- You already know the file and roughly which lines — read it directly instead.
-- The question is conceptual (protocol semantics, deployment architecture) — read the documentation, not the code.
+Not for writing code (`api-integration`), judging code (`code-quality`/`code-standards`), files you already know, or conceptual questions answered by documentation.
 
 ## How to invoke
 
@@ -243,17 +49,7 @@ This skill picks the right search tool for a lookup and runs it, so you stop gue
 Skill(skill: "core:code-search")
 ```
 
-Call it with your query in plain words. If you know the search type or want to limit the blast radius, say so — otherwise the skill classifies the query and picks a default scope from the repository names in `.claude/project.json`.
-
-## Inputs
-
-- `query` — the symbol name, file pattern, or natural-language question — required.
-- `search_type` — `exact`, `pattern`, or `semantic`; decides which tool runs — optional, inferred when omitted.
-- `scope` — a path restriction such as `apps/<mainApp>/src/` — optional.
-
-## What you get back
-
-A list of matches, each with a `file:line` citation and three lines of context, sorted with exact matches first and capped at 50 results per search. The tool used and the exact query executed are stated alongside the results. Semantic results are spot-checked by reading the top two files; anything that fails that check is marked `[POTENTIALLY-STALE]` rather than presented as fact. A search that finds nothing reports the alternatives that were tried before giving up.
+State your `query` in plain words; optionally add `search_type` (`exact`, `pattern`, `semantic` — inferred when omitted) and a `scope` path restriction.
 
 ## Worked example
 
@@ -262,10 +58,8 @@ Skill(skill: "core:code-search")
 query: "telemetryEmitter", search_type: "exact", scope: "apps/<mainApp>/src/"
 ```
 
-The query is classified as an exact symbol lookup, so Grep runs over `*.ts` under that path. You get back five matches across two files: the emitter is declared at `apps/<mainApp>/src/lib/telemetry/ws-client.ts:5` and emitted on at line 12, then imported and subscribed in `apps/<mainApp>/src/app/api/telemetry/stream/route.ts` at lines 2, 11, and 14 — enough to see the definition and every consumer in one pass.
+Classified as an exact symbol lookup, Grep runs over `*.ts` under that path. Five matches across two files come back: the emitter declared at `ws-client.ts:5`, emitted at line 12, then imported and subscribed in `stream/route.ts` at lines 2, 11, and 14 — the definition and every consumer in one pass.
 
 ## Related
 
-- `code-quality` — prefer it once you have the files and want structural quality audited; feed it the `file:line:snippet` tuples from this search.
-- `api-contract` — prefer it when the search surfaces API-layer files whose contracts need verifying.
-- `code-standards` — prefer it when the found code needs a convention and type-safety review.
+- `code-quality`, `api-contract`, `code-standards` — compose downstream: search first, then hand them the `file:line:snippet` tuples for audit, contract verification, or convention review.

@@ -121,7 +121,7 @@ Diagram: `./c4-l2-container.mmd` → `./c4-l2-container.html`.
 **Where this doc lives.** Default is **task-scoped**: it stays under the issue's task dir
 `${AGENT_WORKSPACE_ROOT}/${AGENT_PROJECT}/workspace/working/{{YYYY}}/{{MM}}/{{DD}}/{{slug}}/reports/` alongside its `.mmd`/`.html`.
 **Promote** a copy to the project's architecture docs directory by default (matching
-`@architecture-designer`'s `{component}-design.md` output path; or another project docs area for a
+`@architect`'s `{component}-design.md` output path; or another project docs area for a
 topic-specific doc) **only** when the doc is durable, cross-team, and agreed — the task-dir version
 stays as the work trail. A promotion that edits a cross-tier contract is an **ASK** (the project's
 ASK policy). **Never** write loose `PLAN-*/AUDIT-*/architecture-*.md` at the workspace

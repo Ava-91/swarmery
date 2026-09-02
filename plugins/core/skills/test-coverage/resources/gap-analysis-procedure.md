@@ -1,0 +1,157 @@
+# Test-coverage gap analysis procedure
+
+## Inputs
+
+| Input | Required | Description |
+|-------|----------|-------------|
+| Scope | Yes | Repository or module path to analyze (e.g., `apps/<mainApp>`, or a module inside the device/edge repo) |
+| Priority filter | No | Focus on specific module types: `critical` (telemetry, auth, missions), `api` (route handlers), `all` (default) |
+
+## Report template
+
+Length budget: report must not exceed 200 lines. For repos with more than 50 gaps, group by directory and show only the top 10 highest-risk entries with a summary count of the rest.
+
+```markdown
+## Test Coverage Gap Report
+
+**Scope:** [module/repo path]
+**Date:** [ISO date]
+**Source Files:** X
+**Test Files:** Y
+**Estimated Gap:** Z source files without any corresponding test file
+
+### Coverage by Module
+
+| Module | Source Files | Test Files | Untested Sources | Risk Level |
+|--------|------------|------------|-----------------|------------|
+| src/lib/telemetry/ | 4 | 2 | 2 | High |
+| src/app/api/missions/ | 3 | 0 | 3 | High |
+| src/components/dashboard/ | 6 | 1 | 5 | Medium |
+
+### Untested High-Risk Modules
+
+#### [Module path]
+- **Source file:** `src/lib/telemetry/ws-client.ts`
+- **Public functions/exports:** `connectToDevice()`, `reconnectWithBackoff()`
+- **Suggested test file:** `src/lib/telemetry/__tests__/ws-client.test.ts`
+- **Suggested test cases:**
+  - Happy path: establishes WebSocket connection and emits telemetry events
+  - Error case: reconnects with backoff after connection failure
+  - Edge case: handles malformed telemetry JSON without crashing
+- **Risk rationale:** Telemetry is a critical real-time data path; failures affect all device monitoring
+
+### Files Excluded from Analysis
+[Generated files, type declarations, config files that were skipped, with reasons]
+
+### Suggested Test Commands
+| Repository | Command | Notes |
+|-----------|---------|-------|
+| device/edge repo | `make test` | Unit tests only |
+| apps/<mainApp> | `npm run test -- --coverage` | Jest with coverage report |
+```
+
+## Procedure
+
+### Step 0: Determine scope boundary
+
+Before globbing any files, confirm the scope:
+- Which repos are included?
+- Which file types to exclude (generated code, type declarations, build outputs)?
+- If scope is the entire monorepo, apply the length budget strictly: group by directory, show top 10 highest-risk entries, and summarize the rest as a count.
+
+**Checkpoint:** Scope boundary confirmed. Exclusion patterns listed.
+
+### Step 1: Inventory source files
+
+Find all source files in the target scope:
+- **Device/edge repo (Python):** `src/**/*.py`
+- **Main app (TypeScript):** `src/**/*.{ts,tsx}` excluding `*.d.ts`, `*.test.ts`, `*.test.tsx`, `__tests__/`
+- Exclude: ORM-generated schema types, build outputs, `node_modules/`, `__pycache__/`
+- Exclude: type-only files containing only `interface`/`type` declarations with no runtime logic
+
+**Checkpoint:** N source files inventoried. Exclusions documented.
+
+### Step 2: Map source files to test files
+
+- **Device/edge repo:** `src/foo.py` -> `test/unit/test_foo.py` or `test/integration/test_foo.py`
+- **Main app:** `src/lib/foo.ts` -> `src/lib/__tests__/foo.test.ts` or `src/lib/foo.test.ts`
+- Record which source files have no corresponding test file
+
+**Checkpoint:** Mapping complete. M unmapped files identified.
+
+### Step 3: Gap analysis
+
+- List source files without test files
+- For files with tests, check if public functions/exports have corresponding test cases (grep for function names in test files)
+- Classify risk level:
+  - **High:** Telemetry parsing, auth middleware, mission command handling, WebSocket/SSE streaming, device wire-protocol handling, route handlers with mutations
+  - **Medium:** UI components with user interaction, utility functions with complex logic, database query builders
+  - **Low:** Static configuration, pure presentational components, type re-exports
+
+**Checkpoint:** Risk classification assigned to every untested module.
+
+### Step 4: Suggest test cases
+
+For each untested module, provide:
+- Suggested test file name and location (following repo conventions)
+- 3-5 test case descriptions covering: happy path, error cases, edge cases
+- Risk rationale explaining why this module matters
+
+Also list **E2E test gaps**: critical end-to-end flows (mission creation, telemetry streaming, auth login) that have no E2E coverage -- report them in a dedicated "E2E Test Gaps" section.
+
+Suggest *what* to test, not *how* to write the test code. When naming suggested cases, follow repo conventions -- Jest `describe`/`it` blocks for the main app (incl. route-handler tests that invoke the exported `GET`/`POST` with a `Request`), `@pytest.mark.asyncio` test functions for the device/edge repo. The `testing` skill provides the actual patterns and code skeletons.
+
+**Checkpoint:** Every untested high-risk module has suggested test cases.
+
+### Step 5: Compare against coverage targets
+
+| Repository | Unit | Integration | Critical Modules |
+|-----------|------|-------------|-----------------|
+| device/edge repo | 80% | 60% | 90%+ (telemetry parser, device command handler) |
+| apps/<mainApp> | 70% | 50% | 90%+ (telemetry hooks, auth middleware, API route handlers) |
+
+These targets are maintained here as the single source of truth.
+
+**Checkpoint:** Report includes comparison to targets.
+
+## Self-check before returning
+
+- [ ] All source files in scope were inventoried (not just a sample)
+- [ ] Generated files, type declarations, and test fixtures were excluded from the "untested" count
+- [ ] Every untested module has a risk classification with rationale
+- [ ] Suggested test file paths follow the repo's existing naming convention
+- [ ] The estimated gap count matches the sum of untested entries in the module table
+- [ ] The report distinguishes between "no test file exists" and "test file exists but specific functions are untested"
+- [ ] Coverage estimate is labeled as an estimate, not a tool-measured metric
+- [ ] No test files were created during this analysis (read-only skill)
+- [ ] Report does not exceed 200 lines
+
+## Common mistakes to avoid
+
+- **Creating test files during gap analysis** -- this is a read-only skill; hand off to `testing` for writing tests
+- **Counting generated files as untested source** -- ORM-generated schema types, build outputs, and `.d.ts` files are not testable source
+- **Counting test fixtures as untested source** -- files in `test/fixtures/` or `__fixtures__/` are test data, not source under test
+- **Confusing estimated gap with measured coverage** -- this skill estimates gaps by file/function mapping; `npm run test -- --coverage` measures actual line/branch coverage
+- **Running `make test-all` as part of gap analysis** -- `make test-all` executes the full test suite including integration tests requiring a live database; it is not needed for gap analysis
+- **Flagging trivially untestable files** -- barrel exports (`index.ts`), CSS modules, and constant definitions do not need dedicated test files
+
+## Escalation
+
+- **Scope is the entire monorepo:** Apply the 200-line length budget. Group gaps by directory, show top 10 highest-risk entries, and summarize the rest as a count with a recommendation to narrow scope.
+- **Cannot determine test file convention:** Check existing test files in the repo for patterns; if none exist, use the conventions listed in Step 2.
+- **Coverage targets need updating:** The targets in Step 5 are the authoritative reference; if the user wants to change them, update this document.
+
+## Failure modes
+
+| Failure | Recovery |
+|---------|----------|
+| Repository uses non-standard test file naming | Check existing test files for the actual convention before mapping |
+| Source file has no public exports (all internal) | Skip it or flag as "low priority -- internal module" |
+| Too many gaps to list individually | Group by module/directory; show top 10 with highest risk |
+| Cannot access repository files | Report as blocked; request read access |
+
+## Related skills
+
+- **testing** -- patterns for *writing* tests; references the coverage targets defined here
+- **security-audit** -- may identify security-relevant modules to prioritize for testing
+- **code-quality** -- code quality analysis (separate concern from test coverage)

@@ -13,185 +13,54 @@ docs:
 
 # Purpose
 
-Provide a single, reusable, **self-contained** HTML shell (inline CSS, no external assets, no JS required) so that every report an agent emits — `@summary-generator`'s Phase 8 dashboard and `@code-auditor`'s Phase 5 audit — shares one visual language: a dark "terminal" theme with severity-coded cards, metric tables, and collapsible sections.
+Wrap already-authored content in one reusable, **self-contained** HTML shell —
+inline CSS, no external assets, no build step — so every report an agent emits
+shares one visual language: a dark terminal theme with severity-coded cards,
+metric tables, and collapsible sections. Used by the `session-closeout` skill's
+Phase 8 dashboard and `@code-reviewer`'s Phase 5 audit.
 
-This skill produces presentation only. It does **not** gather data, measure metrics, or run analysis — the calling agent supplies the content and this skill wraps it.
+Presentation only. This skill never gathers data, measures anything, or computes
+a number — the caller supplies the content and this skill renders it.
 
-# When to use this skill
+# Rules (never violate)
 
-- An agent has completed analysis and needs to emit a report as HTML (saved to a `phases/*.html` or `SUMMARY`-adjacent path)
-- `@summary-generator` renders the optional Phase 8 HTML dashboard
-- `@code-auditor` renders the Phase 5 audit report (health score + P0–P3 backlog)
-- A report has >3 sections or will be shared outside the terminal (per `summary-templates` Step 4)
+1. Never fabricate a metric or a health score; format only what the caller passed.
+2. Keep the file self-contained — no CDN link, no external `src`/`href`, no
+   `<script>` unless explicitly required.
+3. Use the canonical shell verbatim and its severity classes; never re-style a
+   report or hand-roll inline colors.
+4. Markdown stays the canonical artifact; the HTML is its optional mirror.
+5. Respect the body budget — `<main>` ≤ 300 lines (summary) / ≤ 500 (audit);
+   consolidate rather than pad, and never leave a `{{…}}` placeholder.
+6. No secrets or PII in the output; verify the written file is non-empty.
 
-# When NOT to use this skill
+# Resources
 
-- **Markdown-only output** — the canonical `SUMMARY.md` / `05-audit.md` stay markdown; HTML is the optional mirror
-- **Measuring or computing metrics** — this skill formats numbers the caller already has; it never fabricates them
-- **Rendering mermaid diagrams** — use `mermaid-viewer`
-- **Writing code, tests, or configuration** — output is a single `.html` document only
-- **Content authoring** — section text comes from `summary-templates` (summaries) or the audit agent's findings; this skill only wraps it
-
-# Required environment
-
-No tooling required. Output is a single self-contained `.html` file (inline `<style>`, no CDN, no build step). It opens directly in any browser and survives being copied between machines.
-
-# Inputs
-
-| Input | Required | Description |
-|-------|----------|-------------|
-| Report kind | Yes | `summary` (Phase 8) or `audit` (Phase 5) — selects the section skeleton |
-| Title | Yes | Report `<h1>` text |
-| Sections | Yes | The already-authored content blocks (metrics, findings, backlog, etc.) |
-| Output path | Yes | Where to write, e.g. `…/{slug}/phases/05-audit.html` or `phases/08-summary.html` |
-| Health score | Audit only | Integer 1–10 for the audit header badge |
-
-# Outputs
-
-**Format:** one self-contained HTML file at the caller's output path.
-
-**Length budget:** body content ≤ 300 lines (summary) / ≤ 500 lines (audit). Consolidate similar findings to stay within budget; never pad. The shell CSS does not count against the content budget.
-
-# The shell (canonical)
-
-Copy this shell verbatim, then fill `{{TITLE}}` and the `<main>` body. Severity classes: `.sev-p0`/`.sev-p1`/`.sev-p2`/`.sev-p3` for audit tiers; `.ok`/`.warn`/`.crit` badges for status.
-
-```html
-<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{TITLE}}</title>
-<style>
-  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;
-        --muted:#8b949e;--accent:#58a6ff;--mono:"SF Mono","JetBrains Mono",Menlo,monospace;
-        --p0:#f85149;--p1:#d29922;--p2:#58a6ff;--p3:#8b949e;
-        --ok:#3fb950;--warn:#d29922;--crit:#f85149;}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);line-height:1.6;
-       font-family:var(--mono);-webkit-font-smoothing:antialiased}
-  .wrap{max-width:920px;margin:0 auto;padding:2rem 1.5rem 4rem}
-  header{border-bottom:1px solid var(--border);padding-bottom:1rem;margin-bottom:1.5rem}
-  h1{font-size:1.5rem;margin:0 0 .4rem} h2{font-size:1.15rem;margin:2rem 0 .8rem}
-  .meta{color:var(--muted);font-size:.85rem}
-  .score{display:inline-block;font-size:2rem;font-weight:700}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;
-        padding:1rem 1.2rem;margin:.8rem 0}
-  .card.sev-p0{border-left:4px solid var(--p0)} .card.sev-p1{border-left:4px solid var(--p1)}
-  .card.sev-p2{border-left:4px solid var(--p2)} .card.sev-p3{border-left:4px solid var(--p3)}
-  table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.88rem}
-  th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--border)}
-  th{color:var(--muted);text-transform:uppercase;font-size:.72rem;letter-spacing:.05em}
-  code{background:#1f2630;padding:.1em .4em;border-radius:4px;font-size:.9em}
-  .badge{display:inline-block;padding:.1em .55em;border-radius:999px;font-size:.72rem;font-weight:600}
-  .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)}
-  .badge.warn{background:rgba(210,153,34,.15);color:var(--warn)}
-  .badge.crit{background:rgba(248,81,73,.15);color:var(--crit)}
-  details{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.6rem 1rem;margin:.6rem 0}
-  summary{cursor:pointer;font-weight:600}
-  a{color:var(--accent)}
-</style></head>
-<body><div class="wrap">
-<header><h1>{{TITLE}}</h1><p class="meta">{{META}}</p></header>
-<main>{{BODY}}</main>
-</div></body></html>
-```
-
-# Procedure
-
-<procedure>
-
-### 1. Pick the skeleton
-- `summary` → sections: Status header → Metrics table → per-role `<details>` "How to Use" → Next steps `<ul>` → Known issues `.card.crit`. Mirror the markdown produced by `summary-templates`.
-- `audit` → sections: Executive summary (health `.score` /10) → Metrics table (current vs target) → Dimension Coverage table → P0–P3 backlog as `.card.sev-pN` blocks, each with What → Risk/Cost → Fix → How-to-verify → Engineering Standards.
-
-Checkpoint: skeleton chosen for the report kind.
-
-### 2. Fill the shell
-Paste the shell, set `{{TITLE}}`/`{{META}}`, drop authored content into `<main>`. Use the severity classes; never invent inline colors.
-
-Checkpoint: all placeholders replaced; no `{{…}}` left.
-
-### 3. Map content to components
-Status header → `<h1>` + `.badge`; metrics → `<table>`; per-role guidance → `<details>`; findings → `.card.sev-pN`; positives → `.badge.ok`.
-
-Checkpoint: every section uses a shell component, not ad-hoc HTML.
-
-### 4. Verify self-containment + budget
-No external `src`/`href` to CDNs; no `<script>` unless explicitly needed. Count `<main>` lines against the budget (300 summary / 500 audit) and trim lowest-priority sections first.
-
-Checkpoint: file opens offline; within budget.
-
-### 5. Write and confirm
-Write to the caller's output path. Confirm the file exists and is non-empty (`test -s`).
-
-Checkpoint: artifact on disk.
-
-</procedure>
-
-# Self-check before returning
-
-- [ ] Output is a single self-contained `.html` (no CDN/external assets)
-- [ ] Correct skeleton used for the report kind (summary vs audit)
-- [ ] All `{{…}}` placeholders replaced
-- [ ] Severity uses `.sev-p0..p3` / `.badge ok|warn|crit` classes, not ad-hoc colors
-- [ ] No metrics fabricated — every number came from the caller
-- [ ] No secrets/PII in the output
-- [ ] `<main>` within length budget (300 summary / 500 audit)
-- [ ] File written and verified on disk (`test -s`)
-
-# Common mistakes to avoid
-
-- **Linking external CSS/JS** — reports must render offline; keep everything inline
-- **Inventing metrics or health scores** — format only supplied numbers
-- **Re-styling per report** — always use the one shell so reports stay consistent
-- **Emitting HTML as the canonical artifact** — markdown stays canonical; HTML is the optional mirror
-
-# Related skills
-
-- **summary-templates** — authors the summary content this skill renders
-- **mermaid-viewer** — for diagrams (do not hand-roll mermaid here)
-- **code-standards** — review findings that feed an audit report
+- Read `resources/shell.md` when rendering: the canonical HTML shell to copy
+  verbatim plus the content-to-component map.
+- Read `resources/render-procedure.md` first: the input table, the two section
+  skeletons (summary, audit), the 5-step procedure, the self-check, common
+  mistakes, and a worked example.
 
 # How to use
 
 ## What it does
 
-This skill turns content you have already written into a single self-contained HTML file — one dark terminal-style page with inline CSS, no external assets, and no build step. Every report an agent emits shares the same visual language: severity-coded cards, metric tables, and collapsible sections. It formats what you hand it; it never gathers data, computes metrics, or invents a number.
+Turns content you already wrote into a single self-contained HTML page that opens
+offline in any browser and survives being copied between machines.
 
 ## When to use it
 
-- An agent finished its analysis and needs the result as a browsable HTML page instead of terminal text.
-- You are rendering a task summary dashboard with a status header, metrics table, and per-role guidance.
-- You are rendering an audit report with a health score and a P0–P3 remediation backlog.
-- A report has more than three sections, or you will share it with someone outside the terminal.
+- An agent finished its analysis and wants a browsable page rather than terminal text.
+- You are rendering a task summary dashboard — status header, metrics, per-role guidance.
+- You are rendering an audit report with a health score and a P0–P3 backlog.
+- A report runs past three sections, or will be read outside the terminal.
 
-## When not to use it
-
-- The output should stay markdown — the canonical `SUMMARY.md` or audit markdown is the source of truth; HTML is the optional mirror.
-- You still need to measure or compute the numbers — do the analysis first, then call this skill to format it.
-- You want a rendered diagram — use `mermaid-viewer` instead.
-- You need code, tests, or configuration written — this skill only produces one `.html` document.
+Not for: markdown-only output (`SUMMARY.md` and audit markdown stay the source of
+truth); work where the numbers are not measured yet — analyse first, format
+after; diagrams (`mermaid-viewer`); or writing code, tests, or config.
 
 ## How to invoke
-
-```
-Skill(skill: "core:html-reporting")
-```
-
-Invoke it once the section content exists, and pass the report kind, title, sections, and output path along with the call.
-
-## Inputs
-
-- **Report kind** — `summary` or `audit`; selects the section skeleton — required.
-- **Title** — the text for the report's `<h1>` — required.
-- **Sections** — your already-authored content blocks (metrics, findings, backlog) — required.
-- **Output path** — where the `.html` file is written — required.
-- **Health score** — an integer 1–10 for the audit header badge — audit reports only.
-
-## What you get back
-
-One `.html` file at your output path, written and verified non-empty on disk. It opens offline in any browser and survives being copied between machines. The `<main>` body stays within a budget of 300 lines for a summary and 500 for an audit; lowest-priority sections are trimmed rather than padded.
-
-## Worked example
 
 ```
 Skill(skill: "core:html-reporting")
@@ -203,10 +72,18 @@ health score: 6
 sections: metrics table, dimension coverage, 9 findings across P0–P3
 ```
 
-The skill picks the audit skeleton, pastes the canonical shell, renders the score badge and tables, and emits each finding as a `.card.sev-pN` block with What → Risk/Cost → Fix → How-to-verify. You end up with one offline HTML file at that path.
+Kind, title, sections, and output path are required; health score for audits only.
+
+## Worked example
+
+The invocation above selects the audit skeleton, pastes the canonical shell,
+renders the score badge and the metrics and coverage tables, and emits each of
+the nine findings as a `.card.sev-pN` block carrying What → Risk/Cost → Fix →
+How-to-verify. You end up with one offline HTML file at that path, verified
+non-empty on disk and inside the 500-line body budget.
 
 ## Related
 
-- **summary-templates** — authors the summary content this skill renders; run it first.
-- **mermaid-viewer** — prefer it whenever the artifact is a diagram.
-- **code-standards** — produces the review findings that feed an audit report.
+- `summary-templates` — authors the summary content this skill renders; run first.
+- `mermaid-viewer` — whenever the artifact is a diagram.
+- `code-standards` — produces the review findings that feed an audit report.
