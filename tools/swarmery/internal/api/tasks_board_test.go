@@ -21,6 +21,9 @@ import (
 
 // boardTaskKeys is the frozen JSON key set of BoardTask in web/src/api/types.ts.
 // Drift between boardTaskDTO and types.ts fails the WS shape assertion below.
+// source / staleAfter / dispatchedPrompt (0066) ship backend-first: the SPA
+// ignores keys it does not declare, and types.ts picks them up with the UI
+// that renders them.
 var boardTaskKeys = []string{
 	"id", "externalId", "projectId", "projectSlug", "title", "prompt",
 	"priority", "status", "boardColumn", "paused", "userPaused",
@@ -28,6 +31,7 @@ var boardTaskKeys = []string{
 	"dispatchError", "startPoint", "retryCount", "verifyRetryCount",
 	"verifyVerdict", "verifyDetail", "resultNote",
 	"agent", "origin", "originSessionId",
+	"source", "staleAfter", "dispatchedPrompt",
 	"planExternalId",
 	"columnMovedAt", "createdAt",
 }

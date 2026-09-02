@@ -151,6 +151,7 @@ func TestInsertCapturedTaskValidation(t *testing.T) {
 		"missing key":    func(c *taskcap.Input) { c.CaptureKey = "" },
 		"blank key":      func(c *taskcap.Input) { c.CaptureKey = "   " },
 		"manual origin":  func(c *taskcap.Input) { c.Origin = "manual" },
+		"fix origin":     func(c *taskcap.Input) { c.Origin = "verify-fix" },
 		"unknown origin": func(c *taskcap.Input) { c.Origin = "telepathy" },
 		"empty origin":   func(c *taskcap.Input) { c.Origin = "" },
 		"capital origin": func(c *taskcap.Input) { c.Origin = "Session" },
@@ -198,16 +199,50 @@ func TestInsertCapturedTaskTrims(t *testing.T) {
 	}
 }
 
+// TestValidOrigin pins the closed set one origin at a time: the three from
+// 0048 plus the verifier's fix-chain marker, which verify/service.go had been
+// writing while this validator rejected it.
 func TestValidOrigin(t *testing.T) {
-	for _, o := range []string{"manual", "session", "llm"} {
-		if !taskcap.ValidOrigin(o) {
-			t.Errorf("ValidOrigin(%q) = false", o)
+	cases := map[string]bool{
+		"manual":     true,
+		"session":    true,
+		"llm":        true,
+		"verify-fix": true,
+		"":           false,
+		"Session":    false,
+		"queue":      false,
+		"telepathy":  false,
+		"verify_fix": false,
+	}
+	for o, want := range cases {
+		if got := taskcap.ValidOrigin(o); got != want {
+			t.Errorf("ValidOrigin(%q) = %v, want %v", o, got, want)
 		}
 	}
-	for _, o := range []string{"", "Session", "queue", "telepathy"} {
-		if taskcap.ValidOrigin(o) {
-			t.Errorf("ValidOrigin(%q) = true", o)
-		}
+}
+
+// TestInsertCapturedTaskStoresProvenance: the turn, the quote and the files
+// land in their own columns (0066) and the prompt is stored as given — capture
+// no longer folds the quote into it.
+func TestInsertCapturedTaskStoresProvenance(t *testing.T) {
+	db, projectID, sessionID := testDB(t)
+	id, inserted, err := taskcap.InsertCapturedTask(db, taskcap.Input{
+		ProjectID: projectID, Title: "t", Prompt: "body only", Origin: "session",
+		OriginSessionID: &sessionID, OriginTurnUUID: "rec-uuid-1",
+		OriginQuote: "what the session was asked", OriginFiles: []string{"a.go", "b.go"},
+		CaptureKey: "todo:cap-session:prov",
+	})
+	if err != nil || !inserted {
+		t.Fatalf("insert = %v, %v", inserted, err)
+	}
+	var prompt, turn, quote, files string
+	if err := db.QueryRow(
+		`SELECT prompt, origin_turn_uuid, origin_quote, origin_files FROM tasks WHERE id = ?`, id,
+	).Scan(&prompt, &turn, &quote, &files); err != nil {
+		t.Fatal(err)
+	}
+	if prompt != "body only" || turn != "rec-uuid-1" || quote != "what the session was asked" || files != `["a.go","b.go"]` {
+		t.Errorf("stored (%q, %q, %q, %q)", prompt, turn, quote, files)
 	}
 }
 

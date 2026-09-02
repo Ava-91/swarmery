@@ -1677,6 +1677,9 @@ func cmdServe(args []string) error {
 	api.AttachPlanRun(planrunSvc)
 
 	buildStart := time.Now()
+	// The board derives each captured card's expiry from the same TTL the
+	// sweeper runs with, so the two can never tell the operator different dates.
+	api.AttachInboxTTL(envInboxTTL())
 	handler, err := api.NewServer(db, !*noIngest)
 	if err != nil {
 		return err

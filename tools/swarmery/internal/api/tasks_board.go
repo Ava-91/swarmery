@@ -32,23 +32,13 @@ import (
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/staleness"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskcap"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/wsingest"
 )
 
 // boardTSFormat matches the millisecond-Z style of the other API timestamps.
-const boardTSFormat = "2006-01-02T15:04:05.000Z"
-
-// boardColumns is the closed set of kanban columns (Fusion builtin:coding
-// semantics). Validated in Go; the migration defaults existing rows to triage.
-var boardColumns = map[string]bool{
-	"triage":      true,
-	"todo":        true,
-	"in_progress": true,
-	"in_review":   true,
-	"done":        true,
-	"archived":    true,
-}
+const boardTSFormat = store.BoardTSFormat
 
 // priorityLabels maps the accepted string tokens to the existing INTEGER
 // priority scale (0001_init.sql, default 5). urgent < high < normal < low so
@@ -151,15 +141,17 @@ func containsLabel(xs []string, label string) bool {
 	return false
 }
 
-// validColumn reports whether c is in the closed board set. Pure; unit-tested.
-func validColumn(c string) bool { return boardColumns[c] }
+// validColumn reports whether c is in the closed board set (Fusion
+// builtin:coding semantics). The set lives next to the board-card constructor
+// in internal/store, which validates it on every insert. Pure; unit-tested.
+func validColumn(c string) bool { return store.ValidColumn(c) }
 
 // validOrigin reports whether o is in the closed provenance set of task
 // provenances (0048): 'manual' for every hand-written card, 'session'/'llm' for
-// minted ones. The set itself lives in internal/taskcap — the capture write
-// path is shared with internal/ingest, and a second copy of the enum here is
-// exactly how the HTTP validation and the writer would drift apart. Pure;
-// unit-tested.
+// minted ones, 'verify-fix' for the verifier's fix chain. The set itself lives
+// in internal/store next to the constructor — the capture write path is shared
+// with internal/ingest, and a second copy of the enum here is exactly how the
+// HTTP validation and the writer would drift apart. Pure; unit-tested.
 func validOrigin(o string) bool { return taskcap.ValidOrigin(o) }
 
 // legalTransition enforces the two board rules from the phase doc: any→archived
@@ -259,8 +251,21 @@ type boardTaskDTO struct {
 	// idempotency key (capture_key) is deliberately NOT exposed — it is an
 	// internal write-path detail with no reader on the board.
 	Agent           *string `json:"agent"`
-	Origin          string  `json:"origin"` // manual|session|llm
+	Origin          string  `json:"origin"` // manual|session|llm|verify-fix
 	OriginSessionID *int64  `json:"originSessionId"`
+	// Source is the capture provenance as one nullable object (0066): null for
+	// a manual card and for a verifier fix task, so "was this captured?" is one
+	// null check rather than a string compare on origin. Quote is the session's
+	// opening prompt (clipped at capture); Files the files that session had
+	// touched — never null inside a non-null Source.
+	Source *boardTaskSourceDTO `json:"source"`
+	// StaleAfter is when the inbox sweeper will retire this card (RFC3339), or
+	// null when the sweep can never touch it — taskcap.StaleAfter, evaluated
+	// with the daemon's SWARMERY_INBOX_TTL. Derived, never stored.
+	StaleAfter *string `json:"staleAfter"`
+	// DispatchedPrompt is the exact first-stage prompt the dispatcher handed the
+	// runner; null until the card has been dispatched.
+	DispatchedPrompt *string `json:"dispatchedPrompt"`
 	// Derived, never stored: whether a task that claims to be running actually is,
 	// and on what evidence. Computed per request by internal/staleness — a cached
 	// verdict would be stale exactly when it matters, since the state it reads
@@ -276,6 +281,14 @@ type boardTaskDTO struct {
 	CreatedAt       string  `json:"createdAt"`
 }
 
+// boardTaskSourceDTO is where a captured card came from (boardTaskDTO.Source).
+type boardTaskSourceDTO struct {
+	SessionID *int64   `json:"sessionId"`
+	TurnUUID  *string  `json:"turnUuid"`
+	Quote     *string  `json:"quote"`
+	Files     []string `json:"files"`
+}
+
 const boardTaskSelect = `
 	SELECT t.id, t.external_id, t.project_id, p.slug, t.title, t.prompt,
 	       t.priority, t.status, t.board_column, t.paused, t.user_paused,
@@ -283,7 +296,8 @@ const boardTaskSelect = `
 	       t.dispatch_error, t.start_point, t.retry_count, t.verify_retry_count,
 	       t.verify_verdict, t.verify_detail, t.result_note,
 	       t.agent, t.origin, t.origin_session_id,
-	       t.column_moved_at, t.created_at, w.external_id
+	       t.origin_turn_uuid, t.origin_quote, t.origin_files, t.dispatched_prompt,
+	       t.source, t.column_moved_at, t.created_at, w.external_id
 	FROM tasks t JOIN projects p ON p.id = t.project_id
 	-- The card's micro-plan, if it has one and wsingest has indexed it: the dir is
 	-- the join (tasks.workspace_dir), the 'plan' artifact is what points at it, and
@@ -291,12 +305,15 @@ const boardTaskSelect = `
 	LEFT JOIN task_artifacts ta ON ta.kind = 'plan' AND ta.path = t.workspace_dir || '/plan'
 	LEFT JOIN tasks w ON w.id = ta.task_id AND w.source = 'workspace'`
 
-func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
+// scanBoardTask hydrates d from one boardTaskSelect row. inboxTTL is the
+// sweeper's TTL for the derived StaleAfter (<= 0 ⇒ the sweep is off ⇒ null).
+func scanBoardTask(scan func(...any) error, d *boardTaskDTO, inboxTTL time.Duration) error {
 	var (
-		priority           int
-		paused, userPaused int64
-		deps, scope, labs  string
-		externalID         sql.NullString
+		priority               int
+		paused, userPaused     int64
+		deps, scope, labs, src string
+		externalID             sql.NullString
+		turnUUID, quote, files sql.NullString
 	)
 	if err := scan(&d.ID, &externalID, &d.ProjectID, &d.ProjectSlug, &d.Title, &d.Prompt,
 		&priority, &d.Status, &d.BoardColumn, &paused, &userPaused,
@@ -304,7 +321,8 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 		&d.DispatchError, &d.StartPoint, &d.RetryCount, &d.VerifyRetryCount,
 		&d.VerifyVerdict, &d.VerifyDetail, &d.ResultNote,
 		&d.Agent, &d.Origin, &d.OriginSessionID,
-		&d.ColumnMovedAt, &d.CreatedAt, &d.PlanExternalID); err != nil {
+		&turnUUID, &quote, &files, &d.DispatchedPrompt,
+		&src, &d.ColumnMovedAt, &d.CreatedAt, &d.PlanExternalID); err != nil {
 		return err
 	}
 	d.ExternalID = externalID.String
@@ -321,6 +339,31 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 	if d.Labels, err = unmarshalStringList(labs); err != nil {
 		return err
 	}
+	// A card is "captured" when it points at a session or carries any capture
+	// column; origin alone is not the test because a verifier fix task has a
+	// non-manual origin and no source at all.
+	if d.OriginSessionID != nil || turnUUID.Valid || quote.Valid || files.Valid {
+		srcDTO := &boardTaskSourceDTO{SessionID: d.OriginSessionID, Files: []string{}}
+		if turnUUID.Valid {
+			srcDTO.TurnUUID = &turnUUID.String
+		}
+		if quote.Valid {
+			srcDTO.Quote = &quote.String
+		}
+		if files.Valid {
+			if srcDTO.Files, err = unmarshalStringList(files.String); err != nil {
+				return err
+			}
+		}
+		d.Source = srcDTO
+	}
+	if at := taskcap.StaleAfter(taskcap.BoardTaskRow{
+		Source: src, BoardColumn: d.BoardColumn, Origin: d.Origin,
+		WorktreePath: d.WorktreePath, CreatedAt: d.CreatedAt, ColumnMovedAt: d.ColumnMovedAt,
+	}, inboxTTL); at != nil {
+		s := at.Format(time.RFC3339)
+		d.StaleAfter = &s
+	}
 	return nil
 }
 
@@ -328,7 +371,7 @@ func scanBoardTask(scan func(...any) error, d *boardTaskDTO) error {
 // task_updated WS payload). Returns (nil, nil) when the row is gone.
 func (h *Handler) boardTaskByID(id int64) (*boardTaskDTO, error) {
 	var d boardTaskDTO
-	err := scanBoardTask(h.DB.QueryRow(boardTaskSelect+` WHERE t.id = ?`, id).Scan, &d)
+	err := scanBoardTask(h.DB.QueryRow(boardTaskSelect+` WHERE t.id = ?`, id).Scan, &d, h.InboxTTL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -390,6 +433,15 @@ func (h *Handler) resolveAgentName(w http.ResponseWriter, projectID int64, name 
 		return nil, false
 	}
 	return trimmed, true
+}
+
+// optString converts the (any, ok) result of resolvePlaybookName /
+// resolveAgentName — nil or a string — into the *string the constructor takes.
+func optString(v any) *string {
+	if s, ok := v.(string); ok {
+		return &s
+	}
+	return nil
 }
 
 // capturedTaskInput is the payload of a capture insert: the parts a captured
@@ -463,7 +515,7 @@ func (h *Handler) listBoardTasks(w http.ResponseWriter, r *http.Request) {
 	out := []boardTaskDTO{}
 	for rows.Next() {
 		var d boardTaskDTO
-		if err := scanBoardTask(rows.Scan, &d); err != nil {
+		if err := scanBoardTask(rows.Scan, &d, h.InboxTTL); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -569,22 +621,7 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	scopeJSON, err := marshalStringList(body.FileScope)
-	if err != nil {
-		badRequest(w, err)
-		return
-	}
-	depsJSON, err := marshalStringList(body.Dependencies)
-	if err != nil {
-		badRequest(w, err)
-		return
-	}
 	labels, err := normalizeLabels(body.Labels)
-	if err != nil {
-		badRequest(w, err)
-		return
-	}
-	labelsJSON, err := marshalStringList(labels)
 	if err != nil {
 		badRequest(w, err)
 		return
@@ -613,28 +650,23 @@ func (h *Handler) createBoardTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	extID, err := newBoardExternalID()
+	id, _, err := store.InsertBoardTask(h.DB, store.BoardTaskInput{
+		ProjectID:    body.ProjectID,
+		Title:        title,
+		Prompt:       prompt,
+		Priority:     priority,
+		Column:       column,
+		Model:        body.Model,
+		Playbook:     optString(playbook),
+		Agent:        optString(agent),
+		FileScope:    body.FileScope,
+		Labels:       labels,
+		Dependencies: body.Dependencies,
+	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	now := time.Now().UTC().Format(boardTSFormat)
-	var movedAt any
-	if column != "triage" {
-		movedAt = now // an explicit non-default landing column counts as a move
-	}
-	res, err := h.DB.Exec(`
-		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
-		                   source, external_id, board_column, model, playbook, file_scope,
-		                   labels, dependencies, column_moved_at, agent, origin)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
-		body.ProjectID, title, prompt, priority, now,
-		extID, column, body.Model, playbook, scopeJSON, labelsJSON, depsJSON, movedAt, agent)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	id, _ := res.LastInsertId()
 	d, err := h.boardTaskByID(id)
 	if err != nil {
 		writeErr(w, err)

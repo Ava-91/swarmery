@@ -92,9 +92,20 @@ func TestCaptureTodosCreatesTriageCards(t *testing.T) {
 		}
 	}
 
+	// The TodoWrite record is the turn every card of this call points at. Its
+	// uuid is the record part of the tool_call event's dedup key, which ingest
+	// stores as "<record uuid>#<tool_use id>".
+	var todoRecordUUID string
+	if err := db.QueryRow(
+		`SELECT dedup_key FROM events WHERE session_id = ? AND tool_name = 'TodoWrite'`, sessionID,
+	).Scan(&todoRecordUUID); err != nil || todoRecordUUID == "" {
+		t.Fatalf("TodoWrite event uuid: %q, %v", todoRecordUUID, err)
+	}
+	todoRecordUUID, _, _ = strings.Cut(todoRecordUUID, "#")
+
 	rows, err := db.Query(`
 		SELECT title, prompt, origin, board_column, source, status, priority, capture_key,
-		       external_id, agent
+		       external_id, agent, origin_turn_uuid, origin_quote
 		  FROM tasks WHERE origin_session_id = ? ORDER BY id`, sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -106,10 +117,10 @@ func TestCaptureTodosCreatesTriageCards(t *testing.T) {
 		var (
 			title, prompt, origin, column, source, status, key, extID string
 			priority                                                  int
-			agent                                                     sql.NullString
+			agent, turnUUID, quote                                    sql.NullString
 		)
 		if err := rows.Scan(&title, &prompt, &origin, &column, &source, &status,
-			&priority, &key, &extID, &agent); err != nil {
+			&priority, &key, &extID, &agent, &turnUUID, &quote); err != nil {
 			t.Fatal(err)
 		}
 		n++
@@ -139,15 +150,24 @@ func TestCaptureTodosCreatesTriageCards(t *testing.T) {
 			t.Errorf("duplicate capture_key %q across cards of one session", key)
 		}
 		seenKeys[key] = true
-		// Provenance footer: the session id, plus the prompt that started it.
+		// Provenance footer in the prompt: the session id and nothing else. The
+		// prompt that started the session is a COLUMN (origin_quote), together
+		// with the record that minted the card (origin_turn_uuid) — not prose
+		// in the card body, which is what every dispatched run used to inherit.
 		if !strings.Contains(prompt, "Captured from session "+captureSessionUUID) {
 			t.Errorf("card %q prompt is missing the session provenance:\n%s", title, prompt)
 		}
-		if !strings.Contains(prompt, "Refactor the retry helper") {
-			t.Errorf("card %q prompt is missing the opening-prompt excerpt:\n%s", title, prompt)
+		if strings.Contains(prompt, "That session opened with:") || strings.Contains(prompt, "Refactor the retry helper") {
+			t.Errorf("card %q prompt still carries the opening-prompt excerpt as prose:\n%s", title, prompt)
 		}
 		if !strings.HasPrefix(prompt, title) {
 			t.Errorf("card prompt should open with the todo text, got:\n%s", prompt)
+		}
+		if !turnUUID.Valid || turnUUID.String != todoRecordUUID {
+			t.Errorf("card %q origin_turn_uuid = %v, want the TodoWrite record %s", title, turnUUID, todoRecordUUID)
+		}
+		if !quote.Valid || quote.String != "Refactor the retry helper and add tests for the backoff." {
+			t.Errorf("card %q origin_quote = %v, want the session's opening prompt", title, quote)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -298,13 +318,13 @@ func TestCaptureTodosSkipsSidechain(t *testing.T) {
 		sessionUUID: captureSessionUUID,
 	}
 
-	in.captureTodos(block, true) // sidechain
+	in.captureTodos(block, true, "rec-test") // sidechain
 	if len(in.capturedTaskIDs) != 0 {
 		t.Errorf("sidechain captured %d cards, want 0", len(in.capturedTaskIDs))
 	}
 	// Control: the identical block on the main transcript DOES capture, so the
 	// assertion above failed on the sidechain flag and not on a broken block.
-	in.captureTodos(block, false)
+	in.captureTodos(block, false, "rec-test")
 	if len(in.capturedTaskIDs) != 1 {
 		t.Errorf("main-transcript capture = %d cards, want 1", len(in.capturedTaskIDs))
 	}
@@ -333,7 +353,7 @@ func TestCaptureTodosShortCircuitsNonTodoWrite(t *testing.T) {
 			ID:    "toolu_x",
 			Name:  name,
 			Input: json.RawMessage(`{"todos":[{"content":"not a real todo"}], "trailing`), // invalid JSON
-		}, false)
+		}, false, "rec-test")
 	}
 	if in.skipCapture != nil {
 		t.Errorf("skip verdict computed for non-TodoWrite blocks (= %v); the name gate must return first",
@@ -477,6 +497,25 @@ func TestCaptureSessionCardFallback(t *testing.T) {
 	// not append a second copy of it as an "excerpt".
 	if n := strings.Count(prompt, "Ship the nightly digest job"); n != 1 {
 		t.Errorf("opening prompt appears %d times in the card body, want 1:\n%s", n, prompt)
+	}
+	// The provenance columns are filled like any captured card's: the turn is
+	// the record that carried the opening prompt, the quote is that prompt.
+	var turnUUID, quote sql.NullString
+	if err := db.QueryRow(`SELECT origin_turn_uuid, origin_quote FROM tasks WHERE id = ?`, id).
+		Scan(&turnUUID, &quote); err != nil {
+		t.Fatal(err)
+	}
+	var promptRecord string
+	if err := db.QueryRow(
+		`SELECT dedup_key FROM events WHERE session_id = ? AND type = 'user_prompt' ORDER BY id LIMIT 1`,
+		sessionID).Scan(&promptRecord); err != nil {
+		t.Fatal(err)
+	}
+	if !turnUUID.Valid || turnUUID.String != promptRecord {
+		t.Errorf("origin_turn_uuid = %v, want the opening prompt's record %s", turnUUID, promptRecord)
+	}
+	if !quote.Valid || !strings.HasPrefix(quote.String, "Ship the nightly digest job") {
+		t.Errorf("origin_quote = %v, want the opening prompt", quote)
 	}
 
 	// Idempotent: the transition can fire again (a re-tail reactivates the

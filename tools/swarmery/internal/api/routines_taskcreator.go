@@ -11,7 +11,8 @@ package api
 import (
 	"database/sql"
 	"fmt"
-	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
 // RoutinesTaskCreator inserts board tasks on behalf of routine create-task steps.
@@ -28,9 +29,11 @@ func NewRoutinesTaskCreator(db *sql.DB) *RoutinesTaskCreator {
 }
 
 // CreateTask inserts a board task (source='queue') in the given column for
-// projectID and returns its external card id. Mirrors createBoardTask's INSERT
-// exactly (priority 'normal', empty file_scope/dependencies), minus the HTTP
-// plumbing. An unknown/blank column falls back to 'triage'.
+// projectID and returns its external card id. Goes through the same
+// constructor as POST /api/board/tasks (priority 'normal', empty
+// file_scope/dependencies), so a routine step can no more mint a blank card
+// than the board can: an empty title or prompt is an error, not a row. An
+// unknown/blank column falls back to 'triage'.
 func (c *RoutinesTaskCreator) CreateTask(projectID int64, title, prompt, column string) (string, error) {
 	if column == "" || !validColumn(column) {
 		column = "triage"
@@ -39,22 +42,17 @@ func (c *RoutinesTaskCreator) CreateTask(projectID int64, title, prompt, column 
 	if err != nil {
 		return "", err
 	}
-	now := time.Now().UTC().Format(boardTSFormat)
-	var movedAt any
-	if column != "triage" {
-		movedAt = now
-	}
-	res, err := c.DB.Exec(`
-		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
-		                   source, external_id, board_column, file_scope,
-		                   dependencies, column_moved_at)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, ?, '[]', '[]', ?)`,
-		projectID, title, prompt, priorityLabels["normal"], now,
-		extID, column, movedAt)
+	id, _, err := store.InsertBoardTask(c.DB, store.BoardTaskInput{
+		ProjectID:  projectID,
+		Title:      title,
+		Prompt:     prompt,
+		Priority:   priorityLabels["normal"],
+		Column:     column,
+		ExternalID: extID,
+	})
 	if err != nil {
 		return "", fmt.Errorf("insert board task: %w", err)
 	}
-	id, _ := res.LastInsertId()
 	// Fan out the same signals a manual board POST would: notify WS subscribers
 	// and poke the dispatcher (both no-ops when not attached).
 	publishTaskUpdated(id)

@@ -340,7 +340,44 @@ type candidate struct {
 	CreatedAt    string
 	FileScope    []string
 	Dependencies []string
-	depBlocker   *DepBlocker // nil ⇒ every dependency clear
+	// Provenance is the block appended to the task body of a CAPTURED card:
+	// the session's opening prompt and the files it touched, read from the
+	// origin_* columns (0066). "" for a manual card. It is added here, at
+	// dispatch, and nowhere else — the card's own prompt no longer carries the
+	// quote, so the run sees it exactly once.
+	Provenance string
+	depBlocker *DepBlocker // nil ⇒ every dependency clear
+}
+
+// body is the text a run is built from: the card's prompt plus, for a captured
+// card, its provenance block. Used for the {task_prompt} variable and for the
+// implicit single stage alike, so the two paths cannot disagree about what the
+// runner is told.
+func (c candidate) body() string { return c.Prompt + c.Provenance }
+
+// provenanceBlock renders the dispatch-time provenance of a captured card.
+// "" when there is nothing to say. The wording deliberately differs from the
+// pre-0066 prose marker ("That session opened with:") so the text can never be
+// mistaken for a card body that still needs the migration's backfill.
+func provenanceBlock(quote string, files []string) string {
+	quote = strings.TrimSpace(quote)
+	if quote == "" && len(files) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n--- PROVENANCE (captured card) ---\n")
+	if quote != "" {
+		b.WriteString("The session this card was captured from was asked:\n")
+		b.WriteString(quote)
+		b.WriteString("\n")
+	}
+	if len(files) > 0 {
+		b.WriteString("Files that session touched: ")
+		b.WriteString(strings.Join(files, ", "))
+		b.WriteString("\n")
+	}
+	b.WriteString("--- END PROVENANCE ---")
+	return b.String()
 }
 
 // candidates returns Todo board tasks (source='queue', both pause flags clear)
@@ -349,7 +386,8 @@ type candidate struct {
 func (s *Service) candidates() ([]candidate, error) {
 	rows, err := s.DB.Query(`
 		SELECT t.id, COALESCE(t.external_id,''), COALESCE(t.title,''), t.project_id, p.slug, p.path,
-		       t.prompt, t.model, t.agent, t.playbook, t.priority, t.created_at, t.file_scope, t.dependencies
+		       t.prompt, t.model, t.agent, t.playbook, t.priority, t.created_at, t.file_scope, t.dependencies,
+		       COALESCE(t.origin_quote,''), COALESCE(t.origin_files,'')
 		  FROM tasks t JOIN projects p ON p.id = t.project_id
 		 WHERE t.source='queue' AND t.board_column='todo'
 		   AND t.paused=0 AND t.user_paused=0`)
@@ -361,10 +399,10 @@ func (s *Service) candidates() ([]candidate, error) {
 	var cands []candidate
 	for rows.Next() {
 		var c candidate
-		var scopeJSON, depsJSON string
+		var scopeJSON, depsJSON, quote, filesJSON string
 		if err := rows.Scan(&c.ID, &c.ExternalID, &c.Title, &c.ProjectID, &c.ProjectSlug,
 			&c.ProjectPath, &c.Prompt, &c.Model, &c.Agent, &c.Playbook, &c.Priority, &c.CreatedAt,
-			&scopeJSON, &depsJSON); err != nil {
+			&scopeJSON, &depsJSON, &quote, &filesJSON); err != nil {
 			return nil, err
 		}
 		if c.FileScope, err = decodeStringList(scopeJSON); err != nil {
@@ -373,6 +411,10 @@ func (s *Service) candidates() ([]candidate, error) {
 		if c.Dependencies, err = decodeStringList(depsJSON); err != nil {
 			return nil, err
 		}
+		// origin_files is best-effort provenance: an undecodable value drops the
+		// file list rather than parking the card.
+		files, _ := decodeStringList(filesJSON)
+		c.Provenance = provenanceBlock(quote, files)
 		cands = append(cands, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -759,7 +801,7 @@ type resolvedPlaybook struct {
 // A card that never chose a playbook gets one auto-selected here and STAMPED
 // back onto the row, so the board shows the recipe that actually ran.
 func (s *Service) resolvePlaybook(c candidate) resolvedPlaybook {
-	single := resolvedPlaybook{stages: []resolvedStage{{name: "implement", body: c.Prompt}}}
+	single := resolvedPlaybook{stages: []resolvedStage{{name: "implement", body: c.body()}}}
 	if s.Playbooks == nil {
 		return single
 	}
@@ -908,7 +950,7 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPla
 		// Render this stage's body with the per-run var map, then append the
 		// execution contract (appended to EVERY stage regardless of playbook).
 		vars := playbooks.Vars{
-			TaskPrompt:          c.Prompt,
+			TaskPrompt:          c.body(),
 			StartPoint:          acq.StartPoint,
 			Branch:              acq.Branch,
 			TaskID:              c.ExternalID,
@@ -917,6 +959,13 @@ func (s *Service) runPlaybook(c candidate, acq worktree.Acquired, pb resolvedPla
 			TaskDoc:             docRel,
 		}
 		prompt := BuildStagePromptDoc(playbooks.Render(st.body, vars), acq.Branch, c.ExternalID, docRel, c.FileScope)
+		if i == 0 {
+			// Record the exact text the runner is about to see, so the card can
+			// answer "what was this task actually told?" — the body, the
+			// provenance block, the rendered recipe stage and the contract, as
+			// one string. First stage only: it is the one that carries the task.
+			s.recordDispatchedPrompt(c.ID, prompt)
+		}
 		// Model precedence, most specific first: the card's own override, then the
 		// recipe's declared model, then the global default. The middle step is what
 		// makes the `model:` frontmatter knob real — it parsed and rendered as a UI
@@ -1181,6 +1230,15 @@ func (s *Service) RemoveWorktreeFor(taskID int64) {
 }
 
 // ── session link + sentinel read ──
+
+// recordDispatchedPrompt stamps tasks.dispatched_prompt (0066) with the text
+// handed to the runner. Best-effort: a failure to record what was said must
+// not stop it being said, so the error is logged and the run proceeds.
+func (s *Service) recordDispatchedPrompt(taskID int64, prompt string) {
+	if _, err := s.DB.Exec(`UPDATE tasks SET dispatched_prompt=? WHERE id=?`, prompt, taskID); err != nil {
+		log.Printf("warning: dispatch: task=%d could not record the dispatched prompt: %v", taskID, err)
+	}
+}
 
 // linkSession reconciles the explicit task↔session link: once the dispatched
 // session's transcript is ingested (a sessions row with our uuid exists), write

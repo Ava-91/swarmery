@@ -80,3 +80,50 @@ func SweepStaleInbox(db *sql.DB, ttl time.Duration, now time.Time) (int64, error
 	}
 	return res.RowsAffected()
 }
+
+// BoardTaskRow is the slice of a tasks row StaleAfter reads: exactly the
+// columns StaleInboxWhere and InboxIdleSince mention, so the two cannot
+// diverge without this struct changing shape.
+type BoardTaskRow struct {
+	Source        string
+	BoardColumn   string
+	Origin        string
+	WorktreePath  *string
+	CreatedAt     string  // millisecond-Z (tsFormat) or RFC3339
+	ColumnMovedAt *string // nil ⇒ NULL, the shape every untouched captured card has
+}
+
+// StaleAfter is the instant SweepStaleInbox would retire the card at, or nil
+// when the sweep can never touch it (a manual card, one already accepted into
+// todo, one the dispatcher owns, a workspace row) or when the sweep is off
+// (ttl <= 0).
+//
+// It is the SAME decision as the sweep's SQL, evaluated for one row in Go so
+// the board can show "expires in 3 days" on a suggestion. Each conjunct
+// mirrors StaleInboxWhere, and the clock mirrors InboxIdleSince — COALESCE
+// (column_moved_at, created_at) + ttl — so for the untouched captured card the
+// answer is simply created_at + ttl. A timestamp the row cannot parse yields
+// nil rather than a guess.
+func StaleAfter(t BoardTaskRow, ttl time.Duration) *time.Time {
+	if ttl <= 0 {
+		return nil
+	}
+	if t.Source != "queue" || t.BoardColumn != "triage" || t.WorktreePath != nil {
+		return nil
+	}
+	if t.Origin != "session" && t.Origin != "llm" {
+		return nil
+	}
+	since := t.CreatedAt
+	if t.ColumnMovedAt != nil && *t.ColumnMovedAt != "" {
+		since = *t.ColumnMovedAt
+	}
+	at, err := time.Parse(tsFormat, since)
+	if err != nil {
+		if at, err = time.Parse(time.RFC3339Nano, since); err != nil {
+			return nil
+		}
+	}
+	out := at.Add(ttl).UTC()
+	return &out
+}

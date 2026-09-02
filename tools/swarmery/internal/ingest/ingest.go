@@ -606,7 +606,7 @@ func (in *ingester) processRecords(recs []record, path string, sidechain bool, s
 				// truncateStrings, and a clipped todo would hash to a different
 				// capture_key than the same todo read whole. Returns after one
 				// string compare for every tool that is not TodoWrite.
-				in.captureTodos(b, sidechain)
+				in.captureTodos(b, sidechain, r.UUID)
 			}
 
 		case "system":
@@ -1260,6 +1260,7 @@ func SlugForPath(path string) string {
 type dbtx interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	QueryRow(query string, args ...any) *sql.Row
+	Query(query string, args ...any) (*sql.Rows, error)
 }
 
 // worktreeRootOverride pins the dispatcher worktree base in tests; empty

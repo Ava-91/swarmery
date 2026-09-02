@@ -499,7 +499,7 @@ func captureBatch(t *testing.T, db *sql.DB, projectID, sessionID int64, b conten
 		sessionID:   sessionID,
 		sessionUUID: captureSessionUUID,
 	}
-	in.captureTodos(b, false)
+	in.captureTodos(b, false, "rec-lifecycle")
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit capture batch: %v", err)
 	}
