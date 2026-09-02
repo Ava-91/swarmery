@@ -102,6 +102,15 @@ still works): `code-quality`, `deps-check`, `env-check`, `migration-check`,
   once-per-session budget warning remain).
 - `pre-commit-test-gate.sh` and `memory-drift-check.sh` are documented
   opt-ins, not wired by default.
+- `task-session-log.sh` writes again (3.0.3). It gated on `AGENT_TASK_ID`,
+  which nothing in the fleet exports, so it had been writing nothing at all —
+  leaving the explicit task↔session link in `logs/sessions.md` with no working
+  writer. It now falls back to the single **active** task (README
+  `Status: active`, the same rule `session-start.sh` uses for its banner), and
+  writes nothing when two tasks are active rather than guessing the wrong card.
+  `session-summary.sh` now puts the session **UUID** in that column instead of
+  `$$`: the ingester only trusts uuid-shaped or ≥8-hex values, so every pid row
+  it wrote was discarded on arrival. Both hooks now emit the same header.
 - `subagent-stop.sh` now writes the delegation ledger row itself (3.0.2). It
   derives agent, phase, verdict, loops and artifact from the SubagentStop
   payload — `last_assistant_message` carries the subagent's final text, so the
