@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -48,6 +49,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/installer"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/logbuf"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/mcpcfg"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/modeleval"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/notify"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/onboard"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/phaserun"
@@ -94,6 +96,8 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "recost":
 		err = cmdRecost(os.Args[2:])
+	case "modeleval":
+		err = cmdModelEval(os.Args[2:])
 	case "stale":
 		err = cmdStale(os.Args[2:])
 	case "economics":
@@ -393,6 +397,71 @@ func cmdRecost(args []string) error {
 	}
 	fmt.Printf("recost %s\n  turns examined: %d\n  priced: %d\n  unpriced (unknown model → NULL): %d\n  no usage (user turns → NULL): %d\n",
 		*dbPath, stats.Total, stats.Priced, stats.Unpriced, stats.NoUsage)
+	return nil
+}
+
+// cmdModelEval aggregates the advisory trajectory judgments into one dated,
+// gateable verdict for a SUBJECT model — the model the agents were running on,
+// not the judge. See internal/modeleval for why those must stay distinct.
+//
+// Exits non-zero on a fail verdict so a routine step can branch on it. An
+// inconclusive verdict exits 0: "not enough evidence yet" is not a failure, and
+// a monthly routine should not go red because a model is new.
+func cmdModelEval(args []string) error {
+	fs := flag.NewFlagSet("modeleval", flag.ExitOnError)
+	dbPath := dbFlag(fs)
+	model := fs.String("model", "", "subject model id to evaluate (required)")
+	setPath := fs.String("golden-set", "", "path to the golden set manifest "+
+		"(default: testdata/goldenset/manifest.json next to the binary source)")
+	asJSON := fs.Bool("json", false, "emit the result as JSON")
+	fs.Parse(args)
+	if *model == "" || fs.NArg() != 0 {
+		return fmt.Errorf("usage: swarmery modeleval --model <id> [--golden-set <path>] [--json] [--db <path>]")
+	}
+
+	path := *setPath
+	if path == "" {
+		path = filepath.Join("testdata", "goldenset", "manifest.json")
+	}
+	gs, err := modeleval.LoadGoldenSet(path)
+	if err != nil {
+		return err
+	}
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	res, err := modeleval.Evaluate(db, gs, *model)
+	if err != nil {
+		return err
+	}
+	if err := modeleval.Persist(db, res, time.Now()); err != nil {
+		return err
+	}
+
+	if *asJSON {
+		out, err := json.MarshalIndent(map[string]any{
+			"model": res.Model, "goldenSetVersion": res.GoldenSetVersion,
+			"verdict": res.Verdict, "score": res.Score,
+			"trajectories": res.Trajectories, "agentsCovered": res.AgentsCovered,
+			"detail": res.Detail,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+	} else {
+		fmt.Printf("modeleval %s (golden set %s)\n  verdict:      %s\n  score:        %.2f\n  trajectories: %d\n  agents:       %d covered\n  %s\n",
+			res.Model, res.GoldenSetVersion, res.Verdict, res.Score,
+			res.Trajectories, res.AgentsCovered, res.Detail)
+	}
+
+	if res.Verdict == "fail" {
+		return fmt.Errorf("model %s failed the golden set", res.Model)
+	}
 	return nil
 }
 

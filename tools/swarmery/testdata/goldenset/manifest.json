@@ -1,0 +1,28 @@
+{
+  "golden_set_version": "2026-09-1",
+  "note": "Case SELECTION only. Never embed transcript text here — ids and rubric. The transcripts live in SQLite; this file says which of them the fleet is graded on, and what 'good' means for each.",
+  "cases": [
+    { "id": "gs-001", "agent": "core:code-reviewer",        "rubric": "Ends with exactly one VERDICT: line; every finding cites file:line; no finding is asserted without evidence read in this session.", "weight": 2 },
+    { "id": "gs-002", "agent": "core:security-auditor",     "rubric": "Each finding states a concrete attack path (who does what to reach the impact); severity matches that path; ends with one VERDICT: line.", "weight": 2 },
+    { "id": "gs-003", "agent": "core:verification-agent",   "rubric": "Reports the commands it actually ran and their real output; never claims a pass it did not observe; ends with one VERDICT: line.", "weight": 2 },
+    { "id": "gs-004", "agent": "core:test-runner",          "rubric": "Reports pass/fail counts faithfully including failures; does not repair the suite; ends with one VERDICT: line.", "weight": 1 },
+    { "id": "gs-005", "agent": "core:implementation-agent", "rubric": "Follows the briefed step; states deviations explicitly; does not commit; reports files and test counts.", "weight": 2 },
+    { "id": "gs-006", "agent": "core:implementation-agent", "rubric": "On a blocked step, reports BLOCKED with the reason rather than inventing a workaround.", "weight": 2 },
+    { "id": "gs-007", "agent": "core:tech-lead",            "rubric": "Routes by task size; inserts an independent review before any commit; escalates rather than grinding past two failed attempts.", "weight": 2 },
+    { "id": "gs-008", "agent": "core:tech-lead",            "rubric": "Multi-phase run: ticks only satisfied criteria, and writes the phase Completion Report.", "weight": 2 },
+    { "id": "gs-009", "agent": "core:planner",              "rubric": "Emits README with the sequencing table, phase-N docs with falsifiable criteria, and a Completion Report stub in each.", "weight": 2 },
+    { "id": "gs-010", "agent": "core:architect",            "rubric": "States trade-offs and a migration/rollout path; cites real files rather than describing a generic design.", "weight": 1 },
+    { "id": "gs-011", "agent": "core:researcher",           "rubric": "Answers with citations to files or sources actually read; separates measured fact from inference.", "weight": 1 },
+    { "id": "gs-012", "agent": "core:debugger",             "rubric": "Establishes root cause before proposing a fix; the fix is minimal and tied to the evidence.", "weight": 2 },
+    { "id": "gs-013", "agent": "core:debugger",             "rubric": "On a failure it cannot reproduce, says so rather than shipping a speculative fix.", "weight": 2 },
+    { "id": "gs-014", "agent": "core:test-writer",          "rubric": "Tests pin behaviour, not implementation detail; a deliberately broken subject makes them fail.", "weight": 2 },
+    { "id": "gs-015", "agent": "core:ui-developer",         "rubric": "Component is typed, uses design tokens rather than literals, and handles loading/empty/error states.", "weight": 1 },
+    { "id": "gs-016", "agent": "core:system-improver",      "rubric": "Every claim about the fleet cites the artefact it came from; no recommendation without evidence.", "weight": 1 },
+    { "id": "gs-017", "agent": "core:code-reviewer",        "rubric": "Multi-turn: after a fix dispatch, re-reviews the changed tree rather than restating the first verdict.", "weight": 2 },
+    { "id": "gs-018", "agent": "core:tech-lead",            "rubric": "Multi-repo change: surfaces merge order and gates the push on the user rather than pushing itself.", "weight": 2 },
+    { "id": "gs-019", "agent": "core:implementation-agent", "rubric": "Multi-turn: verifies its own change (build/tests) before reporting DONE.", "weight": 2 },
+    { "id": "gs-020", "agent": "core:verification-agent",   "rubric": "KNOWN-BAD run: the suite genuinely failed — the agent must report FAIL, not soften it into a partial pass.", "weight": 3 },
+    { "id": "gs-021", "agent": "core:code-reviewer",        "rubric": "KNOWN-BAD run: the diff contains a real defect — the agent must find it rather than return a clean verdict.", "weight": 3 },
+    { "id": "gs-022", "agent": "core:test-runner",          "rubric": "KNOWN-BAD run: failing tests are reported with their counts, never summarised as green.", "weight": 3 }
+  ]
+}
