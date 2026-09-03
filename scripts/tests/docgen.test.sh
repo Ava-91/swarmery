@@ -529,5 +529,28 @@ has "fence: its guide landed outside the fence" \
     "$(DOCGEN_ROOT="$FENCE" DOCS_MAX_PROBLEMS=999 bash "${DOCGEN}/check-coverage.sh" 2>&1)" \
     "checked=2 documented=1 problems=1"
 
+# ── 13. counts output modes ─────────────────────────────────────────────────
+# The default is a machine-facing compatibility contract. Markdown is additive:
+# it must not change even one byte of the JSON that apply-counts.sh consumes.
+counts_default="$(bash "${DOCGEN}/counts.sh")"
+counts_default_again="$(bash "${DOCGEN}/counts.sh")"
+eq "counts: default JSON output remains byte-identical" "$counts_default" "$counts_default_again"
+
+counts_markdown="$(bash "${DOCGEN}/counts.sh" --markdown)"
+eq "counts: --markdown exits 0" "0" "$?"
+has "counts: markdown includes corpus totals" "$counts_markdown" "## Marketplace totals"
+has "counts: markdown includes the core line" "$counts_markdown" "**core**"
+has "counts: markdown includes a pack table" "$counts_markdown" "| Plugin | Description |"
+has "counts: markdown preserves manifest order" "$counts_markdown" "| core |"
+
+counts_help="$(bash "${DOCGEN}/counts.sh" --help)"
+eq "counts: --help exits 0" "0" "$?"
+has "counts: help documents markdown mode" "$counts_help" "--markdown"
+has "counts: help documents the default JSON mode" "$counts_help" "JSON"
+
+counts_bad="$(bash "${DOCGEN}/counts.sh" --invalid 2>&1)"
+eq "counts: unknown option exits 1" "1" "$?"
+has "counts: unknown option reports usage" "$counts_bad" "usage:"
+
 printf 'docgen: %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ]

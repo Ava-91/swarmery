@@ -44,11 +44,44 @@
 # Anything that cannot be derived is emitted as null. A stale number is worse
 # than a missing one: apply-counts.sh drops the tile rather than publish a guess.
 #
-# Exit: 0 = JSON written, 1 = manifest/tree mismatch or an unreadable source.
+# Exit: 0 = JSON/Markdown written or help displayed; 1 = bad usage, manifest/tree
+# mismatch, or an unreadable source.
+#
+# Args:
+#   --markdown  emit a paste-ready Markdown summary instead of the default JSON
+#   --help      describe both output modes
 #
 # Env:
 #   DOCGEN_ROOT  corpus root (default: this repo, resolved from lib.sh)
 set -euo pipefail
+
+COUNTS_OUTPUT="json"
+case "$#" in
+  0) ;;
+  1)
+    case "$1" in
+      --markdown) COUNTS_OUTPUT="markdown" ;;
+      -h | --help)
+        cat <<'USAGE'
+usage: counts.sh [--markdown]
+
+Emit derived marketplace counts as JSON (the default), or as a paste-ready
+Markdown release-note summary with --markdown.
+USAGE
+        exit 0
+        ;;
+      *)
+        echo "usage: counts.sh [--markdown]" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    echo "usage: counts.sh [--markdown]" >&2
+    exit 1
+    ;;
+esac
+export COUNTS_OUTPUT
 
 # shellcheck source=scripts/docgen/lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -206,27 +239,44 @@ if (fs.existsSync(routesFile)) {
   apiRoutes = matches ? matches.length : 0;
 }
 
-process.stdout.write(
-  JSON.stringify(
-    {
-      packs: plugins.length,
-      agents: totals.agent,
-      skills: totals.skill,
-      commands: totals.command,
-      core: {
-        version: String(corePlugin.version || ''),
-        agents: coreItems.agent,
-        skills: coreItems.skill,
-        commands: coreItems.command,
-      },
-      go_packages: goPackages,
-      api_routes: apiRoutes,
-      plugins,
-    },
-    null,
-    2
-  ) + '\n'
-);
+const counts = {
+  packs: plugins.length,
+  agents: totals.agent,
+  skills: totals.skill,
+  commands: totals.command,
+  core: {
+    version: String(corePlugin.version || ''),
+    agents: coreItems.agent,
+    skills: coreItems.skill,
+    commands: coreItems.command,
+  },
+  go_packages: goPackages,
+  api_routes: apiRoutes,
+  plugins,
+};
+
+if (process.env.COUNTS_OUTPUT === 'markdown') {
+  const cell = (value) => String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  const lines = [
+    '## Marketplace totals',
+    '',
+    '- **Packs:** ' + counts.packs,
+    '- **Agents:** ' + counts.agents,
+    '- **Skills:** ' + counts.skills,
+    '- **Commands:** ' + counts.commands,
+    '- **core** v' + counts.core.version + ': ' + counts.core.agents + ' agents, ' +
+      counts.core.skills + ' skills, ' + counts.core.commands + ' commands',
+  ];
+  if (counts.go_packages !== null) lines.push('- **Go packages:** ' + counts.go_packages);
+  if (counts.api_routes !== null) lines.push('- **API routes:** ' + counts.api_routes);
+  lines.push('', '## Plugin packs', '', '| Plugin | Description |', '|---|---|');
+  for (const plugin of counts.plugins) {
+    lines.push('| ' + cell(plugin.name) + ' | ' + cell(plugin.description) + ' |');
+  }
+  process.stdout.write(lines.join('\n') + '\n');
+} else {
+  process.stdout.write(JSON.stringify(counts, null, 2) + '\n');
+}
 COUNTS
 
 node -e "${DOCGEN_NODE_LIB}${COUNTS_JS}"
