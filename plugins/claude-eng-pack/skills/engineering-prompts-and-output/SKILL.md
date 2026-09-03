@@ -1,6 +1,6 @@
 ---
 name: engineering-prompts-and-output
-description: Use when writing or reviewing system prompts, few-shot examples, structured output via tool use, JSON schema validation with retry loops, Message Batches API processing, or multi-instance/multi-pass review pipelines such as automated PR reviewers. Also when outputs are inconsistent between runs, JSON fails validation, false positives erode reviewer trust, hallucinated fields appear, or self-review keeps missing defects.
+description: Use when writing or reviewing system prompts, few-shot examples, structured output via tool use, JSON schema validation with retry loops, Message Batches API processing, or multi-instance/multi-pass review pipelines such as automated PR reviewers. Also when outputs are inconsistent between runs, JSON fails validation, false positives erode reviewer trust, hallucinated fields appear, or self-review keeps missing defects. NOT for tool interface design (use designing-tools-and-mcp), context/review calibration (use managing-context-reliability), or loop orchestration (use auditing-agent-architecture).
 docs:
   status: reviewed
   source_sha: cc1f93195328
