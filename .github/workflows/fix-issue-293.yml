@@ -1,9 +1,0 @@
-name: Fix issue 293
-on: [push]
-permissions:
-  contents: write
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "workflow is running"
