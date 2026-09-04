@@ -236,21 +236,20 @@ section entirely rather than showing an empty shell.
 
 ### Project workspace · Board → worktree → agent
 
-A six-column board: Triage → Todo → In Progress → In Review → Done → Archived. Drag and drop is
-native, and a column drop issues an optimistic update that reverts with a toast if the server
-refuses it — but every card also carries a keyboard **move to →** menu, so dragging is never the
-only path. Quick entry sits at the top of Triage, Done sorts by when it got there, and Archived
-loads lazily on first expand to keep the default view light.
+The board has three lanes: **Inbox → Working → Review**. Cards stay in Inbox until you
+press their **▶ Run** verb; there is no drag-and-drop interaction. Running a card dispatches it to
+a headless agent in a dedicated `swarm/<task-id>` git worktree, where it moves through Working and
+then into Review for verification. The per-card verbs are the primary way to act on work, while
+Inbox keeps unstarted tasks separate from work that is actively running.
 
-Moving a card into **Todo** is the part that does real work. The dispatcher wakes, acquires a
-dedicated `swarm/<task-id>` git worktree so the agent can never collide with your working tree,
-runs a headless `claude -p` session under that task's playbook, and hands the result to the
-verifier — which grades it against the task and stamps `PASS` / `FAIL` / `INCONCLUSIVE` before
-the card lands in review.
+The dispatcher acquires the worktree so the agent can never collide with your working tree, runs a
+headless `claude -p` session under that task's playbook, and hands the result to the verifier —
+which grades it against the task and stamps `PASS` / `FAIL` / `INCONCLUSIVE` before the card lands
+in Review.
 
 <div align="center">
-  <a href="screenshots/board.png"><img src="screenshots/board.png" width="720" alt="Kanban board with six columns and running task cards"></a>
-  <br><sub><i>Todo is the trigger: worktree, headless agent, verification, then In Review.</i></sub>
+  <a href="screenshots/board.png"><img src="screenshots/board.png" width="720" alt="Three-lane board with Inbox, Working, and Review and running task cards"></a>
+  <br><sub><i>Run is the trigger: worktree, headless agent, verification, then Review.</i></sub>
 </div>
 
 ### Project workspace · Planning Mode
