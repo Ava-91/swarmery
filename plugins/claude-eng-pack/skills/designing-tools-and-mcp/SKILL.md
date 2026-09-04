@@ -1,6 +1,6 @@
 ---
 name: designing-tools-and-mcp
-description: Use when creating or reviewing tool definitions for Claude — tool names, descriptions, input schemas, structured error responses, tool_choice configuration, MCP server setup and scoping, or built-in tool usage (Grep, Glob, Read, Edit). Also when Claude picks the wrong tool, confuses similar tools, retries hopeless failures, treats empty results as errors, or degrades because too many tools are exposed.
+description: Use when creating or reviewing tool definitions for Claude — tool names, descriptions, input schemas, structured error responses, tool_choice configuration, MCP server setup and scoping, or built-in tool usage (Grep, Glob, Read, Edit). Also when Claude picks the wrong tool, confuses similar tools, retries hopeless failures, treats empty results as errors, or degrades because too many tools are exposed. NOT for agent loops/orchestration (use auditing-agent-architecture), system prompts/schemas (use engineering-prompts-and-output), or multi-turn error loss (use managing-context-reliability).
 docs:
   status: reviewed
   source_sha: 94f22ca1dec5

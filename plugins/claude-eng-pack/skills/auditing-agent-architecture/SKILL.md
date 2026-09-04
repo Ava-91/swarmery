@@ -1,6 +1,6 @@
 ---
 name: auditing-agent-architecture
-description: Use when designing or reviewing Claude-based agent systems — agentic loops and stop_reason handling, multi-agent orchestration, coordinators, subagent invocation and context passing, workflow enforcement, Agent SDK hooks (PreToolUse/PostToolUse), task decomposition, or session state and resumption. Also when an agent terminates prematurely, loops forever, repeats work, or subagents return inconsistent or incomplete results.
+description: Use when designing or reviewing Claude-based agent systems — agentic loops and stop_reason handling, multi-agent orchestration, coordinators, subagent invocation and context passing, workflow enforcement, Agent SDK hooks (PreToolUse/PostToolUse), task decomposition, or session state and resumption. Also when an agent terminates prematurely, loops forever, repeats work, or subagents return inconsistent or incomplete results. NOT for tool schemas (use designing-tools-and-mcp), prompts (use engineering-prompts-and-output), or context degradation (use managing-context-reliability).
 docs:
   status: reviewed
   source_sha: 1d201d3ba305

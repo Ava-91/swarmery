@@ -1,6 +1,6 @@
 ---
 name: managing-context-reliability
-description: Use when reviewing long-running or multi-agent Claude systems for reliability — context window management and summarisation, escalation and ambiguity resolution, error propagation between agents, codebase exploration and context degradation, human review and confidence calibration, or information provenance and multi-source synthesis. Also when quality degrades over long sessions, agents silently swallow failures, mid-context details get lost, or synthesised answers lose attribution.
+description: Use when reviewing long-running or multi-agent Claude systems for reliability — context window management and summarisation, escalation and ambiguity resolution, error propagation between agents, codebase exploration and context degradation, human review and confidence calibration, or information provenance and multi-source synthesis. Also when quality degrades over long sessions, agents silently swallow failures, mid-context details get lost, or synthesised answers lose attribution. NOT for loop/orchestration structure (use auditing-agent-architecture), prompt/review false-positive tuning (use engineering-prompts-and-output), or tool schemas (use designing-tools-and-mcp).
 docs:
   status: reviewed
   source_sha: 4b55f984d36d
