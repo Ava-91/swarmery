@@ -122,3 +122,53 @@ func migrationVersion(name string) (int, error) {
 	}
 	return v, nil
 }
+
+// MigrateUpTo applies the embedded migrations whose version is <= maxVersion
+// and records each in schema_migrations, exactly as Migrate would — and stops
+// there. It exists for tests that must reconstruct a database as it existed
+// BEFORE a later migration, seed rows in that older shape, and then run
+// Migrate to exercise the newer migration's backfill against them. Production
+// code never calls it: Migrate is the only entry point the daemon uses.
+func MigrateUpTo(db *sql.DB, maxVersion int) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		name       TEXT NOT NULL,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return fmt.Errorf("read embedded migrations: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		version, err := migrationVersion(name)
+		if err != nil {
+			return err
+		}
+		if version > maxVersion {
+			continue
+		}
+		body, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
+			version, name, time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+	}
+	return nil
+}

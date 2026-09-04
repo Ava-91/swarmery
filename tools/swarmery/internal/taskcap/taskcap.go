@@ -6,7 +6,8 @@
 // and they sit on opposite sides of an import edge. internal/api imports
 // internal/ingest (AttachBus takes an *ingest.Bus), so internal/ingest can
 // never import internal/api — the capture helper cannot live in either of
-// them. taskcap therefore depends on nothing but database/sql, which lets the
+// them. taskcap therefore depends on nothing but internal/store (the bottom of
+// the import graph, where the board-card constructor lives), which lets the
 // API layer (LLM/manual capture endpoints) and the ingest layer (live
 // transcript capture) share ONE definition of what a captured card is.
 //
@@ -18,12 +19,11 @@
 package taskcap
 
 import (
-	"crypto/rand"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
-	"time"
+
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
 // DB is the storage surface an insert needs. Both *sql.DB and *sql.Tx satisfy
@@ -31,40 +31,40 @@ import (
 // ingest captures inside the transaction that is already writing the
 // transcript's turns and events, so a card can never outlive a rolled-back
 // tail batch.
-type DB interface {
-	Exec(query string, args ...any) (sql.Result, error)
-	QueryRow(query string, args ...any) *sql.Row
-}
+type DB = store.DB
 
 const (
 	// NormalPriority mirrors internal/api's priorityLabels["normal"] on the
 	// existing INTEGER priority scale (0001_init.sql). Captured cards are
 	// suggestions — they never jump the queue. api.TestCapturedPriorityMatchesBoardDefault
 	// pins the two together (taskcap cannot import api to assert it here).
-	NormalPriority = 5
+	NormalPriority = store.NormalPriority
 
 	// tsFormat matches the millisecond-Z style of api.boardTSFormat so a
 	// captured row's created_at sorts against hand-created ones lexically.
-	tsFormat = "2006-01-02T15:04:05.000Z"
+	tsFormat = store.BoardTSFormat
 
-	// externalIDAlphabet / externalIDLen mint the "T-xxxxxx" card id that the
-	// dispatcher and commit trailers reference.
-	externalIDAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-	externalIDLen      = 6
+	// QuoteLimit caps the opening-prompt quote a captured card carries
+	// (Input.OriginQuote), in runes. Enough to say what the session was FOR;
+	// short enough to render as a chip on the card and to ride into a dispatched
+	// prompt without crowding the task itself.
+	QuoteLimit = 400
 )
 
-// origins is the closed set of task provenances (migration 0048). 'manual' is
-// the default every hand-written card carries and is NOT a capture origin —
-// InsertCapturedTask rejects it. internal/api.validOrigin delegates here so the
-// HTTP validation and the write path can never disagree about the set.
-var origins = map[string]bool{
-	"manual":  true,
+// captureOrigins is the subset of the provenance set a CAPTURE may carry.
+// 'manual' is the default every hand-written card has and 'verify-fix' is the
+// verifier's fix-chain marker — neither is a capture, and InsertCapturedTask
+// rejects both. The full closed set lives in store.ValidOrigin, which
+// internal/api.validOrigin also reads, so the HTTP validation and the write
+// path can never disagree about it.
+var captureOrigins = map[string]bool{
 	"session": true,
 	"llm":     true,
 }
 
-// ValidOrigin reports whether o is in the closed provenance set. Pure.
-func ValidOrigin(o string) bool { return origins[o] }
+// ValidOrigin reports whether o is in the closed provenance set
+// (manual | session | llm | verify-fix). Pure.
+func ValidOrigin(o string) bool { return store.ValidOrigin(o) }
 
 // Input is the payload of a capture insert: the parts a captured card actually
 // varies. Everything else is fixed by construction (see InsertCapturedTask).
@@ -74,21 +74,19 @@ type Input struct {
 	Prompt          string
 	Origin          string // 'session' | 'llm' — 'manual' is not a capture
 	OriginSessionID *int64
-	CaptureKey      string // idempotency key; required
+	// OriginTurnUUID is the transcript record the card was minted from; OriginQuote
+	// is the session's opening prompt (clip it to QuoteLimit); OriginFiles are the
+	// files the session had touched by then. Provenance columns (0066) — they are
+	// NOT folded into Prompt, so the board can render them on their own and the
+	// dispatcher can add them to a run exactly once.
+	OriginTurnUUID string
+	OriginQuote    string
+	OriginFiles    []string
+	CaptureKey     string // idempotency key; required
 }
 
-// NewExternalID mints a "T-" + 6-char base36 card id. The tasks.id INTEGER PK
-// is autoincremented by SQLite; this string is the external_id.
-func NewExternalID() (string, error) {
-	buf := make([]byte, externalIDLen)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	for i := range buf {
-		buf[i] = externalIDAlphabet[int(buf[i])%len(externalIDAlphabet)]
-	}
-	return "T-" + string(buf), nil
-}
+// NewExternalID mints a "T-" + 6-char base36 card id (store.NewExternalID).
+func NewExternalID() (string, error) { return store.NewExternalID() }
 
 // InsertCapturedTask inserts a suggested board card; returns (id, inserted=false)
 // when capture_key already exists (idempotent replay).
@@ -102,59 +100,35 @@ func NewExternalID() (string, error) {
 //
 // Fixed by construction: source='queue' (board rows, disjoint from workspace
 // ingest), board_column='triage' (a suggestion is not yet accepted work),
-// normal priority, status='queued', minted external_id.
+// normal priority, status='queued', minted external_id. The row itself is
+// written by store.InsertBoardTask — the same constructor every board card
+// goes through — so a captured card can never lack what a manual one has.
 //
 // Callers publish task_updated only when inserted is true — a replay changed
 // nothing, and a WS frame for a no-op would make every re-tail look like board
 // activity.
 func InsertCapturedTask(db DB, in Input) (int64, bool, error) {
-	title := strings.TrimSpace(in.Title)
-	prompt := strings.TrimSpace(in.Prompt)
 	key := strings.TrimSpace(in.CaptureKey)
-	if title == "" || prompt == "" {
+	if strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Prompt) == "" {
 		return 0, false, errors.New("captured task: title and prompt are required")
 	}
 	if key == "" {
 		return 0, false, errors.New("captured task: captureKey is required")
 	}
-	if in.Origin == "manual" || !ValidOrigin(in.Origin) {
+	if !captureOrigins[in.Origin] {
 		return 0, false, fmt.Errorf("captured task: invalid origin %q (want session|llm)", in.Origin)
 	}
-	extID, err := NewExternalID()
-	if err != nil {
-		return 0, false, err
-	}
-	now := time.Now().UTC().Format(tsFormat)
-	// The partial index's predicate must be repeated in the conflict target —
-	// SQLite needs it to know which index the upsert is aimed at. A bare
-	// ON CONFLICT(capture_key) does not compile against a partial index.
-	res, err := db.Exec(`
-		INSERT INTO tasks (project_id, title, prompt, priority, status, created_at,
-		                   source, external_id, board_column, file_scope, dependencies,
-		                   origin, origin_session_id, capture_key)
-		VALUES (?, ?, ?, ?, 'queued', ?, 'queue', ?, 'triage', '[]', '[]', ?, ?, ?)
-		ON CONFLICT(capture_key) WHERE capture_key IS NOT NULL DO NOTHING`,
-		in.ProjectID, title, prompt, NormalPriority, now,
-		extID, in.Origin, in.OriginSessionID, key)
-	if err != nil {
-		return 0, false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, false, err
-	}
-	if n == 0 {
-		// Replay: the card already exists. Hand back its id so the caller can
-		// still link to it (a re-capture is a no-op, not a failure).
-		var id int64
-		if err := db.QueryRow(`SELECT id FROM tasks WHERE capture_key = ?`, key).Scan(&id); err != nil {
-			return 0, false, err
-		}
-		return id, false, nil
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, false, err
-	}
-	return id, true, nil
+	return store.InsertBoardTask(db, store.BoardTaskInput{
+		ProjectID:       in.ProjectID,
+		Title:           in.Title,
+		Prompt:          in.Prompt,
+		Priority:        NormalPriority,
+		Column:          "triage",
+		Origin:          in.Origin,
+		OriginSessionID: in.OriginSessionID,
+		OriginTurnUUID:  in.OriginTurnUUID,
+		OriginQuote:     in.OriginQuote,
+		OriginFiles:     in.OriginFiles,
+		CaptureKey:      key,
+	})
 }

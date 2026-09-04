@@ -52,13 +52,16 @@ const (
 	// collision would need two todos in the same session whose normalized text
 	// hashes alike, which is not a realistic failure for a handful of items.
 	captureKeyHashLen = 12
-	// todoPromptExcerpt / sessionPromptLimit bound the provenance text copied
-	// onto a card. A todo card carries a short excerpt of the session's opening
-	// prompt for orientation; a session card IS the opening prompt, so it gets
-	// the larger budget. Both are further capped by what ingest stored on the
-	// user_prompt event (payloadStrLimit).
-	todoPromptExcerpt  = 2000
+	// sessionPromptLimit bounds the opening prompt a SESSION card is built from
+	// (its prompt IS the opening prompt). Further capped by what ingest stored
+	// on the user_prompt event (payloadStrLimit). A todo card's quote of that
+	// same prompt is bounded separately by taskcap.QuoteLimit — it is a
+	// provenance column (origin_quote), not part of the card body.
 	sessionPromptLimit = 4000
+	// captureFilesLimit caps origin_files: the distinct files the session had
+	// touched when the card was captured. Twenty is enough to say what the
+	// session was working on; a card is not a diff.
+	captureFilesLimit = 20
 	// todoStatusCompleted is the TodoWrite status that ends a todo's life and
 	// therefore ends the life of the card captured from it (lifecycle signal 1).
 	// Matched verbatim, not case-folded: it is a literal the transcript writer
@@ -119,7 +122,11 @@ func sessionCaptureKey(sessionUUID string) string { return "sess:" + sessionUUID
 // Inserts go through in.tx, the same transaction already writing this batch's
 // turns and events: a card can never survive a batch that rolls back. The bus
 // frames are deferred to capturedTaskIDs for the same reason.
-func (in *ingester) captureTodos(b contentBlock, sidechain bool) {
+//
+// recordUUID is the envelope uuid of the assistant record that carries this
+// TodoWrite — stored as origin_turn_uuid so the board can link a card to the
+// exact turn that minted it.
+func (in *ingester) captureTodos(b contentBlock, sidechain bool, recordUUID string) {
 	if b.Name != "TodoWrite" {
 		return // hot path: no decode, no query, no allocation for other tools
 	}
@@ -138,7 +145,12 @@ func (in *ingester) captureTodos(b contentBlock, sidechain bool) {
 	if len(input.Todos) == 0 {
 		return
 	}
-	footer := captureFooter(in.tx, in.sessionID, in.sessionUUID, todoPromptExcerpt)
+	// Provenance is read once per TodoWrite call, not per todo: the quote and
+	// the file list are properties of the session at this moment, identical
+	// for every item of the call.
+	footer := captureFooter(in.sessionUUID)
+	quote := firstUserPrompt(in.tx, in.sessionID, taskcap.QuoteLimit)
+	files := sessionFiles(in.tx, in.sessionID, captureFilesLimit)
 	sessionID := in.sessionID
 	for _, td := range input.Todos {
 		content := strings.TrimSpace(td.Content)
@@ -152,6 +164,9 @@ func (in *ingester) captureTodos(b contentBlock, sidechain bool) {
 			Prompt:          content + footer,
 			Origin:          "session",
 			OriginSessionID: &sessionID,
+			OriginTurnUUID:  recordUUID,
+			OriginQuote:     quote,
+			OriginFiles:     files,
 			CaptureKey:      key,
 		})
 		if err != nil {
@@ -516,24 +531,61 @@ func firstUserPrompt(q dbtx, sessionID int64, limit int) string {
 	return clip(strings.TrimSpace(content.String), limit)
 }
 
-// captureFooter is the provenance block appended to every captured card's
-// prompt: which session it came from, and — when excerptLimit > 0 — enough of
-// that session's opening prompt to remind a human what the todo was FOR. A todo
-// like "fix the retry helper" is meaningless on a board three days later
-// without it. A session card passes 0: its prompt already IS the opening
-// prompt, so the excerpt would just repeat the card body.
-func captureFooter(q dbtx, sessionID int64, sessionUUID string, excerptLimit int) string {
-	var b strings.Builder
-	b.WriteString("\n\n---\nCaptured from session ")
-	b.WriteString(sessionUUID)
-	if excerptLimit <= 0 {
-		return b.String()
+// firstUserPromptUUID returns the envelope uuid of the record that carried the
+// session's opening prompt — the dedup_key ingest stored on its user_prompt
+// event (main-transcript records key by their bare uuid). "" when the session
+// has no prompt yet or the read fails.
+func firstUserPromptUUID(q dbtx, sessionID int64) string {
+	var key sql.NullString
+	if err := q.QueryRow(`
+		SELECT dedup_key FROM events
+		 WHERE session_id = ? AND type = 'user_prompt'
+		 ORDER BY id LIMIT 1`, sessionID).Scan(&key); err != nil {
+		return ""
 	}
-	if p := firstUserPrompt(q, sessionID, excerptLimit); p != "" {
-		b.WriteString("\n\nThat session opened with:\n")
-		b.WriteString(p)
+	return key.String
+}
+
+// sessionFiles lists the distinct files the session has touched so far, in
+// first-touch order, capped at limit. Read from file_changes — the rows ingest
+// writes as tool results close — so at capture time it reflects the edits that
+// PRECEDED the TodoWrite in the transcript, which is what "what was this
+// session working on" means for a card minted mid-session. nil on any failure:
+// provenance is best-effort and must never cost the card.
+func sessionFiles(q dbtx, sessionID int64, limit int) []string {
+	rows, err := q.Query(`
+		SELECT file_path FROM file_changes
+		 WHERE session_id = ?
+		 GROUP BY file_path
+		 ORDER BY MIN(id)
+		 LIMIT ?`, sessionID, limit)
+	if err != nil {
+		return nil
 	}
-	return b.String()
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil
+		}
+		out = append(out, p)
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+	return out
+}
+
+// captureFooter is the one line of provenance that stays IN a captured card's
+// prompt: which session it came from. Everything else about where a card came
+// from — the minting turn, the session's opening prompt, the files it touched —
+// lives in its own column (0066) so the board can render it separately and the
+// dispatcher can add it to a run exactly once. Before 0066 the opening prompt
+// was appended here as prose after "That session opened with:", and that text
+// then rode into every dispatched prompt verbatim; migration 0066 moved it out.
+func captureFooter(sessionUUID string) string {
+	return "\n\n---\nCaptured from session " + sessionUUID
 }
 
 // firstLine is the card title source for a session card: a first prompt is
@@ -607,12 +659,20 @@ func CaptureSessionCard(db *sql.DB, sessionID int64) (int64, bool) {
 	if prompt == "" {
 		return 0, false // nothing to title or describe the card with
 	}
+	// A session card IS the opening prompt, so its provenance quote is the same
+	// text once more, clipped: the board's source chip and the dispatcher's
+	// provenance block read origin_quote, and a session card must answer them
+	// like any other captured card rather than as a special case. The turn is
+	// the record that carried that opening prompt.
 	id, inserted, err := taskcap.InsertCapturedTask(db, taskcap.Input{
 		ProjectID:       projectID,
 		Title:           clip(firstLine(prompt), captureTitleLimit),
-		Prompt:          prompt + captureFooter(db, sessionID, sessionUUID, 0),
+		Prompt:          prompt + captureFooter(sessionUUID),
 		Origin:          "session",
 		OriginSessionID: &sessionID,
+		OriginTurnUUID:  firstUserPromptUUID(db, sessionID),
+		OriginQuote:     clip(prompt, taskcap.QuoteLimit),
+		OriginFiles:     sessionFiles(db, sessionID, captureFilesLimit),
 		CaptureKey:      sessionCaptureKey(sessionUUID),
 	})
 	if err != nil {

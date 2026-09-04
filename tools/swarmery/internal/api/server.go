@@ -8,11 +8,13 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/docsfs"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/improve"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/provision"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/retroanalysis"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/taskcap"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/worktree"
 	"github.com/atretyak1985/swarmery/tools/swarmery/web"
 )
@@ -26,6 +28,17 @@ const (
 	cacheControlImmutable = "public, max-age=31536000, immutable"
 )
 
+// inboxTTL is the sweeper TTL the board DTO derives staleAfter from. Set by
+// AttachInboxTTL at startup from the same SWARMERY_INBOX_TTL resolution the
+// sweeper itself uses; the default matches the sweeper's default so a daemon
+// that never calls Attach still reports the truth.
+var inboxTTL = taskcap.DefaultInboxTTL
+
+// AttachInboxTTL records the inbox sweeper's TTL so board cards can report when
+// they expire (boardTaskDTO.StaleAfter). <= 0 means the sweep is disabled and
+// every card reads null. Call before NewServer.
+func AttachInboxTTL(d time.Duration) { inboxTTL = d }
+
 // NewServer builds the full HTTP handler: API routes + embedded SPA fallback.
 // watching reports whether the live ingest pipeline is attached (serve
 // without --no-ingest); /api/health surfaces it to the dashboard.
@@ -35,7 +48,7 @@ func NewServer(db *sql.DB, watching bool) (http.Handler, error) {
 		return nil, fmt.Errorf("embedded docs: %w", err)
 	}
 	mux := http.NewServeMux()
-	h := &Handler{DB: db, Watching: watching, Docs: docs,
+	h := &Handler{DB: db, Watching: watching, Docs: docs, InboxTTL: inboxTTL,
 		Improve: &improve.Service{
 			DB:     db,
 			Runner: improve.ClaudeRunner{},

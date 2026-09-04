@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/improve"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/ingest"
@@ -59,6 +60,12 @@ type Handler struct {
 	// one of its own. Nil disables the recovery — the resume then reports the
 	// missing directory as before.
 	Wt *worktree.Manager
+	// InboxTTL is how long a captured card may sit untouched in triage before
+	// the sweeper retires it — the value boardTaskDTO.StaleAfter is derived
+	// from. Zero or negative means the sweep is off and every card reads null.
+	// NewServer fills it from AttachInboxTTL; a bare &Handler{DB: db} (tests)
+	// leaves it off.
+	InboxTTL time.Duration
 }
 
 type projectDTO struct {

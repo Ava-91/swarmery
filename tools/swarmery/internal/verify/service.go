@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procfind"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/procgroup"
 	"github.com/atretyak1985/swarmery/tools/swarmery/internal/runcore"
+	"github.com/atretyak1985/swarmery/tools/swarmery/internal/store"
 )
 
 // tsFormat matches the millisecond-Z style the api/dispatch packages write.
@@ -767,18 +769,28 @@ func (s *Service) incrementRetry(rootID int64) error {
 // origin_session_id) that is NULL on a fix task and can never match.
 func (s *Service) createFixTask(root task, reasons string) error {
 	fixPrompt := root.prompt + "\n\n## Verification failed\n" + strings.TrimSpace(reasons)
-	now := s.ts()
-	res, err := s.DB.Exec(`
-		INSERT INTO tasks(project_id, title, prompt, priority, status, created_at,
-		                  source, origin, external_id, board_column, model, file_scope,
-		                  dependencies, column_moved_at)
-		VALUES(?, ?, ?, ?, 'queued', ?, 'queue', 'verify-fix', ?, 'todo', ?, ?, '[]', ?)`,
-		root.projectID, "fix: "+root.title, fixPrompt, fixPriority, now,
-		root.externalID, nullableModel(root.model), root.fileScope, now)
+	var scope []string
+	if err := json.Unmarshal([]byte(root.fileScope), &scope); err != nil {
+		// A root whose file_scope is not a JSON array is a row written before
+		// the column was normalized; the fix task falls back to the whole tree
+		// rather than inheriting garbage.
+		scope = nil
+	}
+	id, _, err := store.InsertBoardTask(s.DB, store.BoardTaskInput{
+		ProjectID:  root.projectID,
+		Title:      "fix: " + root.title,
+		Prompt:     fixPrompt,
+		Priority:   fixPriority,
+		Column:     "todo",
+		Origin:     "verify-fix",
+		ExternalID: root.externalID,
+		Model:      &root.model,
+		FileScope:  scope,
+		Now:        s.clock(),
+	})
 	if err != nil {
 		return err
 	}
-	id, _ := res.LastInsertId()
 	log.Printf("verify: created fix task %d for root %s (verify retry %d/%d)",
 		id, root.externalID, root.verifyRetryCount+1, s.Cfg.RetryBudget)
 	s.notify(id)

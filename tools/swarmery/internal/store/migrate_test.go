@@ -3,10 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
-	"sort"
-	"strings"
 	"testing"
-	"time"
 )
 
 // openRaw opens a SQLite DB with the same pragmas as Open but WITHOUT running
@@ -24,49 +21,13 @@ func openRaw(t *testing.T) *sql.DB {
 	return db
 }
 
-// migrateUpTo mirrors Migrate's runner loop but stops after maxVersion —
-// used to reconstruct a database as it existed before a later migration.
+// migrateUpTo applies migrations up to maxVersion only — used to reconstruct
+// a database as it existed before a later migration. Delegates to the exported
+// MigrateUpTo so other packages' tests can build the same pre-migration shape.
 func migrateUpTo(t *testing.T, db *sql.DB, maxVersion int) {
 	t.Helper()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-		version    INTEGER PRIMARY KEY,
-		name       TEXT NOT NULL,
-		applied_at TEXT NOT NULL
-	)`); err != nil {
-		t.Fatalf("create schema_migrations: %v", err)
-	}
-	entries, err := migrationsFS.ReadDir("migrations")
-	if err != nil {
-		t.Fatalf("read embedded migrations: %v", err)
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		version, err := migrationVersion(name)
-		if err != nil {
-			t.Fatalf("parse version of %s: %v", name, err)
-		}
-		if version > maxVersion {
-			continue
-		}
-		body, err := migrationsFS.ReadFile("migrations/" + name)
-		if err != nil {
-			t.Fatalf("read migration %s: %v", name, err)
-		}
-		if _, err := db.Exec(string(body)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
-		if _, err := db.Exec(
-			`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
-			version, name, time.Now().UTC().Format(time.RFC3339),
-		); err != nil {
-			t.Fatalf("record migration %s: %v", name, err)
-		}
+	if err := MigrateUpTo(db, maxVersion); err != nil {
+		t.Fatal(err)
 	}
 }
 
